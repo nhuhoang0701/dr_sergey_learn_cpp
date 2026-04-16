@@ -1,0 +1,292 @@
+# Use CMakePresets.json for reproducible, shareable build configurations
+
+**Category:** Build Systems & CI  
+**Item:** #741  
+**Reference:** <https://cmake.org/cmake/help/latest/manual/cmake-presets.7.html>  
+
+---
+
+## Topic Overview
+
+This third CMakePresets file focuses on **platform-specific presets** with condition expressions, **toolchain file selection** via presets, and the **workflow preset** feature introduced in version 6.
+
+### Platform-Specific Preset Design
+
+```cpp
+
+CMakePresets.json
+├── ci-base (hidden) ── common settings
+├── debug-linux     ── inherits ci-base, condition: Linux
+├── debug-windows   ── inherits ci-base, condition: Windows
+├── release-linux   ── inherits ci-base, condition: Linux, LTO
+├── release-windows ── inherits ci-base, condition: Windows, MSVC
+└── cross-arm64     ── inherits ci-base, toolchainFile
+
+```
+
+| Feature | Version Required | Purpose |
+| --- | --- | --- |
+| `condition` | 3 | OS/compiler-specific presets |
+| `toolchainFile` | 3 | Embed toolchain selection |
+| `workflowPresets` | 6 | Chain configure→build→test |
+| `$env{}` macro | 3 | Read environment variables |
+| `$penv{}` macro | 3 | Read parent environment |
+
+---
+
+## Self-Assessment
+
+### Q1: Write a CMakePresets.json with configure, build, and test presets for debug and release with platform conditions
+
+**Answer:**
+
+```json
+
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "ci-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_CXX_STANDARD": "20",
+                "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+                "BUILD_TESTING": "ON"
+            }
+        },
+        {
+            "name": "debug-linux",
+            "displayName": "Debug (Linux/GCC)",
+            "inherits": "ci-base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-g -O0 -Wall -Wextra -Wpedantic -fsanitize=address,undefined",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+            }
+        },
+        {
+            "name": "release-linux",
+            "displayName": "Release (Linux/GCC + LTO)",
+            "inherits": "ci-base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            },
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS": "-O2 -Wall -Wextra -DNDEBUG",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+            }
+        },
+        {
+            "name": "debug-windows",
+            "displayName": "Debug (Windows/MSVC)",
+            "inherits": "ci-base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "/W4 /WX /EHsc /Zi"
+            }
+        },
+        {
+            "name": "release-windows",
+            "displayName": "Release (Windows/MSVC + LTO)",
+            "inherits": "ci-base",
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            },
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CXX_FLAGS": "/W4 /WX /EHsc /O2 /GL /DNDEBUG",
+                "CMAKE_EXE_LINKER_FLAGS": "/LTCG"
+            }
+        },
+        {
+            "name": "cross-arm64",
+            "displayName": "Cross-compile ARM64",
+            "inherits": "ci-base",
+            "toolchainFile": "${sourceDir}/cmake/toolchains/aarch64-linux-gnu.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "debug-linux",     "configurePreset": "debug-linux" },
+        { "name": "release-linux",   "configurePreset": "release-linux" },
+        { "name": "debug-windows",   "configurePreset": "debug-windows" },
+        { "name": "release-windows", "configurePreset": "release-windows" },
+        { "name": "cross-arm64",     "configurePreset": "cross-arm64" }
+    ],
+    "testPresets": [
+        {
+            "name": "debug-linux",
+            "configurePreset": "debug-linux",
+            "output": { "outputOnFailure": true },
+            "execution": { "timeout": 120 }
+        },
+        {
+            "name": "release-linux",
+            "configurePreset": "release-linux",
+            "output": { "outputOnFailure": true }
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "ci-linux",
+            "displayName": "Full CI (Linux)",
+            "steps": [
+                { "type": "configure", "name": "release-linux" },
+                { "type": "build",     "name": "release-linux" },
+                { "type": "test",      "name": "release-linux" }
+            ]
+        }
+    ]
+}
+
+```
+
+The `condition` field ensures `cmake --list-presets` only shows presets valid for the current host OS.
+
+### Q2: Show that cmake --preset=release-linux selects the right toolchain and flags without manual -D flags
+
+**Answer:**
+
+```bash
+
+# ═══════════ On a Linux machine ═══════════
+$ cmake --list-presets
+Available configure presets:
+
+  "debug-linux"      - Debug (Linux/GCC)
+  "release-linux"    - Release (Linux/GCC + LTO)
+  "cross-arm64"      - Cross-compile ARM64
+# Note: Windows presets NOT listed (condition filtered them out)
+
+$ cmake --preset release-linux
+# Output:
+# Preset CMake variables:
+#   BUILD_TESTING="ON"
+#   CMAKE_BUILD_TYPE="Release"
+#   CMAKE_CXX_FLAGS="-O2 -Wall -Wextra -DNDEBUG"
+#   CMAKE_CXX_STANDARD="20"
+#   CMAKE_INTERPROCEDURAL_OPTIMIZATION="ON"
+# -- The CXX compiler identification is GNU 13.2.0
+# -- Configuring done (0.4s)
+# -- Generating done (0.1s)
+# -- Build files have been written to: /project/build/release-linux
+
+$ cmake --build --preset release-linux -- -j$(nproc)
+# [42/42] Linking CXX executable myapp
+
+$ ctest --preset release-linux
+# Test project /project/build/release-linux
+#   1/8 Test #1: unit_core ............   Passed  0.05 sec
+#   
+#   8/8 Test #8: integration_api .....   Passed  1.23 sec
+# 100% tests passed, 0 tests failed
+
+# ═══════════ Or run the full workflow in one command ═══════════
+$ cmake --workflow --preset ci-linux
+# Executes configure → build → test sequentially
+# If any step fails, the workflow stops immediately
+
+# ═══════════ Toolchain preset for cross-compilation ═══════════
+$ cmake --preset cross-arm64
+# Reads toolchainFile from the preset — no -DCMAKE_TOOLCHAIN_FILE needed
+# The preset encodes the toolchain path relative to ${sourceDir}
+
+```
+
+### Q3: Explain how CMakeUserPresets.json extends the shared presets without committing machine-specific paths
+
+**Answer:**
+
+```json
+
+// CMakeUserPresets.json — MUST be in .gitignore
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "dev-alice",
+            "inherits": "debug-linux",
+            "displayName": "Alice's Local Dev",
+            "cacheVariables": {
+                "CMAKE_PREFIX_PATH": "/home/alice/libs/fmt;/home/alice/libs/spdlog",
+                "CMAKE_INSTALL_PREFIX": "/home/alice/opt/myproject"
+            },
+            "environment": {
+                "CC":  "/usr/lib/ccache/gcc-13",
+                "CXX": "/usr/lib/ccache/g++-13",
+                "VCPKG_ROOT": "/home/alice/vcpkg"
+            }
+        },
+        {
+            "name": "dev-alice-clang",
+            "inherits": "debug-linux",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "/usr/bin/clang++-17",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++ -g -O0"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "dev-alice",
+            "configurePreset": "dev-alice",
+            "jobs": 16
+        }
+    ]
+}
+
+```
+
+**How inheritance works:**
+
+```cpp
+
+CMakePresets.json (committed)         CMakeUserPresets.json (gitignored)
+┌─────────────────────┐               ┌──────────────────────┐
+│ ci-base (hidden)    │               │ dev-alice             │
+│ debug-linux         │◄──inherits────│   inherits: debug-linux│
+│ release-linux       │               │   + custom paths      │
+└─────────────────────┘               │   + ccache compiler   │
+                                      │ dev-alice-clang       │
+                                      │   inherits: debug-linux│
+                                      │   + clang++-17        │
+                                      └──────────────────────┘
+
+```
+
+**Rules:**
+
+- `CMakeUserPresets.json` **can** inherit from `CMakePresets.json` presets
+- `CMakePresets.json` **cannot** reference `CMakeUserPresets.json` presets
+- Use `$env{HOME}` or `$penv{VCPKG_ROOT}` to avoid hardcoded absolute paths where possible
+- `$penv{}` reads from parent environment (shell), `$env{}` reads from preset-defined environment
+
+---
+
+## Notes
+
+- **Condition types:** `equals`, `notEquals`, `inList`, `matches` (regex), `allOf`, `anyOf`, `not` — combine for complex platform targeting
+- **`cmake --workflow`** (version 6) chains configure→build→test→package — ideal for CI one-liners
+- **`${hostSystemName}`** returns `Linux`, `Windows`, or `Darwin` — maps to `CMAKE_HOST_SYSTEM_NAME`
+- **Toolchain in presets** avoids the `cmake -DCMAKE_TOOLCHAIN_FILE=...` flag — the toolchain becomes part of the reproducible configuration

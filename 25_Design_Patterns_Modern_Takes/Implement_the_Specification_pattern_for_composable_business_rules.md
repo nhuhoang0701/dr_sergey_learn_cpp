@@ -1,0 +1,285 @@
+# Implement the Specification pattern for composable business rules
+
+**Category:** Design Patterns — Modern Takes  
+**Item:** #674  
+**Standard:** C++20  
+**Reference:** <https://en.wikipedia.org/wiki/Specification_pattern>  
+
+---
+
+## Topic Overview
+
+The **Specification pattern** encapsulates a business rule as a reusable, composable object. Using C++20 concepts and `std::ranges::filter`, specifications become first-class predicates that combine with `And`, `Or`, `Not` — replacing ad-hoc lambda chains with named, testable, composable business rules.
+
+### Specification Composition
+
+```cpp
+
+AgeSpec(18)        &&  PremiumSpec()       → AndSpec
+  "is adult"           "is premium user"     "adult premium user"
+
+AgeSpec(65)        ||  DisabilitySpec()    → OrSpec
+  "is senior"          "has disability"      "eligible for discount"
+
+!BannedSpec()                              → NotSpec
+  "not banned"                                "account in good standing"
+
+```
+
+---
+
+## Self-Assessment
+
+### Q1: Define a Specification<T> concept with an is_satisfied_by(const T&) -> bool method
+
+**Answer:**
+
+```cpp
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <concepts>
+
+// ═══════════ Domain entity ═══════════
+struct Product {
+    std::string name;
+    double price;
+    std::string category;
+    bool in_stock;
+};
+
+// ═══════════ Specification concept (C++20) ═══════════
+template<typename Spec, typename T>
+concept Specification = requires(const Spec& spec, const T& item) {
+    { spec.is_satisfied_by(item) } -> std::same_as<bool>;
+};
+
+// ═══════════ Concrete specifications ═══════════
+struct InStockSpec {
+    bool is_satisfied_by(const Product& p) const { return p.in_stock; }
+};
+
+struct PriceRangeSpec {
+    double min_price, max_price;
+    bool is_satisfied_by(const Product& p) const {
+        return p.price >= min_price && p.price <= max_price;
+    }
+};
+
+struct CategorySpec {
+    std::string category;
+    bool is_satisfied_by(const Product& p) const {
+        return p.category == category;
+    }
+};
+
+// Verify they satisfy the concept
+static_assert(Specification<InStockSpec, Product>);
+static_assert(Specification<PriceRangeSpec, Product>);
+static_assert(Specification<CategorySpec, Product>);
+
+int main() {
+    std::vector<Product> products = {
+        {"Laptop", 999.99, "electronics", true},
+        {"Headphones", 49.99, "electronics", false},
+        {"Book", 15.99, "books", true},
+        {"Monitor", 399.00, "electronics", true},
+    };
+
+    PriceRangeSpec affordable{0, 100};
+    InStockSpec available;
+
+    for (const auto& p : products) {
+        if (affordable.is_satisfied_by(p) && available.is_satisfied_by(p))
+            std::cout << p.name << " ($" << p.price << ")\n";
+    }
+    // Book ($15.99)
+}
+
+```
+
+### Q2: Compose specifications with And, Or, Not combinators returning new Specification objects
+
+**Answer:**
+
+```cpp
+
+#include <iostream>
+#include <string>
+#include <vector>
+
+struct Product {
+    std::string name;
+    double price;
+    std::string category;
+    bool in_stock;
+};
+
+// ═══════════ Combinator: And ═══════════
+template<typename Spec1, typename Spec2>
+struct AndSpec {
+    Spec1 first;
+    Spec2 second;
+    bool is_satisfied_by(const Product& p) const {
+        return first.is_satisfied_by(p) && second.is_satisfied_by(p);
+    }
+};
+
+// ═══════════ Combinator: Or ═══════════
+template<typename Spec1, typename Spec2>
+struct OrSpec {
+    Spec1 first;
+    Spec2 second;
+    bool is_satisfied_by(const Product& p) const {
+        return first.is_satisfied_by(p) || second.is_satisfied_by(p);
+    }
+};
+
+// ═══════════ Combinator: Not ═══════════
+template<typename Spec>
+struct NotSpec {
+    Spec inner;
+    bool is_satisfied_by(const Product& p) const {
+        return !inner.is_satisfied_by(p);
+    }
+};
+
+// ═══════════ Operator overloads for clean syntax ═══════════
+template<typename S1, typename S2>
+auto operator&&(S1 a, S2 b) { return AndSpec<S1, S2>{a, b}; }
+
+template<typename S1, typename S2>
+auto operator||(S1 a, S2 b) { return OrSpec<S1, S2>{a, b}; }
+
+template<typename S>
+auto operator!(S s) { return NotSpec<S>{s}; }
+
+// Specs
+struct InStockSpec {
+    bool is_satisfied_by(const Product& p) const { return p.in_stock; }
+};
+struct CheapSpec {
+    double max;
+    bool is_satisfied_by(const Product& p) const { return p.price <= max; }
+};
+struct CategorySpec {
+    std::string cat;
+    bool is_satisfied_by(const Product& p) const { return p.category == cat; }
+};
+
+int main() {
+    std::vector<Product> products = {
+        {"Laptop", 999.99, "electronics", true},
+        {"Headphones", 49.99, "electronics", false},
+        {"Cable", 9.99, "electronics", true},
+        {"Novel", 12.99, "books", true},
+    };
+
+    // Compose: cheap electronics that are in stock
+    auto spec = InStockSpec{} && CheapSpec{50.0} && CategorySpec{"electronics"};
+
+    for (const auto& p : products) {
+        if (spec.is_satisfied_by(p))
+            std::cout << p.name << " ($" << p.price << ")\n";
+    }
+    // Cable ($9.99)
+
+    // Or: cheap OR out of stock
+    auto alt_spec = CheapSpec{20.0} || !InStockSpec{};
+    std::cout << "\nCheap or out of stock:\n";
+    for (const auto& p : products) {
+        if (alt_spec.is_satisfied_by(p))
+            std::cout << "  " << p.name << '\n';
+    }
+    // Headphones, Cable, Novel
+}
+
+```
+
+### Q3: Use specifications to filter a container with std::ranges::filter without writing raw predicates
+
+**Answer:**
+
+```cpp
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <ranges>
+#include <algorithm>
+
+struct Product {
+    std::string name;
+    double price;
+    std::string category;
+    bool in_stock;
+};
+
+// Specifications
+struct InStock {
+    bool is_satisfied_by(const Product& p) const { return p.in_stock; }
+};
+struct MaxPrice {
+    double limit;
+    bool is_satisfied_by(const Product& p) const { return p.price <= limit; }
+};
+struct Category {
+    std::string cat;
+    bool is_satisfied_by(const Product& p) const { return p.category == cat; }
+};
+
+// ═══════════ Adapter: Specification → ranges-compatible predicate ═══════════
+template<typename Spec>
+auto as_filter(Spec spec) {
+    return [spec = std::move(spec)](const auto& item) {
+        return spec.is_satisfied_by(item);
+    };
+}
+
+int main() {
+    std::vector<Product> products = {
+        {"Laptop",     999.99, "electronics", true},
+        {"Mouse",       29.99, "electronics", true},
+        {"Headphones",  49.99, "electronics", false},
+        {"Novel",       12.99, "books",       true},
+        {"Cable",        9.99, "electronics", true},
+    };
+
+    // ═══════════ Chain specs with ranges::filter ═══════════
+    auto results = products
+        | std::views::filter(as_filter(InStock{}))
+        | std::views::filter(as_filter(MaxPrice{50.0}))
+        | std::views::filter(as_filter(Category{"electronics"}));
+
+    std::cout << "In-stock, cheap electronics:\n";
+    for (const auto& p : results) {
+        std::cout << "  " << p.name << " ($" << p.price << ")\n";
+    }
+    // Mouse ($29.99)
+    // Cable ($9.99)
+
+    // ═══════════ Reuse specs across different queries ═══════════
+    auto cheap = as_filter(MaxPrice{20.0});
+    auto in_stock = as_filter(InStock{});
+
+    auto budget_items = products
+        | std::views::filter(cheap)
+        | std::views::filter(in_stock);
+
+    std::cout << "\nBudget in-stock items:\n";
+    for (const auto& p : budget_items)
+        std::cout << "  " << p.name << '\n';
+    // Novel, Cable
+}
+
+```
+
+---
+
+## Notes
+
+- The Specification pattern replaces scattered `if` predicates with **named, reusable, composable** business rules
+- Template-based combinators (And/Or/Not) resolve at compile time — zero overhead vs raw lambdas
+- The `as_filter()` adapter bridges Specification objects to `std::ranges::filter` seamlessly
+- For runtime-composable specs (configured from user input), use `std::function<bool(const T&)>` instead of templates

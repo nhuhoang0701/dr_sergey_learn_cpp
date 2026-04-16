@@ -1,0 +1,229 @@
+# Write test fixtures that use RAII for resource management
+
+**Category:** Best Practices & Idioms  
+**Item:** #505  
+**Standard:** C++17  
+**Reference:** <https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rt-raii>  
+
+---
+
+## Topic Overview
+
+**RAII test fixtures** acquire resources in the constructor and release them in the destructor. This guarantees cleanup even when tests throw or fail — no manual `setUp`/`tearDown` needed.
+
+```cpp
+
+Traditional:                    RAII:
+ setUp() { open(db); }          TestFixture() { open(db); }
+ test()  { use(db); throw! }    ~TestFixture() { close(db); }
+ tearDown() { close(db); }      // destructor ALWAYS runs
+ // tearDown SKIPPED on throw!  // cleanup guaranteed!
+
+```
+
+---
+
+## Self-Assessment
+
+### Q1: Replace manual setUp/tearDown with RAII constructor/destructor
+
+```cpp
+
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <cassert>
+#include <filesystem>
+
+// ============ BAD: manual setUp/tearDown ============
+class BadTestFixture {
+    std::ofstream file_;
+    std::string path_;
+public:
+    void setUp() {
+        path_ = "test_output.txt";
+        file_.open(path_);
+        std::cout << "[setUp] File opened\n";
+    }
+
+    void test() {
+        file_ << "test data";
+        // If this throws, tearDown is NEVER called!
+        assert(true);
+    }
+
+    void tearDown() {
+        file_.close();
+        std::filesystem::remove(path_);
+        std::cout << "[tearDown] File cleaned up\n";
+    }
+};
+
+// ============ GOOD: RAII fixture ============
+class GoodTestFixture {
+    std::ofstream file_;
+    std::string path_;
+public:
+    GoodTestFixture() : path_("test_output.txt") {
+        file_.open(path_);
+        std::cout << "[ctor] File opened\n";
+    }
+
+    ~GoodTestFixture() {
+        file_.close();
+        std::filesystem::remove(path_);
+        std::cout << "[dtor] File cleaned up\n";
+    }
+
+    void test() {
+        file_ << "test data";
+        file_.flush();
+        assert(std::filesystem::file_size(path_) > 0);
+        std::cout << "[test] Assertions passed\n";
+    }
+};
+
+int main() {
+    {
+        GoodTestFixture fixture;  // constructor = setUp
+        fixture.test();
+    }  // destructor = tearDown (ALWAYS runs)
+
+    std::cout << "File exists: "
+              << std::filesystem::exists("test_output.txt") << '\n';
+}
+// Expected output:
+// [ctor] File opened
+// [test] Assertions passed
+// [dtor] File cleaned up
+// File exists: 0
+
+```
+
+### Q2: RAII fixtures guarantee cleanup even when tests throw
+
+```cpp
+
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+// RAII resource: simulates a database connection
+class TestDatabase {
+    std::string name_;
+public:
+    explicit TestDatabase(const std::string& name) : name_(name) {
+        std::cout << "[" << name_ << "] DB connected\n";
+    }
+    ~TestDatabase() {
+        std::cout << "[" << name_ << "] DB disconnected (cleanup!)\n";
+    }
+    void query(const std::string& sql) {
+        std::cout << "[" << name_ << "] Query: " << sql << '\n';
+    }
+};
+
+// RAII fixture with multiple resources
+class IntegrationTestFixture {
+    TestDatabase db_;
+    TestDatabase cache_;
+public:
+    IntegrationTestFixture()
+        : db_("main_db"), cache_("cache_db") {}
+    // Destructor automatically cleans up both!
+
+    void run_test() {
+        db_.query("INSERT INTO users VALUES ('alice')");
+        cache_.query("SET user:alice:active true");
+
+        // Simulate test failure:
+        throw std::runtime_error("assertion failed!");
+        // Both db_ and cache_ are STILL cleaned up!
+    }
+};
+
+int main() {
+    try {
+        IntegrationTestFixture fixture;
+        fixture.run_test();
+    } catch (const std::exception& e) {
+        std::cout << "Test failed: " << e.what() << '\n';
+    }
+    std::cout << "Resources cleaned up despite exception\n";
+}
+// Expected output:
+// [main_db] DB connected
+// [cache_db] DB connected
+// [main_db] Query: INSERT INTO users VALUES ('alice')
+// [cache_db] Query: SET user:alice:active true
+// [cache_db] DB disconnected (cleanup!)
+// [main_db] DB disconnected (cleanup!)
+// Test failed: assertion failed!
+// Resources cleaned up despite exception
+
+```
+
+### Q3: Scope exit guard for integration test cleanup
+
+```cpp
+
+#include <iostream>
+#include <fstream>
+#include <filesystem>
+#include <functional>
+#include <string>
+
+// Simple scope_exit guard (similar to GSL final_action)
+class ScopeExit {
+    std::function<void()> action_;
+public:
+    explicit ScopeExit(std::function<void()> action)
+        : action_(std::move(action)) {}
+    ~ScopeExit() { if (action_) action_(); }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+};
+
+void integration_test() {
+    // Create temp file
+    std::string path = "integration_test_data.json";
+    std::ofstream(path) << R"({"test": true})";
+
+    // Guarantee cleanup no matter what happens
+    ScopeExit cleanup([&path] {
+        std::filesystem::remove(path);
+        std::cout << "Cleaned up: " << path << '\n';
+    });
+
+    // Test logic
+    auto size = std::filesystem::file_size(path);
+    std::cout << "File size: " << size << " bytes\n";
+
+    // Even if we throw here, cleanup runs!
+    // throw std::runtime_error("test failed");
+
+    std::cout << "Test passed\n";
+}  // cleanup runs here
+
+int main() {
+    integration_test();
+    std::cout << "File exists: "
+              << std::filesystem::exists("integration_test_data.json") << '\n';
+}
+// Expected output:
+// File size: 14 bytes
+// Test passed
+// Cleaned up: integration_test_data.json
+// File exists: 0
+
+```
+
+---
+
+## Notes
+
+- RAII fixtures work with any test framework: Google Test, Catch2, doctest.
+- Google Test uses `TEST_F` which creates the fixture on the stack (RAII-compatible).
+- Stack unwinding during exceptions destroys local objects in reverse order.
+- Use `ScopeExit`/`scope_guard` for ad-hoc cleanup (C++26 may standardize `std::scope_exit`).
+- Never do important cleanup in a `tearDown()` method — put it in the destructor.

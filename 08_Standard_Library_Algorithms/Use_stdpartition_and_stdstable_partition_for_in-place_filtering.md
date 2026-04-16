@@ -1,0 +1,241 @@
+# Use std::partition and std::stable_partition for in-place filtering
+
+**Category:** Standard Library — Algorithms  
+**Item:** #352  
+**Reference:** <https://en.cppreference.com/w/cpp/algorithm/partition>  
+
+---
+
+## Topic Overview
+
+This file focuses on the **practical filtering patterns** using `std::partition` and `std::stable_partition` — separating elements in-place by a predicate, understanding complexity trade-offs, and implementing multi-way partitioning.
+
+### Quick Reference
+
+```cpp
+
+#include <algorithm>
+
+// Partition: elements satisfying pred come first
+auto mid = partition(v.begin(), v.end(), pred);
+// [v.begin(), mid) — satisfy pred (unordered)
+// [mid, v.end())   — don't satisfy pred (unordered)
+
+// Stable partition: same but preserves relative order
+auto mid = stable_partition(v.begin(), v.end(), pred);
+
+```
+
+### Why In-Place Filtering
+
+| Approach | Time | Extra Space | Preserves Order |
+| --- | --- | --- | --- |
+| Copy + `copy_if` | O(n) | O(n) | Yes |
+| `partition` | O(n) | O(1) | No |
+| `stable_partition` | O(n) / O(n log n) | O(n) / O(1) | Yes |
+| `erase` + `remove_if` | O(n) | O(1) | Yes, but removes |
+
+Partition is unique: it keeps **both** groups in the same container.
+
+---
+
+## Self-Assessment
+
+### Q1: Use partition to separate even and odd numbers in a vector in O(n) time
+
+```cpp
+
+#include <iostream>
+#include <vector>
+#include <algorithm>
+
+int main() {
+    std::vector<int> v = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+    std::cout << "Before: ";
+    for (int x : v) std::cout << x << " ";
+    std::cout << "\n";
+
+    // Partition: even numbers first, O(n) time, O(1) space
+    auto mid = std::partition(v.begin(), v.end(), [](int n) {
+        return n % 2 == 0;
+    });
+
+    std::cout << "After:  ";
+    for (int x : v) std::cout << x << " ";
+    std::cout << "\n";
+    // e.g. 10 2 8 4 6 5 7 3 9 1  (even first, but within groups order varies)
+
+    std::cout << "Even count: " << std::distance(v.begin(), mid) << "\n";  // 5
+
+    // Use partition_point on an already-partitioned range (O(log n) for random access)
+    auto pp = std::partition_point(v.begin(), v.end(), [](int n) {
+        return n % 2 == 0;
+    });
+    std::cout << "partition_point == mid: " << std::boolalpha << (pp == mid) << "\n";
+
+    // partition_copy: non-modifying alternative
+    std::vector<int> original = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    std::vector<int> evens, odds;
+    std::partition_copy(original.begin(), original.end(),
+                        std::back_inserter(evens),
+                        std::back_inserter(odds),
+                        [](int n) { return n % 2 == 0; });
+
+    std::cout << "Evens: ";
+    for (int x : evens) std::cout << x << " ";  // 2 4 6 8 10
+    std::cout << "\nOdds:  ";
+    for (int x : odds)  std::cout << x << " ";  // 1 3 5 7 9
+    std::cout << "\n";
+
+    return 0;
+}
+
+```
+
+### Q2: Show that stable_partition preserves relative order within each partition
+
+```cpp
+
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <string>
+
+struct Task {
+    std::string name;
+    int priority;  // 1 = high, 2 = medium, 3 = low
+};
+
+int main() {
+    std::vector<Task> tasks = {
+        {"Deploy",  3}, {"Fix bug",   1}, {"Write docs", 2},
+        {"Review",  1}, {"Refactor",  2}, {"Test",       1}
+    };
+
+    auto print = [](const std::vector<Task>& ts) {
+        for (auto& t : ts)
+            std::cout << "  [" << t.priority << "] " << t.name << "\n";
+    };
+
+    std::cout << "Original order:\n";
+    print(tasks);
+
+    // stable_partition: high priority (1) first, preserving insertion order
+    auto mid = std::stable_partition(tasks.begin(), tasks.end(),
+        [](const Task& t) { return t.priority == 1; });
+
+    std::cout << "\nAfter stable_partition (priority==1 first):\n";
+    print(tasks);
+    // [1] Fix bug     ← relative order among priority-1 preserved
+    // [1] Review
+    // [1] Test
+    // [3] Deploy      ← relative order among the rest preserved
+    // [2] Write docs
+    // [2] Refactor
+
+    std::cout << "\nHigh priority tasks: "
+              << std::distance(tasks.begin(), mid) << "\n";  // 3
+
+    // === Compare with unstable partition ===
+    std::vector<int> data = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    auto d1 = data;
+    std::partition(d1.begin(), d1.end(), [](int n) { return n <= 4; });
+    std::cout << "\npartition:        ";
+    for (int x : d1) std::cout << x << " ";  // Order not guaranteed
+    std::cout << "\n";
+
+    auto d2 = data;
+    std::stable_partition(d2.begin(), d2.end(), [](int n) { return n <= 4; });
+    std::cout << "stable_partition: ";
+    for (int x : d2) std::cout << x << " ";  // 1 2 3 4 5 6 7 8
+    std::cout << "\n";
+
+    return 0;
+}
+
+```
+
+### Q3: Implement a multi-way partition using two successive partition calls
+
+```cpp
+
+#include <iostream>
+#include <vector>
+#include <algorithm>
+#include <string>
+
+int main() {
+    // === Three-way partition: negative / zero / positive ===
+    std::vector<int> data = {3, -1, 0, -5, 2, 0, -3, 4, 0, 1, -2};
+
+    std::cout << "Before: ";
+    for (int x : data) std::cout << x << " ";
+    std::cout << "\n";
+
+    // Step 1: negatives first
+    auto zero_start = std::stable_partition(data.begin(), data.end(),
+        [](int n) { return n < 0; });
+
+    // Step 2: among the non-negatives, zeros first (then positives)
+    auto pos_start = std::stable_partition(zero_start, data.end(),
+        [](int n) { return n == 0; });
+
+    std::cout << "After three-way partition:\n";
+    std::cout << "  Negative: ";
+    for (auto it = data.begin(); it != zero_start; ++it) std::cout << *it << " ";
+    std::cout << "\n  Zero:     ";
+    for (auto it = zero_start; it != pos_start; ++it) std::cout << *it << " ";
+    std::cout << "\n  Positive: ";
+    for (auto it = pos_start; it != data.end(); ++it) std::cout << *it << " ";
+    std::cout << "\n";
+    // Negative: -1 -5 -3 -2
+    // Zero:     0 0 0
+    // Positive: 3 2 4 1
+
+    // === Practical: four-way classification ===
+    enum class Grade { A, B, C, F };
+    struct Student {
+        std::string name;
+        Grade grade;
+    };
+
+    std::vector<Student> students = {
+        {"Alice", Grade::B}, {"Bob", Grade::A}, {"Carol", Grade::F},
+        {"Dave", Grade::C}, {"Eve", Grade::A}, {"Frank", Grade::B},
+        {"Grace", Grade::C}, {"Hank", Grade::F}
+    };
+
+    auto b_start = std::stable_partition(students.begin(), students.end(),
+        [](const Student& s) { return s.grade == Grade::A; });
+    auto c_start = std::stable_partition(b_start, students.end(),
+        [](const Student& s) { return s.grade == Grade::B; });
+    auto f_start = std::stable_partition(c_start, students.end(),
+        [](const Student& s) { return s.grade == Grade::C; });
+
+    std::cout << "\nGrade groups:\n";
+    for (auto& s : students)
+        std::cout << "  " << s.name << " (" << static_cast<int>(s.grade) << ")\n";
+    // Bob(A), Eve(A), Alice(B), Frank(B), Dave(C), Grace(C), Carol(F), Hank(F)
+
+    return 0;
+}
+
+```
+
+---
+
+## Notes
+
+- **`partition` does NOT sort** — it only guarantees that elements satisfying the predicate come before those that don't. Within each partition, the order is unspecified.
+- **Multi-way partition** with `stable_partition` is a powerful pattern: partition into N groups by calling `stable_partition` N−1 times on successively smaller suffixes.
+- **`partition_copy`** is the non-mutating alternative — splits into two output ranges without modifying the input.
+- `std::ranges::partition` (C++20) supports projections: `std::ranges::partition(people, &Person::is_active)`.
+- Partition-based algorithms are at the heart of **quicksort** and **quickselect**.
+
+```cpp
+
+// Your practice code
+
+```

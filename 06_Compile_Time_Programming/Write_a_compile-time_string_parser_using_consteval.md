@@ -1,0 +1,382 @@
+# Write a Compile-Time String Parser Using `consteval`
+
+**Category:** Compile-Time Programming  
+**Item:** #457  
+**Standard:** C++20  
+**Reference:** <https://en.cppreference.com/w/cpp/language/consteval>  
+
+---
+
+## Topic Overview
+
+### Compile-Time String Parsing
+
+`consteval` functions **must** execute at compile time. Combined with `std::string_view`, you can write parsers that validate string literals during compilation — invalid inputs produce compile errors instead of runtime failures.
+
+### Key Pattern
+
+```cpp
+
+struct IPv4 { uint8_t octets[4]; };
+
+consteval IPv4 parse_ip(std::string_view sv) {
+    // Parse and validate — any error is a compile error
+    // ...
+}
+
+constexpr auto addr = parse_ip("192.168.1.1");  // OK: compile-time parsed
+// constexpr auto bad = parse_ip("999.0.0.1");  // ERROR: compile error!
+
+```
+
+### Why Compile-Time Parsing
+
+| Benefit | Description |
+| --- | --- |
+| Zero runtime cost | Parsed result is a constant in the binary |
+| Error at compile time | Invalid literals fail compilation, not at runtime |
+| No startup parsing | No `inet_pton()` calls during initialization |
+| Self-documenting | Parser code serves as format specification |
+
+---
+
+## Self-Assessment
+
+### Q1: Implement a `consteval` IP address parser that converts `"192.168.1.1"` to four `uint8_t` values
+
+```cpp
+
+#include <iostream>
+#include <cstdint>
+#include <string_view>
+#include <stdexcept>
+#include <array>
+
+struct IPv4 {
+    uint8_t octets[4]{};
+
+    friend std::ostream& operator<<(std::ostream& os, const IPv4& ip) {
+        return os << static_cast<int>(ip.octets[0]) << "."
+                  << static_cast<int>(ip.octets[1]) << "."
+                  << static_cast<int>(ip.octets[2]) << "."
+                  << static_cast<int>(ip.octets[3]);
+    }
+};
+
+// === consteval IP parser ===
+consteval IPv4 parse_ip(std::string_view sv) {
+    IPv4 result{};
+    int octet_idx = 0;
+    int current_value = 0;
+    int digit_count = 0;
+
+    for (std::size_t i = 0; i <= sv.size(); ++i) {
+        if (i == sv.size() || sv[i] == '.') {
+            // Validate
+            if (digit_count == 0)
+                throw "Empty octet in IP address";
+            if (current_value > 255)
+                throw "Octet value > 255";
+            if (octet_idx > 3)
+                throw "Too many octets";
+
+            result.octets[octet_idx] = static_cast<uint8_t>(current_value);
+            ++octet_idx;
+            current_value = 0;
+            digit_count = 0;
+        } else if (sv[i] >= '0' && sv[i] <= '9') {
+            current_value = current_value * 10 + (sv[i] - '0');
+            ++digit_count;
+            if (digit_count > 3)
+                throw "Octet has too many digits";
+        } else {
+            throw "Invalid character in IP address";
+        }
+    }
+
+    if (octet_idx != 4)
+        throw "IP address must have exactly 4 octets";
+
+    return result;
+}
+
+// === Compile-time verified IP addresses ===
+constexpr auto localhost  = parse_ip("127.0.0.1");
+constexpr auto gateway    = parse_ip("192.168.1.1");
+constexpr auto broadcast  = parse_ip("255.255.255.255");
+constexpr auto google_dns = parse_ip("8.8.8.8");
+
+// Compile-time assertions
+static_assert(localhost.octets[0] == 127);
+static_assert(localhost.octets[3] == 1);
+static_assert(gateway.octets[2] == 1);
+static_assert(broadcast.octets[0] == 255);
+
+int main() {
+    std::cout << "=== Compile-Time IP Parser ===\n";
+    std::cout << "localhost:  " << localhost << "\n";
+    std::cout << "gateway:    " << gateway << "\n";
+    std::cout << "broadcast:  " << broadcast << "\n";
+    std::cout << "google_dns: " << google_dns << "\n";
+
+    std::cout << "\nAll addresses parsed and validated at compile time.\n";
+    std::cout << "Invalid literals would cause a compile error.\n";
+
+    return 0;
+}
+
+```
+
+**Expected output:**
+
+```text
+
+=== Compile-Time IP Parser ===
+localhost:  127.0.0.1
+gateway:    192.168.1.1
+broadcast:  255.255.255.255
+google_dns: 8.8.8.8
+
+All addresses parsed and validated at compile time.
+Invalid literals would cause a compile error.
+
+```
+
+### Q2: Show the compile error when an invalid IP address literal is used
+
+```cpp
+
+#include <iostream>
+#include <cstdint>
+#include <string_view>
+
+struct IPv4 { uint8_t octets[4]{}; };
+
+consteval IPv4 parse_ip(std::string_view sv) {
+    IPv4 result{};
+    int octet_idx = 0;
+    int current_value = 0;
+    int digit_count = 0;
+
+    for (std::size_t i = 0; i <= sv.size(); ++i) {
+        if (i == sv.size() || sv[i] == '.') {
+            if (digit_count == 0)
+                throw "Empty octet";
+            if (current_value > 255)
+                throw "Octet value exceeds 255";
+            if (octet_idx > 3)
+                throw "Too many octets (expected 4)";
+            result.octets[octet_idx++] = static_cast<uint8_t>(current_value);
+            current_value = 0;
+            digit_count = 0;
+        } else if (sv[i] >= '0' && sv[i] <= '9') {
+            current_value = current_value * 10 + (sv[i] - '0');
+            ++digit_count;
+        } else {
+            throw "Invalid character in IP address";
+        }
+    }
+    if (octet_idx != 4) throw "Expected exactly 4 octets";
+    return result;
+}
+
+int main() {
+    // === Valid addresses compile fine ===
+    constexpr auto ok1 = parse_ip("10.0.0.1");
+    constexpr auto ok2 = parse_ip("192.168.0.1");
+
+    std::cout << "Valid addresses compiled successfully.\n";
+
+    // === UNCOMMENT ANY LINE BELOW TO SEE A COMPILE ERROR ===
+
+    // constexpr auto err1 = parse_ip("999.0.0.1");
+    // Error: "Octet value exceeds 255"
+    // The throw in consteval is a compile error, not a runtime exception.
+
+    // constexpr auto err2 = parse_ip("1.2.3.4.5");
+    // Error: "Too many octets (expected 4)"
+
+    // constexpr auto err3 = parse_ip("1.2.3");
+    // Error: "Expected exactly 4 octets"
+
+    // constexpr auto err4 = parse_ip("1.2.abc.4");
+    // Error: "Invalid character in IP address"
+
+    // constexpr auto err5 = parse_ip("1..2.3");
+    // Error: "Empty octet"
+
+    std::cout << "\n=== How It Works ===\n";
+    std::cout << "consteval functions MUST run at compile time.\n";
+    std::cout << "A throw in consteval = compile error (not runtime exception).\n";
+    std::cout << "The error message appears in the compiler output.\n";
+    std::cout << "\nExample compiler error for parse_ip(\"999.0.0.1\"):\n";
+    std::cout << "  error: expression '<throw-expression>' is not a constant expression\n";
+    std::cout << "  note: subexpression 'throw \"Octet value exceeds 255\"'\n";
+
+    return 0;
+}
+
+```
+
+**Expected output (when all invalid lines are commented):**
+
+```text
+
+Valid addresses compiled successfully.
+
+=== How It Works ===
+consteval functions MUST run at compile time.
+A throw in consteval = compile error (not runtime exception).
+The error message appears in the compiler output.
+
+Example compiler error for parse_ip("999.0.0.1"):
+  error: expression '<throw-expression>' is not a constant expression
+  note: subexpression 'throw "Octet value exceeds 255"'
+
+```
+
+### Q3: Compare compile-time parsing vs runtime parsing in terms of binary size and startup cost
+
+```cpp
+
+#include <iostream>
+#include <cstdint>
+#include <string_view>
+#include <chrono>
+#include <cstring>  // for runtime parsing comparison
+
+struct IPv4 { uint8_t octets[4]{}; };
+
+// === Compile-time parser ===
+consteval IPv4 parse_ip_ct(std::string_view sv) {
+    IPv4 result{};
+    int idx = 0, val = 0, digits = 0;
+    for (std::size_t i = 0; i <= sv.size(); ++i) {
+        if (i == sv.size() || sv[i] == '.') {
+            if (val > 255 || digits == 0 || idx > 3) throw "Invalid IP";
+            result.octets[idx++] = static_cast<uint8_t>(val);
+            val = 0; digits = 0;
+        } else if (sv[i] >= '0' && sv[i] <= '9') {
+            val = val * 10 + (sv[i] - '0'); ++digits;
+        } else throw "Bad char";
+    }
+    if (idx != 4) throw "Need 4 octets";
+    return result;
+}
+
+// === Runtime parser (same algorithm) ===
+IPv4 parse_ip_rt(const char* s) {
+    IPv4 result{};
+    int idx = 0, val = 0;
+    while (*s) {
+        if (*s == '.') {
+            result.octets[idx++] = static_cast<uint8_t>(val);
+            val = 0;
+        } else {
+            val = val * 10 + (*s - '0');
+        }
+        ++s;
+    }
+    result.octets[idx] = static_cast<uint8_t>(val);
+    return result;
+}
+
+// === Compile-time addresses: zero cost at startup ===
+constexpr IPv4 addresses[] = {
+    parse_ip_ct("10.0.0.1"),
+    parse_ip_ct("192.168.1.1"),
+    parse_ip_ct("172.16.0.1"),
+    parse_ip_ct("8.8.8.8"),
+    parse_ip_ct("8.8.4.4"),
+    parse_ip_ct("1.1.1.1"),
+    parse_ip_ct("255.255.255.0"),
+    parse_ip_ct("127.0.0.1"),
+};
+
+int main() {
+    // === Compare startup cost ===
+    std::cout << "=== Compile-Time vs Runtime Parsing ===\n\n";
+
+    const char* ip_strings[] = {
+        "10.0.0.1", "192.168.1.1", "172.16.0.1", "8.8.8.8",
+        "8.8.4.4", "1.1.1.1", "255.255.255.0", "127.0.0.1"
+    };
+
+    auto start = std::chrono::high_resolution_clock::now();
+    volatile IPv4 rt_results[8];  // volatile to prevent optimization
+    for (int iter = 0; iter < 10000; ++iter) {
+        for (int i = 0; i < 8; ++i) {
+            rt_results[i] = parse_ip_rt(ip_strings[i]);
+        }
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
+
+    std::cout << "Runtime: " << us << " us to parse 8 IPs × 10000 iterations\n";
+    std::cout << "Compile-time: 0 us (already in binary)\n";
+
+    std::cout << "\n=== Comparison Table ===\n";
+    std::cout << "+-------------------+-------------------+--------------------+\n";
+    std::cout << "| Aspect            | Runtime Parsing   | Compile-Time       |\n";
+    std::cout << "+-------------------+-------------------+--------------------+\n";
+    std::cout << "| Startup cost      | O(n) per address  | 0                  |\n";
+    std::cout << "| Validation        | At runtime        | At compile time    |\n";
+    std::cout << "| Binary size (data)| String literals   | Parsed struct      |\n";
+    std::cout << "| Error handling    | Exceptions/errno  | Compile error      |\n";
+    std::cout << "| Dynamic input     | Supported         | Literals only      |\n";
+    std::cout << "+-------------------+-------------------+--------------------+\n";
+
+    std::cout << "\nCompile-time parsed addresses:\n";
+    for (const auto& a : addresses) {
+        std::cout << "  " << static_cast<int>(a.octets[0]) << "."
+                  << static_cast<int>(a.octets[1]) << "."
+                  << static_cast<int>(a.octets[2]) << "."
+                  << static_cast<int>(a.octets[3]) << "\n";
+    }
+
+    return 0;
+}
+
+```
+
+**Expected output (timing varies):**
+
+```text
+
+=== Compile-Time vs Runtime Parsing ===
+
+Runtime: 385 us to parse 8 IPs × 10000 iterations
+Compile-time: 0 us (already in binary)
+
+=== Comparison Table ===
++-------------------+-------------------+--------------------+
+| Aspect            | Runtime Parsing   | Compile-Time       |
++-------------------+-------------------+--------------------+
+| Startup cost      | O(n) per address  | 0                  |
+| Validation        | At runtime        | At compile time    |
+| Binary size (data)| String literals   | Parsed struct      |
+| Error handling    | Exceptions/errno  | Compile error      |
+| Dynamic input     | Supported         | Literals only      |
++-------------------+-------------------+--------------------+
+
+Compile-time parsed addresses:
+  10.0.0.1
+  192.168.1.1
+  172.16.0.1
+  8.8.8.8
+  8.8.4.4
+  1.1.1.1
+  255.255.255.0
+  127.0.0.1
+
+```
+
+---
+
+## Notes
+
+- `consteval` functions that `throw` produce compile errors with the throw message — a clean error reporting mechanism.
+- Use `std::string_view` (not `std::string`) in `consteval` — it's always available at compile time.
+- Parsed results live in `.rodata` — no runtime allocation, no startup cost.
+- Compile-time parsing is ideal for configuration constants: IP addresses, URLs, date formats, regex patterns.
+- Limitation: only works for literals known at compile time. User input still needs runtime parsing.

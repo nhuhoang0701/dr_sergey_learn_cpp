@@ -1,0 +1,45 @@
+# Build Systems & CI
+
+CMake, package management, CI/CD pipelines, and build configuration best practices.
+
+**Topics:** 24
+
+## Contents
+
+- [Set up a complete GitHub Actions CI pipeline for a C++ CMake project](Set_up_a_complete_GitHub_Actions_CI_pipeline_for_a_C++_CMake_project.md)
+- [Set up a multi-stage Docker build for hermetic C++ CI](Set_up_a_multi-stage_Docker_build_for_hermetic_C++_CI.md)
+- [Set up cross-compilation with CMake toolchain files](Set_up_cross-compilation_with_CMake_toolchain_files.md)
+- [Set up cross-compilation with CMake toolchain files 2](Set_up_cross-compilation_with_CMake_toolchain_files_2.md)
+- [Set up cross-compilation with CMake toolchain files 3](Set_up_cross-compilation_with_CMake_toolchain_files_3.md)
+- [Set up remote build caching with CMake and Bazel](Set_up_remote_build_caching_with_CMake_and_Bazel.md)
+- [Set up static analysis in CI with clang-tidy and cppcheck](Set_up_static_analysis_in_CI_with_clang-tidy_and_cppcheck.md)
+- [Understand and use CMakes install and export for library distribution](Understand_and_use_CMakes_install_and_export_for_library_distribution.md)
+- [Understand reproducible builds and eliminate non-determinism](Understand_reproducible_builds_and_eliminate_non-determinism.md)
+- [Understand reproducible builds and how to achieve them in C++](Understand_reproducible_builds_and_how_to_achieve_them_in_C++.md)
+- [Understand reproducible builds and how to achieve them in C++ 2](Understand_reproducible_builds_and_how_to_achieve_them_in_C++_2.md)
+- [Use Bazel or Buck2 as CMake alternatives for large monorepos](Use_Bazel_or_Buck2_as_CMake_alternatives_for_large_monorepos.md)
+- [Use Bazel or Buck2 as an alternative to CMake for large-scale builds](Use_Bazel_or_Buck2_as_an_alternative_to_CMake_for_large-scale_builds.md)
+- [Use CMakePresetsjson for reproducible shareable build configurations](Use_CMakePresetsjson_for_reproducible_shareable_build_configurations.md)
+- [Use CMakePresetsjson for reproducible shareable build configurations 2](Use_CMakePresetsjson_for_reproducible_shareable_build_configurations_2.md)
+- [Use CMakePresetsjson for reproducible shareable build configurations 3](Use_CMakePresetsjson_for_reproducible_shareable_build_configurations_3.md)
+- [Use CMake module dependency scanning for C++20 modules](Use_CMake_module_dependency_scanning_for_C++20_modules.md)
+- [Use CMakes FetchContent for dependency management without a package manager](Use_CMakes_FetchContent_for_dependency_management_without_a_package_manager.md)
+- [Use Conan 20 for C++ package management](Use_Conan_20_for_C++_package_management.md)
+- [Use Conan 20 for C++ package management 2](Use_Conan_20_for_C++_package_management_2.md)
+- [Use Conan 20 for dependency management with CMake integration](Use_Conan_20_for_dependency_management_with_CMake_integration.md)
+- [Use Ninja Multi-Config for single-configure multi-config builds](Use_Ninja_Multi-Config_for_single-configure_multi-config_builds.md)
+- [Use compile commandsjson and Bear for IDE integration](Use_compile_commandsjson_and_Bear_for_IDE_integration.md)
+- [Use dependency scanning for C++20 modules in CMake 328+](Use_dependency_scanning_for_C++20_modules_in_CMake_328+.md)
+
+## Notes
+
+- CMake is the dominant C++ build system — learn 	arget_link_libraries, FetchContent, and presets
+- CMake presets (CMakePresets.json) standardize build configurations across developers
+- Vcpkg and Conan are the two main C++ package managers — vcpkg integrates tightly with CMake
+- CI pipelines should build with multiple compilers (GCC, Clang, MSVC) to catch portability issues
+- Enable sanitizers (ASan, UBSan, TSan) in CI — they catch bugs that unit tests alone miss
+- Unity builds (jumbo builds) combine translation units to reduce build times
+- ccache caches compilation results — essential for fast iterative development
+- Use EXPORT and INSTALL in CMake to create reusable packages for downstream consumers
+- Reproducible builds ensure binary output is identical given the same source — aids security auditing
+- Separate build types: Debug (assertions, symbols), Release (optimizations), RelWithDebInfo (both)

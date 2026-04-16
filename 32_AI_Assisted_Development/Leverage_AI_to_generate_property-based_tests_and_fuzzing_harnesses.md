@@ -1,0 +1,325 @@
+# Leverage AI to generate property-based tests and fuzzing harnesses
+
+**Category:** AI-Assisted C++ Development
+
+---
+
+## Topic Overview
+
+AI assistants can generate **property-based tests** (tests that verify invariants over random inputs) and **fuzz testing harnesses** (for libFuzzer, AFL, or Honggfuzz). These are high-value and tedious to write manually. AI can identify the right properties to test, generate corpus seeds, write coverage-guided fuzz targets, and create structure-aware fuzzers.
+
+### Fuzz Target Generation Workflow
+
+```cpp
+
+Source Code --> Prompt AI --> Fuzz Harness --> libFuzzer --> Crashes
+     |               |              |              |            |
+     v               v              v              v            v
+  API surface    Identify       LLVMFuzzer    Coverage-    Triage &
+
+  + invariants   attack         TestOneInput  guided       fix bugs
+
+                 surface                      mutation
+
+```
+
+---
+
+## Self-Assessment
+
+### Q1: Generate fuzz harnesses with AI
+
+**Answer:**
+
+```cpp
+
+=== PROMPT ===
+
+"Generate a libFuzzer harness for this JSON parser.
+Target:
+
+- Malformed input (truncated, invalid UTF-8, deeply nested)
+- Integer overflow in number parsing
+- Stack overflow from recursive descent
+- Memory safety (buffer overruns in string parsing)
+
+Include a seed corpus and fuzzing dictionary."
+
+```
+
+```cpp
+
+// === Target: a simple JSON parser ===
+class JsonParser {
+public:
+    struct Value { /* variant of object, array, string, number, bool, null */ };
+    static std::expected<Value, ParseError> parse(std::string_view input);
+    static std::expected<Value, ParseError> parse(std::span<const uint8_t> input);
+};
+
+// === AI-generated fuzz harness ===
+// Compile: clang++ -fsanitize=fuzzer,address,undefined json_fuzz.cpp -o json_fuzz
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    // Limit input size to prevent timeout
+    if (size > 1024 * 1024) return 0;
+
+    std::string_view input(reinterpret_cast<const char*>(data), size);
+
+    // Parse should never crash, regardless of input
+    auto result = JsonParser::parse(input);
+
+    if (result) {
+        // Round-trip property: serialize and re-parse should match
+        auto serialized = result->to_string();
+        auto result2 = JsonParser::parse(serialized);
+        assert(result2.has_value() && "Round-trip parse failed");
+        assert(*result == *result2 && "Round-trip value mismatch");
+    }
+
+    return 0;
+}
+
+// === Seed corpus (save each as a file in corpus/ directory) ===
+// 1. corpus/empty:            (empty file)
+// 2. corpus/null:             null
+// 3. corpus/bool:             true
+// 4. corpus/number:           42
+// 5. corpus/float:            3.14e10
+// 6. corpus/string:           "hello world"
+// 7. corpus/array:            [1,"two",null]
+// 8. corpus/object:           {"key":"value","n":42}
+// 9. corpus/nested:           {"a":{"b":{"c":[1,2,3]}}}
+// 10. corpus/unicode:         "\u0041\u00e9\u4e16\u754c"
+
+// === Fuzzing dictionary (json.dict) ===
+// Save as json.dict, run with: ./json_fuzz -dict=json.dict corpus/
+//
+// "true"
+// "false"
+// "null"
+// "\"\""          # empty string
+// "{}"             # empty object
+// "[]"             # empty array
+// "0"
+// "-1"
+// "1e308"          # near double max
+// "1e-308"         # near double min
+// "9999999999999999999"  # integer overflow
+// "\\u0000"        # null byte in string
+// "\\n"
+// "\\t"
+
+```
+
+### Q2: Generate property-based tests
+
+**Answer:**
+
+```cpp
+
+=== PROMPT ===
+
+"Generate property-based tests for a C++ BTree<K,V>
+implementation using the RapidCheck framework.
+Properties to verify:
+
+1. All inserted keys are findable
+2. Size equals number of unique insertions
+3. Iteration produces sorted order
+4. Remove + find returns empty
+5. Insert order doesn't affect final tree content"
+
+```
+
+```cpp
+
+#include <rapidcheck.h>
+
+// Property 1: Insert then find always succeeds
+RC_GTEST_PROP(BTreeProperties, InsertThenFind,
+    (std::vector<std::pair<int, std::string>> entries)) {
+    BTree<int, std::string> tree;
+    for (const auto& [k, v] : entries)
+        tree.insert(k, v);
+
+    for (const auto& [k, v] : entries) {
+        auto result = tree.find(k);
+        RC_ASSERT(result.has_value());
+        // Value should be last inserted for this key
+    }
+}
+
+// Property 2: Size equals unique key count
+RC_GTEST_PROP(BTreeProperties, SizeEqualsUniqueKeys,
+    (std::vector<std::pair<int, std::string>> entries)) {
+    BTree<int, std::string> tree;
+    std::set<int> unique_keys;
+    for (const auto& [k, v] : entries) {
+        tree.insert(k, v);
+        unique_keys.insert(k);
+    }
+    RC_ASSERT(tree.size() == unique_keys.size());
+}
+
+// Property 3: Iteration is sorted
+RC_GTEST_PROP(BTreeProperties, IterationIsSorted,
+    (std::vector<int> keys)) {
+    BTree<int, int> tree;
+    for (int k : keys) tree.insert(k, k);
+
+    std::vector<int> result;
+    for (auto it = tree.begin(); it != tree.end(); ++it)
+        result.push_back(it->first);
+
+    RC_ASSERT(std::is_sorted(result.begin(), result.end()));
+}
+
+// Property 4: Insert order doesn't matter (commutativity)
+RC_GTEST_PROP(BTreeProperties, InsertOrderIndependent,
+    (std::vector<std::pair<int, int>> entries)) {
+    RC_PRE(!entries.empty());
+
+    BTree<int, int> tree1, tree2;
+    for (const auto& [k, v] : entries)
+        tree1.insert(k, v);
+
+    auto shuffled = entries;
+    std::shuffle(shuffled.begin(), shuffled.end(),
+                 std::mt19937{42});
+    for (const auto& [k, v] : shuffled)
+        tree2.insert(k, v);
+
+    // Same keys present
+    std::vector<int> keys1, keys2;
+    for (auto it = tree1.begin(); it != tree1.end(); ++it)
+        keys1.push_back(it->first);
+    for (auto it = tree2.begin(); it != tree2.end(); ++it)
+        keys2.push_back(it->first);
+    RC_ASSERT(keys1 == keys2);
+}
+
+// Property 5: Remove + find returns nullopt
+RC_GTEST_PROP(BTreeProperties, RemoveThenFindFails,
+    (std::vector<int> keys)) {
+    RC_PRE(!keys.empty());
+    BTree<int, int> tree;
+    for (int k : keys) tree.insert(k, k);
+
+    int to_remove = *rc::gen::elementOf(keys);
+    tree.remove(to_remove);
+    RC_ASSERT(!tree.find(to_remove).has_value());
+}
+
+```
+
+### Q3: Structure-aware fuzzing with AI
+
+**Answer:**
+
+```cpp
+
+=== PROMPT ===
+
+"Generate a structure-aware fuzzer for a protocol buffer
+parser using libprotobuf-mutator + libFuzzer.
+The protocol handles:
+
+- Header (magic bytes, version, length)
+- Payload (variable-length TLV records)
+- CRC32 checksum
+
+The fuzzer should mutate the structure intelligently,
+not just random bytes."
+
+```
+
+```cpp
+
+// === AI-generated structure-aware fuzzer ===
+
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+struct Header {
+    uint32_t magic;     // 0xDEADBEEF
+    uint16_t version;
+    uint32_t payload_len;
+};
+
+struct TLVRecord {
+    uint8_t type;
+    uint16_t length;
+    std::vector<uint8_t> value;
+};
+
+// Custom mutator: understands the protocol structure
+extern "C" size_t LLVMFuzzerCustomMutator(
+    uint8_t* data, size_t size, size_t max_size, unsigned int seed) {
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> action(0, 4);
+
+    // Start with valid structure if too small
+    if (size < sizeof(Header)) {
+        Header hdr{0xDEADBEEF, 1, 0};
+        std::memcpy(data, &hdr, sizeof(hdr));
+        return sizeof(hdr);
+    }
+
+    switch (action(rng)) {
+    case 0:  // Corrupt magic bytes
+        data[rng() % 4] ^= (1 << (rng() % 8));
+        break;
+    case 1:  // Set extreme version
+        reinterpret_cast<Header*>(data)->version = 0xFFFF;
+        break;
+    case 2:  // Mismatch payload_len
+        reinterpret_cast<Header*>(data)->payload_len =
+            static_cast<uint32_t>(rng());
+        break;
+    case 3:  // Truncate mid-TLV record
+        if (size > sizeof(Header) + 3)
+            return sizeof(Header) + 1;  // Cut inside TLV header
+        break;
+    case 4:  // Insert oversized TLV record
+        if (size + 5 <= max_size) {
+            data[size] = static_cast<uint8_t>(rng());      // type
+            uint16_t big_len = 0xFFFF;
+            std::memcpy(data + size + 1, &big_len, 2);     // length
+            size += 3;
+        }
+        break;
+    }
+    return size;
+}
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    // Parser should handle all inputs without crashing
+    auto result = ProtocolParser::parse(
+        std::span<const uint8_t>(data, size));
+
+    if (result) {
+        // Invariant: parsed payload length matches actual records
+        size_t total = 0;
+        for (const auto& rec : result->records)
+            total += 3 + rec.value.size();  // type + len + value
+        assert(total <= result->header.payload_len);
+    }
+    return 0;
+}
+
+```
+
+---
+
+## Notes
+
+- AI can generate **seed corpora** that cover diverse input patterns — always ask for them
+- For property-based testing, AI excels at identifying the **right properties** (commutativity, idempotency, round-trip)
+- **Structure-aware fuzzers** are much more effective than random byte mutation for protocols
+- Always enable sanitizers when fuzzing: `-fsanitize=fuzzer,address,undefined`
+- Ask AI to generate a **CMakeLists.txt** for the fuzz target with correct sanitizer flags
+- RapidCheck generators for custom types can be AI-generated: `rc::gen::build<MyType>(...)`
+- Run fuzz tests in CI with a **time budget** (e.g., 60 seconds) per target
