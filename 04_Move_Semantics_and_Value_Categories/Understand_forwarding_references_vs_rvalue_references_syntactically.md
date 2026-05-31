@@ -11,7 +11,9 @@
 
 ### The Syntactic Ambiguity
 
-`T&&` can mean **two completely different things** depending on whether `T` is deduced:
+Here is a genuinely confusing thing about C++: `T&&` can mean two completely different things depending on whether `T` is being deduced right now, at the point of this function call. If `T` is deduced, you have a forwarding reference that can bind to anything. If `T` is already known (concrete), you have a plain rvalue reference that only binds to rvalues.
+
+The reason this trips people up is that both look identical in source code. You have to ask: "Is this `T` being deduced by this specific call?" If yes - forwarding reference. If no - rvalue reference.
 
 | Syntax | Context | Type | What it is |
 | --- | --- | --- | --- |
@@ -31,8 +33,9 @@
 
 ### Q1: Distinguish `void f(T&& x)` (forwarding ref) from `void f(Widget&& x)` (rvalue ref)
 
-```cpp
+This example puts all the cases side by side so you can see exactly which situations give you a forwarding reference and which do not. Pay close attention to `Container::push` - even though `T` looks like a template parameter, it was fixed when you instantiated the class, so it is not deduced by `push` itself:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -53,17 +56,17 @@ void forwarding(T&& x) {
                   << typeid(T).name() << ")\n";
 }
 
-// RVALUE REFERENCE: Widget is concrete — only accepts rvalues
+// RVALUE REFERENCE: Widget is concrete -- only accepts rvalues
 void rvalue_only(Widget&& w) {
     std::cout << "  rvalue_only(Widget&&): val = " << w.val << "\n";
 }
 
-// Also rvalue reference — even though T is a template parameter,
+// Also rvalue reference -- even though T is a template parameter,
 // it's already determined at class level, not deduced by this function
 template <typename T>
 struct Container {
     void push(T&& x) {  // NOT a forwarding reference! T is fixed
-        std::cout << "  Container::push(T&&) — rvalue ref only\n";
+        std::cout << "  Container::push(T&&) - rvalue ref only\n";
     }
 };
 
@@ -72,40 +75,42 @@ int main() {
 
     Widget w{42};
 
-    // Forwarding reference — accepts BOTH lvalues and rvalues
-    std::cout << "forwarding(T&&) — accepts everything:\n";
+    // Forwarding reference -- accepts BOTH lvalues and rvalues
+    std::cout << "forwarding(T&&) - accepts everything:\n";
     forwarding(w);              // OK: T = Widget&, T&& = Widget&
     forwarding(Widget{1});      // OK: T = Widget, T&& = Widget&&
     forwarding(std::move(w));   // OK: T = Widget, T&& = Widget&&
 
-    // Rvalue reference — accepts ONLY rvalues
-    std::cout << "\nrvalue_only(Widget&&) — rvalues only:\n";
+    // Rvalue reference -- accepts ONLY rvalues
+    std::cout << "\nrvalue_only(Widget&&) - rvalues only:\n";
     // rvalue_only(w);          // ERROR: cannot bind lvalue to Widget&&
     rvalue_only(Widget{2});     // OK: temporary is rvalue
     rvalue_only(std::move(w));  // OK: xvalue is rvalue
 
-    // Container::push — NOT a forwarding reference
-    std::cout << "\nContainer<Widget>::push(T&&) — rvalue ref:\n";
+    // Container::push -- NOT a forwarding reference
+    std::cout << "\nContainer<Widget>::push(T&&) - rvalue ref:\n";
     Container<Widget> c;
     // c.push(w);               // ERROR: T is Widget, not deduced
     c.push(Widget{3});          // OK: rvalue
 
-    // auto&& — IS a forwarding reference
-    std::cout << "\nauto&& — forwarding reference:\n";
-    auto&& r1 = w;              // auto = Widget& → Widget&
-    auto&& r2 = Widget{4};     // auto = Widget → Widget&&
+    // auto&& -- IS a forwarding reference
+    std::cout << "\nauto&& - forwarding reference:\n";
+    auto&& r1 = w;              // auto = Widget& -> Widget&
+    auto&& r2 = Widget{4};     // auto = Widget -> Widget&&
     std::cout << "  r1 is lvalue ref: " << std::is_lvalue_reference_v<decltype(r1)> << "\n";
     std::cout << "  r2 is rvalue ref: " << std::is_rvalue_reference_v<decltype(r2)> << "\n";
 
     return 0;
 }
-
 ```
+
+Notice that `r1` binds to a named variable (lvalue), so `auto` deduces to `Widget&` and `auto&&` collapses to `Widget&`. `r2` binds to a temporary (rvalue), so `auto` deduces to `Widget` and `auto&&` becomes `Widget&&`. This is reference collapsing in action.
 
 ### Q2: Show a failed attempt to overload on forwarding reference and explain why it fails
 
-```cpp
+The forwarding reference template is "too greedy" - it can produce an exact match for almost any argument type, including types you intended to go elsewhere. Here you can see it stealing the non-const copy case right out from under the proper copy constructor:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -113,13 +118,13 @@ int main() {
 class Person {
     std::string name_;
 public:
-    // Forwarding reference constructor — TOO GREEDY!
+    // Forwarding reference constructor -- TOO GREEDY!
     template <typename T>
     Person(T&& n) : name_(std::forward<T>(n)) {
         std::cout << "  Template ctor: " << name_ << "\n";
     }
 
-    // Copy constructor — should be called for lvalue Person
+    // Copy constructor -- should be called for lvalue Person
     Person(const Person& other) : name_(other.name_) {
         std::cout << "  Copy ctor: " << name_ << "\n";
     }
@@ -132,14 +137,14 @@ int main() {
 
     // This works fine
     std::cout << "1. String rvalue:\n";
-    Person p1(std::string("Alice"));  // T = string → template ctor ✓
+    Person p1(std::string("Alice"));  // T = string -> template ctor
 
-    // This fails — template ctor is a BETTER match than copy ctor!
+    // This fails -- template ctor is a BETTER match than copy ctor!
     std::cout << "\n2. Copying non-const Person:\n";
     Person p2(p1);  // BUG! Calls template ctor with T = Person&
-    // The template ctor deduces T = Person& → exact match
-    // Copy ctor requires const Person& → requires const conversion
-    // Template wins → tries to construct string from Person → ERROR or wrong behavior!
+    // The template ctor deduces T = Person& -> exact match
+    // Copy ctor requires const Person& -> requires const conversion
+    // Template wins -> tries to construct string from Person -> ERROR or wrong behavior!
 
     // const Person works because const Person& is exact match for copy ctor
     std::cout << "\n3. Copying const Person:\n";
@@ -153,13 +158,15 @@ int main() {
 // exact match (Person&) while copy ctor requires adding const.
 //
 // Solution: Constrain the template (see Q3)
-
 ```
+
+The copy constructor requires a `const Person&`, which means adding `const` - a small implicit conversion. The template deduces `T = Person&` for an exact match. Exact match beats the implicit const-add, so the template wins. Always constrain forwarding reference constructors.
 
 ### Q3: Write a function that uses `requires` (C++20) to constrain a forwarding reference
 
-```cpp
+The fix is to exclude the template from the overload set when the argument is already the same type (or cv/ref variation of it). C++20 `requires` and `std::same_as<std::remove_cvref_t<T>, PersonFixed>` is the clean way to do that. Notice the `!` negation - the constraint says "only enable this template when T is NOT a PersonFixed":
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -176,7 +183,7 @@ public:
         std::cout << "  Template ctor: \"" << name_ << "\"\n";
     }
 
-    // Copy constructor — now wins for PersonFixed arguments
+    // Copy constructor -- now wins for PersonFixed arguments
     PersonFixed(const PersonFixed& other) : name_(other.name_) {
         std::cout << "  Copy ctor: \"" << name_ << "\"\n";
     }
@@ -210,24 +217,24 @@ public:
 int main() {
     std::cout << "=== Constrained Forwarding Reference (C++20) ===\n\n";
 
-    // String rvalue → template ctor
+    // String rvalue -> template ctor
     std::cout << "1. From string rvalue:\n";
     PersonFixed p1(std::string("Alice"));
 
-    // Non-const copy → copy ctor (template excluded by constraint!)
+    // Non-const copy -> copy ctor (template excluded by constraint!)
     std::cout << "\n2. Non-const copy (now works!):\n";
-    PersonFixed p2(p1);  // Copy ctor wins — template excluded
+    PersonFixed p2(p1);  // Copy ctor wins -- template excluded
 
-    // Move → move ctor
+    // Move -> move ctor
     std::cout << "\n3. Move:\n";
     PersonFixed p3(std::move(p2));
 
-    // const copy → copy ctor
+    // const copy -> copy ctor
     std::cout << "\n4. Const copy:\n";
     const PersonFixed p4("Bob");
     PersonFixed p5(p4);
 
-    // C-string → template ctor (convertible to string)
+    // C-string -> template ctor (convertible to string)
     std::cout << "\n5. From C-string literal:\n";
     PersonFixed p6("Charlie");
 
@@ -238,15 +245,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `std::remove_cvref_t<T>` trait strips all references and cv-qualifiers before the comparison, so `PersonFixed&`, `const PersonFixed&`, and `PersonFixed&&` all correctly match the constraint and get excluded. That is why C++20 prefers `remove_cvref_t` here over the older `std::decay_t`.
 
 ---
 
 ## Notes
 
 - `T&&` is a forwarding reference **only** when `T` is deduced by that specific function call.
-- `vector<T>&&`, `Container<T>::f(T&&)` — these are **rvalue references**, not forwarding.
+- `vector<T>&&`, `Container<T>::f(T&&)` - these are **rvalue references**, not forwarding.
 - `auto&&` in range-for, lambdas, and variable declarations is a forwarding reference.
-- Forwarding reference constructors are too greedy — always constrain them with `requires` or `enable_if`.
+- Forwarding reference constructors are too greedy - always constrain them with `requires` or `enable_if`.
 - C++20 `std::remove_cvref_t` is the right trait to strip references and cv-qualifiers for constraints.

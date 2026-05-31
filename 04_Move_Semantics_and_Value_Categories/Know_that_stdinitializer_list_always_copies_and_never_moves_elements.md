@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-`std::initializer_list<T>` is backed by a hidden `const T[N]` array. The keyword here is **`const`** — the elements are immutable. This means that even if you `std::move` the `initializer_list` itself, the elements inside cannot be moved from because they are `const`. Every element extraction from an `initializer_list` results in a **copy**, never a move.
+`std::initializer_list<T>` is backed by a hidden `const T[N]` array. The keyword here is **`const`** - the elements are immutable. This means that even if you `std::move` the `initializer_list` itself, the elements inside cannot be moved from because they are `const`. Every element extraction from an `initializer_list` results in a **copy**, never a move.
+
+This is one of those things that feels like it should work but silently doesn't. The reason it trips people up is that `std::move` on a `const` object produces a `const T&&` - which the overload resolution rules send to the **copy constructor**, not the move constructor. So your attempted move becomes a copy, with no compiler warning.
+
+Here is the mental model for what the list actually looks like in memory:
 
 ```cpp
-
 ┌──────────────────────────────────────────────────────────────────┐
 │              std::initializer_list Internal Model                 │
 │                                                                  │
@@ -25,18 +28,18 @@
 │   │      "gamma"   // const! cannot move from       │            │
 │   │  };                                             │            │
 │   └─────────────────────────────────────────────────┘            │
-│                     ▲             ▲                               │
+│                     ^             ^                               │
 │   initializer_list: │ begin()     │ end()                        │
 │   (pointer + size)  └─────────────┘                              │
 │   Copying this only copies the pointer+size, not the array.     │
 └──────────────────────────────────────────────────────────────────┘
-
 ```
 
-This has significant **performance implications**. If you construct a container of move-only or expensive-to-copy types using brace initialization, each element will be copied, not moved. For `std::vector<std::string>`, this means every string is copied even when the source is a temporary string literal that could have been moved. For `std::vector<std::unique_ptr<T>>`, brace initialization is simply **impossible** — `unique_ptr` is not copyable.
+This has significant **performance implications**. If you construct a container of move-only or expensive-to-copy types using brace initialization, each element will be copied, not moved. For `std::vector<std::string>`, this means every string is copied even when the source is a temporary string literal that could have been moved. For `std::vector<std::unique_ptr<T>>`, brace initialization is simply **impossible** - `unique_ptr` is not copyable.
+
+Here is how the two approaches compare:
 
 ```cpp
-
 ┌────────────────────────────────────────────────────────────────┐
 │            Performance Comparison: init-list vs reserve+emplace│
 ├────────────────────────┬───────────────────────────────────────┤
@@ -50,7 +53,6 @@ This has significant **performance implications**. If you construct a container 
 │  v.emplace_back("b");  │   construction)                       │
 │  v.emplace_back("c");  │                                       │
 └────────────────────────┴───────────────────────────────────────┘
-
 ```
 
 The workaround is to avoid `initializer_list` when move semantics matter. Use `reserve` + `emplace_back`, or use variadic templates, or construct a `std::array` and move from it. Some libraries provide `make_vector`-style helpers that use parameter packs instead of `initializer_list`.
@@ -61,8 +63,9 @@ The workaround is to avoid `initializer_list` when move semantics matter. Use `r
 
 ### Q1: Why does `std::initializer_list` force copies, and what does `std::move` on the list actually do
 
-```cpp
+Let's make the copies visible. The `Verbose` type below prints every construction so you can see exactly what happens when you try to move from an `initializer_list`.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -91,7 +94,7 @@ void take_by_init_list(std::initializer_list<Verbose> il) {
     std::vector<Verbose> v;
     v.reserve(il.size());
     for (const auto& elem : il) {
-        // elem is const Verbose& — we MUST copy
+        // elem is const Verbose& - we MUST copy
         v.push_back(elem);
     }
 }
@@ -120,18 +123,20 @@ int main() {
     std::cout << "\n=== Moving the list object itself ===\n";
     std::initializer_list<Verbose> il = {"Eve", "Frank"};
     auto il2 = std::move(il);
-    // il2 just copies the pointer+size — elements are still const
+    // il2 just copies the pointer+size - elements are still const
     std::cout << "  il2.size() = " << il2.size() << "\n";
 
     return 0;
 }
-
 ```
+
+Watch the output carefully: both functions print COPY, never MOVE. Moving the list object itself (`std::move(il)`) only moves the pointer and size - the backing `const` array stays put, and its elements remain un-moveable.
 
 ### Q2: How do you efficiently initialize a `vector` of expensive-to-copy types without `initializer_list`
 
-```cpp
+Once you know that `initializer_list` always copies, the fix is straightforward: bypass it entirely. Here are three alternatives, all of which allow moves or in-place construction.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -213,13 +218,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `std::array` approach is worth noting: `std::array` is not `const`, so iterating over it with `auto&` gives you a mutable reference and `std::move` actually moves. That is the fundamental difference from `initializer_list`.
 
 ### Q3: Can you detect the performance difference between `initializer_list` construction and `emplace_back`
 
-```cpp
+This benchmark makes the cost visible in wall-clock time. The `BigString` type is cheap to move and expensive to copy, which exaggerates the difference.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -275,16 +282,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `std::initializer_list<T>` is backed by a hidden `const T[N]` array — the `const` is the reason moves are impossible.
-- `std::move` on an `initializer_list` only copies the internal pointer and size — it does NOT move the elements.
+- `std::initializer_list<T>` is backed by a hidden `const T[N]` array - the `const` is the reason moves are impossible.
+- `std::move` on an `initializer_list` only copies the internal pointer and size - it does NOT move the elements.
 - Attempting `std::move(*it)` on an `initializer_list` iterator yields `const T&&`, which binds to the **copy** constructor, not the move constructor. This is a silent performance trap.
-- Move-only types like `std::unique_ptr` cannot be used with `initializer_list` at all — it won't compile.
+- Move-only types like `std::unique_ptr` cannot be used with `initializer_list` at all - it won't compile.
 - Prefer `reserve()` + `emplace_back()` or a variadic template helper when move semantics matter.
 - This is a known deficiency in the language. Proposals to fix it (like `std::initializer_list` with move semantics) have been discussed but not adopted as of C++26.

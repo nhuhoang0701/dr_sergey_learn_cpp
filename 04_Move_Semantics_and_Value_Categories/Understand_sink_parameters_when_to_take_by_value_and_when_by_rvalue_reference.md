@@ -10,20 +10,22 @@
 
 ### The Sink Parameter Decision Tree
 
-```cpp
+When a function needs to store or consume its argument, the choice of parameter type actually matters for performance. The decision is not arbitrary - it follows directly from the type's move cost and how the function is used. Here is the reasoning as a decision tree:
 
+```cpp
 Want to store/consume the argument?
 ├─ YES (sink parameter):
-│   ├─ Type is move-only (unique_ptr)? → Take by T&&
-│   ├─ Type has cheap move (string, vector)? → Take by value + move
-│   ├─ Hot path / tight loop setter? → Two overloads (const T& + T&&)
-│   └─ Large trivially-copyable? → Take by const T&
+│   ├─ Type is move-only (unique_ptr)? -> Take by T&&
+│   ├─ Type has cheap move (string, vector)? -> Take by value + move
+│   ├─ Hot path / tight loop setter? -> Two overloads (const T& + T&&)
+│   └─ Large trivially-copyable? -> Take by const T&
 └─ NO (just read):
     └─ Take by const T& or std::string_view/std::span
-
 ```
 
 ### Quick Reference
+
+If the table feels like a lot, the rule of thumb is: by-value for most things, rvalue reference for move-only types, const reference when move is as expensive as copy.
 
 | Scenario | Signature | Why |
 | --- | --- | --- |
@@ -38,8 +40,9 @@ Want to store/consume the argument?
 
 ### Q1: Explain why `void setName(std::string name) { name_ = std::move(name); }` is the preferred sink idiom
 
-```cpp
+By-value sink works because the parameter itself becomes the "staging area." The caller either copies into it (lvalue case) or moves into it (rvalue case), and then the function body moves from it once more into the member. That second move is cheap - it is just a pointer swap for `std::string`. The net result is near-optimal with a single function:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -64,13 +67,13 @@ public:
 int main() {
     std::cout << "=== By-Value Sink Idiom ===\n\n";
 
-    // Rvalue: string constructed in-place → moved once into param → moved into member
+    // Rvalue: string constructed in-place -> moved once into param -> moved into member
     // Total: ~2 moves (nearly free for string)
     std::cout << "1. Rvalue argument:\n";
     Employee e1("Alice", "Engineering");
     std::cout << "  " << e1.name() << "\n";
 
-    // Lvalue: string copied into param → moved into member
+    // Lvalue: string copied into param -> moved into member
     // Total: 1 copy + 1 move (copy is necessary, move is nearly free)
     std::cout << "\n2. Lvalue argument:\n";
     std::string name = "Bob";
@@ -81,24 +84,26 @@ int main() {
     std::cout << "\n=== Why this works ===\n";
     std::cout << "  1. Single function handles both lvalues and rvalues\n";
     std::cout << "  2. No template complexity, no overload explosion\n";
-    std::cout << "  3. The 'extra' move is O(1) — typically ~5ns\n";
+    std::cout << "  3. The 'extra' move is O(1) -- typically ~5ns\n";
     std::cout << "  4. Caller's intent is clear: function CONSUMES the value\n";
     std::cout << "  5. Works with implicit conversions: setName(\"literal\")\n";
 
     // setName with implicit conversion from const char*
-    std::cout << "\n3. Implicit conversion (const char* → string):\n";
-    e1.setName("Charlie");  // Constructs string from literal → moves into member
+    std::cout << "\n3. Implicit conversion (const char* -> string):\n";
+    e1.setName("Charlie");  // Constructs string from literal -> moves into member
     std::cout << "  " << e1.name() << "\n";
 
     return 0;
 }
-
 ```
+
+Point 5 in the output is easy to overlook but practically important: taking by value means implicit conversions work for free. `setName("Charlie")` constructs a `std::string` from the string literal and then moves it in - no extra overload required.
 
 ### Q2: Show when two overloads (`const T&` + `T&&`) are better than by-value sink
 
-```cpp
+The two-overload approach wins when the target member already has allocated capacity and you can reuse it on the lvalue path. With a single `const std::string&` overload, assigning directly into the member can skip allocation entirely if the capacity is large enough. The by-value path always brings a freshly-allocated copy and discards the existing buffer:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -164,13 +169,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The benchmark is reproducible on your machine - try it. The gap between the two approaches depends on the string size and allocation behavior of your standard library implementation, but for repeated calls with an existing buffer, `log_optimal` will typically win by a measurable margin.
 
 ### Q3: Benchmark sink-by-value vs sink-by-rvalue-reference for a type with expensive move
 
-```cpp
+This example targets a different failure mode: a type where `move` and `copy` cost the same because there is no heap buffer to steal. `std::array<double, 1024>` is 8 KB of stack data - moving it memcpys all 8 KB just like copying does. Taking it by value in a sink therefore pays two memcpys where one would do:
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <array>
@@ -178,10 +185,10 @@ int main() {
 
 // A type where move is EXPENSIVE (not just pointer-swap)
 struct BigMatrix {
-    std::array<double, 1024> data{};  // 8 KB — trivially copyable
+    std::array<double, 1024> data{};  // 8 KB -- trivially copyable
 
     // Move == Copy for trivially copyable types!
-    // No pointers to steal — must memcpy the entire array
+    // No pointers to steal -- must memcpy the entire array
     BigMatrix() = default;
     BigMatrix(const BigMatrix&) = default;
     BigMatrix(BigMatrix&&) = default;
@@ -192,7 +199,7 @@ struct BigMatrix {
 class Solver {
     BigMatrix matrix_;
 public:
-    // By-value: lvalue → copy into param + move(=copy) into member = 2 copies
+    // By-value: lvalue -> copy into param + move(=copy) into member = 2 copies
     void set_byval(BigMatrix m) {
         matrix_ = std::move(m);  // move == memcpy for BigMatrix
     }
@@ -248,8 +255,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The ratio printed at the end will be close to 2x for large trivially-copyable types on any modern machine. This is the empirical confirmation of the decision tree at the top: "large trivially-copyable? -> take by const T&".
 
 ---
 
@@ -258,5 +266,5 @@ int main() {
 - **By-value sink** = simple default for constructors with cheap-move types (string, vector).
 - **Rvalue reference** (`T&&`) = required for move-only types, signals "I will consume this".
 - **Two overloads** = optimal when repeated setter calls benefit from buffer reuse.
-- **Never take `unique_ptr` by value** — it's move-only, use `unique_ptr&&` to signal ownership transfer.
-- For large trivially-copyable types, by-value sink doubles the copy cost — use `const T&`.
+- **Never take `unique_ptr` by value** - it's move-only, use `unique_ptr&&` to signal ownership transfer.
+- For large trivially-copyable types, by-value sink doubles the copy cost - use `const T&`.

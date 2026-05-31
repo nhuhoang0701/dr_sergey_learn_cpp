@@ -1,6 +1,6 @@
 # Move Semantics & Value Categories
 
-Rvalue references, std::move, std::forward, perfect forwarding, copy elision, and value category rules.
+This folder covers one of the most practically impactful corners of modern C++: how objects move instead of copy, what value categories actually mean, and how the language uses all of this to squeeze out performance. If you've ever wondered why `std::move` doesn't actually move anything, or why forgetting `noexcept` on a move constructor silently slows down your `std::vector`, this is the folder for you.
 
 **Topics:** 22
 
@@ -31,14 +31,13 @@ Rvalue references, std::move, std::forward, perfect forwarding, copy elision, an
 
 ## Notes
 
-- std::move does not move — it casts to an rvalue reference, enabling move constructors
-- Moved-from objects must be in a valid but unspecified state — never assume their value
-- std::forward preserves value category in perfect forwarding — use only with forwarding references
-- Value categories (lvalue, xvalue, prvalue) determine which overload gets called
-- The copy-and-swap idiom provides strong exception guarantee for assignment operators
-- Guaranteed copy elision (C++17) means prvalues are never materialized unless needed
-- Return by value — compilers apply NRVO/RVO, and move semantics handles the rest
-- 
-oexcept on move constructors is critical — containers like std::vector require it for strong exception safety
-- Don't std::move in return statements with local variables — it prevents NRVO
-- Rvalue reference members in classes are almost always a design mistake
+- `std::move` does not move - it casts to an rvalue reference, enabling move constructors.
+- Moved-from objects must be in a valid but unspecified state - never assume their value.
+- `std::forward` preserves value category in perfect forwarding - use only with forwarding references.
+- Value categories (lvalue, xvalue, prvalue) determine which overload gets called.
+- The copy-and-swap idiom provides a strong exception guarantee for assignment operators.
+- Guaranteed copy elision (C++17) means prvalues are never materialized unless needed.
+- Return by value - compilers apply NRVO/RVO, and move semantics handles the rest.
+- `noexcept` on move constructors is critical - containers like `std::vector` require it for strong exception safety.
+- Don't `std::move` in return statements with local variables - it prevents NRVO.
+- Rvalue reference members in classes are almost always a design mistake.

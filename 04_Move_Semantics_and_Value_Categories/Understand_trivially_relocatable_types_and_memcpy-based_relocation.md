@@ -10,15 +10,13 @@
 
 ### What Is Trivial Relocation
 
-**Relocation** = move-construct at new location + destroy at old location. A type is **trivially relocatable** if this relocation is equivalent to a `memcpy` — no custom move/destroy logic needed.
+**Relocation** = move-construct at new location + destroy at old location. A type is **trivially relocatable** if this relocation is equivalent to a `memcpy` - no custom move/destroy logic needed. The practical payoff is that `std::vector` can reallocate its buffer with a single `memcpy` instead of calling a move constructor and destructor on every element.
 
 ```cpp
-
 Normal relocation:          Trivial relocation:
 
 1. Move-construct at dest   1. memcpy from src to dest
-2. Destroy at source        (done — no destroy needed)
-
+2. Destroy at source        (done - no destroy needed)
 ```
 
 | Type | Trivially relocatable? | Why |
@@ -42,10 +40,11 @@ Trivial relocation is **not yet standardized** (P1144 is proposed). However:
 
 ## Self-Assessment
 
-### Q1: Explain what trivially relocatable means — move + destroy is equivalent to memcpy
+### Q1: Explain what trivially relocatable means - move + destroy is equivalent to memcpy
+
+The key insight is what happens when you move a `std::string`: the move steals the internal pointer, then the destructor on the source checks if the pointer is null and does nothing. The net effect is identical to just copying the raw bytes. That's why `memcpy` is sufficient.
 
 ```cpp
-
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -60,8 +59,8 @@ struct TriviallyRelocatable {
     TriviallyRelocatable(std::string n, int v)
         : name(std::move(n)), value(v) {}
 
-    // Move: steals name's pointer → source.name = {nullptr, 0, 0}
-    // Destroy source: ~string on {nullptr, 0, 0} → no-op
+    // Move: steals name's pointer -> source.name = {nullptr, 0, 0}
+    // Destroy source: ~string on {nullptr, 0, 0} -> no-op
     // The net effect is just: copy bytes from old to new location
     // This means memcpy achieves the same result!
 };
@@ -69,7 +68,7 @@ struct TriviallyRelocatable {
 // A NON-trivially-relocatable type: has self-referencing pointer
 struct SelfReferential {
     int data;
-    int* self_ptr;  // Points to &data — becomes dangling after memcpy!
+    int* self_ptr;  // Points to &data - becomes dangling after memcpy!
 
     SelfReferential(int d) : data(d), self_ptr(&data) {}
 
@@ -78,7 +77,7 @@ struct SelfReferential {
         , self_ptr(&data)  // Must re-point to OUR data, not other's
     {}
 
-    // memcpy would copy the old self_ptr value → points to old (freed) location!
+    // memcpy would copy the old self_ptr value -> points to old (freed) location!
 };
 
 int main() {
@@ -96,7 +95,7 @@ int main() {
     // Simulate memcpy-based relocation
     alignas(TriviallyRelocatable) char buffer[sizeof(TriviallyRelocatable)];
     std::memcpy(buffer, &original, sizeof(TriviallyRelocatable));
-    // WARNING: This is for demonstration only — not valid C++ without start_lifetime_as
+    // WARNING: This is for demonstration only - not valid C++ without start_lifetime_as
 
     auto* relocated = reinterpret_cast<TriviallyRelocatable*>(buffer);
     std::cout << "Relocated: name=\"" << relocated->name << "\", value=" << relocated->value << "\n";
@@ -107,7 +106,7 @@ int main() {
     SelfReferential sr(99);
     std::cout << "sr.data = " << sr.data << "\n";
     std::cout << "sr.self_ptr points to: " << sr.self_ptr << " (&data = " << &sr.data << ")\n";
-    std::cout << "After memcpy, self_ptr would still point to old address → DANGLING!\n";
+    std::cout << "After memcpy, self_ptr would still point to old address -> DANGLING!\n";
 
     // Clean up: destroy original manually since we memcpy'd its guts
     // (In real code, use proper move + destroy)
@@ -118,13 +117,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `SelfReferential` example shows exactly why this property matters: `self_ptr` stores the address of `data` within the same object. After a `memcpy` to a new location, `self_ptr` still holds the old address - a dangling pointer. The move constructor has to fix it up manually, so `memcpy` alone isn't safe.
 
 ### Q2: Show why `std::vector` can use `memmove` for trivially relocatable types during reallocation
 
-```cpp
+When `std::vector` runs out of capacity and has to move all elements to a new buffer, each element normally goes through move-construct + destroy. For trivially relocatable types, that entire loop collapses into a single `memcpy` call.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -166,7 +167,7 @@ int main() {
 
     // For trivially relocatable types, vector CAN do:
     //   1. Allocate new buffer
-    //   2. memcpy(new_buf, old_buf, n * sizeof(T))  ← single bulk operation!
+    //   2. memcpy(new_buf, old_buf, n * sizeof(T))  <- single bulk operation!
     //   3. Free old buffer (no element-wise destruction needed)
     // This is dramatically faster for large vectors
 
@@ -175,7 +176,7 @@ int main() {
     std::cout << "  Just:       memcpy(new_buf, old_buf, n * sizeof(T))\n";
     std::cout << "  Speedup:    ~10x for large vectors (one memcpy vs n operations)\n";
 
-    // Benchmark: vector<int> (trivially copyable ⊂ trivially relocatable)
+    // Benchmark: vector<int> (trivially copyable, trivially relocatable)
     constexpr int N = 10'000'000;
     {
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -184,24 +185,24 @@ int main() {
         auto t2 = std::chrono::high_resolution_clock::now();
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
         std::cout << "\n3. vector<int> push_back " << N << ": " << ms << " ms\n";
-        std::cout << "  (Compiler can use memcpy for reallocation — very fast)\n";
+        std::cout << "  (Compiler can use memcpy for reallocation - very fast)\n";
     }
 
     std::cout << "\n=== How libraries detect trivial relocation ===\n";
-    std::cout << "  - is_trivially_copyable → always trivially relocatable\n";
+    std::cout << "  - is_trivially_copyable -> always trivially relocatable\n";
     std::cout << "  - Custom trait: is_trivially_relocatable<T>\n";
     std::cout << "  - Clang: [[clang::trivially_relocatable]] attribute\n";
     std::cout << "  - P1144 proposal: std::is_trivially_relocatable type trait\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: List standard types that are trivially relocatable and why user types often are too
 
-```cpp
+The good news is that most types you write day-to-day are trivially relocatable, because they're composed entirely of types that are themselves trivially relocatable.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -238,7 +239,7 @@ int main() {
         std::vector<int> data;    // Trivially relocatable
         std::unique_ptr<int> ptr; // Trivially relocatable
         int flags;                // Trivially copyable
-        // → UserType is trivially relocatable!
+        // -> UserType is trivially relocatable!
     };
 
     struct AlsoRelocatable {
@@ -248,7 +249,7 @@ int main() {
 
     struct NotRelocatable {
         int data;
-        int* self_ptr;  // Points to &data → NOT relocatable
+        int* self_ptr;  // Points to &data -> NOT relocatable
 
         NotRelocatable() : data(0), self_ptr(&data) {}
         NotRelocatable(NotRelocatable&& o) noexcept
@@ -261,22 +262,23 @@ int main() {
     std::cout << "      vector<T> items; // relocatable\n";
     std::cout << "      int count;       // trivially copyable\n";
     std::cout << "  };\n";
-    std::cout << "  → Trivially relocatable (all members are)\n\n";
+    std::cout << "  -> Trivially relocatable (all members are)\n\n";
 
     std::cout << "Rare non-relocatable pattern:\n";
     std::cout << "  struct Node {\n";
     std::cout << "      Data data;\n";
-    std::cout << "      Node* self;  // points to &data → breaks after memcpy\n";
+    std::cout << "      Node* self;  // points to &data -> breaks after memcpy\n";
     std::cout << "  };\n\n";
 
     std::cout << "Estimate: >95% of user-defined types are trivially relocatable\n";
     std::cout << "because most types are just aggregates of strings, vectors,\n";
-    std::cout << "smart pointers, and scalars — all of which are relocatable.\n";
+    std::cout << "smart pointers, and scalars - all of which are relocatable.\n";
 
     return 0;
 }
-
 ```
+
+The takeaway: if your type's members are all standard containers, smart pointers, or scalars, you're almost certainly trivially relocatable already. The rare exception is a type that stores a pointer to one of its own members.
 
 ---
 
@@ -284,7 +286,7 @@ int main() {
 
 - Trivially relocatable = `move + destroy == memcpy`. Not yet standardized (P1144).
 - Most standard types (string, vector, unique_ptr, shared_ptr) are trivially relocatable in practice.
-- `std::vector` can use `memcpy`/`memmove` for bulk reallocation of trivially relocatable types — ~10x faster.
+- `std::vector` can use `memcpy`/`memmove` for bulk reallocation of trivially relocatable types - ~10x faster.
 - Self-referential types (internal pointers to own members) are **not** trivially relocatable.
 - Clang provides `[[clang::trivially_relocatable]]`; MSVC and GCC optimize internally without an attribute.
-- `is_trivially_copyable` ⊂ `is_trivially_relocatable` — all trivially copyable types are trivially relocatable.
+- `is_trivially_copyable` is a subset of `is_trivially_relocatable` - all trivially copyable types are trivially relocatable.

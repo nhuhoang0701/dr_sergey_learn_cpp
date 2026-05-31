@@ -12,6 +12,8 @@
 
 Constructors (including move constructors) **cannot be virtual** in C++. This creates a tension with polymorphic types where we want to copy/move through a base pointer.
 
+The reason constructors cannot be virtual is fundamental: virtual dispatch requires a vtable pointer, and the vtable pointer is set up *during* construction. While the constructor is running, the object does not yet have its final type identity - so there is nothing to dispatch through. The type must be fully known at construction time.
+
 | Operation | Can be virtual? | Workaround |
 | --- | :---: | --- |
 | Destructor | Yes | (always make virtual for polymorphic bases) |
@@ -31,8 +33,9 @@ Constructors (including move constructors) **cannot be virtual** in C++. This cr
 
 ### Q1: Show that a virtual move constructor is not possible and explain the design implication
 
-```cpp
+This example shows the language syntax that is illegal (in comments) and then demonstrates what you can do instead. The design implication is important: without virtual construction, you cannot polymorphically duplicate an object through a base pointer without extra machinery:
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -46,8 +49,8 @@ public:
     // - Virtual dispatch requires a vtable, which doesn't exist yet during construction
     // - C++ constructors build the vtable incrementally (base first, then derived)
 
-    // virtual Shape(Shape&& other);     // ❌ ILLEGAL: constructor can't be virtual
-    // virtual Shape(const Shape& other); // ❌ ILLEGAL: same reason
+    // virtual Shape(Shape&& other);     // ERROR: constructor can't be virtual
+    // virtual Shape(const Shape& other); // ERROR: same reason
 
     virtual std::string name() const = 0;
     virtual double area() const = 0;
@@ -58,7 +61,7 @@ class Circle : public Shape {
 public:
     Circle(double r) : radius_(r) {}
 
-    // Regular (non-virtual) move constructor — works fine
+    // Regular (non-virtual) move constructor -- works fine
     Circle(Circle&& other) noexcept : radius_(other.radius_) {
         std::cout << "  Circle move ctor\n";
     }
@@ -86,7 +89,7 @@ int main() {
 
     Circle c(5.0);
     std::cout << "1. Non-virtual move works for concrete types:\n";
-    Circle c2 = std::move(c);  // Fine — we know the type
+    Circle c2 = std::move(c);  // Fine -- we know the type
     std::cout << "  c2: " << c2.name() << ", area=" << c2.area() << "\n";
 
     // But through a base pointer, we can't move:
@@ -94,19 +97,21 @@ int main() {
     // Shape s2 = std::move(*sp);  // SLICING: only base part copied, Circle data lost!
 
     std::cout << "\n2. Slicing danger:\n";
-    // Shape base_copy = *sp;   // Would compile but SLICES — only Shape part
+    // Shape base_copy = *sp;   // Would compile but SLICES -- only Shape part
     std::cout << "  Can't polymorphically copy/move through base pointer\n";
     std::cout << "  Solution: virtual clone() method (see Q2)\n";
 
     return 0;
 }
-
 ```
+
+The slicing problem is what makes this tricky in practice. If you accidentally assign `*sp` into a `Shape` object, it compiles - but silently discards all the derived-class data. The solution is the `clone()` idiom shown in Q2.
 
 ### Q2: Implement a `clone()` virtual method as the idiomatic alternative to virtual copy/move
 
-```cpp
+The `clone()` pattern gives you polymorphic copying through a base pointer. Each derived class overrides `clone()` and constructs a copy of itself using `std::make_unique<DerivedType>(*this)`. This way the correct constructor is always called because each derived class knows its own type:
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -116,10 +121,10 @@ class Animal {
 public:
     virtual ~Animal() = default;
 
-    // Virtual clone — the idiomatic replacement for virtual copy constructor
+    // Virtual clone -- the idiomatic replacement for virtual copy constructor
     virtual std::unique_ptr<Animal> clone() const = 0;
 
-    // Virtual "move-clone" — optional, for when source can be consumed
+    // Virtual "move-clone" -- optional, for when source can be consumed
     virtual std::unique_ptr<Animal> move_clone() {
         return clone();  // Default: just copy (safe fallback)
     }
@@ -213,18 +218,20 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `clone_collection` function is worth studying: it iterates through a `vector<unique_ptr<Animal>>` and calls `a->clone()` on each element. Even though the pointer type is `Animal*`, each call dispatches to the correct derived `clone()` override - that is virtual dispatch working exactly as intended.
 
 ### Q3: Explain why a polymorphic base class should have a virtual destructor and how that interacts with move
 
-```cpp
+The virtual destructor requirement is about correctness. Without it, deleting a derived object through a base pointer is undefined behavior - the wrong destructor runs and resources leak. But there is a subtlety with move semantics: declaring *any* user-provided destructor (even `= default`) suppresses the implicitly generated move operations. You need to explicitly default them to get real moves back:
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <type_traits>
 
-// A polymorphic base WITHOUT virtual destructor — DANGEROUS
+// A polymorphic base WITHOUT virtual destructor -- DANGEROUS
 struct BadBase {
     // ~BadBase() {}  // Non-virtual! (the default)
     virtual void f() {}
@@ -238,10 +245,9 @@ struct BadDerived : BadBase {
     }
 };
 
-// A polymorphic base WITH virtual destructor — CORRECT
+// A polymorphic base WITH virtual destructor -- CORRECT
 struct GoodBase {
     virtual ~GoodBase() = default;  // Virtual destructor
-    virtual void f() {}
 
     // PROBLEM: Declaring virtual destructor suppresses implicit move!
     // The compiler sees a user-declared destructor (even = default) and
@@ -253,6 +259,7 @@ struct GoodBase {
     GoodBase& operator=(const GoodBase&) = default;
     GoodBase(GoodBase&&) = default;
     GoodBase& operator=(GoodBase&&) = default;
+    virtual void f() {}
 };
 
 struct GoodDerived : GoodBase {
@@ -267,9 +274,9 @@ int main() {
     std::cout << "1. Without virtual destructor (BAD):\n";
     {
         BadBase* p = new BadDerived();
-        delete p;  // UB: ~BadDerived not called → memory leak!
+        delete p;  // UB: ~BadDerived not called -> memory leak!
         // Only ~BadBase runs (non-virtual dispatch)
-        std::cout << "  (BadDerived destructor was NOT called → LEAK)\n";
+        std::cout << "  (BadDerived destructor was NOT called -> LEAK)\n";
     }
 
     // With virtual destructor: correct polymorphic deletion
@@ -279,16 +286,16 @@ int main() {
         // ~GoodDerived correctly called through virtual dispatch
     }
 
-    // Virtual destructor suppresses move — verify with type traits
+    // Virtual destructor suppresses move -- verify with type traits
     std::cout << "\n3. Move suppression check:\n";
 
     struct NoVirtDtor {
-        // No destructor declared → move is implicit
+        // No destructor declared -> move is implicit
         std::string data;
     };
 
     struct VirtDtorNoDefault {
-        virtual ~VirtDtorNoDefault() {}  // User-provided → suppresses move
+        virtual ~VirtDtorNoDefault() {}  // User-provided -> suppresses move
         std::string data;
     };
 
@@ -311,15 +318,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice the subtle point with `VirtDtorNoDefault`: `is_move_constructible` still returns true because the class falls back to copying when moved. The copy constructor acts as a move constructor in that case. But `is_nothrow_move_constructible` would return false, and the performance is copy-level rather than move-level. The `VirtDtorWithDefault` example with all five special members explicitly defaulted is the pattern to follow for any polymorphic base class.
 
 ---
 
 ## Notes
 
-- C++ constructors cannot be virtual — use `virtual clone()` for polymorphic copying.
+- C++ constructors cannot be virtual - use `virtual clone()` for polymorphic copying.
 - Always declare a **virtual destructor** in polymorphic base classes.
-- Virtual destructor **suppresses** implicit move generation — explicitly `= default` all five special members.
-- Slicing occurs when copying a Derived object into a Base by value — always use pointers/references.
+- Virtual destructor **suppresses** implicit move generation - explicitly `= default` all five special members.
+- Slicing occurs when copying a Derived object into a Base by value - always use pointers/references.
 - Consider making polymorphic base classes non-copyable to prevent accidental slicing.

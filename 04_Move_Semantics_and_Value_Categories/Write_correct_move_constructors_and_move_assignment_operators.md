@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-### Move Constructor & Move Assignment — The Pattern
+### Move Constructor & Move Assignment - The Pattern
+
+A move constructor's job is to steal resources from the source and leave the source in a valid, destructible state. Here's the canonical pattern using `std::exchange`, which atomically reads the old value and writes the new one - exactly what you need to nullify a pointer in one step:
 
 ```cpp
-
 class Resource {
     T* ptr_;
     size_t size_;
@@ -31,26 +32,27 @@ public:
         return *this;
     }
 };
-
 ```
 
 ### Critical Requirements
 
+Every one of these matters. The `noexcept` requirement in particular surprises people - see Q3 for why skipping it has a real performance cost.
+
 | Requirement | Why |
 | --- | --- |
-| **`noexcept`** | `std::vector` uses `move_if_noexcept` — without `noexcept`, it falls back to copy |
-| **Nullify source** | Source must be destructible — dangling pointers cause double-free |
+| **`noexcept`** | `std::vector` uses `move_if_noexcept` - without `noexcept`, it falls back to copy |
+| **Nullify source** | Source must be destructible - dangling pointers cause double-free |
 | **Self-assignment safety** | `x = std::move(x)` must not corrupt state |
 | **Leave source valid** | Moved-from state must be destructible and assignable |
 
-### `std::exchange` — The Key Helper
+### `std::exchange` - The Key Helper
+
+`std::exchange` is what makes move operations concise and correct. It reads the old value and writes the new one in a single expression, which avoids the two-step "save, then nullify" pattern that is easy to get wrong:
 
 ```cpp
-
 // std::exchange(obj, new_val) returns old value, sets obj = new_val
 ptr_ = std::exchange(other.ptr_, nullptr);
 // Equivalent to:  ptr_ = other.ptr_;  other.ptr_ = nullptr;
-
 ```
 
 ---
@@ -59,8 +61,9 @@ ptr_ = std::exchange(other.ptr_, nullptr);
 
 ### Q1: Implement a move constructor that leaves the source in a valid but unspecified state
 
-```cpp
+This example traces construction, moving, and destruction so you can verify that the moved-from object is safely destroyed without a double-free:
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <utility>
@@ -92,7 +95,7 @@ public:
         std::cout << "  Copy-constructed: \"" << data_ << "\"\n";
     }
 
-    // MOVE CONSTRUCTOR — steal resources, leave source in valid empty state
+    // MOVE CONSTRUCTOR - steal resources, leave source in valid empty state
     DynamicBuffer(DynamicBuffer&& other) noexcept
         : data_(std::exchange(other.data_, nullptr))
         , size_(std::exchange(other.size_, 0))
@@ -121,7 +124,7 @@ int main() {
 
     DynamicBuffer a("Hello, World!");
 
-    std::cout << "\nMoving a → b:\n";
+    std::cout << "\nMoving a -> b:\n";
     DynamicBuffer b(std::move(a));
 
     std::cout << "\nAfter move:\n";
@@ -134,7 +137,7 @@ int main() {
 }
 // Expected output:
 //   Constructed: "Hello, World!" (cap=14)
-//   Moving a → b:
+//   Moving a -> b:
 //   Move-constructed: "Hello, World!"
 //   After move:
 //     a: "" (size=0, empty=1)
@@ -142,15 +145,15 @@ int main() {
 //   Destroying both (no double-free!):
 //   Destroying: "Hello, World!"
 //   Destroying: "(moved-from)"
-
 ```
+
+The destructor reaching `delete[] nullptr` is perfectly safe - that's the invariant the move constructor establishes by nullifying `other.data_`.
 
 ### Q2: Explain why the move assignment operator must handle self-assignment
 
-Self-assignment with move (`x = std::move(x)`) can happen in generic code, especially through algorithms. Without a guard, the object **destroys its own resources** before stealing them:
+Self-assignment with move (`x = std::move(x)`) can happen in generic code, especially through algorithms. Without a guard, the object **destroys its own resources** before stealing them - use-after-free on the next line.
 
 ```cpp
-
 #include <iostream>
 #include <utility>
 #include <algorithm>
@@ -163,7 +166,7 @@ public:
         std::iota(data_, data_ + n, 0);
     }
 
-    // BUGGY move assignment — no self-assignment check
+    // BUGGY move assignment - no self-assignment check
     Buffer& assign_buggy(Buffer&& other) noexcept {
         delete[] data_;                          // Deletes OUR data...
         data_ = std::exchange(other.data_, nullptr);  // ...which IS other.data_!
@@ -171,7 +174,7 @@ public:
         return *this;
     }
 
-    // CORRECT move assignment — with self-assignment guard
+    // CORRECT move assignment - with self-assignment guard
     Buffer& operator=(Buffer&& other) noexcept {
         if (this != &other) {  // Guard against self-assignment
             delete[] data_;
@@ -231,13 +234,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The swap-based alternative (`assign_swap`) is worth knowing: swapping pointers is inherently safe under self-assignment because you're just exchanging values with yourself, and the old data gets cleaned up by the other object's destructor.
 
 ### Q3: Show a move constructor that is NOT `noexcept` and how this prevents use in `std::vector` reallocation
 
-```cpp
+This is a concrete demonstration of why the `noexcept` rule matters. When `std::vector` needs to grow its buffer, it uses `std::move_if_noexcept` internally. If your move constructor might throw, the vector has no way to roll back a half-completed reallocation and still satisfy the strong exception guarantee - so it falls back to copying every element instead.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -247,7 +252,7 @@ class SafeWidget {
 public:
     SafeWidget(std::string n) : name_(std::move(n)) {}
 
-    // noexcept move → vector WILL use this during reallocation
+    // noexcept move -> vector WILL use this during reallocation
     SafeWidget(SafeWidget&& other) noexcept : name_(std::move(other.name_)) {
         std::cout << "  MOVE: " << name_ << "\n";
     }
@@ -261,7 +266,7 @@ class UnsafeWidget {
 public:
     UnsafeWidget(std::string n) : name_(std::move(n)) {}
 
-    // NO noexcept → vector will FALL BACK TO COPY during reallocation!
+    // NO noexcept -> vector will FALL BACK TO COPY during reallocation!
     // Reason: if move throws mid-reallocation, original data is corrupted
     // and vector can't provide strong exception guarantee
     UnsafeWidget(UnsafeWidget&& other)  // Missing noexcept!
@@ -274,24 +279,24 @@ public:
 };
 
 int main() {
-    std::cout << "=== noexcept move → vector uses MOVE ===\n";
+    std::cout << "=== noexcept move -> vector uses MOVE ===\n";
     {
         std::vector<SafeWidget> v;
         v.reserve(2);
         v.emplace_back("A");
         v.emplace_back("B");
-        std::cout << "  Triggering reallocation (capacity 2→4):\n";
-        v.emplace_back("C");  // Reallocates → moves A and B
+        std::cout << "  Triggering reallocation (capacity 2->4):\n";
+        v.emplace_back("C");  // Reallocates -> moves A and B
     }
 
-    std::cout << "\n=== Non-noexcept move → vector uses COPY ===\n";
+    std::cout << "\n=== Non-noexcept move -> vector uses COPY ===\n";
     {
         std::vector<UnsafeWidget> v;
         v.reserve(2);
         v.emplace_back("A");
         v.emplace_back("B");
-        std::cout << "  Triggering reallocation (capacity 2→4):\n";
-        v.emplace_back("C");  // Reallocates → COPIES A and B (not moves!)
+        std::cout << "  Triggering reallocation (capacity 2->4):\n";
+        v.emplace_back("C");  // Reallocates -> COPIES A and B (not moves!)
     }
 
     // Check at compile time
@@ -302,30 +307,31 @@ int main() {
               << std::is_nothrow_move_constructible_v<UnsafeWidget> << "\n";   // 0
 
     // vector uses std::move_if_noexcept internally:
-    // If move ctor is noexcept → returns T&& (move)
-    // If move ctor may throw   → returns const T& (copy for safety)
+    // If move ctor is noexcept -> returns T&& (move)
+    // If move ctor may throw   -> returns const T& (copy for safety)
 
     return 0;
 }
 // Expected output (showing the critical difference):
-//   === noexcept move → vector uses MOVE ===
+//   === noexcept move -> vector uses MOVE ===
 //     Triggering reallocation:
 //     MOVE: A
 //     MOVE: B
 //
-//   === Non-noexcept move → vector uses COPY ===
+//   === Non-noexcept move -> vector uses COPY ===
 //     Triggering reallocation:
 //     COPY: A
 //     COPY: B
-
 ```
+
+The output difference is the whole story. Two identical-looking classes, one `noexcept`, one not - and the vector silently copies the entire buffer content every time it grows, for the "safe" one. You can verify this at compile time with `std::is_nothrow_move_constructible_v` if you want to catch the mistake before it becomes a performance mystery.
 
 ---
 
 ## Notes
 
-- **Always mark move operations `noexcept`** — `std::vector` and other containers depend on it.
+- **Always mark move operations `noexcept`** - `std::vector` and other containers depend on it.
 - Use `std::exchange` to atomically read-and-nullify in move operations.
 - Moved-from objects must be in a valid state: at minimum destructible and assignable.
-- Self-assignment in move (`x = std::move(x)`) must be safe — use `if (this != &other)` or swap.
-- If you can, follow the Rule of Zero — let compiler-generated moves handle everything.
+- Self-assignment in move (`x = std::move(x)`) must be safe - use `if (this != &other)` or swap.
+- If you can, follow the Rule of Zero - let compiler-generated moves handle everything.

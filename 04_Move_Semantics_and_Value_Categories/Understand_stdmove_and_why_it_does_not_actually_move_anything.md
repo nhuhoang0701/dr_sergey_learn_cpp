@@ -11,33 +11,33 @@
 
 ### What `std::move` Really Does
 
-`std::move` is **not** a function that moves anything. It is an **unconditional cast** to an rvalue reference (`T&&`):
+`std::move` is **not** a function that moves anything. It is an **unconditional cast** to an rvalue reference (`T&&`). The name is genuinely misleading - the reason this trips people up is that the name sounds like an action, but it's really just a label change that tells the compiler "you're allowed to steal from this." Here's the simplified implementation:
 
 ```cpp
-
 // Simplified implementation of std::move:
 template <typename T>
 constexpr std::remove_reference_t<T>&& move(T&& t) noexcept {
     return static_cast<std::remove_reference_t<T>&&>(t);
 }
-
 ```
+
+That's it - a `static_cast`. Nothing is transferred. The actual moving, if any, happens later when a move constructor or move assignment operator accepts that `T&&` and decides what to do with it.
 
 | Misconception | Reality |
 | --- | --- |
-| `std::move` moves data | It only **casts** to `T&&` — a value category change |
+| `std::move` moves data | It only **casts** to `T&&` - a value category change |
 | Movement always happens | Movement only happens if a move constructor/assignment accepts the `T&&` |
-| `std::move` on `const` moves | `const T&&` binds to `const T&` → **copy** instead |
+| `std::move` on `const` moves | `const T&&` binds to `const T&` -> **copy** instead |
 | Moved-from object is destroyed | Object is in a **valid but unspecified** state |
 
 ### The Actual Move Chain
 
-```cpp
+Here's the full chain so you can see where the cast ends and the real work begins:
 
-std::move(x)  →  cast to T&&  →  binds to T(T&&)  →  move constructor steals resources
+```cpp
+std::move(x)  ->  cast to T&&  ->  binds to T(T&&)  ->  move constructor steals resources
      ^                                  ^
   Just a cast              THIS does the actual moving
-
 ```
 
 ---
@@ -46,8 +46,9 @@ std::move(x)  →  cast to T&&  →  binds to T(T&&)  →  move constructor stea
 
 ### Q1: Show that `std::move` is just a cast to `T&&` and that the actual move happens in the constructor/assignment
 
-```cpp
+This example traces what actually happens at each step so you can see that `std::move(a)` leaves `a` completely intact until something binds to the resulting reference.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <utility>
@@ -59,15 +60,15 @@ public:
         std::cout << "  Constructed with: \"" << data_ << "\"\n";
     }
 
-    // THIS is where the actual move happens — not in std::move()
+    // THIS is where the actual move happens - not in std::move()
     Tracker(Tracker&& other) noexcept : data_(std::move(other.data_)) {
-        std::cout << "  Move constructor called — stole data\n";
+        std::cout << "  Move constructor called - stole data\n";
         std::cout << "  our data:   \"" << data_ << "\"\n";
         std::cout << "  source now: \"" << other.data_ << "\"\n";
     }
 
     Tracker(const Tracker& other) : data_(other.data_) {
-        std::cout << "  Copy constructor called — copied data\n";
+        std::cout << "  Copy constructor called - copied data\n";
     }
 
     const std::string& data() const { return data_; }
@@ -78,15 +79,15 @@ int main() {
 
     Tracker a("Hello, World!");
 
-    // std::move(a) does NOT move anything — it's just static_cast<Tracker&&>(a)
+    // std::move(a) does NOT move anything - it's just static_cast<Tracker&&>(a)
     std::cout << "\nAfter std::move(a) but before using result:\n";
-    Tracker&& ref = std::move(a);  // Just a cast — 'a' is untouched
+    Tracker&& ref = std::move(a);  // Just a cast - 'a' is untouched
     std::cout << "  a.data() is still: \"" << a.data() << "\"\n";
     std::cout << "  (nothing moved yet!)\n";
 
     // The ACTUAL move happens when the rvalue reference binds to a move constructor
     std::cout << "\nNow constructing b from that rvalue reference:\n";
-    Tracker b(std::move(a));  // Move ctor called — THIS moves
+    Tracker b(std::move(a));  // Move ctor called - THIS moves
     std::cout << "  a.data() after move: \"" << a.data() << "\"\n";
     std::cout << "  b.data() after move: \"" << b.data() << "\"\n";
 
@@ -94,8 +95,8 @@ int main() {
     std::cout << "\n--- If there's no move ctor, it copies ---\n";
     const Tracker c("Immovable");
     std::cout << "Moving from const object:\n";
-    Tracker d = std::move(c);  // const Tracker&& → binds to const Tracker& → COPY
-    std::cout << "  c.data() still: \"" << c.data() << "\" (unchanged — was copied)\n";
+    Tracker d = std::move(c);  // const Tracker&& -> binds to const Tracker& -> COPY
+    std::cout << "  c.data() still: \"" << c.data() << "\" (unchanged - was copied)\n";
 
     return 0;
 }
@@ -105,7 +106,7 @@ int main() {
 //     a.data() is still: "Hello, World!"
 //     (nothing moved yet!)
 //   Now constructing b from that rvalue reference:
-//     Move constructor called — stole data
+//     Move constructor called - stole data
 //     our data:   "Hello, World!"
 //     source now: ""
 //     a.data() after move: ""
@@ -113,15 +114,17 @@ int main() {
 //   --- If there's no move ctor, it copies ---
 //   Constructed with: "Immovable"
 //   Moving from const object:
-//     Copy constructor called — copied data
-//     c.data() still: "Immovable" (unchanged — was copied)
-
+//     Copy constructor called - copied data
+//     c.data() still: "Immovable" (unchanged - was copied)
 ```
+
+Notice the gap: the cast happens on one line, the resource theft happens on a completely different line when the move constructor runs. That gap is what the name `std::move` hides from you.
 
 ### Q2: Demonstrate a bug where `std::move` is applied to a `const` object and silently falls back to copy
 
-```cpp
+This is a surprisingly common performance bug. The compiler won't warn you - it just quietly copies. Watch what happens when `const` meets `std::move`:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -132,16 +135,16 @@ class ExpensiveData {
 public:
     ExpensiveData() : buffer_(1'000'000, 42) {}
 
-    // Move — cheap O(1)
+    // Move - cheap O(1)
     ExpensiveData(ExpensiveData&& other) noexcept
         : buffer_(std::move(other.buffer_)) {
-        std::cout << "  [MOVE] O(1) — stole " << buffer_.size() << " elements\n";
+        std::cout << "  [MOVE] O(1) - stole " << buffer_.size() << " elements\n";
     }
 
-    // Copy — expensive O(n)
+    // Copy - expensive O(n)
     ExpensiveData(const ExpensiveData& other)
         : buffer_(other.buffer_) {
-        std::cout << "  [COPY] O(n) — copied " << buffer_.size() << " elements\n";
+        std::cout << "  [COPY] O(n) - copied " << buffer_.size() << " elements\n";
     }
 
     size_t size() const { return buffer_.size(); }
@@ -151,21 +154,21 @@ public:
 class Container {
     ExpensiveData data_;
 public:
-    // BUGGY: const& parameter → std::move produces const ExpensiveData&&
-    //        → binds to const ExpensiveData& → COPY, not move!
+    // BUGGY: const& parameter -> std::move produces const ExpensiveData&&
+    //        -> binds to const ExpensiveData& -> COPY, not move!
     void set_buggy(const ExpensiveData& d) {
         data_ = std::move(d);  // BUG! Silently copies
-        // std::move(d) → const ExpensiveData&& → binds to copy ctor
+        // std::move(d) -> const ExpensiveData&& -> binds to copy ctor
     }
 
     // FIXED version 1: Take by value and move
     void set_fixed_v1(ExpensiveData d) {
-        data_ = std::move(d);  // d is non-const → actual move
+        data_ = std::move(d);  // d is non-const -> actual move
     }
 
     // FIXED version 2: Take by rvalue reference explicitly
     void set_fixed_v2(ExpensiveData&& d) {
-        data_ = std::move(d);  // d is non-const T&& → actual move
+        data_ = std::move(d);  // d is non-const T&& -> actual move
     }
 };
 
@@ -191,21 +194,21 @@ int main() {
         const std::string name;  // const member!
     };
     Wrapper w1{"Original"};
-    Wrapper w2 = std::move(w1);  // const string → COPIES, not moves
-    std::cout << "w1.name: \"" << w1.name << "\" (unchanged — const member was copied)\n";
+    Wrapper w2 = std::move(w1);  // const string -> COPIES, not moves
+    std::cout << "w1.name: \"" << w1.name << "\" (unchanged - const member was copied)\n";
     std::cout << "w2.name: \"" << w2.name << "\"\n";
 
     return 0;
 }
-
 ```
+
+The `set_buggy` case is the one to internalize. You write `std::move(d)` expecting a move, but because `d` is `const`, the result is `const ExpensiveData&&`, and the only constructor that accepts a const rvalue reference is the copy constructor. You pay O(n) cost every time.
 
 ### Q3: Explain why using a moved-from object is not UB for standard types (but value is unspecified)
 
-Contrary to the common myth, **using a moved-from standard library object is NOT undefined behavior**. The C++ standard guarantees that moved-from objects are in a **valid but unspecified state**:
+Contrary to the common myth, **using a moved-from standard library object is NOT undefined behavior**. The C++ standard guarantees that moved-from objects are in a **valid but unspecified state**. That means you can destroy them, reassign them, or call operations that have no preconditions on value - you just can't depend on what value they hold.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -257,7 +260,7 @@ int main() {
             , size(std::exchange(other.size, 0)) {}
         ~Buffer() { delete[] data; }
 
-        // After move: data==nullptr, size==0 — perfectly well-defined state
+        // After move: data==nullptr, size==0 - perfectly well-defined state
         bool empty() const { return size == 0; }
     };
 
@@ -268,15 +271,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+For your own types, you get to define what "valid but unspecified" means - whatever state makes the destructor safe to call. The `Buffer` example above shows the idiom: `std::exchange` sets both members to safe sentinel values in one clean step.
 
 ---
 
 ## Notes
 
-- `std::move` is a cast, not an operation — it produces an xvalue that **enables** moving.
-- Never `std::move` from `const` objects — the compiler silently falls back to copying.
-- Moved-from standard types are valid but unspecified — safe to destroy or reassign.
-- Mark move constructors/assignments `noexcept` — this enables `std::vector` to use moves during reallocation.
+- `std::move` is a cast, not an operation - it produces an xvalue that **enables** moving.
+- Never `std::move` from `const` objects - the compiler silently falls back to copying.
+- Moved-from standard types are valid but unspecified - safe to destroy or reassign.
+- Mark move constructors/assignments `noexcept` - this enables `std::vector` to use moves during reallocation.
 - Common pitfall: `std::move` in `return` statements can **prevent** NRVO (see separate topic).

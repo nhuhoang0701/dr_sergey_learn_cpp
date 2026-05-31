@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-**Relocation** = move-construct + destroy-source, combined into one operation. For many types ("trivially relocatable" types), this can be optimized to a simple `memcpy`.
+**Relocation** = move-construct + destroy-source, combined into one operation. For many types ("trivially relocatable" types), this combined operation can be optimized down to a simple `memcpy`. The payoff is huge for containers like `std::vector`: instead of calling N move constructors and N destructors during reallocation, you do a single bulk memory copy.
 
 ### What is Trivial Relocatability
 
-```cpp
+The key question is: can we replace "move the object + destroy the old location" with a plain byte copy? For most types the answer is yes.
 
+```cpp
 #include <cstring>
 
 // A type is trivially relocatable if moving it + destroying the source
@@ -31,15 +32,17 @@ struct TriviallyRelocatable {
 struct SelfReferential {
     int data;
     int* self_ptr = &data;  // Points to itself!
-    // After memcpy, self_ptr points to OLD location — broken!
+    // After memcpy, self_ptr points to OLD location - broken!
 };
-
 ```
+
+The reason `unique_ptr` is trivially relocatable despite holding a pointer is that after the `memcpy` the pointer value is still correct - it points to the same heap allocation. The old location is simply abandoned without running a destructor, which is fine because the destructor would have been a no-op anyway (the moved-from `unique_ptr` holds null). Self-referential types break this because the pointer value itself encodes the old address.
 
 ### Why It Matters for vector
 
-```cpp
+Right now, when `std::vector` needs more capacity, it pays a per-element cost in move constructors and destructors. With trivial relocatability, that entire cost collapses to one call.
 
+```cpp
 // vector::push_back with reallocation currently:
 // 1. Allocate new buffer
 // 2. Move-construct each element to new buffer  (N move constructors)
@@ -51,13 +54,13 @@ struct SelfReferential {
 // 2. memcpy(new_buf, old_buf, N * sizeof(T))   (ONE memory operation)
 // 3. Deallocate old buffer (no destructors needed)
 // Speedup: ~5-10x for vector reallocation of trivially relocatable types
-
 ```
 
 ### The Proposed API
 
-```cpp
+The proposal (P1144) introduces a trait and a relocate utility that the standard library can use internally, and that you can use in your own data structures.
 
+```cpp
 // P1144 proposal:
 template<typename T>
 concept trivially_relocatable = /* compiler-determined */;
@@ -73,7 +76,6 @@ T* relocate_at(T* source, T* dest) {
     }
     return dest;
 }
-
 ```
 
 ---
@@ -86,17 +88,17 @@ T* relocate_at(T* source, T* dest) {
 
 ### Q2: Why can't the compiler auto-detect trivial relocatability
 
-The compiler can't see through `virtual` functions, external libraries, or types that register themselves in constructors. A type might store `this` in a global registry — memcpy would leave a stale entry. An explicit `[[trivially_relocatable]]` attribute is needed.
+The compiler can't see through `virtual` functions, external libraries, or types that register themselves in constructors. A type might store `this` in a global registry - `memcpy` would leave a stale entry. An explicit `[[trivially_relocatable]]` attribute is needed for user types to opt in.
 
 ### Q3: How do existing libraries handle this
 
-Folly (Facebook) uses `folly::IsRelocatable<T>` trait and `fbvector` which does `memcpy` reallocation. Abseil has similar optimizations. BSL (Bloomberg) uses `bslmf::IsBitwiseMoveable`. All pre-date the standard proposal.
+Folly (Facebook) uses `folly::IsRelocatable<T>` trait and `fbvector` which does `memcpy` reallocation. Abseil has similar optimizations. BSL (Bloomberg) uses `bslmf::IsBitwiseMoveable`. All pre-date the standard proposal and demonstrate that the optimization is real and valuable in production.
 
 ---
 
 ## Notes
 
 - P1144 has been in discussion since 2018 and targets C++26.
-- `[[trivially_relocatable]]` attribute opt-in for user types.
-- The main beneficiary is `std::vector` — reallocation becomes O(1) memcpy.
-- MSVC STL already uses `_Is_trivially_relocatable` internally.
+- The `[[trivially_relocatable]]` attribute lets user types opt in explicitly.
+- The main beneficiary is `std::vector` - reallocation becomes a single `memcpy` instead of N move + N destroy.
+- MSVC STL already uses `_Is_trivially_relocatable` internally as a non-standard extension.

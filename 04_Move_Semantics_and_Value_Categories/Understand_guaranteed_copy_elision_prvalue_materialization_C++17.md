@@ -11,20 +11,22 @@
 
 ### What Changed in C++17
 
-Before C++17, copy/move elision was an optimization the compiler was *permitted* to perform. In C++17, certain cases are **mandatory** — the standard redefines prvalues so that no copy/move ever exists in the first place.
+Before C++17, copy/move elision was an optimization the compiler was *permitted* to perform. In C++17, certain cases are **mandatory** - the standard redefines prvalues so that no copy/move ever exists in the first place.
+
+The key mental shift is this: in C++17, a prvalue like `T{args}` is not an object - it is an *initialization recipe*. It tells the compiler how to construct the target object directly, without creating a temporary along the way. No temporary means no copy or move is needed. That is not an optimization; it is a change in what the language says is happening.
 
 | Concept | Pre-C++17 | C++17+ |
 | --- | --- | --- |
-| `T x = T{args}` | Conceptually copy/move, may be elided | **No copy/move exists** — prvalue directly initializes `x` |
-| `return T{args}` (URVO) | May be elided | **Guaranteed** — prvalue materializes at call site |
+| `T x = T{args}` | Conceptually copy/move, may be elided | **No copy/move exists** - prvalue directly initializes `x` |
+| `return T{args}` (URVO) | May be elided | **Guaranteed** - prvalue materializes at call site |
 | `return named_var` (NRVO) | May be elided | **Still optional** (not guaranteed) |
 | Non-movable types | Can't be returned by value | **CAN** be returned by value (if prvalue) |
 
 ### Key Terminology
 
-- **Prvalue materialization**: A prvalue doesn't create a temporary — it's an *initialization recipe* that directly constructs the target object.
-- **URVO** (Unnamed Return Value Optimization): `return T{...}` — guaranteed in C++17.
-- **NRVO** (Named Return Value Optimization): `return named` — still optional, but nearly universal.
+- **Prvalue materialization**: A prvalue doesn't create a temporary - it's an *initialization recipe* that directly constructs the target object.
+- **URVO** (Unnamed Return Value Optimization): `return T{...}` - guaranteed in C++17.
+- **NRVO** (Named Return Value Optimization): `return named` - still optional, but nearly universal.
 
 ---
 
@@ -32,8 +34,9 @@ Before C++17, copy/move elision was an optimization the compiler was *permitted*
 
 ### Q1: Show that `Widget f() { return Widget{42}; }` is guaranteed to not call any copy/move constructor in C++17
 
-```cpp
+The constructors in this example are instrumented so you can see exactly what gets called. In C++17, you will only ever see the regular constructor - never the copy or move constructor - regardless of how many times a prvalue passes through function boundaries:
 
+```cpp
 #include <iostream>
 
 class Widget {
@@ -54,14 +57,14 @@ public:
     int value() const { return value_; }
 };
 
-// Return prvalue — guaranteed no copy/move in C++17
+// Return prvalue -- guaranteed no copy/move in C++17
 Widget make_widget(int v) {
     return Widget{v};  // Prvalue: directly constructs at call site
 }
 
-// Chaining prvalues — still no copy/move!
+// Chaining prvalues -- still no copy/move!
 Widget make_double(int v) {
-    return make_widget(v * 2);  // Prvalue → prvalue → direct initialization
+    return make_widget(v * 2);  // Prvalue -> prvalue -> direct initialization
 }
 
 int main() {
@@ -69,15 +72,15 @@ int main() {
 
     std::cout << "1. Direct initialization from prvalue:\n";
     Widget w1 = Widget{42};
-    // Output: only "Constructor(42)" — no copy or move
+    // Output: only "Constructor(42)" -- no copy or move
 
     std::cout << "\n2. Function returning prvalue:\n";
     Widget w2 = make_widget(100);
-    // Output: only "Constructor(100)" — guaranteed, not just optimized
+    // Output: only "Constructor(100)" -- guaranteed, not just optimized
 
     std::cout << "\n3. Chained prvalue functions:\n";
     Widget w3 = make_double(50);
-    // Output: only "Constructor(100)" — still no copy/move
+    // Output: only "Constructor(100)" -- still no copy/move
 
     std::cout << "\n4. Prvalue as function argument:\n";
     auto show = [](Widget w) {
@@ -102,12 +105,13 @@ int main() {
 //     Constructor(77)
 //     Received: 77
 //   Results: 42, 100, 100
-
 ```
+
+The chained case is especially worth noticing: `make_double` calls `make_widget`, which returns a prvalue, and `make_double` in turn returns that prvalue. The recipe gets passed along the chain, and the actual construction happens only once - directly into `w3`.
 
 ### Q2: Explain why NRVO is not guaranteed while URVO is mandatory in C++17
 
-**URVO (mandatory):** When returning a prvalue (`return T{...}`), the standard says prvalues are not objects — they are recipes for initialization. The prvalue directly initializes the caller's target. No temporary exists, so no copy/move is needed.
+**URVO (mandatory):** When returning a prvalue (`return T{...}`), the standard says prvalues are not objects - they are recipes for initialization. The prvalue directly initializes the caller's target. No temporary exists, so no copy/move is needed.
 
 **NRVO (optional):** When returning a named variable (`return local_var`), the variable **is** an object with identity (an lvalue). The compiler must logically create it, then copy/move it to the return slot. Compilers **usually** optimize this away, but the standard can't mandate it because:
 
@@ -115,8 +119,9 @@ int main() {
 2. The named variable may need to exist at a specific address
 3. Exception handling may need the local to exist separately
 
-```cpp
+The fundamental difference is that a named variable has identity - it lives somewhere specific in memory. A prvalue has no identity; it is just a description of how to make a value, so there is nothing to copy or move.
 
+```cpp
 #include <iostream>
 
 class Heavy {
@@ -128,14 +133,14 @@ public:
     int id() const { return id_; }
 };
 
-// URVO: return prvalue → GUARANTEED no copy/move (C++17)
+// URVO: return prvalue -> GUARANTEED no copy/move (C++17)
 Heavy urvo() {
-    return Heavy{1};  // Prvalue — directly initializes at call site
+    return Heavy{1};  // Prvalue -- directly initializes at call site
 }
 
-// NRVO: return named variable → compiler USUALLY elides, but NOT guaranteed
+// NRVO: return named variable -> compiler USUALLY elides, but NOT guaranteed
 Heavy nrvo() {
-    Heavy h{2};       // Named local — has identity (lvalue)
+    Heavy h{2};       // Named local -- has identity (lvalue)
     return h;         // NRVO likely applied, but not mandated
 }
 
@@ -144,7 +149,7 @@ Heavy conditional_return(bool flag) {
     Heavy a{10};
     Heavy b{20};
     if (flag) return a;  // Which variable to construct in return slot?
-    return b;            // Compiler can't know at compile time → NRVO may fail
+    return b;            // Compiler can't know at compile time -> NRVO may fail
 }
 
 int main() {
@@ -162,20 +167,20 @@ int main() {
 }
 // Typical output:
 //   === URVO (guaranteed) ===
-//     Construct #1                  ← ALWAYS just one construction
+//     Construct #1                  <- ALWAYS just one construction
 //   === NRVO (optional, usually applied) ===
-//     Construct #2                  ← Usually just one (NRVO applied)
+//     Construct #2                  <- Usually just one (NRVO applied)
 //   === Conditional return (NRVO harder) ===
 //     Construct #10
 //     Construct #20
-//     MOVE #10                      ← May see move (NRVO not applied)
-
+//     MOVE #10                      <- May see move (NRVO not applied)
 ```
 
 ### Q3: Demonstrate a class with deleted copy/move that can still be returned by value in C++17
 
-```cpp
+This was simply impossible before C++17. If a type had no copy or move constructor, you could not return it by value - full stop. C++17 changes that entirely for the prvalue case, because no copy or move is ever attempted. This opens the door for factory functions returning non-movable resources:
 
+```cpp
 #include <iostream>
 #include <memory>
 
@@ -187,7 +192,7 @@ public:
         std::cout << "  Constructed Unique(" << v << ")\n";
     }
 
-    // DELETED copy and move — in C++14 this can't be returned by value
+    // DELETED copy and move -- in C++14 this can't be returned by value
     Unique(const Unique&) = delete;
     Unique(Unique&&) = delete;
     Unique& operator=(const Unique&) = delete;
@@ -198,10 +203,10 @@ public:
 
 // C++17: Legal! Prvalue doesn't need copy or move
 Unique make_unique_val(int v) {
-    return Unique{v};    // Prvalue → materializes directly at call site
+    return Unique{v};    // Prvalue -> materializes directly at call site
 }
 
-// Chaining also works — still no copy/move
+// Chaining also works -- still no copy/move
 Unique make_doubled(int v) {
     return make_unique_val(v * 2);
 }
@@ -214,7 +219,7 @@ void consume(Unique u) {
 // Real-world use case: factory returning non-movable mutex-guarded resource
 class LockedResource {
     int resource_;
-    // Imagine this has a mutex — can't copy or move
+    // Imagine this has a mutex -- can't copy or move
 public:
     LockedResource(int r) : resource_(r) {
         std::cout << "  LockedResource(" << r << ") created\n";
@@ -267,15 +272,16 @@ int main() {
 //   4. Real-world: non-movable factory:
 //     LockedResource(7) created
 //     Resource: 7
-
 ```
+
+The last comment block in the code is worth paying attention to: you still cannot return a *named* `Unique` because NRVO is not guaranteed and the fallback is a move - which is deleted. Guaranteed copy elision only helps when you return a prvalue directly.
 
 ---
 
 ## Notes
 
-- C++17 prvalues are **not objects** — they are "initialization recipes" that construct directly into the target.
+- C++17 prvalues are **not objects** - they are "initialization recipes" that construct directly into the target.
 - Guaranteed copy elision makes it possible to return **non-movable types** by value from factory functions.
-- NRVO is still optional but nearly every compiler applies it — write `noexcept` move ctors as fallback.
-- Don't use `std::move` in `return` statements when NRVO would apply — it **prevents** NRVO.
+- NRVO is still optional but nearly every compiler applies it - write `noexcept` move ctors as fallback.
+- Don't use `std::move` in `return` statements when NRVO would apply - it **prevents** NRVO.
 - `auto x = T{args}` in C++17 creates exactly one object (no temporary + move).

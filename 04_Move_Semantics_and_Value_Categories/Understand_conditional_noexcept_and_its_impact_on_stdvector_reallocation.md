@@ -2,38 +2,37 @@
 
 **Category:** Move Semantics & Value Categories  
 **Standard:** C++11 and later  
-**Reference:** https://en.cppreference.com/w/cpp/utility/move_if_noexcept  
+**Reference:** <https://en.cppreference.com/w/cpp/utility/move_if_noexcept>  
 
 ---
 
 ## Topic Overview
 
-When `std::vector` needs to reallocate (due to `push_back`, `emplace_back`, `resize`, etc.), it must transfer existing elements from the old buffer to the new buffer. The vector has two choices: **copy** or **move** each element. Moving is faster, but if a move constructor throws an exception midway, the vector is left in an unrecoverable state — some elements have been moved out of the old buffer, the new buffer is incomplete, and the strong exception guarantee is violated.
+When `std::vector` needs to reallocate (due to `push_back`, `emplace_back`, `resize`, etc.), it must transfer existing elements from the old buffer to the new buffer. The vector has two choices: **copy** or **move** each element. Moving is faster, but if a move constructor throws an exception midway, the vector is left in an unrecoverable state - some elements have been moved out of the old buffer, the new buffer is incomplete, and the strong exception guarantee is violated.
+
+This is the core tension: moving is fast but risky if it can throw; copying is slow but safe. The vector resolves this by asking the type's move constructor whether it promises not to throw.
 
 ```cpp
-
 ┌────────────────────────────────────────────────────────────────────┐
 │         vector Reallocation: Copy vs Move Decision                 │
 │                                                                    │
 │   if (is_nothrow_move_constructible<T> ||                          │
 │       !is_copy_constructible<T>)                                   │
 │   {                                                                │
-│       // MOVE elements — fast, safe (can't throw) or only option   │
+│       // MOVE elements - fast, safe (can't throw) or only option   │
 │   }                                                                │
 │   else                                                             │
 │   {                                                                │
-│       // COPY elements — slow but provides strong exception safety │
+│       // COPY elements - slow but provides strong exception safety │
 │   }                                                                │
 │                                                                    │
 │   Implemented internally via std::move_if_noexcept(element)        │
 └────────────────────────────────────────────────────────────────────┘
-
 ```
 
 The vector uses `std::move_if_noexcept` internally, which returns an rvalue reference if the type's move constructor is `noexcept`, or a const lvalue reference otherwise. The effect is:
 
 ```cpp
-
 ┌────────────────────────────────────┬─────────────────────────────┐
 │  Move ctor is...                   │  vector reallocation does..│
 ├────────────────────────────────────┼─────────────────────────────┤
@@ -42,23 +41,20 @@ The vector uses `std::move_if_noexcept` internally, which returns an rvalue refe
 │  potentially throwing + !copyable  │  MOVE (only option, risky) │
 │  not declared at all               │  uses copy ctor            │
 └────────────────────────────────────┴─────────────────────────────┘
-
 ```
 
-This means that **forgetting `noexcept` on your move constructor** silently degrades `std::vector` performance from O(1) amortized moves to O(n) copies per reallocation. The fix is simple: always mark move constructors and move assignment operators as `noexcept` when they truly cannot throw (which is almost always the case — move operations that only reassign pointers, sizes, and built-in types never throw).
+This means that **forgetting `noexcept` on your move constructor** silently degrades `std::vector` performance from O(1) amortized moves to O(n) copies per reallocation. The fix is simple: always mark move constructors and move assignment operators as `noexcept` when they truly cannot throw - which is almost always the case, since move operations that only reassign pointers, sizes, and built-in types never throw.
 
 For conditional cases, use `noexcept(expression)` to propagate noexcept-ness from member types:
 
 ```cpp
-
 MyClass(MyClass&& o) noexcept(
     std::is_nothrow_move_constructible_v<Member1> &&
     std::is_nothrow_move_constructible_v<Member2>
 ) = default;
-
 ```
 
-Or simply `= default` the move constructor — the compiler will compute the correct `noexcept` specification automatically based on all members.
+Or simply `= default` the move constructor - the compiler will compute the correct `noexcept` specification automatically based on all members. This is the preferred approach when you can use it.
 
 ---
 
@@ -66,8 +62,9 @@ Or simply `= default` the move constructor — the compiler will compute the cor
 
 ### Q1: How does forgetting `noexcept` on a move constructor affect `std::vector` performance
 
-```cpp
+The benchmark below shows the same work done by two types that differ only in one keyword: `noexcept`. Watch the performance difference.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -79,7 +76,7 @@ struct BadMove {
 
     BadMove(int id, std::string s) : data(std::move(s)), id(id) {}
 
-    // Move constructor WITHOUT noexcept — vector will COPY instead
+    // Move constructor WITHOUT noexcept - vector will COPY instead
     BadMove(BadMove&& o) : data(std::move(o.data)), id(o.id) {
         // No throw here, but compiler doesn't know that!
     }
@@ -95,7 +92,7 @@ struct GoodMove {
 
     GoodMove(int id, std::string s) : data(std::move(s)), id(id) {}
 
-    // Move constructor WITH noexcept — vector will MOVE (fast)
+    // Move constructor WITH noexcept - vector will MOVE (fast)
     GoodMove(GoodMove&& o) noexcept : data(std::move(o.data)), id(o.id) {}
 
     GoodMove(const GoodMove& o) : data(o.data), id(o.id) {}
@@ -135,13 +132,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `is_nothrow_move_constructible` printout confirms the trait value before the benchmark runs. If `BadMove` had `noexcept`, both rows would show `1` and the timings would be similar.
 
 ### Q2: How does `std::move_if_noexcept` work, and when would you use it directly
 
-```cpp
+You rarely call `std::move_if_noexcept` yourself - it is mainly used inside container implementations. But understanding it directly shows you exactly what decision `std::vector` is making on your behalf.
 
+```cpp
 #include <iostream>
 #include <utility>
 #include <type_traits>
@@ -214,13 +213,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `MoveOnly` case shows the "only option" escape hatch: if the type cannot be copied, the vector moves it even without `noexcept`, accepting the weaker exception guarantee. There is no other choice.
 
 ### Q3: How do you write a conditionally `noexcept` move constructor for a class with multiple members
 
-```cpp
+When you have a template class whose `T` might or might not have a `noexcept` move, you want your move constructor's `noexcept`-ness to track `T`'s. The cleanest way is `= default`; the explicit way is `noexcept(is_nothrow_move_constructible_v<T>)`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -321,8 +322,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `static_assert` at the bottom is a good habit: it turns a silent performance regression into a compile error. If someone later adds a member with a throwing move, the assert fires and reminds them to fix it.
 
 ---
 
@@ -330,8 +332,8 @@ int main() {
 
 - `std::vector` uses `std::move_if_noexcept` during reallocation: it moves elements only if the move constructor is `noexcept`; otherwise it copies for strong exception safety.
 - **Always mark move constructors and move assignment operators `noexcept`** when they cannot throw. Omitting it is a silent performance bug.
-- Prefer `= default` for move operations — the compiler automatically computes the correct `noexcept` specification based on all data members.
+- Prefer `= default` for move operations - the compiler automatically computes the correct `noexcept` specification based on all data members.
 - For template classes, use conditional `noexcept`: `noexcept(std::is_nothrow_move_constructible_v<T>)`.
-- If your type is move-only (no copy constructor), vector will move even without `noexcept` — it has no other choice. But it means you lose the strong exception guarantee.
+- If your type is move-only (no copy constructor), vector will move even without `noexcept` - it has no other choice. But it means you lose the strong exception guarantee.
 - Use `static_assert(std::is_nothrow_move_constructible_v<MyType>)` in your code to catch accidental `noexcept` regressions at compile time.
-- This behavior also affects `std::vector::reserve`, `resize`, `insert`, and any operation that may trigger reallocation — not just `push_back`.
+- This behavior also affects `std::vector::reserve`, `resize`, `insert`, and any operation that may trigger reallocation - not just `push_back`.

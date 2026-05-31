@@ -17,17 +17,17 @@
 - Lambdas capturing any move-only type
 - Move-only function objects
 
-```cpp
+The reason is that `std::function` itself needs to be copyable, and copying it means copying the stored callable. If the callable isn't copyable, the whole thing falls apart at compile time.
 
+```cpp
 auto ptr = std::make_unique<int>(42);
 // std::function<void()> f = [p = std::move(ptr)]{ *p = 10; };  // ERROR!
 // std::function requires CopyConstructible callable
-
 ```
 
 ### `std::move_only_function` (C++23)
 
-`std::move_only_function` drops the copy requirement — it only requires the callable to be **move-constructible**.
+`std::move_only_function` drops the copy requirement - it only requires the callable to be **move-constructible**. In exchange, the wrapper itself is no longer copyable. That's the deal: you give up copyability, you gain the ability to capture anything movable.
 
 | Feature | `std::function` | `std::move_only_function` |
 | --- | :---: | :---: |
@@ -42,13 +42,11 @@ auto ptr = std::make_unique<int>(42);
 
 ### const-Correctness Advantage
 
-`std::function<void()>::operator()` is `const` even though it may call a non-const callable — this is a design flaw. `std::move_only_function` encodes const in the signature:
+`std::function<void()>::operator()` is `const` even though it may call a non-const callable - this is a known design flaw. `std::move_only_function` fixes it by encoding const directly in the signature:
 
 ```cpp
-
 std::move_only_function<void()>        f1;  // operator() is non-const
 std::move_only_function<void() const>  f2;  // operator() is const
-
 ```
 
 ---
@@ -57,8 +55,9 @@ std::move_only_function<void() const>  f2;  // operator() is const
 
 ### Q1: Store a lambda that captures a `unique_ptr` in a `std::move_only_function<void()>`
 
-```cpp
+This is the simplest use case: you have a lambda that owns a resource via `unique_ptr` and you need to store it somewhere. `std::function` refuses at compile time; `std::move_only_function` handles it without complaint.
 
+```cpp
 #include <functional>
 #include <memory>
 #include <iostream>
@@ -67,7 +66,7 @@ class Logger {
     std::move_only_function<void(std::string_view)> sink_;
 
 public:
-    // Accept any callable — including move-only ones
+    // Accept any callable - including move-only ones
     Logger(std::move_only_function<void(std::string_view)> sink)
         : sink_(std::move(sink)) {}
 
@@ -77,7 +76,7 @@ public:
 };
 
 int main() {
-    // Lambda capturing a unique_ptr — move-only!
+    // Lambda capturing a unique_ptr - move-only!
     auto file_handle = std::make_unique<std::ostream*>(&std::cout);
 
     std::move_only_function<void()> greet = [fh = std::move(file_handle)]() {
@@ -112,25 +111,23 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Hello from move_only_function!
 Flushing: buffered data
 [Resource 99] system started
 [Resource 99] processing...
 greet empty after move: yes
-
 ```
 
 ### Q2: Show that `std::function` rejects this while `move_only_function` accepts it
 
-```cpp
+The compile errors are commented out so you can see exactly what the problem is, then see the working alternatives immediately after:
 
+```cpp
 #include <functional>
 #include <memory>
 #include <iostream>
@@ -164,11 +161,11 @@ int main() {
     // ERROR 1: Lambda capturing unique_ptr
     // auto ptr = std::make_unique<int>(42);
     // std::function<void()> f1 = [p = std::move(ptr)]{ std::cout << *p; };
-    //   → error: use of deleted copy constructor
+    //   -> error: use of deleted copy constructor
 
     // ERROR 2: Move-only functor
     // std::function<void()> f2 = UniqueTask(10);
-    //   → error: call to deleted copy constructor of 'UniqueTask'
+    //   -> error: call to deleted copy constructor of 'UniqueTask'
 
     // --- std::move_only_function ACCEPTS them ---
 
@@ -204,20 +201,18 @@ int main() {
     int counter = 0;
     std::move_only_function<void()> mutating = [&counter] { ++counter; };
     // std::move_only_function<void() const> const_fn = [&counter] { ++counter; };
-    // ↑ Would also work — lambdas with captures by ref are const-callable
+    // Would also work - lambdas with captures by ref are const-callable
 
     mutating();
     std::cout << "\nCounter after mutating call: " << counter << "\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === std::function vs std::move_only_function ===
 
 Lambda with unique_ptr: 42
@@ -229,13 +224,13 @@ Processing resource: 10
 Processing resource: 20
 
 Counter after mutating call: 1
-
 ```
 
 ### Q3: Compare the size and overhead of `move_only_function` vs `function` for simple function pointers
 
-```cpp
+`move_only_function` is typically smaller than `std::function` because it doesn't need to store a copy-function pointer in its internal vtable. The invocation overhead is usually identical since both go through an indirect call.
 
+```cpp
 #include <functional>
 #include <iostream>
 #include <chrono>
@@ -256,7 +251,7 @@ int main() {
 
     // Typical results (MSVC/x64):
     //   std::function<void()>:           64 bytes (stores type-erased callable + vtable + SBO buffer)
-    //   std::move_only_function<void()>: 32-48 bytes (no copy vtable needed → smaller)
+    //   std::move_only_function<void()>: 32-48 bytes (no copy vtable needed -> smaller)
 
     std::cout << "\n=== Overhead Analysis ===\n\n";
 
@@ -267,8 +262,8 @@ int main() {
 
     std::cout << "std::move_only_function overhead:\n";
     std::cout << "  - Stores: callable + invoke ptr + destroy ptr\n";
-    std::cout << "  - No copy pointer needed → smaller vtable\n";
-    std::cout << "  - No target_type() → no RTTI needed\n\n";
+    std::cout << "  - No copy pointer needed -> smaller vtable\n";
+    std::cout << "  - No target_type() -> no RTTI needed\n\n";
 
     // Performance benchmark: invoke overhead
     constexpr int N = 100'000'000;
@@ -294,7 +289,7 @@ int main() {
     std::cout << "=== Invocation benchmark (" << N << " calls) ===\n";
     std::cout << "std::function:           " << ms_fn << " ms\n";
     std::cout << "std::move_only_function: " << ms_mof << " ms\n";
-    std::cout << "(Invocation cost is typically similar — both use indirect call)\n";
+    std::cout << "(Invocation cost is typically similar - both use indirect call)\n";
 
     std::cout << "\n=== When to use which ===\n";
     std::cout << "+------------------------------+-------------------+------------------------+\n";
@@ -309,7 +304,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -319,6 +313,6 @@ int main() {
 - `std::move_only_function` (C++23) is the move-only sibling of `std::function`.
 - Use it when your callable captures move-only types (`unique_ptr`, `jthread`, etc.).
 - It is typically smaller than `std::function` (no copy vtable entry, no RTTI).
-- It properly encodes `const`/`noexcept` qualifiers in the signature — a fix for `std::function`'s const-correctness bug.
+- It properly encodes `const`/`noexcept` qualifiers in the signature - a fix for `std::function`'s const-correctness bug.
 - `std::move_only_function` itself is **not copyable**, only movable.
 - For C++26, `std::copyable_function` will be the "fixed" copyable version (const-correct).

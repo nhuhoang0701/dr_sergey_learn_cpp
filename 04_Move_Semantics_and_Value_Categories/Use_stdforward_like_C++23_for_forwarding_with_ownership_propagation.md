@@ -2,7 +2,7 @@
 
 **Category:** Move Semantics & Value Categories  
 **Standard:** C++23  
-**Reference:** https://en.cppreference.com/w/cpp/utility/forward_like  
+**Reference:** <https://en.cppreference.com/w/cpp/utility/forward_like>  
 
 ---
 
@@ -10,43 +10,35 @@
 
 `std::forward_like` solves a problem that `std::forward` cannot: **forwarding a member of a forwarding reference while propagating the value category of the owning object**, not the member itself. When you have a forwarding reference `T&& obj` and you want to access `obj.member`, you need the member to be an lvalue reference when `obj` is an lvalue, and an rvalue reference when `obj` is an rvalue. Plain `std::forward<T>(obj).member` works in simple cases, but `std::forward_like` provides an explicit, composable, and correct solution for all cases.
 
+The reason this trips people up is that `decltype(wrapper.value)` always gives you the member's own type, regardless of how `wrapper` was passed in. You lose the caller's value category entirely. `std::forward_like` restores it.
+
 ```cpp
+// The problem forward_like solves:
 
-┌──────────────────────────────────────────────────────────────────┐
-│                  The Problem forward_like Solves                  │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  template<typename T>                                            │
-│  void process(T&& wrapper) {                                     │
-│      // We want to forward wrapper.value with the SAME           │
-│      // value category as wrapper:                               │
-│      //   wrapper is lvalue  -> value should be lvalue           │
-│      //   wrapper is rvalue  -> value should be rvalue           │
-│      //                                                          │
-│      // WRONG: std::forward<???>(wrapper.value)                  │
-│      //   What type do we put? decltype(wrapper.value) is        │
-│      //   always the member type, losing wrapper's category.     │
-│      //                                                          │
-│      // CORRECT (C++23):                                         │
-│      use(std::forward_like<T>(wrapper.value));                   │
-│  }                                                               │
-└──────────────────────────────────────────────────────────────────┘
-
+template<typename T>
+void process(T&& wrapper) {
+    // We want to forward wrapper.value with the SAME
+    // value category as wrapper:
+    //   wrapper is lvalue  -> value should be lvalue
+    //   wrapper is rvalue  -> value should be rvalue
+    //
+    // WRONG: std::forward<???>(wrapper.value)
+    //   What type do we put? decltype(wrapper.value) is
+    //   always the member type, losing wrapper's category.
+    //
+    // CORRECT (C++23):
+    use(std::forward_like<T>(wrapper.value));
+}
 ```
 
 The signature is `template<class T, class U> constexpr auto&& forward_like(U&& x) noexcept;`. The type parameter `T` determines the value category and const-ness to apply, and `x` is the object to forward. The rules are:
 
 ```cpp
-
-┌──────────────────────┬──────────────┬──────────────────────────┐
-│  T (Owner type)      │  U (Member)  │  Result type             │
-├──────────────────────┼──────────────┼──────────────────────────┤
-│  Owner&  (lvalue)    │  Member      │  Member&                 │
-│  Owner&& (rvalue)    │  Member      │  Member&&                │
-│  const Owner& (clv)  │  Member      │  const Member&           │
-│  const Owner&& (crv) │  Member      │  const Member&&          │
-└──────────────────────┴──────────────┴──────────────────────────┘
-
+// T (Owner type)      |  U (Member)  |  Result type
+// Owner&  (lvalue)    |  Member      |  Member&
+// Owner&& (rvalue)    |  Member      |  Member&&
+// const Owner& (clv)  |  Member      |  const Member&
+// const Owner&& (crv) |  Member      |  const Member&&
 ```
 
 Before C++23, achieving this required manual trait gymnastics or the `std::forward<T>(obj).member` pattern, which breaks down with `std::tuple`, `std::optional`, and other wrappers where member access goes through an accessor function rather than direct `.member` syntax. `std::forward_like` is the clean, generic solution.
@@ -57,8 +49,9 @@ Before C++23, achieving this required manual trait gymnastics or the `std::forwa
 
 ### Q1: What problem does `std::forward_like` solve that `std::forward` alone cannot
 
-```cpp
+This example shows both the old approach and the C++23 approach side by side, with a helper that prints whether the value arrived as an lvalue or rvalue:
 
+```cpp
 // Requires C++23: compile with -std=c++23
 #include <iostream>
 #include <string>
@@ -112,13 +105,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Both approaches produce the same result here, but the `forward_like` version is clearer about intent and doesn't depend on having direct member access syntax. That's where the next example shows it pulling ahead.
 
 ### Q2: How does `std::forward_like` help with generic wrappers like `std::optional` or `std::tuple`
 
-```cpp
+When you access a value through an accessor like `opt.value()` or `std::get<N>(tuple)`, you can't use `std::forward<T>(wrapper).value()` - there's no `.member` to chain after the forward. `std::forward_like` sidesteps the syntax problem entirely by working on the already-dereferenced value:
 
+```cpp
 // Requires C++23: compile with -std=c++23
 #include <iostream>
 #include <optional>
@@ -144,7 +139,7 @@ decltype(auto) transform_if(Opt&& opt, F&& f) {
     if constexpr (std::is_void_v<ReturnType>) {
         return;
     } else {
-        // In real code you'd return an empty optional — simplified here
+        // In real code you'd return an empty optional - simplified here
         return ReturnType{};
     }
 }
@@ -174,14 +169,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: How would you implement a simplified `forward_like` to understand its mechanics
 
-```cpp
+Working through a hand-rolled implementation is the best way to internalize what `forward_like` actually computes. The logic is: copy const-ness from `T`, copy value category from `T`, apply both to `U`:
 
-// This shows the mechanism — use std::forward_like in real code.
+```cpp
+// This shows the mechanism - use std::forward_like in real code.
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -266,8 +261,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The four cases map cleanly to the four rows in the table from the overview. Once you see that the implementation is just two `static_cast`s selected by `if constexpr`, the utility becomes less mysterious.
 
 ---
 
@@ -277,5 +273,5 @@ int main() {
 - It replaces the `std::forward<T>(wrapper).member` pattern, which fails when member access is through an accessor (like `opt.value()` or `std::get<N>(tuple)`).
 - Think of `forward_like` as: "forward `x` *as if* it were a member of an object with type `T`."
 - In generic library code (tuple-like, optional-like, variant-like types), `forward_like` is essential for correct forwarding of contained values.
-- The "like" in the name means "give `x` a value category *like* that of `T`" — it doesn't actually require `x` to be a member of `T`.
+- The "like" in the name means "give `x` a value category *like* that of `T`" - it doesn't actually require `x` to be a member of `T`.
 - Before C++23, libraries like Boost and ranges-v3 had ad-hoc solutions; `forward_like` standardizes the pattern.
