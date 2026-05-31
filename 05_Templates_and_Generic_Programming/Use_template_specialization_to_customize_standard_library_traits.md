@@ -10,16 +10,16 @@
 
 ### Customizing Standard Library Traits
 
-The C++ standard explicitly allows you to specialize certain standard library templates for your own types. This integrates your types into the standard library ecosystem:
+The C++ standard explicitly allows you to specialize certain standard library templates for your own types. This is the sanctioned way to integrate your types into the standard library ecosystem - making them work with hash maps, generic algorithms, or formatting facilities without any runtime overhead.
+
+Here is the pattern at a glance:
 
 ```cpp
-
 // Your type works with std::unordered_map after specializing std::hash:
 template <>
 struct std::hash<MyType> {
     size_t operator()(const MyType& t) const noexcept { ... }
 };
-
 ```
 
 ### What Can Be Specialized
@@ -45,8 +45,9 @@ struct std::hash<MyType> {
 
 ### Q1: Specialize `std::hash<MyType>` to enable use of `MyType` as an `unordered_map` key
 
-```cpp
+Without a `std::hash` specialization, trying to use your type as an `unordered_map` key gives a compile error buried inside the standard library headers - often with a confusing message. Once you provide the specialization, everything just works.
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <unordered_set>
@@ -113,7 +114,7 @@ int main() {
     labels[{1, 0}] = "right";
     labels[{0, 1}] = "up";
     for (const auto& [pt, label] : labels)
-        std::cout << "  " << pt << " → " << label << "\n";
+        std::cout << "  " << pt << " -> " << label << "\n";
 
     std::cout << "\n=== Employee in unordered_map ===\n";
     std::unordered_map<Employee, double> salaries;
@@ -123,13 +124,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The hash combining formula for `Employee` is a common pattern borrowed from Boost. A naive XOR of all the hashes tends to produce poor distribution - the magic constant `0x9e3779b9` is derived from the golden ratio and helps spread bits around.
 
 ### Q2: Specialize `std::numeric_limits<MyDecimal>` to integrate a custom decimal type with generic algorithms
 
-```cpp
+`std::numeric_limits` is what algorithms like `std::clamp`, `std::minmax_element`, and numeric code use to ask "what is the smallest or largest representable value?" Without a specialization for your type, those algorithms cannot work with it generically.
 
+```cpp
 #include <iostream>
 #include <limits>
 #include <cstdint>
@@ -217,24 +220,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain the ODR rules when specializing standard library templates in different TUs
 
-The **One Definition Rule (ODR)** applies to template specializations across translation units:
+This is the part that catches people off guard. You can specialize `std::hash<Point>` in a header and include it in ten different translation units with no problem. But if you define two different specializations for the same type in two different `.cpp` files, you have undefined behavior - and the compiler is not required to warn you.
 
 ```cpp
-
                     TU 1 (file1.cpp)          TU 2 (file2.cpp)
                     ┌──────────────┐         ┌──────────────┐
                     │ template <>  │         │ template <>  │
-                    │ struct hash  │    =    │ struct hash  │    ← MUST be identical!
+                    │ struct hash  │    =    │ struct hash  │    <- MUST be identical!
                     │ <MyType> {   │         │ <MyType> {   │
                     │   ...        │         │   ...        │
                     │ };           │         │ };           │
                     └──────────────┘         └──────────────┘
-
 ```
 
 **Rules:**
@@ -243,11 +243,12 @@ The **One Definition Rule (ODR)** applies to template specializations across tra
 | --- | --- |
 | **Same definition** | If the same specialization appears in multiple TUs, it must be **token-for-token identical** |
 | **Same meaning** | All names in the definition must resolve to the same entities |
-| **Violation = UB** | Different definitions in different TUs → **undefined behavior** (no diagnostic required!) |
+| **Violation = UB** | Different definitions in different TUs -> **undefined behavior** (no diagnostic required!) |
 | **Best practice** | Put specializations in a **header file** so all TUs see the same definition |
 
-```cpp
+Here is the wrong and right way side by side:
 
+```cpp
 // === WRONG: Different definitions in different TUs ===
 // file1.cpp:
 // template <> struct std::hash<Point> {
@@ -258,7 +259,7 @@ The **One Definition Rule (ODR)** applies to template specializations across tra
 // template <> struct std::hash<Point> {
 //     size_t operator()(const Point& p) const { return p.x * 31 + p.y; }
 // };
-// → ODR violation! Undefined behavior!
+// -> ODR violation! Undefined behavior!
 
 // === CORRECT: Single definition in header ===
 // point.h:
@@ -269,8 +270,7 @@ The **One Definition Rule (ODR)** applies to template specializations across tra
 //         return std::hash<int>{}(p.x) ^ (std::hash<int>{}(p.y) << 1);
 //     }
 // };
-// All TUs #include "point.h" → same definition everywhere ✓
-
+// All TUs #include "point.h" -> same definition everywhere
 ```
 
 **Additional constraints:**
@@ -280,19 +280,17 @@ The **One Definition Rule (ODR)** applies to template specializations across tra
 - Adding entirely new templates or overloads to `namespace std` is **undefined behavior**
 
 ```cpp
-
 #include <iostream>
 
 int main() {
     std::cout << "=== ODR rules for std specializations ===\n";
-    std::cout << "1. Put specialization in a header → all TUs see the same def\n";
+    std::cout << "1. Put specialization in a header -> all TUs see the same def\n";
     std::cout << "2. Must specialize for user-defined types only\n";
     std::cout << "3. Full specialization only (usually)\n";
     std::cout << "4. Don't add new functions/templates to namespace std\n";
     std::cout << "5. Violation is UB — compiler may not warn you!\n";
     return 0;
 }
-
 ```
 
 ---
@@ -302,6 +300,6 @@ int main() {
 - Specialize `std::hash<T>` in `namespace std` to enable your type as an unordered container key.
 - Specialize `std::numeric_limits<T>` to integrate custom numeric types with generic algorithms.
 - Always define specializations in **header files** to satisfy ODR across translation units.
-- Only specialize for types involving your user-defined types — never for `int`, `std::string`, etc.
+- Only specialize for types involving your user-defined types - never for `int`, `std::string`, etc.
 - In C++20, prefer `std::formatter<T>` for custom formatting (replaces `operator<<` for `std::format`).
 - Hash combining: use `h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2))` (Boost hash_combine pattern).

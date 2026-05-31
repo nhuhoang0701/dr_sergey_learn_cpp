@@ -11,30 +11,32 @@
 
 ### What Is CRTP
 
-The **Curiously Recurring Template Pattern** is when a class derives from a template instantiated with itself:
+The **Curiously Recurring Template Pattern** is when a class derives from a template instantiated with itself. That sounds like a tongue-twister, so here is what it looks like in code:
 
 ```cpp
-
 template <typename Derived>
 class Base { /* can call static_cast<Derived&>(*this) */ };
 
 class MyClass : public Base<MyClass> { /* ... */ };
-
 ```
 
-The base class "knows" the derived type at compile time, enabling **static polymorphism** — calling derived methods without virtual dispatch.
+The key insight is that the base class "knows" the derived type at compile time. That means it can call derived methods through a `static_cast` without any virtual dispatch. This is what people mean by **static polymorphism** - all the type resolution happens at compile time, so there is zero overhead compared to virtual functions.
 
 ### Classic CRTP Use Cases
 
+Here is a quick map of where CRTP shows up in practice:
+
 | Use Case | Description |
 | --- | --- |
-| **Static polymorphism** | Call derived methods via `static_cast<Derived&>(*this)` — zero overhead |
+| **Static polymorphism** | Call derived methods via `static_cast<Derived&>(*this)` - zero overhead |
 | **Mixin injection** | Add operators, logging, serialization to any derived class |
 | **Counting instances** | Each derived class gets its own static counter |
 | **Enable clone** | Automate `clone()` in polymorphic hierarchies |
 | **Comparisons** | Derive `!=`, `<=`, `>=`, `>` from `==` and `<` |
 
 ### CRTP vs Virtual Functions vs C++23 Deducing-This
+
+If you are weighing your options, this table summarizes the trade-offs:
 
 | Feature | Virtual dispatch | CRTP | Deducing-this (C++23) |
 | --- | :---: | :---: | :---: |
@@ -51,8 +53,9 @@ The base class "knows" the derived type at compile time, enabling **static polym
 
 ### Q1: Implement a CRTP base that adds `operator==` and `operator!=` derived from a single `equals()` method
 
-```cpp
+The idea here is that every class that needs equality operators only has to provide one method - `equals()`. The CRTP base handles both `==` and `!=` automatically. Watch how both `Point` and `CaseInsensitiveString` get their operators for free just by inheriting from `EqualityComparable<Derived>`:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <cmath>
@@ -115,25 +118,25 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Both classes get working `==` and `!=` without writing those operators themselves - the CRTP base wires them up from `equals()`. That is the mixin injection pattern in action.
 
 **Expected output:**
 
 ```text
-
 (1, 2) == (1, 2) : 1
 (1, 2) != (3, 4) : 1
 (1, 2) == (3, 4) : 0
 Hello == hELLO : 1
 Hello != World : 1
-
 ```
 
 ### Q2: Show how CRTP achieves static polymorphism without virtual dispatch overhead
 
-```cpp
+The key difference from virtual functions is that `ShapeBase<Circle>` is a distinct type from `ShapeBase<Square>`. When `area()` calls `area_impl()`, the compiler knows the derived type at compile time and can inline the call directly. The benchmark at the end makes this concrete:
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <vector>
@@ -144,7 +147,7 @@ template <typename Derived>
 class ShapeBase {
 public:
     double area() const {
-        // At compile time, Derived is known → direct function call
+        // At compile time, Derived is known -> direct function call
         return static_cast<const Derived*>(this)->area_impl();
     }
 
@@ -197,17 +200,17 @@ double total_area(const std::vector<Shape>& shapes) {
 }
 
 int main() {
-    // CRTP usage — no virtual dispatch, calls are inlined
+    // CRTP usage - no virtual dispatch, calls are inlined
     Circle c(5.0);
     Square s(4.0);
     c.describe();  // Area = 78.5398
     s.describe();  // Area = 16
 
-    // Each container holds ONE concrete type → CRTP works
+    // Each container holds ONE concrete type -> CRTP works
     std::vector<Circle> circles(1000, Circle(3.0));
     std::vector<Square> squares(1000, Square(2.0));
 
-    // Virtual usage — requires base pointer, indirect call
+    // Virtual usage - requires base pointer, indirect call
     std::vector<std::unique_ptr<VShape>> vshapes;
     for (int i = 0; i < 1000; ++i) vshapes.push_back(std::make_unique<VCircle>(3.0));
 
@@ -229,17 +232,19 @@ int main() {
     auto ms2 = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
     std::cout << "\nCRTP (static):  " << ms1 << " ms\n";
     std::cout << "Virtual (dynamic): " << ms2 << " ms\n";
-    std::cout << "(CRTP is faster — calls are inlined, no indirect branch)\n";
+    std::cout << "(CRTP is faster - calls are inlined, no indirect branch)\n";
 
     return 0;
 }
-
 ```
+
+Notice that the CRTP version stores homogeneous containers (`vector<Circle>`, `vector<Square>`). That is the trade-off: CRTP is faster, but you cannot mix derived types in a single collection the way you can with virtual functions.
 
 ### Q3: Compare CRTP with C++23 deducing-this for the same use case
 
-```cpp
+In C++23, you can write `void print(this const auto& self)` and the compiler automatically deduces the most-derived type without any `static_cast` or template parameter on the base class. The side-by-side comment block in this example makes the reduction in boilerplate clear:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -323,28 +328,27 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Both approaches produce identical runtime behavior - the performance is the same. The deducing-this version just removes a lot of ceremony.
 
 **Expected output:**
 
 ```text
-
 CRTP: Widget#42
 Deducing-this: Widget#99
 
 Verdict: Prefer deducing-this in C++23+.
 Use CRTP only for pre-C++23 codebases.
-
 ```
 
 ---
 
 ## Notes
 
-- CRTP = a class derives from `Base<Derived>` — the base knows the derived type at compile time.
+- CRTP = a class derives from `Base<Derived>` - the base knows the derived type at compile time.
 - Primary uses: static polymorphism, mixin injection (operators, serialization), instance counting.
-- Zero-overhead: CRTP calls are resolved and often inlined at compile time — no vtable.
+- Zero-overhead: CRTP calls are resolved and often inlined at compile time - no vtable.
 - Limitation: cannot mix derived types in a single container (unlike virtual polymorphism).
 - C++23 deducing-this (`this auto& self`) replaces most CRTP use cases more cleanly.
 - CRTP remains relevant for pre-C++23 code and for complex multi-level mixin hierarchies.

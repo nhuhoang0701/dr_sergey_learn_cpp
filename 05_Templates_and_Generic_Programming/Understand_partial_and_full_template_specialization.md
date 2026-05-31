@@ -10,7 +10,7 @@
 
 ### What Is Template Specialization
 
-Template specialization lets you provide **custom implementations** for specific type combinations.
+Template specialization lets you provide **custom implementations** for specific type combinations. Instead of the general template, the compiler picks a more specific version when the types match exactly.
 
 | Type | Syntax | Usage |
 | --- | --- | --- |
@@ -20,11 +20,11 @@ Template specialization lets you provide **custom implementations** for specific
 
 ### Selection Priority
 
-```cpp
+The compiler always picks the most specific match. Full specialization is more specific than partial, which is more specific than the primary:
 
+```cpp
 Full specialization  >  Partial specialization  >  Primary template
 (most specific)                                    (most general)
-
 ```
 
 ### Key Rules
@@ -40,8 +40,9 @@ Full specialization  >  Partial specialization  >  Primary template
 
 ### Q1: Write a class template `MyPair<T,U>` and specialize it for `MyPair<T,T>` (partial) and `MyPair<int,int>` (full)
 
-```cpp
+Here you can see all three levels in action. Pay attention to which version is selected for each variable in `main` - the priority rule is "most specific wins":
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -103,31 +104,31 @@ int main() {
     std::cout << "  sum = " << p3.sum() << "\n";
 
     // Selection priority:
-    // MyPair<string, int> → Primary (different types)
-    // MyPair<double, double> → Partial (same types, not int,int)
-    // MyPair<int, int> → Full (exact match beats partial)
+    // MyPair<string, int> -> Primary (different types)
+    // MyPair<double, double> -> Partial (same types, not int,int)
+    // MyPair<int, int> -> Full (exact match beats partial)
 
     return 0;
 }
-
 ```
+
+Notice that `MyPair<int, int>` matches both the partial specialization `<T,T>` and the full specialization `<int,int>`. The full specialization wins because it is more specific - that is why `p3` reports "Full<int,int>" and not "Partial<T,T>".
 
 **Expected output:**
 
 ```text
-
 Primary<T,U>: (hello, 5)
 Partial<T,T>: (3.14, 2.71)
   diff = 0.43
 Full<int,int>: (10, 20) sum=30
   sum = 30
-
 ```
 
 ### Q2: Explain why function templates cannot be partially specialized and what to use instead
 
-```cpp
+This is one of those C++ rules that trips people up. The standard simply does not define partial specialization for function templates - only class templates (and variable templates) support it. The good news is that function overloading and `if constexpr` cover all the same ground, often more cleanly:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -189,7 +190,7 @@ struct ProcessHelper {
 };
 
 template <typename T>
-struct ProcessHelper<std::vector<T>> {  // Partial specialization — class, so OK
+struct ProcessHelper<std::vector<T>> {  // Partial specialization - class, so OK
     static void exec(const std::vector<T>& v) {
         std::cout << "helper vector<T>: size=" << v.size() << "\n";
     }
@@ -217,13 +218,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The helper class trick (Alternative 3) is the most flexible - it lets you partially specialize for patterns like `std::vector<T>` by delegating to a class template, which does support partial specialization.
 
 ### Q3: Show how specialization of `std::hash` for a user type enables use in unordered containers
 
-```cpp
+Specializing `std::hash` is the canonical example of adding a full specialization in namespace `std`. The standard explicitly permits this for user-defined types, and it is the standard way to make your type usable as an unordered container key:
 
+```cpp
 #include <iostream>
 #include <functional>
 #include <unordered_set>
@@ -268,11 +271,11 @@ struct PointHash {
 };
 
 int main() {
-    // std::hash specialization → works directly with unordered containers
+    // std::hash specialization -> works directly with unordered containers
     std::unordered_set<Employee> team;
     team.insert({1, "Alice"});
     team.insert({2, "Bob"});
-    team.insert({1, "Alice"});  // Duplicate — not inserted
+    team.insert({1, "Alice"});  // Duplicate - not inserted
 
     std::cout << "Team size: " << team.size() << "\n";  // 2
     for (const auto& e : team) {
@@ -294,8 +297,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+If you prefer not to touch namespace `std`, the functor approach (`PointHash` above) is equally valid - you just pass it as the second template argument to the container. Both approaches work well; the choice is mostly a matter of style.
 
 ---
 
@@ -304,6 +308,6 @@ int main() {
 - **Full specialization** (`template<>`) provides exact implementation for specific types.
 - **Partial specialization** (`template<typename T> class X<T,T>`) matches a pattern of types.
 - Selection: full > partial > primary (most specific wins).
-- Function templates **cannot** be partially specialized — use overloading, `if constexpr`, or helper class patterns.
+- Function templates **cannot** be partially specialized - use overloading, `if constexpr`, or helper class patterns.
 - `std::hash<UserType>` specialization is the standard way to enable unordered container support.
-- Full specializations do not participate in overload resolution — overloads are preferred.
+- Full specializations do not participate in overload resolution - overloads are preferred.

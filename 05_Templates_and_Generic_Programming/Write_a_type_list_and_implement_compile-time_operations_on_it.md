@@ -10,31 +10,33 @@
 
 ### What Is a Type List
 
-A **type list** is a compile-time data structure that holds a sequence of types. It has no runtime representation — it exists purely in the type system:
+A **type list** is a compile-time data structure that holds a sequence of types. It has no runtime representation - it exists purely in the type system. Think of it as a `std::vector` whose elements are types, not values, and whose entire lifetime is at compile time.
 
 ```cpp
-
 template <typename... Ts>
 struct TypeList {};
 
 using MyTypes = TypeList<int, double, char, std::string>;
-// MyTypes is a type, not a value — it holds 4 types at compile time
-
+// MyTypes is a type, not a value - it holds 4 types at compile time
 ```
+
+You never create a `TypeList` object at runtime. The entire point is to manipulate type sequences using template specializations, so that the results appear as new types in your program.
 
 ### Common Compile-Time Operations
 
+Here is a quick overview of what you can build on top of a basic type list:
+
 | Operation | Description | Example |
 | --- | --- | --- |
-| `Size` | Count of types | `Size<TypeList<int,char>>` → 2 |
-| `Head` | First type | `Head<TypeList<int,char>>` → `int` |
-| `Tail` | All except first | `Tail<TypeList<int,char,double>>` → `TypeList<char,double>` |
-| `Append` | Add type at end | `Append<TypeList<int>, char>` → `TypeList<int,char>` |
-| `Prepend` | Add type at front | `Prepend<TypeList<int>, char>` → `TypeList<char,int>` |
-| `Contains` | Check membership | `Contains<TypeList<int,char>, int>` → `true` |
-| `IndexOf` | Position of type | `IndexOf<TypeList<int,char>, char>` → 1 |
-| `Filter` | Keep types matching predicate | `Filter<TypeList<int,double>, is_integral>` → `TypeList<int>` |
-| `Transform` | Apply metafunction to each | `Transform<TypeList<int>, add_pointer>` → `TypeList<int*>` |
+| `Size` | Count of types | `Size<TypeList<int,char>>` -> 2 |
+| `Head` | First type | `Head<TypeList<int,char>>` -> `int` |
+| `Tail` | All except first | `Tail<TypeList<int,char,double>>` -> `TypeList<char,double>` |
+| `Append` | Add type at end | `Append<TypeList<int>, char>` -> `TypeList<int,char>` |
+| `Prepend` | Add type at front | `Prepend<TypeList<int>, char>` -> `TypeList<char,int>` |
+| `Contains` | Check membership | `Contains<TypeList<int,char>, int>` -> `true` |
+| `IndexOf` | Position of type | `IndexOf<TypeList<int,char>, char>` -> 1 |
+| `Filter` | Keep types matching predicate | `Filter<TypeList<int,double>, is_integral>` -> `TypeList<int>` |
+| `Transform` | Apply metafunction to each | `Transform<TypeList<int>, add_pointer>` -> `TypeList<int*>` |
 
 ---
 
@@ -42,8 +44,9 @@ using MyTypes = TypeList<int, double, char, std::string>;
 
 ### Q1: Define `template<typename...> struct TypeList{};` and implement a `Size` metafunction
 
-```cpp
+The pattern for every type list metafunction is the same: write a primary template (often just declared, not defined), then write one or more partial specializations that match specific shapes of the template argument. For `Size`, the specialization matches `TypeList<Ts...>` and uses `sizeof...(Ts)` to count the pack.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -132,13 +135,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `Contains` uses three specializations to implement what is essentially a linear search over the type list at compile time: match nothing (false), match the head (true), or peel the head and recurse.
 
 **Expected output:**
 
 ```text
-
 Size: 4
 Empty: 0
 Empty<>: 1
@@ -146,13 +149,13 @@ Head is int: true
 Tail is <double,char,string>: true
 Contains int:   1
 Contains float: 0
-
 ```
 
 ### Q2: Implement an `Append<TypeList<A,B>, C>` that returns `TypeList<A,B,C>`
 
-```cpp
+`Append` and `Prepend` are both trivial when you realize that pack expansion lets you just unpack the existing types alongside the new one. The interesting one here is `Concat`, which merges two lists by expanding both packs into a single `TypeList<As..., Bs...>` in one shot - no recursion needed.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -231,19 +234,19 @@ int main() {
     // Append
     using Appended = Append_t<Base, char>;
     static_assert(std::is_same_v<Appended, TypeList<int, double, char>>);
-    std::cout << "Append<{int,double}, char> → size " << Size_v<Appended> << "\n";  // 3
+    std::cout << "Append<{int,double}, char> -> size " << Size_v<Appended> << "\n";  // 3
 
     // Prepend
     using Prepended = Prepend_t<Base, char>;
     static_assert(std::is_same_v<Prepended, TypeList<char, int, double>>);
-    std::cout << "Prepend<{int,double}, char> → size " << Size_v<Prepended> << "\n";  // 3
+    std::cout << "Prepend<{int,double}, char> -> size " << Size_v<Prepended> << "\n";  // 3
 
     // Concat
     using List1 = TypeList<int, double>;
     using List2 = TypeList<char, float>;
     using Merged = Concat_t<List1, List2>;
     static_assert(std::is_same_v<Merged, TypeList<int, double, char, float>>);
-    std::cout << "Concat → size " << Size_v<Merged> << "\n";  // 4
+    std::cout << "Concat -> size " << Size_v<Merged> << "\n";  // 4
 
     // IndexOf
     std::cout << "IndexOf double: " << IndexOf_v<Merged, double> << "\n";  // 1
@@ -251,13 +254,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Implement `Filter<TypeList<int, double, char>, std::is_integral>` returning `TypeList<int, char>`
 
-```cpp
+`Filter` is where things get a little more involved because you need to decide, for each element, whether to include it in the output. The cleanest approach uses a `PrependHelper` and `std::conditional_t`: if the predicate fires for the head, prepend it to the filtered tail; otherwise just return the filtered tail. `Transform` is simpler - pack expansion handles it in one line.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -284,7 +287,7 @@ struct Filter<TypeList<>, Pred> {
     using type = TypeList<>;
 };
 
-// Recursive case: T satisfies predicate → keep it
+// Recursive case: T satisfies predicate -> keep it
 template <typename T, typename... Ts, template <typename> class Pred>
 struct Filter<TypeList<T, Ts...>, Pred> {
     using rest = typename Filter<TypeList<Ts...>, Pred>::type;
@@ -294,7 +297,7 @@ struct Filter<TypeList<T, Ts...>, Pred> {
         // Prepend T to the filtered rest
         typename decltype([]<typename... Rs>(TypeList<Rs...>) {
             return TypeList<T, Rs...>{};
-        }(std::declval<rest>()))::type_identity_helper,   // ← complex, let's use a helper
+        }(std::declval<rest>()))::type_identity_helper,   // <- complex, let's use a helper
         rest
     >;
 };
@@ -367,26 +370,23 @@ int main() {
     // Transform: add const to each type
     using Consts = Transform_t<TypeList<int, double>, std::add_const>;
     static_assert(std::is_same_v<Consts, TypeList<const int, const double>>);
-    std::cout << "Transform<add_const>: verified ✓\n";
+    std::cout << "Transform<add_const>: verified\n";
 
     std::cout << "\nAll compile-time type list operations verified!\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Filter<is_integral>: size = 3
 Filter<is_floating_point>: size = 2
 Transform<add_pointer>: size = 3
-Transform<add_const>: verified ✓
+Transform<add_const>: verified
 
 All compile-time type list operations verified!
-
 ```
 
 ---
@@ -394,8 +394,8 @@ All compile-time type list operations verified!
 ## Notes
 
 - Type lists are the foundation of template metaprogramming libraries (Boost.MPL, Boost.Hana, mp11).
-- All operations happen at compile time — zero runtime cost.
+- All operations happen at compile time - zero runtime cost.
 - Type lists + `Filter` + `Transform` give you a functional programming model at the type level.
 - In C++17/20, `if constexpr` and concepts can simplify some metaprogramming that previously required type lists.
 - `std::tuple` can serve as a type list in practice, since `std::tuple_size` and `std::tuple_element` provide similar operations.
-- Watch template instantiation depth — deep recursion can hit compiler limits (typically 256-1024).
+- Watch template instantiation depth - deep recursion can hit compiler limits (typically 256-1024).

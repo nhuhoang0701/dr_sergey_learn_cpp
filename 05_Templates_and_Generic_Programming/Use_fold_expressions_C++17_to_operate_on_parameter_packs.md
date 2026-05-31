@@ -11,26 +11,28 @@
 
 ### What Are Fold Expressions
 
-Fold expressions let you **reduce a parameter pack** with an operator in a single expression, without recursion:
+Before C++17, operating on a parameter pack required recursive templates - one overload for the base case, one for the recursive step, and a fair amount of boilerplate. Fold expressions let you **reduce a parameter pack** with an operator in a single expression:
 
 ```cpp
-
 template <typename... Args>
 auto sum(Args... args) {
     return (args + ...);  // unary right fold
 }
-sum(1, 2, 3, 4);  // → 1 + (2 + (3 + 4)) = 10
-
+sum(1, 2, 3, 4);  // -> 1 + (2 + (3 + 4)) = 10
 ```
+
+That's the whole pack reduction, in one line, with no recursion.
 
 ### The Four Forms
 
+The four forms vary along two axes: unary vs binary (whether you supply an initial value) and left vs right (which end the folding starts from). The difference between left and right matters for non-commutative operators:
+
 | Form | Syntax | Expansion | Name |
 | --- | --- | --- | --- |
-| Unary right fold | `(pack op ...)` | `a₁ op (a₂ op (... op aₙ))` | Right-associative |
-| Unary left fold | `(... op pack)` | `((a₁ op a₂) op ...) op aₙ` | Left-associative |
-| Binary right fold | `(pack op ... op init)` | `a₁ op (a₂ op (... op (aₙ op init)))` | Right with initial value |
-| Binary left fold | `(init op ... op pack)` | `(((init op a₁) op a₂) op ...) op aₙ` | Left with initial value |
+| Unary right fold | `(pack op ...)` | `a1 op (a2 op (... op aN))` | Right-associative |
+| Unary left fold | `(... op pack)` | `((a1 op a2) op ...) op aN` | Left-associative |
+| Binary right fold | `(pack op ... op init)` | `a1 op (a2 op (... op (aN op init)))` | Right with initial value |
+| Binary left fold | `(init op ... op pack)` | `(((init op a1) op a2) op ...) op aN` | Left with initial value |
 
 ### Supported Operators
 
@@ -39,13 +41,11 @@ All 32 binary operators work with fold expressions:
 
 ### Empty Pack Behavior
 
-For unary folds, an empty pack is only valid for `&&` (→ `true`), `||` (→ `false`), and `,` (→ `void()`). Other operators with empty packs are ill-formed — use a binary fold with an init value:
+For unary folds, an empty pack is only valid for `&&` (-> `true`), `||` (-> `false`), and `,` (-> `void()`). Other operators with empty packs are ill-formed - use a binary fold with an init value to handle the empty case:
 
 ```cpp
-
 (args + ...);        // ERROR if pack is empty
 (args + ... + 0);    // OK: binary fold, returns 0 for empty pack
-
 ```
 
 ---
@@ -54,8 +54,9 @@ For unary folds, an empty pack is only valid for `&&` (→ `true`), `||` (→ `f
 
 ### Q1: Write a variadic sum using a unary right fold: `(args + ... + 0)`
 
-```cpp
+The binary form with `+ 0` is the version you actually want to use in production - it handles the empty pack and documents the identity element clearly. The other variants here show how the same idea extends to products, strings, and booleans:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -63,14 +64,14 @@ For unary folds, an empty pack is only valid for `&&` (→ `true`), `||` (→ `f
 template <typename... Args>
 auto sum_unary(Args... args) {
     return (args + ...);  // Unary right fold: a1 + (a2 + (a3 + a4))
-    // Empty pack → compile error!
+    // Empty pack -> compile error!
 }
 
 // === Binary right fold with init value ===
 template <typename... Args>
 auto sum(Args... args) {
     return (args + ... + 0);  // Binary right fold: a1 + (a2 + (... + (aN + 0)))
-    // Empty pack → returns 0
+    // Empty pack -> returns 0
 }
 
 // === Product fold ===
@@ -89,12 +90,12 @@ std::string concat(Args&&... args) {
 // === Boolean folds ===
 template <typename... Args>
 bool all_true(Args... args) {
-    return (args && ...);  // Unary: empty pack → true
+    return (args && ...);  // Unary: empty pack -> true
 }
 
 template <typename... Args>
 bool any_true(Args... args) {
-    return (args || ...);  // Unary: empty pack → false
+    return (args || ...);  // Unary: empty pack -> false
 }
 
 int main() {
@@ -119,10 +120,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Explain the difference between left fold, right fold, and their unary vs binary forms
+
+For commutative, associative operations like addition, left and right folds give the same result. The difference only matters when the operator is not associative - subtraction is the clearest example:
 
 | Form | Syntax | Expansion Example (a,b,c) | Associativity |
 | --- | --- | --- | --- |
@@ -131,10 +133,9 @@ int main() {
 | **Binary left fold** | `(init op ... op pack)` | `((init op a) op b) op c` | Left |
 | **Binary right fold** | `(pack op ... op init)` | `a op (b op (c op init))` | Right |
 
-**When does it matter?**
+**When does it matter?** Watch the subtraction case - the two folds give different answers because subtraction isn't associative:
 
 ```cpp
-
 #include <iostream>
 
 // For commutative + associative ops (like +), left vs right gives same result
@@ -147,11 +148,11 @@ auto sum_right(Args... args) { return (args + ...); }   // right fold
 // For non-associative ops (like -), order matters!
 template<typename... Args>
 auto sub_left(Args... args) { return (... - args); }
-// sub_left(1,2,3) → (1 - 2) - 3 = -4
+// sub_left(1,2,3) -> (1 - 2) - 3 = -4
 
 template<typename... Args>
 auto sub_right(Args... args) { return (args - ...); }
-// sub_right(1,2,3) → 1 - (2 - 3) = 2
+// sub_right(1,2,3) -> 1 - (2 - 3) = 2
 
 // For << (stream output), LEFT fold is natural:
 template<typename... Args>
@@ -175,13 +176,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Use a fold expression to print all arguments with spaces between them
 
-```cpp
+Printing with separators is slightly tricky because you don't want a leading or trailing space. The four methods below show different ways to handle this, each with a different trade-off between simplicity and flexibility:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -250,7 +251,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -258,8 +258,8 @@ int main() {
 ## Notes
 
 - Fold expressions (C++17) eliminate recursive template expansion for parameter pack operations.
-- Four forms: unary/binary × left/right. Use **binary** to handle empty packs.
-- **Left fold**: `(... op pack)` — natural for stream `<<` and left-associative ops.
-- **Right fold**: `(pack op ...)` — natural for right-associative construction.
-- **Comma fold** `(expr, ...)` is the most versatile — lets you call functions or execute statements per argument.
+- Four forms: unary/binary x left/right. Use **binary** to handle empty packs.
+- **Left fold**: `(... op pack)` - natural for stream `<<` and left-associative ops.
+- **Right fold**: `(pack op ...)` - natural for right-associative construction.
+- **Comma fold** `(expr, ...)` is the most versatile - lets you call functions or execute statements per argument.
 - For printing with separators, use the "first + rest" pattern or a `bool first` flag with comma fold.

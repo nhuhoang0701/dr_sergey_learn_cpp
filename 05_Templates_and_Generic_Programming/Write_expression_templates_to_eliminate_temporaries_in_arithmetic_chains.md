@@ -13,19 +13,17 @@
 While the previous topic covered dynamic vector expression templates, this topic focuses on **fixed-size types** like `Vec3` where the goal is eliminating temporaries in chains like `a + b + c`:
 
 ```cpp
-
 // Without expression templates:
 Vec3 a + b + c;
-// temp1 = a + b     ← copy 3 doubles
-// result = temp1 + c ← copy 3 more doubles
+// temp1 = a + b     <- copy 3 doubles
+// result = temp1 + c <- copy 3 more doubles
 // Total: 2 temporary Vec3 objects
 
 // With expression templates:
 Vec3 result = a + b + c;
-// result.x = a.x + b.x + c.x   ← single pass, no temps
+// result.x = a.x + b.x + c.x   <- single pass, no temps
 // result.y = a.y + b.y + c.y
 // result.z = a.z + b.z + c.z
-
 ```
 
 ### Key Insight: Assembly Comparison
@@ -38,8 +36,9 @@ With `-O2`, modern compilers often optimize the naive version to match expressio
 
 ### Q1: Implement a simple `Vec3` expression template that avoids temporaries in `a + b + c`
 
-```cpp
+The structure here is the same CRTP approach as with dynamic vectors, but simpler because there is no dynamic allocation to worry about. Every expression proxy just returns scalars for `x()`, `y()`, and `z()`. The `Vec3` constructor that takes a `const Expr<E>&` is the single evaluation point where all the chained additions actually compute.
 
+```cpp
 #include <iostream>
 #include <cmath>
 
@@ -58,7 +57,7 @@ struct Vec3 : Expr<Vec3> {
     Vec3() : x_(0), y_(0), z_(0) {}
     Vec3(double x, double y, double z) : x_(x), y_(y), z_(z) {}
 
-    // Construct from any expression — single evaluation point
+    // Construct from any expression - single evaluation point
     template <typename E>
     Vec3(const Expr<E>& expr)
         : x_(expr.x()), y_(expr.y()), z_(expr.z()) {}
@@ -133,7 +132,7 @@ int main() {
     Vec3 b(4.0, 5.0, 6.0);
     Vec3 c(7.0, 8.0, 9.0);
 
-    // a + b + c → AddExpr<AddExpr<Vec3,Vec3>, Vec3>
+    // a + b + c -> AddExpr<AddExpr<Vec3,Vec3>, Vec3>
     // No temporaries until assignment!
     Vec3 sum = a + b + c;
     std::cout << "a + b + c = " << sum << "\n";  // (12, 15, 18)
@@ -148,23 +147,23 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `2.0 * a + b - c` builds up a proxy tree of type `SubExpr<AddExpr<ScaleExpr<Vec3>,Vec3>,Vec3>` without computing a single number. The three coordinates are computed all at once when `complex` is initialized.
 
 **Expected output:**
 
 ```text
-
 a + b + c = (12, 15, 18)
 2*a + b - c = (-1, 1, 3)
 |a - b| = 5.19615
-
 ```
 
 ### Q2: Show the assembly difference between expression templates and operator-overloaded temporaries
 
-```cpp
+The key point here is that with `-O2`, modern compilers often produce identical assembly for naive `Vec3` and expression-template `Vec3`. The difference shows up more clearly for larger types or when you force the naive approach to store its temporaries (as `volatile` does in the snippet below). Understanding where the improvement is guaranteed matters as much as understanding the technique itself.
 
+```cpp
 #include <iostream>
 
 // === NAIVE: Returns temporary Vec3 ===
@@ -220,13 +219,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain why expression templates increase compile time and template error verbosity
 
-```cpp
+The reason this trips people up is that the compile-time cost of expression templates scales with the length of your expressions. Each `+` introduces a new unique template instantiation. With a chain of five additions you get four new types, and the compiler must instantiate each one, generate debug symbols for each one, and inline through all of them during optimization.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -234,10 +233,10 @@ int main() {
 
     // 1. Template Instantiation Growth
     std::cout << "1. TEMPLATE INSTANTIATION GROWTH\n";
-    std::cout << "   a + b           → AddExpr<Vec3, Vec3>\n";
-    std::cout << "   a + b + c       → AddExpr<AddExpr<Vec3,Vec3>, Vec3>\n";
-    std::cout << "   a + b + c + d   → AddExpr<AddExpr<AddExpr<Vec3,Vec3>,Vec3>, Vec3>\n";
-    std::cout << "   Each operator creates a UNIQUE type → more instantiations\n\n";
+    std::cout << "   a + b           -> AddExpr<Vec3, Vec3>\n";
+    std::cout << "   a + b + c       -> AddExpr<AddExpr<Vec3,Vec3>, Vec3>\n";
+    std::cout << "   a + b + c + d   -> AddExpr<AddExpr<AddExpr<Vec3,Vec3>,Vec3>, Vec3>\n";
+    std::cout << "   Each operator creates a UNIQUE type -> more instantiations\n\n";
 
     // 2. Error Messages
     std::cout << "2. ERROR MESSAGE VERBOSITY\n";
@@ -253,7 +252,7 @@ int main() {
     // 3. Compile Time Factors
     std::cout << "3. COMPILE TIME FACTORS\n";
     std::cout << "   Factor                     Impact\n";
-    std::cout << "   ─────────────────────────  ──────\n";
+    std::cout << "   -------------------------  ------\n";
     std::cout << "   Unique type per expression  Each expression is a new type\n";
     std::cout << "   N operators = N types        Compiler must instantiate each\n";
     std::cout << "   Inlining depth              Optimizer must inline N levels\n";
@@ -270,7 +269,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -280,6 +278,6 @@ int main() {
 - For `Vec3`/`Vec4`: modern compilers with `-O2` often eliminate temporaries anyway via copy elision and inlining. **Benchmark before adding complexity.**
 - For large vectors (`std::vector<double>`): expression templates provide significant speedup by avoiding heap allocations.
 - Expression templates are the core technique behind Eigen, Blaze, xtensor.
-- **Dangling reference pitfall:** `auto expr = a + b;` — if `a` or `b` go out of scope, `expr` holds dangling references.
+- **Dangling reference pitfall:** `auto expr = a + b;` - if `a` or `b` go out of scope, `expr` holds dangling references.
 - C++20 concepts can constrain expression template operators for better error messages.
 - Consider `std::valarray` (has expression-template-like optimizations in some implementations) before rolling your own.

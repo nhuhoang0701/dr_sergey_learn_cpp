@@ -13,8 +13,9 @@
 
 A **command dispatcher** maps command names (strings) to handler functions. A **compile-time** dispatcher resolves this mapping at compile time using `constexpr` and template metaprogramming, producing optimal code at runtime (often a series of `if`/`else` comparisons that the compiler can optimize into direct calls or jump tables).
 
-```cpp
+The contrast with the typical runtime approach is worth spelling out. When you use a runtime map, every lookup costs a hash computation plus a pointer dereference into heap memory. The compile-time version sidesteps all of that:
 
+```cpp
 // Runtime approach (unordered_map):
 std::unordered_map<std::string, Handler> commands;
 commands["help"] = &handle_help;
@@ -25,11 +26,14 @@ constexpr auto dispatch = make_dispatcher(
     command<"help">(handle_help),
     command<"quit">(handle_quit)
 );
-dispatch("help");  // resolved at compile time → direct call
-
+dispatch("help");  // resolved at compile time -> direct call
 ```
 
+The compile-time version wins on cache locality (the table lives in `.rodata`), startup cost (nothing to build at runtime), and correctness (the compiler can verify command names exist).
+
 ### Key Building Blocks
+
+Here is a quick map of the pieces you need to put this together:
 
 | Component | Purpose |
 | --- | --- |
@@ -46,8 +50,9 @@ dispatch("help");  // resolved at compile time → direct call
 
 ### Q1: Build a compile-time map from `string_view` command names to handler function pointers
 
-```cpp
+The key idea here is that `std::string_view` supports `constexpr` comparison since C++17, so you can store the mapping in a `constexpr std::array` and iterate over it in a `constexpr` function. The `make_dispatcher` helper deduces the array size from the number of entries you pass in.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <array>
@@ -124,26 +129,26 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice the `static_assert` calls at namespace scope. Those fire at compile time with zero runtime cost - they are your first line of defence against typos in command names.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Command Dispatcher ===
 
 Help: Available commands: help, status, quit
 Status: All systems operational
 Quitting...
 Status: All systems operational
-
 ```
 
 ### Q2: Show that an invalid command name at compile time triggers a `static_assert`
 
-```cpp
+When you promote command lookup to a template parameter (using a `constexpr std::string_view` as a non-type template argument in C++20), the compiler can check at instantiation time whether the name exists. Pass an unregistered name and you get a build error, not a runtime exception.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <array>
@@ -214,23 +219,27 @@ int main() {
 
     return 0;
 }
-
 ```
 
+The reason this is valuable is that a typo in a runtime string only blows up when someone runs the bad path. Here the compiler catches it the moment you build.
+
 ### Q3: Explain the performance advantage of compile-time dispatch vs runtime `unordered_map` lookup
+
+If the table feels like a lot, the short version is: the compile-time approach does no heap work at all, and the loop over a small contiguous array is extremely cache-friendly. Here is the full picture:
 
 | Aspect | Compile-Time Dispatch | Runtime `unordered_map` |
 | --- | --- | --- |
 | **Lookup cost** | Zero (resolved at compile time) or O(n) with small n and branch prediction | O(1) amortized but with hash computation |
 | **Memory overhead** | No heap allocation, data in `.rodata` | Heap-allocated buckets, nodes, strings |
-| **Startup cost** | None — everything is initialized at compile time | Must populate map at startup |
-| **Cache behavior** | Excellent — contiguous data, predictable branches | Poor — pointer chasing through heap nodes |
+| **Startup cost** | None - everything is initialized at compile time | Must populate map at startup |
+| **Cache behavior** | Excellent - contiguous data, predictable branches | Poor - pointer chasing through heap nodes |
 | **Hash collision** | N/A | Can degrade to O(n) |
 | **Indirect calls** | Compiler can inline known handlers | Always indirect through function pointer |
 | **Extensibility** | Fixed at compile time (add = recompile) | Can add/remove commands at runtime |
 
-```cpp
+The benchmark below measures both paths so you can see the difference directly.
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -289,7 +298,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -298,7 +306,7 @@ int main() {
 
 - `constexpr` + `std::string_view` enables compile-time string comparison since C++17.
 - With C++20 NTTPs, you can use string literals directly as template parameters.
-- For small command sets (< ~20), a linear search through `constexpr std::array` is faster than any hash map.
+- For small command sets (less than about 20), a linear search through `constexpr std::array` is faster than any hash map.
 - The compiler can optimize a series of `constexpr` string comparisons into a jump table.
-- Use `static_assert` to catch invalid command names at compile time — zero runtime cost for validation.
+- Use `static_assert` to catch invalid command names at compile time - zero runtime cost for validation.
 - For runtime-extensible systems, use `unordered_map`. For fixed command sets, prefer compile-time dispatch.

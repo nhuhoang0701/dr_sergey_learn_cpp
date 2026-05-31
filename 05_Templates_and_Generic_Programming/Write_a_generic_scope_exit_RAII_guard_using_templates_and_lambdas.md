@@ -13,34 +13,34 @@
 
 A **scope_exit** guard is an RAII wrapper that executes a cleanup function when it goes out of scope, **regardless of how the scope exits** (normal return, exception, `break`, etc.).
 
-```cpp
+The nice part is how little it takes to use it. You write the cleanup once and put it at the top of the function, next to the resource acquisition. No matter how many early returns or exception paths you add later, the cleanup runs automatically.
 
+```cpp
 {
     auto guard = scope_exit([&] { cleanup(); });
     // ... do work ...
     // cleanup() is called automatically when guard is destroyed
 }
-
 ```
 
 ### The Three Scope Guards
 
 | Guard | When Cleanup Runs | Use Case |
 | --- | --- | --- |
-| `scope_exit` | **Always** — normal exit and exception | General cleanup (close file, release lock) |
+| `scope_exit` | **Always** - normal exit and exception | General cleanup (close file, release lock) |
 | `scope_success` | **Only on normal exit** (no new exception) | Commit transaction |
 | `scope_fail` | **Only on exception exit** | Rollback transaction |
 
 ### How `std::uncaught_exceptions()` Enables scope_success/scope_fail
 
-```cpp
+`std::uncaught_exceptions()` (plural, added in C++17) returns a count of how many exceptions are currently in flight. By snapshotting the count at construction and comparing it at destruction, you can tell whether the scope ended normally or was unwound by an exception.
 
+```cpp
 Constructor:  saved_count_ = std::uncaught_exceptions()  // e.g., 0
 
 Destructor:   current_count = std::uncaught_exceptions()
-              if (current_count > saved_count_)  → scope is exiting via exception
-              if (current_count == saved_count_) → scope is exiting normally
-
+              if (current_count > saved_count_)  -> scope is exiting via exception
+              if (current_count == saved_count_) -> scope is exiting normally
 ```
 
 ---
@@ -49,8 +49,9 @@ Destructor:   current_count = std::uncaught_exceptions()
 
 ### Q1: Implement `scope_exit<F>` that calls `F` on destruction regardless of how the scope exits
 
-```cpp
+There are two subtleties to get right here. First, the destructor must catch and swallow any exception thrown by the cleanup function, because throwing from a destructor during stack unwinding terminates the program. Second, a `release()` method lets callers cancel the cleanup - useful when you only want cleanup on failure.
 
+```cpp
 #include <iostream>
 #include <utility>
 #include <stdexcept>
@@ -68,7 +69,7 @@ public:
     explicit scope_exit(const F& f) noexcept
         : func_(f), active_(true) {}
 
-    // Move constructor — transfers ownership
+    // Move constructor - transfers ownership
     scope_exit(scope_exit&& other) noexcept
         : func_(std::move(other.func_)), active_(other.active_) {
         other.release();
@@ -105,7 +106,7 @@ void example_normal_exit() {
         std::cout << "  Cleanup executed (normal exit)\n";
     });
     std::cout << "  Doing work...\n";
-    // guard destroyed here → cleanup runs
+    // guard destroyed here -> cleanup runs
 }
 
 void example_exception_exit() {
@@ -116,7 +117,7 @@ void example_exception_exit() {
         });
         std::cout << "  Doing work...\n";
         throw std::runtime_error("oops");
-        // guard destroyed during stack unwinding → cleanup still runs
+        // guard destroyed during stack unwinding -> cleanup still runs
     } catch (const std::exception& e) {
         std::cout << "  Caught: " << e.what() << "\n";
     }
@@ -129,10 +130,10 @@ void example_early_return(bool condition) {
     });
     if (condition) {
         std::cout << "  Returning early\n";
-        return;  // guard destroyed → cleanup runs
+        return;  // guard destroyed -> cleanup runs
     }
     std::cout << "  Reached end\n";
-    // guard destroyed → cleanup runs
+    // guard destroyed -> cleanup runs
 }
 
 void example_release() {
@@ -142,7 +143,7 @@ void example_release() {
     });
     std::cout << "  Releasing guard...\n";
     guard.release();  // cancel the cleanup
-    // guard destroyed but inactive → cleanup does NOT run
+    // guard destroyed but inactive -> cleanup does NOT run
     std::cout << "  Guard was released, cleanup skipped\n";
 }
 
@@ -154,13 +155,11 @@ int main() {
     example_release();
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 --- Normal exit ---
   Doing work...
   Cleanup executed (normal exit)
@@ -181,13 +180,13 @@ int main() {
 --- Release (cancel cleanup) ---
   Releasing guard...
   Guard was released, cleanup skipped
-
 ```
 
 ### Q2: Show that `scope_exit` replaces ad-hoc cleanup in functions with multiple return paths
 
-```cpp
+The classic problem with manual cleanup is that every `return` statement needs its own copy of the cleanup code. Add a new early-return path six months later and it is easy to forget to add the `fclose`. `scope_exit` collapses all of that into a single cleanup point declared once.
 
+```cpp
 #include <iostream>
 #include <cstdio>
 #include <stdexcept>
@@ -206,7 +205,7 @@ public:
 };
 template <typename F> scope_exit(F) -> scope_exit<F>;
 
-// === BAD: Manual cleanup with multiple return paths ===
+// BAD: Manual cleanup with multiple return paths
 bool process_file_bad(const char* filename) {
     FILE* f = fopen(filename, "r");
     if (!f) return false;
@@ -227,14 +226,14 @@ bool process_file_bad(const char* filename) {
     return true;
 }
 
-// === GOOD: scope_exit eliminates duplication ===
+// GOOD: scope_exit eliminates duplication
 bool process_file_good(const char* filename) {
     FILE* f = fopen(filename, "r");
     if (!f) return false;
 
     auto guard = scope_exit([&] {
         std::cout << "  [guard] Closing file\n";
-        fclose(f);               // single cleanup point — always runs
+        fclose(f);               // single cleanup point - always runs
     });
 
     char buf[256];
@@ -283,22 +282,22 @@ int main() {
     multi_resource_example();
 
     std::cout << "\n=== Benefits ===\n";
-    std::cout << "1. Single cleanup point — no duplication\n";
+    std::cout << "1. Single cleanup point - no duplication\n";
     std::cout << "2. Exception-safe by construction\n";
     std::cout << "3. Resources released in reverse order (LIFO)\n";
     std::cout << "4. Works with any cleanup: close, unlock, free, rollback\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain how `scope_success` and `scope_fail` guards differ using `std::uncaught_exceptions`
 
-`std::uncaught_exceptions()` (C++17) returns the **number of uncaught exceptions currently in flight**. By comparing the count at construction vs destruction, you can tell whether a scope exited normally or via exception:
+`std::uncaught_exceptions()` (C++17) returns the **number of uncaught exceptions currently in flight**. By comparing the count at construction vs destruction, you can tell whether a scope exited normally or via exception.
+
+The reason this needs to be a count rather than a boolean - the old `std::uncaught_exception()` returned a bool - is that exception handlers can be nested. If your code is already inside a `catch` block and throws again, the count goes from 1 to 2. The old boolean API could not distinguish those two situations, making `scope_fail` unreliable in nested contexts. The count fixes that.
 
 ```cpp
-
 #include <iostream>
 #include <exception>
 #include <utility>
@@ -328,7 +327,7 @@ public:
         , uncaught_count_(std::uncaught_exceptions()) {}
 
     ~scope_success() {
-        // If no NEW exceptions since construction → normal exit
+        // If no NEW exceptions since construction -> normal exit
         if (std::uncaught_exceptions() == uncaught_count_) {
             try { func_(); } catch (...) {}
         }
@@ -348,7 +347,7 @@ public:
         , uncaught_count_(std::uncaught_exceptions()) {}
 
     ~scope_fail() noexcept {
-        // If MORE exceptions now than at construction → exception exit
+        // If MORE exceptions now than at construction -> exception exit
         if (std::uncaught_exceptions() > uncaught_count_) {
             try { func_(); } catch (...) {}
         }
@@ -390,8 +389,8 @@ int main() {
     // Output:
     //   Processing order #42...
     //   Order processed successfully
-    //   [scope_success] Committing order #42     ← runs (normal exit)
-    //   [scope_exit] Logging order #42 attempt   ← runs (always)
+    //   [scope_success] Committing order #42     <- runs (normal exit)
+    //   [scope_exit] Logging order #42 attempt   <- runs (always)
     //   scope_fail does NOT run
 
     std::cout << "\n";
@@ -404,32 +403,29 @@ int main() {
     }
     // Output:
     //   Processing order #42...
-    //   [scope_fail] Rolling back order #42      ← runs (exception exit)
-    //   [scope_exit] Logging order #42 attempt   ← runs (always)
+    //   [scope_fail] Rolling back order #42      <- runs (exception exit)
+    //   [scope_exit] Logging order #42 attempt   <- runs (always)
     //   scope_success does NOT run
 
     return 0;
 }
-
 ```
 
-**How `std::uncaught_exceptions()` works:**
+Here is a plain-language summary of how the count is used:
 
 ```cpp
-
 Constructor:  saved = std::uncaught_exceptions()   // typically 0
 
 Normal exit:
-  Destructor: std::uncaught_exceptions() == saved  → scope_success fires
+  Destructor: std::uncaught_exceptions() == saved  -> scope_success fires
 
 Exception exit:
-  Destructor: std::uncaught_exceptions() > saved   → scope_fail fires
+  Destructor: std::uncaught_exceptions() > saved   -> scope_fail fires
 
 Nested exceptions:
   If already inside a catch, saved might be 1.
   A new throw makes it 2.
-  saved=1, current=2 → scope_fail correctly detects the new exception.
-
+  saved=1, current=2 -> scope_fail correctly detects the new exception.
 ```
 
 ---
@@ -439,7 +435,7 @@ Nested exceptions:
 - `scope_exit` is in the Library Fundamentals TS v3 (`<experimental/scope>`), and expected in a future standard.
 - The GSL (`gsl::finally`) provides a similar facility.
 - `std::uncaught_exceptions()` (note: plural) was added in C++17 replacing the broken `std::uncaught_exception()` (singular, returns `bool`).
-- The singular version couldn't distinguish between nested exception levels — the plural version returns a count.
-- Always mark `scope_fail` destructor `noexcept` — it runs during stack unwinding.
-- `scope_exit` is one of the most practical RAII patterns — use it for any ad-hoc cleanup.
-- Destruction order is reverse of declaration order → declare guards in resource acquisition order.
+- The singular version couldn't distinguish between nested exception levels - the plural version returns a count.
+- Always mark `scope_fail` destructor `noexcept` - it runs during stack unwinding.
+- `scope_exit` is one of the most practical RAII patterns - use it for any ad-hoc cleanup.
+- Destruction order is reverse of declaration order - declare guards in resource acquisition order.

@@ -11,40 +11,38 @@
 
 ### What Are Abbreviated Function Templates
 
-C++20 lets you write **function templates without the `template<...>` syntax** by using `auto` (or constrained `auto`) in the parameter list:
+C++20 lets you write **function templates without the `template<...>` syntax** by using `auto` (or constrained `auto`) in the parameter list. The result is a real function template - it's just written in a more concise form:
 
 ```cpp
-
 // Traditional template syntax
 template <typename T, typename U>
 void print_pair(T a, U b);
 
 // Abbreviated function template (C++20) — equivalent!
 void print_pair(auto a, auto b);
-
 ```
 
-Each `auto` parameter introduces an **independent implicit template parameter**.
+Each `auto` parameter introduces an **independent implicit template parameter**. The compiler treats the abbreviated form exactly as if you had written the explicit `template<typename T, typename U>` version.
 
 ### Equivalence Rules
+
+The table below maps each abbreviated form to its traditional equivalent. Pay attention to the third row - two `auto` parameters do not force the same type, they each get their own independent type parameter:
 
 | Abbreviated | Equivalent Traditional |
 | --- | --- |
 | `void f(auto x)` | `template<typename T> void f(T x)` |
 | `void f(auto x, auto y)` | `template<typename T, typename U> void f(T x, U y)` |
-| `void f(auto x, auto y)` | NOT `template<typename T> void f(T x, T y)` — T and U are **independent** |
+| `void f(auto x, auto y)` | NOT `template<typename T> void f(T x, T y)` - T and U are **independent** |
 | `void f(std::integral auto x)` | `template<std::integral T> void f(T x)` |
 | `void f(const auto& x)` | `template<typename T> void f(const T& x)` |
 
 ### Constrained `auto`
 
-You can prefix `auto` with a concept to constrain the deduced type:
+You can prefix `auto` with a concept to constrain the deduced type. This gives you concise overloading without any `enable_if` machinery:
 
 ```cpp
-
 void process(std::integral auto x);     // x must satisfy std::integral
 void process(std::floating_point auto x); // overload for floating point
-
 ```
 
 ---
@@ -53,8 +51,9 @@ void process(std::floating_point auto x); // overload for floating point
 
 ### Q1: Write `void f(auto x, auto y)` and explain it is equivalent to `template<typename T, typename U>`
 
-```cpp
+The most important thing to internalize here is that each `auto` is independently deduced. If you need two parameters to be the same type, you still have to use the traditional `template<typename T>` syntax:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <typeinfo>
@@ -77,7 +76,7 @@ void f(auto x, auto y) {
 
 // This is NOT the same as:
 // template <typename T>
-// void f(T x, T y);    // ← forces SAME type for both params
+// void f(T x, T y);    // <- forces SAME type for both params
 
 // To force the same type with abbreviated syntax, you can't — use traditional syntax:
 template <typename T>
@@ -88,7 +87,7 @@ void same_type(T x, T y) {
 int main() {
     std::cout << "=== Abbreviated function template ===\n";
 
-    // Different types — works because auto → independent template params
+    // Different types — works because auto -> independent template params
     f(42, 3.14);                     // T=int, U=double
     f(std::string("hello"), 100);    // T=string, U=int
     f('A', 'B');                     // T=char, U=char (same, but independently deduced)
@@ -118,13 +117,13 @@ int main() {
 //   same_type(1, 2)
 //   Lambda: 30
 //   Lambda: 4
-
 ```
 
 ### Q2: Constrain an abbreviated template parameter: `void f(std::integral auto x)`
 
-```cpp
+Constrained `auto` is where abbreviated templates really shine for readability. You get overload sets based on concepts with almost no boilerplate, and the syntax reads almost like English:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <string>
@@ -164,8 +163,8 @@ int main() {
     std::cout << "=== Constrained auto parameters ===\n";
     process(42);         // matches integral overload
     process(3.14);       // matches floating_point overload
-    process(100L);       // long → integral
-    process(2.718f);     // float → floating_point
+    process(100L);       // long -> integral
+    process(2.718f);     // float -> floating_point
 
     std::cout << "\n=== Const ref to integral ===\n";
     int val = 99;
@@ -197,13 +196,13 @@ int main() {
 //   display: 42
 //   display: hello
 //   display: world
-
 ```
 
 ### Q3: Show the interaction between abbreviated templates and explicit template argument lists
 
-```cpp
+This is a subtle but important point: even though the template parameters are "invisible" in abbreviated syntax, they still exist as real template parameters, and you can supply explicit template arguments for them. The rule is that any explicitly declared parameters come first, and the invented `auto` parameters come after in left-to-right order:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <string>
@@ -270,8 +269,8 @@ int main() {
     std::cout << "\n=== Order of template parameters ===\n";
     std::cout << "Rule: explicit params first, then invented params (left-to-right)\n";
     std::cout << "  template<typename R> R convert(auto input)\n";
-    std::cout << "  → template<typename R, typename _T1> R convert(_T1 input)\n";
-    std::cout << "  Call: convert<int>(3.14) → R=int, _T1=double\n";
+    std::cout << "  -> template<typename R, typename _T1> R convert(_T1 input)\n";
+    std::cout << "  Call: convert<int>(3.14) -> R=int, _T1=double\n";
 
     return 0;
 }
@@ -284,7 +283,6 @@ int main() {
 //   7 7 7 7 7
 //   Rule: explicit params first, then invented params (left-to-right)
 //   ...
-
 ```
 
 ---
@@ -292,8 +290,8 @@ int main() {
 ## Notes
 
 - `auto` in function parameters (C++20) makes each `auto` an independent invented template parameter.
-- `ConceptName auto x` constrains the deduced type — equivalent to `template<ConceptName T> void f(T x)`.
-- Each `auto` is a **different** type parameter — two `auto` params can be different types.
+- `ConceptName auto x` constrains the deduced type - equivalent to `template<ConceptName T> void f(T x)`.
+- Each `auto` is a **different** type parameter - two `auto` params can be different types.
 - Explicit template arguments can be mixed: declared params first, then invented params in left-to-right order.
 - Abbreviated syntax works for lambdas too: `[](auto x, std::integral auto y) { ... }`.
-- Cannot force two `auto` params to be the same type — use traditional `template<typename T>` for that.
+- Cannot force two `auto` params to be the same type - use traditional `template<typename T>` for that.

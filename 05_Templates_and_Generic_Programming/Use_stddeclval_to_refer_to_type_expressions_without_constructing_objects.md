@@ -10,25 +10,25 @@
 
 ### What Is `std::declval`
 
-`std::declval<T>()` produces an **rvalue reference** to `T` without actually constructing an object. It can only be used in **unevaluated contexts** (`decltype`, `sizeof`, `noexcept`, concept requirements):
+`std::declval<T>()` produces an **rvalue reference** to `T` without actually constructing an object. It can only be used in **unevaluated contexts** (`decltype`, `sizeof`, `noexcept`, concept requirements).
+
+The classic use case is asking "what type does `T::foo()` return?" when `T` has no default constructor and you cannot write `T{}` to get an instance:
 
 ```cpp
-
 // T has no default constructor — can't write T{}
 // But we CAN ask "what type does T::foo() return?"
 using ReturnType = decltype(std::declval<T>().foo());
-
 ```
 
 ### Signature
 
 ```cpp
-
 template <class T>
 std::add_rvalue_reference_t<T> declval() noexcept;
-// Never defined — only declared. Using it at runtime → linker error.
-
+// Never defined — only declared. Using it at runtime -> linker error.
 ```
+
+The fact that it is only declared and never defined is intentional - it forces you to use it only where the compiler analyzes expressions without generating code.
 
 ### Why It Exists
 
@@ -49,8 +49,9 @@ For non-void types, `declval<T>()` returns `T&&`. For `T&`, it returns `T&` (ref
 
 ### Q1: Use `decltype(std::declval<T>().foo())` to detect the return type of a method without `T` being default-constructible
 
-```cpp
+The key insight is that `decltype` is an unevaluated context - the compiler only looks at the type of the expression, it never executes it. So even though you cannot construct a `Database` or a `Shape`, you can still ask the compiler what their methods return.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -79,7 +80,7 @@ public:
 // === Detect return types using declval ===
 
 // Without declval, this would require:  Database{}.query_count()
-// But Database has no default constructor → compile error!
+// But Database has no default constructor -> compile error!
 
 // With declval: "pretend" we have a Database object
 using QueryReturnType = decltype(std::declval<Database>().query_count());
@@ -115,7 +116,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Explain why `std::declval<T>()` is only valid in unevaluated contexts like `decltype` and `sizeof`
@@ -123,19 +123,17 @@ int main() {
 `std::declval<T>()` is declared but **never defined**:
 
 ```cpp
-
 // In <utility>, roughly:
 template <class T>
 std::add_rvalue_reference_t<T> declval() noexcept;
 // No function body! Just a declaration.
-
 ```
 
-**Why it can't be called at runtime:**
+The reason this design works is that the compiler only needs a declaration to analyze type expressions. Here is why it cannot work at runtime:
 
-1. **No definition** → If you try to call it, the linker cannot find the function body → **linker error**
-2. **Design intent** → It exists solely to "manufacture" a type expression for the compiler's type analysis
-3. **Would be impossible for some types** → How would you construct an abstract class? A deleted-constructor type?
+1. **No definition** - If you try to call it, the linker cannot find the function body - **linker error**
+2. **Design intent** - It exists solely to "manufacture" a type expression for the compiler's type analysis
+3. **Would be impossible for some types** - How would you construct an abstract class? A deleted-constructor type?
 
 **Unevaluated contexts** are places where the compiler analyzes expressions but never executes them:
 
@@ -146,8 +144,9 @@ std::add_rvalue_reference_t<T> declval() noexcept;
 | `noexcept(expr)` | `noexcept(std::declval<T>().foo())` | No |
 | `requires { expr; }` | `requires { std::declval<T>() + 1; }` | No |
 
-```cpp
+Here is a minimal example showing what is and is not allowed:
 
+```cpp
 #include <iostream>
 #include <utility>
 
@@ -158,25 +157,25 @@ public:
 };
 
 int main() {
-    // ✓ OK: decltype is unevaluated — no object is created
+    // OK: decltype is unevaluated — no object is created
     using R = decltype(std::declval<NonConstructible>().value());
     std::cout << "Return type detected: " << std::is_same_v<R, int> << "\n";
 
-    // ✓ OK: sizeof is unevaluated
+    // OK: sizeof is unevaluated
     std::cout << "Size: " << sizeof(std::declval<NonConstructible>()) << "\n";
 
-    // ✗ ERROR: this would try to actually CALL declval at runtime
+    // ERROR: this would try to actually CALL declval at runtime
     // auto x = std::declval<NonConstructible>();  // LINKER ERROR
 
     return 0;
 }
-
 ```
 
 ### Q3: Show a SFINAE check that uses `declval` to test for a specific member function signature
 
-```cpp
+The pattern here is `std::void_t<decltype(expression)>`. The idea is that if the expression inside `decltype` is valid for type `T`, the specialization matches and the trait becomes `true_type`. If the expression would be ill-formed, SFINAE kicks in and the primary template (`false_type`) wins instead.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -277,8 +276,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `has_serialize` for `Gadget` returns `false` even though `Gadget` does have a `serialize` method - the return type is `int`, not `std::string`, so the expression check fails. That is exactly the kind of precise interface testing that `declval` makes possible.
 
 ---
 
@@ -288,5 +288,5 @@ int main() {
 - Essential for SFINAE detection: check if expressions like `t.foo()`, `t + u` are valid.
 - Works with abstract classes, deleted constructors, and move-only types.
 - Common patterns: `std::void_t<decltype(std::declval<T>().method())>` for member detection.
-- In C++20, prefer **concepts and requires expressions** — they're cleaner and provide better errors.
-- Never call `std::declval` at runtime — it has no definition (linker error).
+- In C++20, prefer **concepts and requires expressions** - they're cleaner and provide better errors.
+- Never call `std::declval` at runtime - it has no definition (linker error).

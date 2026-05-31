@@ -11,14 +11,16 @@
 
 ### What Is the Detection Idiom
 
-The **detection idiom** uses SFINAE with `std::void_t` and partial specialization to detect whether a type has a particular member, method, or nested type — at compile time.
+The **detection idiom** lets you ask at compile time: "does this type have a particular member, method, or nested type?" The answer comes back as a `true_type` or `false_type` that you can branch on with `if constexpr` or use in `enable_if` conditions.
+
+The mechanism underneath is SFINAE with `std::void_t` and partial specialization. The two-piece structure is what makes it tick:
 
 ```cpp
-
-Primary template:          → false (default — trait not detected)
-Partial specialization:    → true  (only valid if expression compiles)
-
+Primary template:          -> false (default - trait not detected)
+Partial specialization:    -> true  (only valid if expression compiles)
 ```
+
+If you have never seen this pattern before, the reason it works is subtle: the partial specialization is only a valid candidate when the expression inside `void_t<...>` is well-formed. If the expression fails (say, because `T` has no `.size()`), SFINAE eliminates that specialization and the compiler falls back to the primary template, which inherits from `false_type`.
 
 ### Building Blocks
 
@@ -30,23 +32,27 @@ Partial specialization:    → true  (only valid if expression compiles)
 
 ### How `void_t` Detection Works
 
-```cpp
+Here is the minimal pattern for detecting whether `T` has a `.size()` method. The reason the second template parameter is `void` by default is so that the partial specialization (which also produces `void` via `void_t`) can match and take over:
 
-// Step 1: Primary template — default is false
+```cpp
+// Step 1: Primary template - default is false
 template <typename T, typename = void>
 struct has_size : std::false_type {};
 
-// Step 2: Specialization — true if T.size() is valid
+// Step 2: Specialization - true if T.size() is valid
 template <typename T>
 struct has_size<T, std::void_t<decltype(std::declval<T>().size())>>
     : std::true_type {};
 
 // has_size<std::vector<int>>::value == true   (vector has .size())
 // has_size<int>::value            == false  (int has no .size())
-
 ```
 
-### Evolution: void_t → is_detected → Concepts
+The `std::declval<T>()` is necessary because `T` may not be default-constructible - `declval` gives you a fake reference to `T` purely for use in unevaluated contexts like `decltype`.
+
+### Evolution: void_t -> is_detected -> Concepts
+
+The idiom has gotten progressively cleaner over the years:
 
 | Approach | Era | Verbosity | Readability |
 | --- | :---: | :---: | :---: |
@@ -60,8 +66,9 @@ struct has_size<T, std::void_t<decltype(std::declval<T>().size())>>
 
 ### Q1: Implement a `has_size<T>` trait using `std::void_t` and partial specialization
 
-```cpp
+This shows the full pattern applied to four different capabilities. Each trait is independent, but they all follow the exact same two-piece structure:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -132,13 +139,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `is_iterable` checks two expressions in a single `void_t<...>` - you can pack multiple validity checks together and the whole thing only succeeds if every expression is valid.
 
 **Expected output:**
 
 ```text
-
 === has_size ===
 vector<int>: true
 string:      true
@@ -156,13 +163,13 @@ int:         false
 === is_printable ===
 int:         true
 vector<int>: false
-
 ```
 
 ### Q2: Show why `is_detected` (or equivalent) is cleaner than raw `void_t`
 
-```cpp
+The `is_detected` utility from Library Fundamentals TS v2 wraps the two-piece `void_t` boilerplate into a single reusable machine. Instead of writing six lines per trait, you write one alias template and query it. The machinery is a bit involved to implement, but you only write it once:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -203,11 +210,11 @@ using detected_t = typename detail::detector<detail::nonesuch, void, Op, Args...
 
 // === Using is_detected: define detection aliases ===
 
-// Alias: T.size() → returns its type
+// Alias: T.size() -> returns its type
 template <class T>
 using size_expr = decltype(std::declval<const T&>().size());
 
-// Alias: T.push_back(val) → returns its type
+// Alias: T.push_back(val) -> returns its type
 template <class T>
 using push_back_expr = decltype(std::declval<T&>().push_back(std::declval<typename T::value_type>()));
 
@@ -222,7 +229,7 @@ int main() {
     // RAW void_t: 6 lines per trait (primary + specialization + helper)
     // is_detected: 1 line alias + 1 line usage
 
-    std::cout << "=== is_detected — much cleaner ===\n";
+    std::cout << "=== is_detected - much cleaner ===\n";
     std::cout << "has .size():       vector=" << is_detected_v<size_expr, std::vector<int>>
               << ", int=" << is_detected_v<size_expr, int> << "\n";
 
@@ -233,23 +240,25 @@ int main() {
               << ", int=" << is_detected_v<iterator_type, int> << "\n";
 
     // detected_t gives you the actual type
-    // detected_t<size_expr, std::vector<int>> → std::vector<int>::size_type
+    // detected_t<size_expr, std::vector<int>> -> std::vector<int>::size_type
 
     return 0;
 }
-
 ```
+
+The bonus is `detected_t<Op, T>`, which gives you the actual return type of the expression rather than just a yes/no answer. That is useful when you need to branch on what type a method returns.
 
 ### Q3: Rewrite the detection idiom using a C++20 `requires` expression for the same check
 
-```cpp
+In C++20, all of this collapses into a single `concept` definition. What took six lines and a helper becomes one line that reads almost like English:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <vector>
 #include <string>
 
-// === C++20 requires-based detection — dramatically simpler ===
+// === C++20 requires-based detection - dramatically simpler ===
 
 // One-liner concepts replace 6+ lines of void_t boilerplate
 template <typename T>
@@ -301,16 +310,16 @@ int main() {
     std::cout << "void_t approach (C++17):\n";
     std::cout << "  template<class T, class=void> struct has_X : false_type {};\n";
     std::cout << "  template<class T> struct has_X<T, void_t<expr>> : true_type {};\n";
-    std::cout << "  → 6 lines, hard to read, easy to get wrong\n\n";
+    std::cout << "  -> 6 lines, hard to read, easy to get wrong\n\n";
 
     std::cout << "is_detected approach (C++17 TS):\n";
     std::cout << "  template<class T> using X_expr = decltype(expr);\n";
     std::cout << "  is_detected_v<X_expr, T>\n";
-    std::cout << "  → 2 lines, but requires is_detected machinery\n\n";
+    std::cout << "  -> 2 lines, but requires is_detected machinery\n\n";
 
     std::cout << "requires approach (C++20):\n";
     std::cout << "  concept HasX = requires(T t) { t.x(); };\n";
-    std::cout << "  → 1 line, clear, composable, first-class language feature\n\n";
+    std::cout << "  -> 1 line, clear, composable, first-class language feature\n\n";
 
     std::cout << "=== Constrained overloads ===\n";
     std::vector<int> v{1,2,3};
@@ -320,15 +329,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `requires` expression inside a concept definition is also part of the "immediate context" for SFINAE purposes, which means you get cleaner error messages and can compose concepts together with `&&` and `||`.
 
 ---
 
 ## Notes
 
 - The detection idiom checks at compile time whether a type supports a given expression.
-- `std::void_t<Expr>` maps valid expressions to `void`; substitution failure triggers SFINAE → falls back to primary template.
+- `std::void_t<Expr>` maps valid expressions to `void`; substitution failure triggers SFINAE -> falls back to primary template.
 - `is_detected` (Library Fundamentals TS) wraps the `void_t` pattern into a reusable utility.
-- C++20 `requires` expressions are the modern replacement — shorter, clearer, composable via `&&`/`||`.
+- C++20 `requires` expressions are the modern replacement - shorter, clearer, composable via `&&`/`||`.
 - Use `void_t` only in pre-C++20 codebases; prefer concepts in new code.

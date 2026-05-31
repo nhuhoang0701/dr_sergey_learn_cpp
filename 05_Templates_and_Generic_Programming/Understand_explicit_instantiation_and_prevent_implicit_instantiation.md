@@ -10,7 +10,7 @@
 
 ### What Is Template Instantiation
 
-When you use a template with specific types, the compiler generates code for that specialization — this is **instantiation**.
+When you use a template with specific types, the compiler generates code for that specialization - this is **instantiation**. There are three flavors:
 
 | Type | Syntax | When | Where |
 | --- | --- | --- | --- |
@@ -20,27 +20,25 @@ When you use a template with specific types, the compiler generates code for tha
 
 ### The Problem: Redundant Instantiation
 
-Without `extern template`, every `.cpp` file that uses `std::vector<int>` independently instantiates it. The linker deduplicates later, but the **compile cost** is paid in every TU.
+Without `extern template`, every `.cpp` file that uses `std::vector<int>` independently instantiates it. The linker deduplicates later, but the **compile cost** is paid in every translation unit. In a large project with dozens of TUs all using the same heavy template, this adds up fast:
 
 ```cpp
-
-TU1: uses vector<int> → instantiates vector<int> (slow)
-TU2: uses vector<int> → instantiates vector<int> (slow, redundant)
-TU3: uses vector<int> → instantiates vector<int> (slow, redundant)
+TU1: uses vector<int> -> instantiates vector<int> (slow)
+TU2: uses vector<int> -> instantiates vector<int> (slow, redundant)
+TU3: uses vector<int> -> instantiates vector<int> (slow, redundant)
 Linker: keeps one, discards duplicates
-
 ```
 
 ### The Solution: `extern template`
 
-```cpp
+The fix is to declare the instantiation `extern` in the header (telling every TU "don't instantiate this, someone else will"), and then provide the actual instantiation in exactly one `.cpp` file:
 
+```cpp
 header.h:          extern template class std::vector<int>;     // suppress
 instantiation.cpp: template class std::vector<int>;            // define once
-TU1: includes header → no instantiation (fast)
-TU2: includes header → no instantiation (fast)
+TU1: includes header -> no instantiation (fast)
+TU2: includes header -> no instantiation (fast)
 Linker: uses the one from instantiation.cpp
-
 ```
 
 ---
@@ -49,8 +47,9 @@ Linker: uses the one from instantiation.cpp
 
 ### Q1: Use `extern template` to prevent implicit instantiation of `std::vector<HeavyType>` in multiple TUs
 
-```cpp
+Here is the full pattern spread across multiple files. The key is that `extern template` in the header acts as a promise: "the definition exists elsewhere, don't generate it here." Only `heavy_type_instantiation.cpp` actually pays the instantiation cost:
 
+```cpp
 // === heavy_type.h ===
 #ifndef HEAVY_TYPE_H
 #define HEAVY_TYPE_H
@@ -84,7 +83,7 @@ extern template class std::vector<HeavyType>;
 template class std::vector<HeavyType>;
 
 // === main.cpp ===
-#include "heavy_type.h"  // includes extern template → NO implicit instantiation
+#include "heavy_type.h"  // includes extern template -> NO implicit instantiation
 #include <iostream>
 
 int main() {
@@ -104,7 +103,7 @@ int main() {
 }
 
 // === another_module.cpp ===
-#include "heavy_type.h"  // Also gets extern template → NO instantiation here either
+#include "heavy_type.h"  // Also gets extern template -> NO instantiation here either
 #include <algorithm>
 
 void sort_heavy(std::vector<HeavyType>& v) {
@@ -116,20 +115,22 @@ void sort_heavy(std::vector<HeavyType>& v) {
 // Without extern template:
 //   main.cpp:           instantiates vector<HeavyType> (slow)
 //   another_module.cpp: instantiates vector<HeavyType> (slow, redundant)
-//   → 2x compile cost, linker discards one
+//   -> 2x compile cost, linker discards one
 //
 // With extern template:
 //   heavy_type_instantiation.cpp: instantiates ONCE
 //   main.cpp:                     no instantiation (fast)
 //   another_module.cpp:           no instantiation (fast)
-//   → compile cost paid only once
-
+//   -> compile cost paid only once
 ```
+
+The savings scale with the number of TUs. If ten files all include that header, only one of them pays to compile `vector<HeavyType>`.
 
 ### Q2: Provide an explicit instantiation definition in exactly one TU
 
-```cpp
+This example shows the same pattern applied to a custom template. Notice that `DataProcessor<double>` is deliberately left out of the explicit instantiation list - any TU that uses it will instantiate it implicitly, which is sometimes what you want for less-common specializations:
 
+```cpp
 // === my_template.h ===
 #ifndef MY_TEMPLATE_H
 #define MY_TEMPLATE_H
@@ -171,7 +172,7 @@ extern template std::string transform<std::string>(const std::string&);
 // EXACTLY ONE TU provides the explicit instantiation definitions
 #include "my_template.h"
 
-// Explicit instantiation definitions — generates ALL member functions
+// Explicit instantiation definitions - generates ALL member functions
 template class DataProcessor<int>;
 template class DataProcessor<std::string>;
 
@@ -180,7 +181,7 @@ template int transform<int>(const int&);
 template std::string transform<std::string>(const std::string&);
 
 // Note: DataProcessor<double> is NOT explicitly instantiated
-// → any TU using DataProcessor<double> will implicitly instantiate it
+// -> any TU using DataProcessor<double> will implicitly instantiate it
 
 // === main.cpp ===
 #include "my_template.h"
@@ -198,19 +199,19 @@ int main() {
     std::cout << transform(std::string("ab")) << "\n"; // abab
 
     // DataProcessor<double> is NOT extern template'd
-    // → implicitly instantiated HERE (compile cost paid)
+    // -> implicitly instantiated HERE (compile cost paid)
     DataProcessor<double> dp3(3.14);
     dp3.process();              // Processing: 3.14
 
     return 0;
 }
-
 ```
 
 ### Q3: Measure compile-time improvement from using explicit instantiation on a large template
 
-```cpp
+This example makes the trade-off concrete. The comment table at the bottom shows what happens as the number of TUs grows - without `extern template`, instantiation cost scales linearly with TU count:
 
+```cpp
 // === Practical example: measuring the effect ===
 // This demonstrates the concept; actual measurements require multi-TU builds.
 
@@ -305,8 +306,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+One thing worth noting: explicit instantiation does not change runtime behavior at all. It is purely a compile-time optimization. If you remove `extern template` from an otherwise correct program, it still works - it just compiles slower.
 
 ---
 
@@ -315,7 +317,7 @@ int main() {
 - `extern template class X<T>;` **suppresses** implicit instantiation in a TU.
 - `template class X<T>;` **forces** explicit instantiation in exactly one TU.
 - The `extern` declaration goes in the **header**; the definition goes in **one .cpp file**.
-- Savings scale with number of TUs: N TUs → ~Nx compile time without → ~1x with extern template.
-- Does not affect runtime behavior — only compile/link performance.
+- Savings scale with number of TUs: N TUs -> ~Nx compile time without -> ~1x with extern template.
+- Does not affect runtime behavior - only compile/link performance.
 - Works for both class templates and function templates.
 - For function templates: `extern template int foo<int>(int);` / `template int foo<int>(int);`

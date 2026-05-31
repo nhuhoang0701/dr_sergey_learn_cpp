@@ -11,12 +11,13 @@
 
 ### The Problem
 
-Given a type `T`, you want to check at compile time: "Is `T` some specialization of `std::vector`?" — i.e., `std::vector<int>`, `std::vector<string>`, etc.
+Given a type `T`, you want to check at compile time: "Is `T` some specialization of `std::vector`?" - i.e., `std::vector<int>`, `std::vector<string>`, etc. You cannot just compare types with `std::is_same` because you do not know the element type ahead of time - you want to match the template itself, not a specific instantiation.
 
 ### The `is_specialization_of` Trait
 
-```cpp
+The solution uses partial specialization to match the shape `Template<Args...>`. The primary template says "no" by default, and the partial specialization fires only when `T` actually decomposes into that form:
 
+```cpp
 // Primary: false by default
 template <typename T, template <typename...> class Template>
 struct is_specialization_of : std::false_type {};
@@ -24,8 +25,9 @@ struct is_specialization_of : std::false_type {};
 // Partial specialization: true when T matches Template<Args...>
 template <template <typename...> class Template, typename... Args>
 struct is_specialization_of<Template<Args...>, Template> : std::true_type {};
-
 ```
+
+The key is the template template parameter `template <typename...> class Template`. That lets you pass `std::vector` itself (not `std::vector<int>`) as an argument, so the partial specialization can match any instantiation of it.
 
 | Expression | Result |
 | --- | :---: |
@@ -36,7 +38,7 @@ struct is_specialization_of<Template<Args...>, Template> : std::true_type {};
 
 ### Limitation: Non-Type Template Parameters
 
-This technique only works with templates that take **type** parameters. It breaks for `std::array<T,N>` (has a non-type `N`) and `std::integer_sequence<T, Ns...>`.
+This technique only works with templates that take **type** parameters. It breaks for `std::array<T,N>` (has a non-type `N`) and `std::integer_sequence<T, Ns...>`. The reason is that `template <typename...> class Template` can only match parameters that are types - it cannot match a `size_t` parameter.
 
 ---
 
@@ -44,8 +46,9 @@ This technique only works with templates that take **type** parameters. It break
 
 ### Q1: Write `is_specialization_of<T, std::vector>` that is true only when `T` is a `std::vector`
 
-```cpp
+Notice that the same trait works for multi-parameter templates like `std::map` without any changes - the variadic `Args...` captures all the type arguments at once:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -83,7 +86,7 @@ int main() {
     std::cout << "optional<int>     is optional: "
               << is_specialization_of_v<std::optional<int>, std::optional> << "\n";     // true
 
-    // map test (has multiple type params — still works!)
+    // map test (has multiple type params - still works!)
     std::cout << "map<string,int>   is map:      "
               << is_specialization_of_v<std::map<std::string,int>, std::map> << "\n";   // true
 
@@ -99,13 +102,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The trait correctly handles every type-only template, regardless of how many type parameters it takes.
 
 **Expected output:**
 
 ```text
-
 === is_specialization_of ===
 
 vector<int>       is vector:   true
@@ -116,13 +119,13 @@ map<string,int>   is map:      true
 int               is vector:   false
 double            is optional:  false
 variant<int,str>  is variant:  true
-
 ```
 
 ### Q2: Show the limitation: this approach breaks for non-type template parameter specializations
 
-```cpp
+`std::array<T, N>` is the canonical example of a template that cannot be handled by the generic trait. The compiler rejects the attempt because `template <typename...>` expects only type parameters, but `std::array` has a `size_t N`. The workaround is to write a dedicated trait for each such template:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <array>
@@ -173,7 +176,7 @@ int main() {
     // std::cout << is_specialization_of_v<std::array<int,5>, std::array>;
     // Error: template template argument has different template params
 
-    std::cout << "Broken: is_specialization_of<array<int,5>, array>  → compile error\n";
+    std::cout << "Broken: is_specialization_of<array<int,5>, array>  -> compile error\n";
     std::cout << "Reason: std::array<T,N> has non-type param N (size_t)\n";
     std::cout << "        template<typename...> can only match type params\n\n";
 
@@ -192,13 +195,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+There is no single generic workaround for all non-type parameter templates - you write a dedicated `is_std_array`, `is_bitset`, and so on for each one you need.
 
 ### Q3: Use a concept to constrain a function to accept only `std::optional` specializations
 
-```cpp
+Once you have the trait, wrapping it in a concept gives you a clean, composable constraint that produces readable error messages when someone passes the wrong type:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <optional>
@@ -249,7 +254,7 @@ int main() {
     unwrap_or_print(b, -1);          // No value, using fallback: -1
     unwrap_or_print(c, std::string("default")); // Has value: hello
 
-    // These would NOT compile — int is not an optional:
+    // These would NOT compile - int is not an optional:
     // unwrap_or_print(42, 0);       // ERROR: constraint not satisfied
     // unwrap_or_print("hello", ""); // ERROR: constraint not satisfied
 
@@ -262,13 +267,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `std::remove_cvref_t<T>` in the concept definition is important - without it, a `const std::optional<int>&` would not match because the partial specialization would try to match `const std::optional<int>&`, not `std::optional<int>`.
 
 **Expected output:**
 
 ```text
-
 === Concept-constrained to std::optional ===
 
 Has value: 42
@@ -278,7 +283,6 @@ Has value: hello
 === Concept-constrained to std::vector ===
 
 First element: 10
-
 ```
 
 ---
@@ -287,6 +291,6 @@ First element: 10
 
 - `is_specialization_of<T, Template>` uses partial specialization to match `Template<Args...>`.
 - Works for templates with **only type parameters** (`vector`, `optional`, `map`, `variant`).
-- **Breaks** for templates with non-type parameters (`array<T,N>`, `bitset<N>`, `span<T,E>`) — use dedicated traits.
+- **Breaks** for templates with non-type parameters (`array<T,N>`, `bitset<N>`, `span<T,E>`) - use dedicated traits.
 - Wrap in a concept for clean constrained overloads: `concept IsOptional = is_specialization_of<T, std::optional>::value;`
 - Always use `std::remove_cvref_t<T>` in the concept to handle const/ref-qualified types.

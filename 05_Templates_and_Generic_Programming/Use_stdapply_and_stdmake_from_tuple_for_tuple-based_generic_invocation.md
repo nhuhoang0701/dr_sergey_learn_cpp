@@ -10,24 +10,23 @@
 
 ### What Are `std::apply` and `std::make_from_tuple`
 
-These utilities let you **unpack a tuple** into function arguments or constructor arguments:
+These two utilities solve the same core problem from different angles: you have a tuple holding some values, and you want to use those values as separate arguments - either to call a function or to construct an object. Without these tools you'd need to unpack the tuple manually using `std::get<0>`, `std::get<1>`, and so on, which doesn't generalize across tuple sizes:
 
 ```cpp
-
 auto args = std::make_tuple(1, 3.14, "hello");
 
 // Call a function with tuple elements as separate arguments
-std::apply(some_function, args);  // → some_function(1, 3.14, "hello")
+std::apply(some_function, args);  // -> some_function(1, 3.14, "hello")
 
 // Construct an object from tuple elements
-auto obj = std::make_from_tuple<MyClass>(args);  // → MyClass(1, 3.14, "hello")
-
+auto obj = std::make_from_tuple<MyClass>(args);  // -> MyClass(1, 3.14, "hello")
 ```
+
+Both tools are available since C++17 and work with any tuple-like type (`std::tuple`, `std::pair`, `std::array`).
 
 ### Key Signatures
 
 ```cpp
-
 // C++17
 template <class F, class Tuple>
 constexpr decltype(auto) apply(F&& f, Tuple&& t);
@@ -35,7 +34,6 @@ constexpr decltype(auto) apply(F&& f, Tuple&& t);
 // C++17
 template <class T, class Tuple>
 constexpr T make_from_tuple(Tuple&& t);
-
 ```
 
 ### When to Use
@@ -53,8 +51,9 @@ constexpr T make_from_tuple(Tuple&& t);
 
 ### Q1: Use `std::apply` to invoke a function with arguments stored in a `std::tuple`
 
-```cpp
+The power of `std::apply` is that it works with any callable - free functions, lambdas, function objects, and (via a wrapping lambda) member functions. The tuple unpacking is completely generic across sizes:
 
+```cpp
 #include <iostream>
 #include <tuple>
 #include <string>
@@ -114,13 +113,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Construct a class object from a tuple of constructor arguments using `make_from_tuple`
 
-```cpp
+`std::make_from_tuple<T>` is the construction counterpart to `std::apply`. It's especially useful when you want to store constructor arguments and defer the actual construction until later - the `DeferredFactory` pattern at the end illustrates this:
 
+```cpp
 #include <iostream>
 #include <tuple>
 #include <string>
@@ -189,13 +188,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Show the equivalence between `std::apply` and a hand-rolled `index_sequence` expansion
 
-```cpp
+If you've ever wondered how `std::apply` actually works internally, here it is. The trick is `std::index_sequence` - it generates a compile-time sequence of integers `0, 1, 2, ...` that are then used as pack-expansion indices into the tuple. This is the standard pattern for unpacking tuple-like types in generic code:
 
+```cpp
 #include <iostream>
 #include <tuple>
 #include <utility>
@@ -270,15 +269,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `std::apply(f, tuple)` — unpacks tuple elements as function arguments. Available since C++17.
-- `std::make_from_tuple<T>(tuple)` — constructs `T` from tuple elements. Available since C++17.
+- `std::apply(f, tuple)` - unpacks tuple elements as function arguments. Available since C++17.
+- `std::make_from_tuple<T>(tuple)` - constructs `T` from tuple elements. Available since C++17.
 - Internally both use `std::index_sequence` to expand the pack: `std::get<0>(t), std::get<1>(t), ...`
 - Works with any tuple-like type (`std::tuple`, `std::pair`, `std::array`).
 - `std::apply` uses `std::invoke` internally, so it works with member function pointers too.

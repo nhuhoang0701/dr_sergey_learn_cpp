@@ -10,10 +10,11 @@
 
 ### Recursive Type Lists
 
-A **recursive type list** uses partial specialization and recursion to implement operations on compile-time type sequences. Each operation peels off the first type, processes it, and recurses on the rest:
+A **recursive type list** uses partial specialization and recursion to implement operations on compile-time type sequences. Each operation peels off the first type, processes it, and recurses on the rest.
+
+The reason this matters is that not every type list operation can be expressed as a single pack expansion. If what you compute for element N depends on what you already decided for elements 0 through N-1 (as in `unique` or `flatten`), you need recursion - there is no way to express that dependency in a one-shot expansion.
 
 ```cpp
-
 type_list<int, double, char>
          │
     Head: int
@@ -23,14 +24,14 @@ type_list<int, double, char>
                Tail: type_list<char>
                               │
                          Head: char
-                         Tail: type_list<>  ← base case
-
+                         Tail: type_list<>  <- base case
 ```
 
 ### Pattern: Recursive Metafunction
 
-```cpp
+Every recursive type list metafunction follows the same shape: a primary template, a base case for the empty list, and a recursive case that peels off the head and processes the tail.
 
+```cpp
 // General pattern for recursive type list operations:
 template <typename List>
 struct Operation;                           // primary (declaration)
@@ -42,7 +43,6 @@ template <typename Head, typename... Tail>
 struct Operation<type_list<Head, Tail...>> {
     // Process Head, recurse on type_list<Tail...>
 };
-
 ```
 
 ### Key Operations
@@ -61,8 +61,9 @@ struct Operation<type_list<Head, Tail...>> {
 
 ### Q1: Implement `type_list<Ts...>` and a `contains<T, List>` meta-function using partial specialization
 
-```cpp
+`contains` is a good starter because it has a clean three-case structure: empty list (false), head matches (true), head doesn't match (recurse). The `unique` metafunction at the end of this snippet is harder - it needs to accumulate a "seen so far" set, which is why it carries a `Seen` parameter that starts as an empty list and grows as types are accepted.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -75,15 +76,15 @@ struct type_list {};
 template <typename T, typename List>
 struct contains;
 
-// Base case: empty list → false
+// Base case: empty list -> false
 template <typename T>
 struct contains<T, type_list<>> : std::false_type {};
 
-// Found: head matches T → true
+// Found: head matches T -> true
 template <typename T, typename... Tail>
 struct contains<T, type_list<T, Tail...>> : std::true_type {};
 
-// Not found yet: head doesn't match → recurse on tail
+// Not found yet: head doesn't match -> recurse on tail
 template <typename T, typename Head, typename... Tail>
 struct contains<T, type_list<Head, Tail...>> : contains<T, type_list<Tail...>> {};
 
@@ -162,31 +163,29 @@ int main() {
     using Unique = unique_t<List>;
     std::cout << "unique size: " << size_v<Unique> << "\n";  // 4: int, double, char, float
     static_assert(std::is_same_v<Unique, type_list<int, double, char, float>>);
-    std::cout << "unique verified ✓\n";
+    std::cout << "unique verified\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 contains int:    true
 contains float:  true
 contains string: false
 size: 6
 index_of char: 2
 unique size: 4
-unique verified ✓
-
+unique verified
 ```
 
 ### Q2: Write a `transform_list<List, F>` that applies a meta-function `F` to each type in the list
 
-```cpp
+Here is a good illustration of when you don't need recursion. The simple `transform_simple` version uses a single pack expansion `typename F<Ts>::type...` to transform every type in one shot. The recursive version shown first is instructive but unnecessary - it's included so you can see both styles side by side.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -251,40 +250,40 @@ struct wrap_in_vector {
 int main() {
     using Input = type_list<int, double, char, float, long>;
 
-    // add_pointer: int → int*, double → double*, etc.
+    // add_pointer: int -> int*, double -> double*, etc.
     using Pointers = transform_t<Input, std::add_pointer>;
     static_assert(std::is_same_v<Pointers,
         type_list<int*, double*, char*, float*, long*>>);
-    std::cout << "add_pointer: verified ✓ (size " << size_v<Pointers> << ")\n";
+    std::cout << "add_pointer: verified (size " << size_v<Pointers> << ")\n";
 
-    // add_const: int → const int, etc.
+    // add_const: int -> const int, etc.
     using Consts = transform_t<Input, std::add_const>;
     static_assert(std::is_same_v<Consts,
         type_list<const int, const double, const char, const float, const long>>);
-    std::cout << "add_const: verified ✓\n";
+    std::cout << "add_const: verified\n";
 
     // add_lvalue_reference
     using Refs = transform_t<Input, std::add_lvalue_reference>;
     static_assert(std::is_same_v<Refs,
         type_list<int&, double&, char&, float&, long&>>);
-    std::cout << "add_lvalue_reference: verified ✓\n";
+    std::cout << "add_lvalue_reference: verified\n";
 
     // Custom: make integral types unsigned
     using Input2 = type_list<int, double, short, float>;
     using Unsigned = transform_t<Input2, make_unsigned_if_integral>;
     static_assert(std::is_same_v<Unsigned,
         type_list<unsigned int, double, unsigned short, float>>);
-    std::cout << "make_unsigned_if_integral: verified ✓\n";
+    std::cout << "make_unsigned_if_integral: verified\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Implement `flatten_list` that recursively unwraps nested `type_list`s into a single flat list
 
-```cpp
+`flatten` is the most complex of the three exercises because the recursion has two directions: into the head (if it is itself a list) and through the tail. The key is the two specializations for the recursive case - one matches a head that is a `type_list`, and one matches a plain type. Both recurse on the tail, but the first also recurses into the nested list before concatenating.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -326,7 +325,7 @@ struct flatten<type_list<>> {
     using type = type_list<>;
 };
 
-// Head is a type_list → flatten it, then concat with flattened tail
+// Head is a type_list -> flatten it, then concat with flattened tail
 template <typename... Inner, typename... Tail>
 struct flatten<type_list<type_list<Inner...>, Tail...>> {
     using flattened_head = typename flatten<type_list<Inner...>>::type;  // recurse into nested list
@@ -334,7 +333,7 @@ struct flatten<type_list<type_list<Inner...>, Tail...>> {
     using type = concat_t<flattened_head, flattened_tail>;
 };
 
-// Head is NOT a type_list → keep it, flatten tail
+// Head is NOT a type_list -> keep it, flatten tail
 template <typename Head, typename... Tail>
 struct flatten<type_list<Head, Tail...>> {
     using flattened_tail = typename flatten<type_list<Tail...>>::type;
@@ -384,25 +383,22 @@ int main() {
     static_assert(std::is_same_v<F5, type_list<int, double>>);
     std::cout << "Empty nested list removed: size = " << size_v<F5> << "\n";  // 2
 
-    std::cout << "\nAll flatten operations verified ✓\n";
+    std::cout << "\nAll flatten operations verified\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Flat list stays flat: size = 3
 One level nested: size = 4
 Two levels nested: size = 5
 Complex nesting: size = 6
 Empty nested list removed: size = 2
 
-All flatten operations verified ✓
-
+All flatten operations verified
 ```
 
 ---
@@ -410,9 +406,9 @@ All flatten operations verified ✓
 ## Notes
 
 - Recursive type list manipulation is the foundation of TMP (Template MetaProgramming).
-- **Pack expansion** (`F<Ts>::type...`) is often simpler than explicit recursion — prefer it when possible.
+- **Pack expansion** (`F<Ts>::type...`) is often simpler than explicit recursion - prefer it when possible.
 - Recursive approaches are needed when the operation depends on previously processed elements (e.g., `unique`, `flatten`).
 - Partial specialization is the mechanism that enables "pattern matching" on template arguments.
-- **Template depth limits** can be hit with very deep nesting — GCC default is ~900.
+- **Template depth limits** can be hit with very deep nesting - GCC default is about 900.
 - Libraries like Boost.Mp11 and Boost.Hana provide optimized type list operations.
 - In C++26, static reflection may replace some TMP patterns with simpler code.

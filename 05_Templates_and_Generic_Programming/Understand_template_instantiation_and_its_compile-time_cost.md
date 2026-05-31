@@ -10,27 +10,31 @@
 
 ### How Templates Generate Code
 
-Templates are **not code** — they are **recipes**. The compiler generates actual code (instantiation) for each unique set of template arguments used.
+Here's the mental model that explains most of the compile-time cost story: templates are **not code** - they are **recipes**. The compiler generates actual code (instantiation) for each unique set of template arguments you actually use. You write one template, but the compiler may generate many distinct classes from it.
 
 ```cpp
-
 Template:    vector<T>
 Usage:       vector<int>, vector<string>, vector<double>
 Generated:   3 separate classes with all member functions
-
 ```
+
+Each of those three is a completely independent class - they share no machine code at runtime.
 
 ### Why It's Expensive
 
+Once you understand that each unique argument set generates a new class, the costs in the table below follow naturally. Nested templates multiply the problem because each layer adds a new dimension of unique combinations:
+
 | Factor | Impact |
 | --- | --- |
-| Each unique `T` → separate instantiation | Multiplies code generation |
+| Each unique `T` -> separate instantiation | Multiplies code generation |
 | All member functions instantiated (if used) | More work per instantiation |
 | Nested templates (e.g., `vector<map<string,int>>`) | Exponential nesting |
 | Header-only libraries | Every TU pays the cost |
 | Linker deduplication | Linker discards duplicates but has to compare |
 
 ### Mitigation Strategies
+
+The strategies below range from a compiler directive (`extern template`) to architectural choices like type erasure. Pick the right tool based on how much control you have over which types get instantiated:
 
 | Strategy | How | When |
 | --- | --- | --- |
@@ -46,8 +50,9 @@ Generated:   3 separate classes with all member functions
 
 ### Q1: Demonstrate how explicit instantiation in a `.cpp` file reduces compile time and binary size
 
-```cpp
+The key idea here is the two-step pattern: `extern template` in the header says "don't generate this here", and `template class` in one `.cpp` says "generate it exactly here". Every other translation unit gets the compiled result for free:
 
+```cpp
 // === widget.h ===
 #ifndef WIDGET_H
 #define WIDGET_H
@@ -141,8 +146,8 @@ int main() {
     std::cout << "\n=== Cost analysis ===\n";
     std::cout << "Without extern template:\n";
     std::cout << "  Each TU using DataStore<int> generates ALL member functions\n";
-    std::cout << "  10 TUs × ~10 functions = ~100 function compilations\n";
-    std::cout << "  Linker deduplicates → wasted work\n\n";
+    std::cout << "  10 TUs x ~10 functions = ~100 function compilations\n";
+    std::cout << "  Linker deduplicates -> wasted work\n\n";
     std::cout << "With extern template:\n";
     std::cout << "  1 TU generates all member functions (widget.cpp)\n";
     std::cout << "  9 other TUs: zero template compilation for DataStore<int>\n";
@@ -150,13 +155,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Explain why each unique set of template arguments produces a separate instantiation
 
-```cpp
+The cleanest proof that `Box<int>` and `Box<double>` are truly separate classes is that each gets its own static member variable at a different address. They don't share any state:
 
+```cpp
 #include <iostream>
 #include <typeinfo>
 
@@ -211,9 +216,9 @@ int main() {
     std::cout << "The compiler generates completely independent classes.\n\n";
 
     std::cout << "This means:\n";
-    std::cout << "  vector<int>    → ~20 functions generated\n";
-    std::cout << "  vector<string> → ~20 functions generated (different code!)\n";
-    std::cout << "  vector<double> → ~20 functions generated\n";
+    std::cout << "  vector<int>    -> ~20 functions generated\n";
+    std::cout << "  vector<string> -> ~20 functions generated (different code!)\n";
+    std::cout << "  vector<double> -> ~20 functions generated\n";
     std::cout << "  Total: ~60 functions for 3 instantiations\n\n";
 
     std::cout << "Compile-time cost grows linearly with unique instantiations.\n";
@@ -221,13 +226,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Use `extern template` to suppress implicit instantiation across translation units
 
-```cpp
+Notice the two-step protocol in the comments: the header tells every including TU to stay hands-off, and exactly one `.cpp` file does the actual work. That's the entire pattern:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -284,24 +289,23 @@ int main() {
 
     std::cout << "\n=== extern template summary ===\n";
     std::cout << "Step 1: In header:  extern template class Logger<int>;\n";
-    std::cout << "  → Suppresses instantiation in every TU that includes header\n\n";
+    std::cout << "  -> Suppresses instantiation in every TU that includes header\n\n";
     std::cout << "Step 2: In one .cpp: template class Logger<int>;\n";
-    std::cout << "  → Forces instantiation in this single TU\n\n";
+    std::cout << "  -> Forces instantiation in this single TU\n\n";
     std::cout << "Result: Logger<int> compiled ONCE, linked everywhere.\n";
     std::cout << "Compile-time savings: proportional to (#TUs - 1)\n";
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Templates produce **separate code** for each unique argument set — `vector<int>` and `vector<double>` are unrelated classes.
-- Compile-time cost: proportional to (number of unique instantiations) × (number of member functions) × (number of TUs).
+- Templates produce **separate code** for each unique argument set - `vector<int>` and `vector<double>` are unrelated classes.
+- Compile-time cost: proportional to (number of unique instantiations) x (number of member functions) x (number of TUs).
 - `extern template` suppresses implicit instantiation; explicit instantiation in one `.cpp` provides the code.
-- Only works for known specializations — `extern template` cannot cover user-provided types.
-- Binary size concern: many instantiations → code bloat. Linker's ICF (Identical Code Folding) helps but isn't guaranteed.
+- Only works for known specializations - `extern template` cannot cover user-provided types.
+- Binary size concern: many instantiations -> code bloat. Linker's ICF (Identical Code Folding) helps but isn't guaranteed.
 - Advanced: type erasure (e.g., `std::function`, `std::any`) avoids template bloat at the cost of runtime overhead.

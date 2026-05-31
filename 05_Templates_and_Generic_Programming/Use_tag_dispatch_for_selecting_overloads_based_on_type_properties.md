@@ -11,10 +11,11 @@
 
 ### What Is Tag Dispatch
 
-Tag dispatch uses **empty tag types** (like `std::true_type`, `std::false_type`, or iterator category tags) as function parameters to select the correct overload at compile time:
+Tag dispatch uses **empty tag types** (like `std::true_type`, `std::false_type`, or iterator category tags) as function parameters to select the correct overload at compile time. The tag carries no data - its only purpose is to route the call to the right overload.
+
+Here is the basic pattern:
 
 ```cpp
-
 // Tag types (empty structs used only for overload selection)
 struct fast_tag {};
 struct slow_tag {};
@@ -26,23 +27,20 @@ void process(int x, slow_tag) { /* O(n) algorithm */ }
 template <typename T>
 void process(T x) {
     if constexpr (sizeof(T) <= 8)
-        process(x, fast_tag{});   // small → fast path
+        process(x, fast_tag{});   // small -> fast path
     else
-        process(x, slow_tag{});   // large → slow path
+        process(x, slow_tag{});   // large -> slow path
 }
-
 ```
 
 ### How `std::advance` Uses Tag Dispatch
 
-The standard library's `std::advance` selects the algorithm based on iterator category:
+The standard library's `std::advance` is the textbook example. It picks a completely different algorithm depending on what the iterator can do:
 
 ```cpp
-
-random_access_iterator_tag  →  it += n        (O(1))
-bidirectional_iterator_tag  →  ++it / --it    (O(n))
-input_iterator_tag          →  ++it only      (O(n), forward only)
-
+random_access_iterator_tag  ->  it += n        (O(1))
+bidirectional_iterator_tag  ->  ++it / --it    (O(n))
+input_iterator_tag          ->  ++it only      (O(n), forward only)
 ```
 
 ### Tag Dispatch vs Alternatives
@@ -60,8 +58,9 @@ input_iterator_tag          →  ++it only      (O(n), forward only)
 
 ### Q1: Implement `advance()` using tag dispatch on `iterator_category` (random vs bidirectional vs input)
 
-```cpp
+The dispatcher extracts the iterator category tag type from `std::iterator_traits` and constructs a temporary instance of it. That instance is passed to one of the three `advance_impl` overloads, and normal overload resolution picks the right one at compile time.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <list>
@@ -133,13 +132,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `random_access_iterator_tag` inherits from `bidirectional_iterator_tag` in the standard hierarchy, so the most derived matching overload wins. That is why the vector iterator correctly calls the `random_access` version even though a `bidirectional` overload also exists.
 
 ### Q2: Compare tag dispatch with `if constexpr` for the same selection and explain when each is better
 
-```cpp
+Both approaches produce identical runtime behavior here - the choice is about readability, extensibility, and which C++ version you are targeting.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -191,12 +192,12 @@ int main() {
     std::string dst_s[3];
 
     std::cout << "=== Tag dispatch ===\n";
-    copy_v1(src_i, dst_i, 3);  // trivial → memcpy
-    copy_v1(src_s, dst_s, 3);  // non-trivial → loop
+    copy_v1(src_i, dst_i, 3);  // trivial -> memcpy
+    copy_v1(src_s, dst_s, 3);  // non-trivial -> loop
 
     std::cout << "\n=== if constexpr ===\n";
-    copy_v2(src_i, dst_i, 3);  // trivial → memcpy
-    copy_v2(src_s, dst_s, 3);  // non-trivial → loop
+    copy_v2(src_i, dst_i, 3);  // trivial -> memcpy
+    copy_v2(src_s, dst_s, 3);  // non-trivial -> loop
 
     std::cout << "\n=== When to use which? ===\n";
     std::cout << "Tag dispatch:\n";
@@ -215,13 +216,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The reason tag dispatch still has a place even in C++17 codebases: when you have more than two categories (like the three iterator categories above), `if constexpr` chains become a ladder of `else if`. Tag dispatch gives you naturally separate, independently readable functions instead.
 
 ### Q3: Show how `std::true_type` and `std::false_type` are used as dispatch tags
 
-```cpp
+`std::true_type` and `std::false_type` are themselves empty structs with a `value` member. Standard type traits inherit from them, which means you can pass a trait instantiation directly as a tag - no intermediate conversion needed.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <cstring>
@@ -235,13 +238,13 @@ int main() {
 // === Example 1: Optimize destruction ===
 template <typename T>
 void destroy_impl(T* ptr, size_t n, std::true_type /*trivially_destructible*/) {
-    std::cout << "  Trivially destructible → no-op\n";
+    std::cout << "  Trivially destructible -> no-op\n";
     // Nothing to do!
 }
 
 template <typename T>
 void destroy_impl(T* ptr, size_t n, std::false_type /*trivially_destructible*/) {
-    std::cout << "  Non-trivial → calling destructors\n";
+    std::cout << "  Non-trivial -> calling destructors\n";
     for (size_t i = 0; i < n; ++i)
         ptr[i].~T();
 }
@@ -290,16 +293,16 @@ void analyze_passing(const T& val) {
 int main() {
     std::cout << "=== Destruction dispatch ===\n";
     int arr_int[3] = {1, 2, 3};
-    destroy(arr_int, 3);  // trivial → no-op
+    destroy(arr_int, 3);  // trivial -> no-op
 
     std::string arr_str[2] = {"a", "b"};
-    destroy(arr_str, 0);  // non-trivial → destructors (n=0 here for safety)
+    destroy(arr_str, 0);  // non-trivial -> destructors (n=0 here for safety)
 
     std::cout << "\n=== Serialization dispatch ===\n";
     int x = 42;
-    serialize(x);                      // trivial → binary
+    serialize(x);                      // trivial -> binary
     std::string s = "hello";
-    serialize(s);                      // non-trivial → custom
+    serialize(s);                      // non-trivial -> custom
 
     std::cout << "\n=== Custom bool_constant dispatch ===\n";
     analyze_passing(42);               // small
@@ -310,8 +313,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `is_small` alias shows how `std::bool_constant<expr>` lets you turn any compile-time boolean expression into a tag. This is the bridge between a trait check and the dispatch mechanism.
 
 ---
 
@@ -322,4 +326,4 @@ int main() {
 - `std::bool_constant<expr>` creates custom true/false tags from compile-time expressions.
 - **Advantage**: pre-C++17, naturally extensible, separate function bodies.
 - **Disadvantage**: more boilerplate than `if constexpr` or concepts.
-- In modern C++ (20+), prefer **concepts** for new code — tag dispatch is still useful in library code.
+- In modern C++ (20+), prefer **concepts** for new code - tag dispatch is still useful in library code.

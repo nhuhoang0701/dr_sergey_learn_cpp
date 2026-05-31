@@ -11,34 +11,36 @@
 
 ### Constraining Return Types with Concepts
 
-Most developers learn concepts for constraining **parameters**. But C++20 also lets you constrain **return types** using a **constrained placeholder** (`ConceptName auto`):
+Most developers discover concepts through parameter constraints first. But C++20 also lets you constrain **return types** using a **constrained placeholder** (`ConceptName auto`). The idea is the same as a constrained parameter, just applied to the return type instead:
 
 ```cpp
-
 // Constrained PARAMETER (common):
 void process(std::integral auto x);
 
 // Constrained RETURN TYPE (this topic):
 std::integral auto getCount();    // return type MUST satisfy std::integral
-
 ```
+
+This is more than a documentation hint - the compiler actively enforces it and will reject your function if the deduced return type doesn't satisfy the concept.
 
 ### How Return Type Constraints Work
 
-When you write `std::integral auto getCount()`, the compiler:
+When you write `std::integral auto getCount()`, the compiler does three things:
 
 1. **Deduces** the return type from the `return` statement (like `auto`)
 2. **Checks** that the deduced type satisfies the concept
 3. **Rejects** the code at compile time if the constraint fails
 
-```cpp
+Here's what that looks like in practice:
 
+```cpp
 std::integral auto getCount() {
     return 42;     // OK: int satisfies std::integral
     // return 3.14; // ERROR: double does NOT satisfy std::integral
 }
-
 ```
+
+The constraint is checked at the call site where the function is defined, not where it's called - so if your implementation accidentally returns a `double`, you get an error right there in your own code, not somewhere downstream.
 
 ### Where You Can Constrain Return Types
 
@@ -56,8 +58,9 @@ std::integral auto getCount() {
 
 ### Q1: Write a function template where the return type is constrained: `std::integral auto getCount()`
 
-```cpp
+Notice how each function below documents its return contract in the signature - a reader can immediately see that `totalItems()` returns some integral type without reading the implementation:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <vector>
@@ -75,7 +78,7 @@ std::integral auto getCount() {
 // The return type is deduced but must satisfy std::integral
 template <typename Container>
 std::integral auto countElements(const Container& c) {
-    return static_cast<int>(c.size());  // size_t → int, both integral
+    return static_cast<int>(c.size());  // size_t -> int, both integral
 }
 
 // === Custom concept for return type constraint ===
@@ -84,7 +87,7 @@ concept NonNegative = std::integral<T> && std::is_unsigned_v<T>;
 
 template <typename Container>
 NonNegative auto safeSize(const Container& c) {
-    return c.size();  // size_t is unsigned integral → satisfies NonNegative
+    return c.size();  // size_t is unsigned integral -> satisfies NonNegative
 }
 
 // === Floating point return constraint ===
@@ -137,74 +140,66 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Explain what the compiler checks when the return type is a constrained placeholder
 
-When you write a constrained placeholder return type, the compiler performs these checks:
+It helps to think of `std::integral auto` as two instructions to the compiler: "deduce this like `auto`, then verify it." The steps happen in sequence, and if the second step fails you get a clear error that points right at the return statement:
 
 **Step-by-step compilation:**
 
 ```cpp
-
 std::integral auto getCount() {
     return 42;
 }
-
 ```
 
-1. **Type deduction:** The compiler deduces the return type from `return 42;` → `int`
-2. **Concept check:** The compiler evaluates `std::integral<int>` → `true`
+1. **Type deduction:** The compiler deduces the return type from `return 42;` -> `int`
+2. **Concept check:** The compiler evaluates `std::integral<int>` -> `true`
 3. **If check fails:** Hard compile error with a clear diagnostic
 
 ```cpp
-
 std::integral auto getFraction() {
     return 3.14;  // Deduced: double
-    // Concept check: std::integral<double> → false
+    // Concept check: std::integral<double> -> false
     // ERROR: deduced return type 'double' does not satisfy 'integral'
 }
-
 ```
 
 **What exactly is checked:**
 
 | Check | Description |
 | --- | --- |
-| Type deduction | Same rules as plain `auto` — deduced from return expression |
+| Type deduction | Same rules as plain `auto` - deduced from return expression |
 | Concept satisfaction | The deduced type is substituted into the concept |
 | All return paths | Every `return` statement must deduce the **same** type |
 | Constraint consistency | The single deduced type must satisfy the concept |
 
-**Multiple return statements:**
+**Multiple return statements** - the same consistency rule as plain `auto` applies: all return paths must deduce the same type, and that type must satisfy the concept:
 
 ```cpp
-
 std::integral auto getValue(bool flag) {
     if (flag) return 42;      // deduces int
     else return 100;           // also int — OK
     // else return 3.14;       // ERROR: inconsistent deduction (double vs int)
 }
-
 ```
 
-**The constraint is on the deduced type, not on the expression:**
+**The constraint is on the deduced type, not on the expression** - a cast is fine as long as the cast result is the right type:
 
 ```cpp
-
 std::integral auto weird() {
     double x = 3.14;
     return static_cast<int>(x);  // Expression involves double, but return TYPE is int
-    // std::integral<int> → OK!
+    // std::integral<int> -> OK!
 }
-
 ```
 
 ### Q3: Show how to express 'this function returns something that satisfies a concept' in a concept definition
 
-```cpp
+Inside a `requires` expression, you use the **compound requirement** syntax `{ expr } -> ConceptName` to state that an expression must be valid and its result type must satisfy a concept. This is how you write concepts that check what operations return, not just whether they compile:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <string>
@@ -219,8 +214,8 @@ std::integral auto weird() {
 // Concept: T must have a .size() that returns something integral
 template <typename T>
 concept HasIntegralSize = requires(T t) {
-    { t.size() } -> std::integral;  
-    // ≡ std::integral<decltype(t.size())> must be true
+    { t.size() } -> std::integral;
+    // equivalent to: std::integral<decltype(t.size())> must be true
 };
 
 // Concept: T must have .begin() returning something that satisfies input_iterator
@@ -297,14 +292,13 @@ int main() {
 //   Elements: h e l l o
 //   Created: world
 //   applyTwice(double, 3) = 12
-
 ```
 
 ---
 
 ## Notes
 
-- **`ConceptName auto f()`** constrains the return type — the deduced type must satisfy the concept.
+- **`ConceptName auto f()`** constrains the return type - the deduced type must satisfy the concept.
 - The compiler deduces the return type using standard `auto` rules, then checks the concept.
 - All `return` statements must deduce the **same type** (same rule as plain `auto` return).
 - In concept definitions, use **compound requirements** `{ expr } -> Concept` to constrain what an expression returns.

@@ -11,17 +11,15 @@
 
 ### Building a Type-Trait-Based JSON Serializer
 
-The goal is a `to_json(T)` function that automatically serializes any supported type to a JSON string, using type traits and `if constexpr` to select the encoding:
+The goal is a `to_json(T)` function that automatically serializes any supported type to a JSON string, using type traits and `if constexpr` to select the encoding. This is a practical example where you can see type introspection directly solving a real problem:
 
 ```cpp
-
-to_json(42)          → "42"
-to_json(3.14)        → "3.14"
-to_json(true)        → "true"
-to_json("hello")     → "\"hello\""
-to_json(vector{1,2}) → "[1,2]"
-to_json(MyType{})    → calls MyType::to_json() if it exists
-
+to_json(42)          -> "42"
+to_json(3.14)        -> "3.14"
+to_json(true)        -> "true"
+to_json("hello")     -> "\"hello\""
+to_json(vector{1,2}) -> "[1,2]"
+to_json(MyType{})    -> calls MyType::to_json() if it exists
 ```
 
 ### Type Detection Strategy
@@ -34,7 +32,7 @@ to_json(MyType{})    → calls MyType::to_json() if it exists
 | `number` (float) | `std::is_floating_point_v<T>` |
 | `string` | `std::is_convertible_v<T, std::string>` or `std::string`/`string_view` |
 | `array` | Has `.begin()`, `.end()`, `.size()` (range-like) |
-| `object` | Custom — user-defined `to_json()` method |
+| `object` | Custom - user-defined `to_json()` method |
 
 ---
 
@@ -42,8 +40,9 @@ to_json(MyType{})    → calls MyType::to_json() if it exists
 
 ### Q1: Detect array, object, string, number, and bool types using type traits in a `serialize<T>` function
 
-```cpp
+The important ordering point here is that `bool` is an integral type in C++, so if you check `is_integral` before `is_same<T, bool>` you will serialize `true` as `"1"` instead of `"true"`. The `if constexpr` chain must handle the more specific case first.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -164,15 +163,15 @@ int main() {
 //   strings: ["a","b"]
 //   map:    {"x":1,"y":2}
 //   nested: [[1,2],[3,4]]
-
 ```
+
+The `MapLike` concept is checked before `RangeLike` because a `std::map` satisfies both - the more specific one must win.
 
 ### Q2: Use `if constexpr` chains to select the correct JSON encoding for each detected category
 
-The key insight is **`if constexpr` is evaluated at compile time** — only the matching branch is compiled:
+The key insight is that **`if constexpr` is evaluated at compile time** - only the matching branch is compiled for any given type. This matters because some branches contain code that would not even compile for the wrong type, such as calling `std::to_string` on a `std::string`.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -184,32 +183,32 @@ template <typename T>
 std::string json_encode(const T& value) {
     // Order matters! Check bool BEFORE integral (bool is integral)
     if constexpr (std::is_same_v<std::decay_t<T>, bool>) {
-        // Branch 1: bool → "true"/"false"
+        // Branch 1: bool -> "true"/"false"
         return value ? "true" : "false";
     }
     else if constexpr (std::is_integral_v<T>) {
-        // Branch 2: integers → digits
+        // Branch 2: integers -> digits
         return std::to_string(value);
     }
     else if constexpr (std::is_floating_point_v<T>) {
-        // Branch 3: floating point → decimal
+        // Branch 3: floating point -> decimal
         std::ostringstream oss;
         oss << value;
         return oss.str();
     }
     else if constexpr (std::is_convertible_v<T, std::string_view>) {
-        // Branch 4: string-like → quoted
+        // Branch 4: string-like -> quoted
         return "\"" + std::string(value) + "\"";
     }
     else {
-        // Branch 5: unsupported → compile-time error
+        // Branch 5: unsupported -> compile-time error
         static_assert(!sizeof(T*), "Type not supported");
     }
 }
 
 // Why order matters:
-// bool is_integral → true!  So we MUST check bool first
-// const char* is_convertible_to<string_view> → true
+// bool is_integral -> true!  So we MUST check bool first
+// const char* is_convertible_to<string_view> -> true
 
 int main() {
     std::cout << "=== if constexpr branching ===\n";
@@ -221,18 +220,18 @@ int main() {
     std::cout << "\n=== Why if constexpr, not regular if ===\n";
     std::cout << "Regular if: ALL branches must compile for ALL types\n";
     std::cout << "if constexpr: only the MATCHING branch is compiled\n";
-    std::cout << "→ to_string(string) would fail in regular if, but\n";
+    std::cout << "-> to_string(string) would fail in regular if, but\n";
     std::cout << "  with if constexpr, it's never instantiated for strings\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Add a custom `to_json(T)` detection concept to allow opt-in user-defined serialization
 
-```cpp
+This is the extensibility story. Rather than the serializer knowing every type up front, you let user types opt in either by providing a `.to_json()` member or a free function discoverable via ADL.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -358,15 +357,16 @@ int main() {
 //   Rect:  {"origin":{"x":0,"y":0},"w":100.000000,"h":50.000000}
 //   Color: {"r":255,"g":128,"b":0}
 //   Points: [{"x":0,"y":0},{"x":1,"y":1},{"x":2,"y":3}]
-
 ```
+
+The two opt-in patterns - member function and ADL friend - give users flexibility. If the type is in third-party code you cannot modify, you can provide a `to_json_adl` free function in the same namespace. If it is your own type, the member function is usually cleaner.
 
 ---
 
 ## Notes
 
-- `if constexpr` selects the serialization branch at compile time — non-matching branches aren't compiled.
-- Check `bool` before `integral` — `bool` satisfies `is_integral`!
+- `if constexpr` selects the serialization branch at compile time - non-matching branches aren't compiled.
+- Check `bool` before `integral` - `bool` satisfies `is_integral`!
 - Use concepts (`CustomJsonSerializable`) or SFINAE to detect user-defined serialization hooks.
 - Two opt-in patterns: **member function** `T::to_json()` and **ADL friend** `to_json_adl(T)`.
 - `static_assert(!sizeof(T*), "msg")` in the `else` branch gives a readable error for unsupported types.

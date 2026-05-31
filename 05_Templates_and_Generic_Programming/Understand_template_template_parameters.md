@@ -10,10 +10,9 @@
 
 ### What Are Template Template Parameters
 
-A **template template parameter** is a template parameter that is itself a template. It lets you parameterize a class or function on the **container template** rather than a concrete type.
+A **template template parameter** is a template parameter that is itself a template. The key insight is that it lets you parameterize a class or function on the **container template** rather than a concrete instantiated type. The difference is subtle but important: you're saying "I want something that acts like a container template" rather than "I want a specific container of a specific element type."
 
 ```cpp
-
 // Regular:      takes a TYPE
 template <typename T> class Box {};
 
@@ -25,23 +24,26 @@ class Stack {
 
 Stack<std::vector, int> s;    // storage_ is vector<int>
 Stack<std::deque, double> s2; // storage_ is deque<double>
-
 ```
+
+Notice that when you write `Stack<std::vector, int>`, you're passing the `std::vector` template itself - not `std::vector<int>`. The `Stack` template then plugs in `T` to form the concrete type internally.
 
 ### Syntax
 
-```cpp
+The syntax wraps the inner template's parameter list inside the outer template parameter:
 
+```cpp
 template <template <typename...> class Name>   // Using typename...
 //        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 //        template template parameter
 
 template <template <typename> class Name>      // Exactly one type param
 template <template <typename, typename> class Name>  // Exactly two
-
 ```
 
 ### `typename...` vs Fixed Params
+
+The choice between `typename...` and a fixed-arity form matters because standard containers like `std::vector` have more than one template parameter (the second being the allocator). If you lock your parameter to exactly one type argument, `std::vector` won't match:
 
 | Syntax | Matches |
 | --- | --- |
@@ -57,8 +59,9 @@ In C++17+, `template<typename...>` can match templates with default arguments (l
 
 ### Q1: Write a class template that accepts a container template as a parameter: `template<template<typename...> class Container>`
 
-```cpp
+The caller chooses which container to use - `std::vector`, `std::deque`, `std::list` - and the template instantiates it with `T`. Everything else about `DataBuffer` stays the same regardless of which container you pick:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <deque>
@@ -119,13 +122,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Explain a case where template template parameters fail with standard library containers that have default allocators
 
-```cpp
+The reason this trips people up is that `std::vector` is not `template<typename T>` - it's `template<typename T, typename Alloc>`. If your template template parameter expects exactly one type parameter, the match fails. The `typename...` variadic form solves this in C++11 and later, and C++17 relaxed the matching rules further:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <map>
@@ -168,8 +171,8 @@ public:
 };
 
 // === Problem with non-type template params ===
-// std::array<T, N> has a NON-TYPE parameter → cannot match template<typename...>
-// template<template<typename...> class C> → does NOT match std::array
+// std::array<T, N> has a NON-TYPE parameter -> cannot match template<typename...>
+// template<template<typename...> class C> -> does NOT match std::array
 
 int main() {
     // Works with typename...
@@ -186,18 +189,18 @@ int main() {
     std::cout << "\n=== Common pitfalls ===\n";
     std::cout << "1. Pre-C++17: template<typename> class doesn't match vector (has 2 params)\n";
     std::cout << "   Fix: use template<typename...> class or alias templates\n";
-    std::cout << "2. std::array<T,N> has non-type param → can't match typename...\n";
+    std::cout << "2. std::array<T,N> has non-type param -> can't match typename...\n";
     std::cout << "3. std::map<K,V,Comp,Alloc> has 4 params but typename... matches in C++17\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Rewrite a template template parameter example using type aliases to simplify the interface
 
-```cpp
+Often the simplest fix for complex template template parameter syntax is to expose a cleaner alias to your users - or to skip template template parameters entirely and just take the fully-instantiated container type. The third approach shown here is worth knowing because it sidesteps the whole matching problem:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <deque>
@@ -269,13 +272,12 @@ int main() {
     simple.print("Simple");
 
     std::cout << "\nRecommendation:\n";
-    std::cout << "  1. If you need to rebind container to different types → template template\n";
-    std::cout << "  2. If container type is fixed → pass full type (simplest)\n";
+    std::cout << "  1. If you need to rebind container to different types -> template template\n";
+    std::cout << "  2. If container type is fixed -> pass full type (simplest)\n";
     std::cout << "  3. Use type aliases to hide template template complexity from users\n";
 
     return 0;
 }
-
 ```
 
 ---
@@ -283,7 +285,7 @@ int main() {
 ## Notes
 
 - Template template parameters let you parameterize on a **template** rather than a concrete type.
-- Syntax: `template <template <typename...> class Container>` — note the `class` keyword (or `typename` in C++17+).
+- Syntax: `template <template <typename...> class Container>` - note the `class` keyword (or `typename` in C++17+).
 - Use `typename...` to match containers with default template arguments (allocators, comparators).
 - C++17 relaxed matching rules: `template<typename>` can now match `vector<T, Alloc>` if `Alloc` has a default.
 - Type aliases simplify the user interface: `using VecStack = Stack<std::vector, int>;`

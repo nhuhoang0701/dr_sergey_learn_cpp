@@ -11,22 +11,23 @@
 
 ### What Is Type Erasure
 
-**Type erasure** hides concrete types behind a uniform interface. The caller interacts with a non-template type, while the implementation uses templates internally to handle any concrete type:
+**Type erasure** hides concrete types behind a uniform interface. The caller interacts with a non-template type, while the implementation uses templates internally to handle any concrete type.
+
+The problem it solves is that you sometimes want to store objects of different types in the same container, or pass them around without the caller knowing what the concrete type is. Inheritance can do this, but it requires every type to derive from a base class - which you can't always control. Type erasure solves it without that constraint.
 
 ```cpp
-
 // User sees:
 Function<int(int, int)> f = [](int a, int b) { return a + b; };
-f(3, 4);  // calls the lambda — type of lambda is erased
+f(3, 4);  // calls the lambda - type of lambda is erased
 
 // Internally: a virtual base class stores the concrete callable
-
 ```
 
 ### The Type Erasure Pattern
 
-```cpp
+The standard recipe has three parts. The **Concept** is an abstract base class with the interface you want to expose. The **Model** is a templated class that inherits from Concept and wraps a concrete object. The **Wrapper** is what the user actually holds - a non-template class that owns a `unique_ptr<Concept>` pointing at a `Model<T>`.
 
+```cpp
 ┌─────────────────────────────────────────────────┐
 │ Type-Erased Wrapper (e.g., Function<Sig>)       │
 │                                                  │
@@ -45,7 +46,6 @@ f(3, 4);  // calls the lambda — type of lambda is erased
 │                                                  │
 │  unique_ptr<Concept> pimpl_;                     │
 └─────────────────────────────────────────────────┘
-
 ```
 
 ### Standard Library Type-Erased Types
@@ -63,8 +63,9 @@ f(3, 4);  // calls the lambda — type of lambda is erased
 
 ### Q1: Implement a simplified `std::function` using type erasure with virtual dispatch internally
 
-```cpp
+The partial specialization on `R(Args...)` is what lets you write `Function<int(int,int)>` and have the compiler split that into a return type `R = int` and argument types `Args... = int, int`. The `clone()` virtual function is needed to make copies work - since `pimpl_` is a `unique_ptr`, copying the wrapper means calling `clone()` to get a fresh heap object of the right type.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <utility>
@@ -72,7 +73,7 @@ f(3, 4);  // calls the lambda — type of lambda is erased
 
 // === Simplified std::function using type erasure ===
 
-// Primary template (undefined) — only the partial specialization below is used
+// Primary template (undefined) - only the partial specialization below is used
 template <typename Signature>
 class Function;
 
@@ -172,26 +173,26 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `Function` itself is not a template in the way users see it - it takes a signature string like `int(int,int)`. That signature is split by the partial specialization, and the Model template handles the actual callable type internally.
 
 **Expected output:**
 
 ```text
-
 Lambda:   f1(3, 4) = 7
 FuncPtr:  f2(3, 4) = 7
 Functor:  f3(6) = 30
 Copy:     f4(10, 20) = 30
 Stateful: counter = 3
 empty: empty
-
 ```
 
 ### Q2: Explain why `std::any` uses type erasure and what the Small Buffer Optimization achieves
 
-```cpp
+`std::any` needs to hold any copyable type without knowing at compile time what that type will be. That is the defining use case for type erasure. The interesting implementation detail is the Small Buffer Optimization (SBO): instead of always allocating on the heap, the implementation stores small objects directly inside the `std::any` object itself. This eliminates heap allocation for common small types like `int` and `double`.
 
+```cpp
 #include <iostream>
 #include <any>
 #include <string>
@@ -246,8 +247,8 @@ int main() {
     std::cout << "  sizeof(any) = " << sizeof(std::any) << " bytes\n";
     std::cout << "  Typical SBO buffer: 16-32 bytes\n\n";
 
-    std::cout << "  Small types (int, double, ptr): stored in-place → no allocation\n";
-    std::cout << "  Large types (string, vector):   stored on heap → one allocation\n\n";
+    std::cout << "  Small types (int, double, ptr): stored in-place -> no allocation\n";
+    std::cout << "  Large types (string, vector):   stored on heap -> one allocation\n\n";
 
     std::cout << "Benefits of SBO:\n";
     std::cout << "  1. No heap allocation for small types (int, double, pointers)\n";
@@ -257,13 +258,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Compare virtual dispatch type erasure with template-based type erasure (CRTP) in terms of call overhead
 
-```cpp
+The fundamental trade-off is heterogeneity versus performance. Virtual dispatch lets you store objects of different types in one container - that requires a runtime vtable lookup per call. CRTP eliminates the indirection entirely, but every type is statically distinct, so you can't mix them in a single container.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -293,7 +294,7 @@ public:
     void draw() const { pimpl_->draw(); }
 };
 
-// === Approach 2: CRTP (Static Polymorphism) — no type erasure ===
+// === Approach 2: CRTP (Static Polymorphism) - no type erasure ===
 template <typename Derived>
 class Drawable_CRTP {
 public:
@@ -323,28 +324,28 @@ int main() {
     std::cout << "=== Virtual Dispatch vs CRTP Comparison ===\n\n";
 
     std::cout << "Feature              Virtual Dispatch         CRTP (Static)\n";
-    std::cout << "─────────────────    ───────────────────      ──────────────\n";
+    std::cout << "-------------------  -----------------------  -------------\n";
     std::cout << "Call overhead        1 vtable indirection     Zero (inlined)\n";
     std::cout << "Memory overhead      vtable ptr + heap alloc  No overhead\n";
-    std::cout << "Heterogeneous coll.  ✅ Yes (value semantic)  ❌ No (diff types)\n";
-    std::cout << "Runtime flexibility  ✅ Yes                   ❌ No\n";
+    std::cout << "Heterogeneous coll.  Yes (value semantic)     No (diff types)\n";
+    std::cout << "Runtime flexibility  Yes                      No\n";
     std::cout << "Compile time         Fast                     Slower (more templates)\n";
-    std::cout << "Can inline?          ❌ Not usually           ✅ Yes, always\n";
-    std::cout << "Cache friendly?      ❌ (pointer chasing)     ✅ (contiguous data)\n\n";
+    std::cout << "Can inline?          Not usually              Yes, always\n";
+    std::cout << "Cache friendly?      No (pointer chasing)     Yes (contiguous data)\n\n";
 
     // Virtual dispatch: can store different types in one container
     std::vector<Drawable_Virtual> shapes;
     shapes.push_back(Drawable_Virtual(Circle{}));
     shapes.push_back(Drawable_Virtual(Square{}));
     for (const auto& s : shapes) {
-        s.draw();  // virtual call → indirect (vtable lookup)
+        s.draw();  // virtual call -> indirect (vtable lookup)
     }
     std::cout << "Virtual: drew " << shapes.size() << " shapes (heterogeneous)\n";
 
-    // CRTP: each type is separate — no heterogeneous container
+    // CRTP: each type is separate - no heterogeneous container
     std::vector<Circle_CRTP> circles(100);
     for (const auto& c : circles) {
-        c.draw();  // static call → inlined, no overhead
+        c.draw();  // static call -> inlined, no overhead
     }
     std::cout << "CRTP: drew " << circles.size() << " circles (homogeneous)\n";
 
@@ -361,7 +362,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -370,8 +370,8 @@ int main() {
 
 - Type erasure = templates (internal) + virtual dispatch (hidden from user) + value semantics (external).
 - The three core components: **Concept** (abstract interface), **Model** (templated implementation), **Wrapper** (user-facing non-template).
-- `std::function` has overhead from heap allocation + virtual dispatch — avoid in hot loops.
-- **SBO** typically stores objects up to ~32 bytes inline (implementation-dependent).
+- `std::function` has overhead from heap allocation + virtual dispatch - avoid in hot loops.
+- **SBO** typically stores objects up to about 32 bytes inline (implementation-dependent).
 - `std::move_only_function` (C++23) avoids the copy requirement, enabling unique_ptr captures.
 - Sean Parent's "Inheritance Is The Base Class of Evil" talk popularized this pattern.
-- For maximum performance, consider `std::function_ref` (C++26) — no ownership, no allocation.
+- For maximum performance, consider `std::function_ref` (C++26) - no ownership, no allocation.

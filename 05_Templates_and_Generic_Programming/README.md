@@ -1,6 +1,6 @@
 # Templates & Generic Programming
 
-Function/class templates, SFINAE, variadic templates, template metaprogramming, and fold expressions.
+Templates are one of C++'s most powerful - and most intimidating - features. Once it clicks, though, you'll find yourself reaching for them constantly. This section covers everything from basic function templates to SFINAE, concepts, variadic packs, and template metaprogramming.
 
 **Topics:** 38
 
@@ -48,11 +48,11 @@ Function/class templates, SFINAE, variadic templates, template metaprogramming, 
 ## Notes
 
 - SFINAE (Substitution Failure Is Not An Error) enables compile-time overload selection
-- Prefer C++20 concepts over SFINAE — they give clearer error messages and intent
-- Template instantiation happens at use site — put definitions in headers (or use explicit instantiation)
+- Prefer C++20 concepts over SFINAE - they give clearer error messages and intent
+- Template instantiation happens at use site - put definitions in headers (or use explicit instantiation)
 - Variadic templates use parameter packs and fold expressions (C++17) for clean recursive patterns
 - CRTP (Curiously Recurring Template Pattern) provides static polymorphism without virtual dispatch
-- Type erasure combines templates and runtime polymorphism — see std::function, std::any
+- Type erasure combines templates and runtime polymorphism - see std::function, std::any
 - Non-type template parameters (NTTP) can be floating-point and class types since C++20
 - Template specialization (full and partial) customizes behavior for specific types
 - Two-phase lookup: non-dependent names resolve at definition, dependent names at instantiation

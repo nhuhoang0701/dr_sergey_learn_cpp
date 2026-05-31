@@ -11,14 +11,12 @@
 
 ### What Is `std::function_ref`
 
-`std::function_ref` is a **non-owning**, **lightweight** type-erased callable wrapper coming in C++26. It's like a "reference" to a callable — no heap allocation, no ownership:
+`std::function_ref` is a **non-owning**, **lightweight** type-erased callable wrapper coming in C++26. Think of it as a "borrow" of a callable - it stores just two pointers and does zero heap allocation, but it does not own what it points to:
 
 ```cpp
-
 void apply(std::function_ref<int(int)> f, int x) {
     std::cout << f(x);  // Calls through the reference
 }
-
 ```
 
 ### Comparison with Other Callable Wrappers
@@ -30,17 +28,17 @@ void apply(std::function_ref<int(int)> f, int x) {
 | Owns callable | Yes (copies/moves) | No (reference only) | Depends |
 | Nullable | Yes (`operator bool`) | No (always valid) | N/A |
 | Size | ~32-64 bytes | ~16 bytes (2 pointers) | 0 (compile-time) |
-| Can store | Yes | No — must not outlive callable | N/A |
-| Copy | Copies callable | No copy — must not dangle | Copies callable |
+| Can store | Yes | No - must not outlive callable | N/A |
+| Copy | Copies callable | No copy - must not dangle | Copies callable |
 
 ### When to Use Each
 
+Here is the short decision rule:
+
 ```cpp
-
-Need to STORE callable for later?    → std::function (owns it)
-Need to PASS callable to a function? → std::function_ref (cheapest type-erasure)
-Need maximum performance?            → template<typename F> (no type erasure)
-
+Need to STORE callable for later?    -> std::function (owns it)
+Need to PASS callable to a function? -> std::function_ref (cheapest type-erasure)
+Need maximum performance?            -> template<typename F> (no type erasure)
 ```
 
 ---
@@ -49,8 +47,11 @@ Need maximum performance?            → template<typename F> (no type erasure)
 
 ### Q1: Replace a `std::function` parameter with `std::function_ref` where ownership is not needed
 
-```cpp
+The problem with `std::function` as a parameter type is that it does more than you need: it copies the callable, may heap-allocate, and checks for null on every call. If the callable only needs to live for the duration of one call, `function_ref` is the right tool.
 
+Since `std::function_ref` is C++26, this example uses a manual implementation to demonstrate the concept:
+
+```cpp
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -138,13 +139,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Show that `function_ref` has no heap allocation and a smaller size than `std::function`
 
-```cpp
+The size difference follows directly from the design: `function_ref` is two pointers - one to the callable object and one to the dispatch function. `std::function` needs additional storage for small-buffer optimization, a deleter, and type metadata.
 
+```cpp
 #include <iostream>
 #include <functional>
 #include <cstddef>
@@ -175,7 +176,7 @@ int main() {
     std::cout << "sizeof(function_ref<int(int)>):   "
               << sizeof(function_ref<int(int)>) << " bytes\n";
     // Typically 16 bytes (2 pointers)
-    
+
     std::cout << "sizeof(std::function<int(int)>):  "
               << sizeof(std::function<int(int)>) << " bytes\n";
     // Typically 32-64 bytes (SBO buffer + vtable pointer + etc.)
@@ -198,21 +199,19 @@ int main() {
     std::cout << "\nref(42) = " << ref(42) << "\n";  // 42
 
     std::cout << "\n=== Performance benefit ===\n";
-    std::cout << "function_ref: no allocation → no cache miss, no indirection to heap\n";
-    std::cout << "std::function: may heap-allocate → potential cache miss\n";
+    std::cout << "function_ref: no allocation -> no cache miss, no indirection to heap\n";
+    std::cout << "std::function: may heap-allocate -> potential cache miss\n";
     std::cout << "Template param: zero overhead, but can't be stored in container\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain the lifetime constraint: `function_ref` must not outlive the referenced callable
 
-`function_ref` is a **non-owning reference** — it stores a raw pointer to the callable. If the callable is destroyed, the `function_ref` **dangles**:
+This is the one rule you absolutely must not forget. `function_ref` stores a raw pointer to whatever callable you give it. The moment that callable goes out of scope, your `function_ref` is dangling - and using it is undefined behavior with no diagnostic.
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 
@@ -237,7 +236,7 @@ public:
 // === SAFE: callable outlives function_ref ===
 void safe_example() {
     auto lambda = [](int x) { return x * 2; };
-    function_ref<int(int)> ref = lambda;  // ref → lambda (on stack)
+    function_ref<int(int)> ref = lambda;  // ref -> lambda (on stack)
     std::cout << "Safe: " << ref(21) << "\n";  // 42
     // lambda and ref destroyed together — no problem
 }
@@ -256,7 +255,7 @@ void safe_example() {
 // Callback store_ref() {
 //     auto f = []() { std::cout << "Hi\n"; };
 //     return Callback{function_ref<void()>(f)};
-//     // f destroyed → Callback::ref dangles!
+//     // f destroyed -> Callback::ref dangles!
 // }
 
 // === SAFE pattern: pass-through only ===
@@ -273,23 +272,24 @@ int main() {
     process([](int v) { std::cout << "Processed: " << v << "\n"; });
 
     std::cout << "\n=== Guidelines ===\n";
-    std::cout << "✓ SAFE: function_ref as function parameter (pass-through)\n";
-    std::cout << "✗ DANGER: returning function_ref from function\n";
-    std::cout << "✗ DANGER: storing function_ref as member (callable may die)\n";
-    std::cout << "→ If you need to STORE a callable, use std::function instead\n";
+    std::cout << "SAFE: function_ref as function parameter (pass-through)\n";
+    std::cout << "DANGER: returning function_ref from function\n";
+    std::cout << "DANGER: storing function_ref as member (callable may die)\n";
+    std::cout << "-> If you need to STORE a callable, use std::function instead\n";
 
     return 0;
 }
-
 ```
+
+The mental model that helps here: treat `function_ref` exactly like a raw reference. You would never return a reference to a local variable - the same logic applies to `function_ref`.
 
 ---
 
 ## Notes
 
-- `std::function_ref` (C++26) is a non-owning, lightweight callable wrapper — **2 pointers**, no heap.
-- Use for **function parameters only** — where the callable outlives the call.
-- **Never store** a `function_ref` — it doesn't own the callable and can dangle.
+- `std::function_ref` (C++26) is a non-owning, lightweight callable wrapper - **2 pointers**, no heap.
+- Use for **function parameters only** - where the callable outlives the call.
+- **Never store** a `function_ref` - it doesn't own the callable and can dangle.
 - Compared to `std::function`: no allocation, no null state, smaller size, but no ownership.
 - Compared to template `F`: type-erased (can be virtual, stored in containers), but has indirection cost.
 - If you need C++26 before it's available, libraries like `tl::function_ref` or `llvm::function_ref` provide equivalent functionality.

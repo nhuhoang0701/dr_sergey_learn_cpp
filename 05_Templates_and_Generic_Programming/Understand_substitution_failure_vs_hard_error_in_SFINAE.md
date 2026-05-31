@@ -10,7 +10,7 @@
 
 ### The Critical Distinction
 
-Not all invalid code in templates triggers SFINAE. The compiler distinguishes between:
+Not all invalid code in templates triggers SFINAE. This is probably the most common source of confusion when people first start writing SFINAE-heavy code: they expect a compile error to be silently swallowed, but instead the build breaks. The compiler distinguishes sharply between two situations:
 
 | Situation | Result | Where |
 | --- | --- | --- |
@@ -29,19 +29,19 @@ The **immediate context** includes:
 
 Errors **outside** immediate context (inside the function body, inside instantiated nested templates, inside `static_assert`) are **hard errors**.
 
-```cpp
+The mental model is this: the immediate context is everything the compiler checks before committing to instantiate the function body. Think of it as the "surface" of the function - the parts visible in the declaration. Once the compiler steps inside and starts generating code, it is committed, and any error there is fatal:
 
+```cpp
 ┌─── Immediate context (SFINAE-friendly) ───┐
 │ template <typename T>                      │
-│ auto f(T x) -> decltype(x.size())         │← failure here = SFINAE
+│ auto f(T x) -> decltype(x.size())         │<- failure here = SFINAE
 │ {                                          │
 │ ┌─ Non-immediate context (hard error) ──┐ │
-│ │   return x.size();                     │ │← failure here = HARD ERROR
-│ │   static_assert(sizeof(T) > 8);       │ │← always hard error
+│ │   return x.size();                     │ │<- failure here = HARD ERROR
+│ │   static_assert(sizeof(T) > 8);       │ │<- always hard error
 │ └────────────────────────────────────────┘ │
 │ }                                          │
 └────────────────────────────────────────────┘
-
 ```
 
 ---
@@ -50,8 +50,9 @@ Errors **outside** immediate context (inside the function body, inside instantia
 
 ### Q1: Show that a syntax error in a non-immediate context is a hard error, not SFINAE
 
-```cpp
+The reason this trips people up is that the error looks like it should be SFINAE-able. After all, `inner_check<T>::type` is used in what looks like a return type position - which is immediate context. But the error does not happen there: it happens inside `inner_check<T>` itself, during instantiation of that helper. That is non-immediate context, and the `static_assert` fires as a hard error:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -60,14 +61,14 @@ Errors **outside** immediate context (inside the function body, inside instantia
 template <typename T>
 struct inner_check {
     // This static_assert is in a NON-immediate context
-    // If it fails, it's a HARD ERROR — not SFINAE
+    // If it fails, it's a HARD ERROR - not SFINAE
     static_assert(std::is_integral_v<T>, "T must be integral!");
     using type = T;
 };
 
 // This function uses inner_check<T>::type
 // The error from static_assert is NOT in the immediate context
-// → it's a HARD ERROR, not SFINAE
+// -> it's a HARD ERROR, not SFINAE
 template <typename T>
 typename inner_check<T>::type process(T val) {
     return val * 2;
@@ -79,8 +80,8 @@ std::string process(const std::string& s) {
 }
 
 // If we call process(std::string("hi")):
-//   1. Compiler tries process<string>(string) → inner_check<string>::type
-//   2. Inside inner_check<string>, static_assert fails → HARD ERROR
+//   1. Compiler tries process<string>(string) -> inner_check<string>::type
+//   2. Inside inner_check<string>, static_assert fails -> HARD ERROR
 //   3. The program does NOT fall through to the string overload
 //   4. Instead, compilation ABORTS
 
@@ -88,7 +89,7 @@ std::string process(const std::string& s) {
 
 template <typename T>
 auto process_fixed(T val) -> std::enable_if_t<std::is_integral_v<T>, T> {
-    // enable_if is in IMMEDIATE context → SFINAE-friendly
+    // enable_if is in IMMEDIATE context -> SFINAE-friendly
     return val * 2;
 }
 
@@ -105,34 +106,36 @@ int main() {
     // This would be a HARD ERROR (uncomment to see):
     // std::cout << process(std::string("hi")) << "\n";
     // Error: static_assert failed: T must be integral!
-    // (NOT SFINAE — compilation aborts)
+    // (NOT SFINAE - compilation aborts)
 
     std::cout << "\n=== Fixed version (SFINAE-friendly) ===\n";
     std::cout << "process_fixed(21):     " << process_fixed(21) << "\n";           // 42
     std::cout << "process_fixed(\"hi\"): " << process_fixed(std::string("hi")) << "\n"; // hihi
-    // Works! enable_if failure is SFINAE → falls through to string overload
+    // Works! enable_if failure is SFINAE -> falls through to string overload
 
     return 0;
 }
-
 ```
+
+The fix is always the same: move the condition into the immediate context - either the return type, a parameter type, or a template parameter default - instead of hiding it inside a helper template's body.
 
 ### Q2: Demonstrate that accessing a non-existent member in a `decltype`/`sizeof` is SFINAE-friendly
 
-```cpp
+Using `decltype` in the trailing return type is the most common way to make a check SFINAE-friendly. The compiler evaluates the `decltype` expression as part of the function signature, which is immediate context, so a failure there becomes a substitution failure rather than a hard error:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
 #include <vector>
 
-// === decltype in IMMEDIATE context → SFINAE-friendly ===
+// === decltype in IMMEDIATE context -> SFINAE-friendly ===
 
-// Trailing return type with decltype — in immediate context
+// Trailing return type with decltype - in immediate context
 template <typename T>
 auto get_size(const T& c) -> decltype(c.size()) {
     // If T has no .size(), decltype(c.size()) is invalid
-    // This is in IMMEDIATE context → SFINAE (overload removed)
+    // This is in IMMEDIATE context -> SFINAE (overload removed)
     return c.size();
 }
 
@@ -142,7 +145,7 @@ int get_size(const T&) {
     return -1;  // No size available
 }
 
-// === sizeof in immediate context → also SFINAE-friendly ===
+// === sizeof in immediate context -> also SFINAE-friendly ===
 
 // Check if T has a .data() member via decltype in enable_if
 template <typename T>
@@ -194,13 +197,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The comma-operator trick in `decltype(c.data(), bool{})` is worth noting: the comma operator evaluates both operands, so the `decltype` checks that `c.data()` is valid and then yields the type of `bool{}` as the actual return type.
 
 ### Q3: Explain the immediate context rule and why it matters for SFINAE robustness
 
-```cpp
+This example demonstrates the dangerous pattern more explicitly: a function whose return type uses `enable_if`, which looks SFINAE-safe, but which internally triggers a helper template that fires a `static_assert`. The `enable_if` is in the immediate context, but the `Validator<T>` instantiation is not - so the hard error still fires:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -232,7 +237,7 @@ template <typename T>
 auto validate(T val) -> std::enable_if_t<Validator<T>::valid, bool> {
     return true;
 }
-// If T=void, Validator<void> triggers static_assert → HARD ERROR
+// If T=void, Validator<void> triggers static_assert -> HARD ERROR
 // Even though enable_if is in immediate context, Validator<void>
 // is instantiated in NON-immediate context
 
@@ -284,15 +289,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The C++20 `requires` clause is the cleanest solution precisely because everything inside a `requires` expression is always treated as immediate context - there is no risk of accidentally triggering a hard error through a nested instantiation.
 
 ---
 
 ## Notes
 
-- **Substitution failure** (SFINAE) only works in the **immediate context** — return type, parameter types, template args, requires.
+- **Substitution failure** (SFINAE) only works in the **immediate context** - return type, parameter types, template args, requires.
 - Errors inside function bodies, nested template instantiations, or `static_assert` are **hard errors** that abort compilation.
-- Classic trap: using a helper trait that has `static_assert` inside — the assert fires as a hard error, not SFINAE.
-- C++20 `requires` expressions make everything inside them part of the immediate context — much safer.
+- Classic trap: using a helper trait that has `static_assert` inside - the assert fires as a hard error, not SFINAE.
+- C++20 `requires` expressions make everything inside them part of the immediate context - much safer.
 - Rule of thumb: keep all conditions checked via `enable_if`/`decltype`/`requires` at the function signature level.
