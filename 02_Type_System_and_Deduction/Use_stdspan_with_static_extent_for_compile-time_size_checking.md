@@ -11,9 +11,11 @@
 
 ### What Is `std::span`
 
-`std::span<T>` is a lightweight, non-owning view over a contiguous sequence of elements. It replaces `(T* ptr, size_t size)` pairs with a single, type-safe object.
+`std::span<T>` is a lightweight, non-owning view over a contiguous sequence of elements. Think of it as a safer replacement for the old `(T* ptr, size_t size)` pair - it bundles both into a single, type-safe object without taking ownership of the memory.
 
 ### Static vs Dynamic Extent
+
+The second template parameter is where things get interesting. Leave it out and you get a dynamic extent (size tracked at runtime). Provide a number and you get a static extent (size baked into the type itself).
 
 | Declaration | Extent | Size Known At | `sizeof(span)` |
 | --- | --- | --- | --- |
@@ -22,8 +24,9 @@
 
 ### Core Syntax
 
-```cpp
+Here's the basic usage showing both extent flavors and how they interact:
 
+```cpp
 #include <span>
 #include <array>
 
@@ -39,18 +42,21 @@ std::span<int, 4> s2{stdarr};     // OK: std::array of 4
 std::span<int> d1{arr};           // OK: deduces size = 4
 std::span<int> d2{arr, 3};        // OK: only first 3 elements
 
-// Static → dynamic: always OK (implicit conversion)
+// Static -> dynamic: always OK (implicit conversion)
 std::span<int> d3 = s1;
 
-// Dynamic → static: NOT implicit (would need static_cast or subspan)
-
+// Dynamic -> static: NOT implicit (would need static_cast or subspan)
 ```
+
+Notice that converting from static to dynamic is always fine - you're just adding a runtime size field. Going the other direction is not implicit because the compiler can't verify the size is correct without your explicit say-so.
 
 ### Why Static Extent
 
-1. **Compile-time size errors** — pass wrong-size array and the compiler rejects it
-2. **Zero overhead** — no need to store the size (it's in the type)
-3. **Stronger contracts** — functions that require exactly N elements express this in the type
+Static extent is not just a micro-optimization. It changes what the compiler can check for you:
+
+1. **Compile-time size errors** - pass wrong-size array and the compiler rejects it
+2. **Zero overhead** - no need to store the size (it's in the type)
+3. **Stronger contracts** - functions that require exactly N elements express this in the type
 
 ---
 
@@ -58,8 +64,9 @@ std::span<int> d3 = s1;
 
 ### Q1: Declare `std::span<int, 4>` and show the compile error when a 3-element array is passed
 
-```cpp
+The key thing to watch here is how the static extent becomes part of the function's contract - a mismatch is caught before the program even runs.
 
+```cpp
 #include <iostream>
 #include <span>
 #include <array>
@@ -112,13 +119,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice the `static_assert` on `s4.size()` - that works only because the size is a compile-time constant for static extents. With a dynamic span, `size()` is a runtime call and cannot be used in a `static_assert`.
 
 **Output:**
 
 ```text
-
 Processing quad: 1 2 3 4 (sum=10)
 Processing quad: 10 20 30 40 (sum=100)
 Processing triple: 1.1 2.2 3.3
@@ -126,10 +133,11 @@ Processing triple: 1.1 2.2 3.3
 Static extent: 4
 sizeof(span<int,4>): 8
 sizeof(span<int>):   16
-
 ```
 
 ### Q2: Explain when to use dynamic extent (`std::dynamic_extent`) vs static extent
+
+The table below is a useful cheat sheet, but the mental model is simple: use static extent when the size is part of the contract, dynamic extent when you want flexibility.
 
 | Use Static Extent When... | Use Dynamic Extent When... |
 | --- | --- |
@@ -138,8 +146,9 @@ sizeof(span<int>):   16
 | Maximum performance needed (no size stored) | Accepting slices of larger containers |
 | Working with fixed-size arrays/structs | Interfacing with C APIs (`ptr + size`) |
 
-```cpp
+Here's a side-by-side showing each in a realistic context:
 
+```cpp
 #include <iostream>
 #include <span>
 #include <vector>
@@ -185,13 +194,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Static extent (matrix rows):
   Row: 1, 2, 3
   Row: 4, 5, 6
@@ -201,13 +208,13 @@ Dynamic extent (any size):
   [3 elements]: 10 20 30
   [2 elements]: 100 200
   [3 elements]: 2 3 4
-
 ```
 
 ### Q3: Show how static extent enables zero-overhead `subspan` with compile-time offset and count
 
-```cpp
+When you call `subspan` with template (compile-time) arguments, the resulting span also has a static extent. That means no extra size field, no runtime arithmetic - just a pointer offset.
 
+```cpp
 #include <iostream>
 #include <span>
 #include <array>
@@ -216,7 +223,7 @@ int main() {
     std::array<int, 8> data = {10, 20, 30, 40, 50, 60, 70, 80};
     std::span<int, 8> full{data};
 
-    // subspan with compile-time offset and count → static extent result
+    // subspan with compile-time offset and count -> static extent result
     auto first3 = full.subspan<0, 3>();   // span<int, 3>
     auto mid2   = full.subspan<3, 2>();   // span<int, 2>
     auto last3  = full.subspan<5, 3>();   // span<int, 3>
@@ -273,13 +280,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `sizeof` comparison at the end tells the whole story: a static-extent span is just a pointer, while a dynamic-extent span carries an extra `size_t`. The template-based `subspan` preserves that zero-overhead property all the way through.
 
 **Output:**
 
 ```text
-
 first3: 10 20 30
 mid2:   40 50
 last3:  60 70 80
@@ -291,7 +298,6 @@ dynamic subspan: 30 40 50 (sizeof=16)
 
 sizeof(span<int,3>):       8
 sizeof(span<int>):         16
-
 ```
 
 ---

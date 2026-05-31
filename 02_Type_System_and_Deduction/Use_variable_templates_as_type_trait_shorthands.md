@@ -11,10 +11,9 @@
 
 ### What Are Variable Templates
 
-C++14 introduced **variable templates** — templates that define a family of variables. The most common use is creating `_v` shorthands for type traits:
+C++14 introduced **variable templates** - templates that define a family of variables rather than a family of types or functions. The most visible use in day-to-day C++ is the `_v` shorthands for type traits:
 
 ```cpp
-
 // Standard library pattern:
 template<typename T>
 constexpr bool is_integral_v = std::is_integral<T>::value;
@@ -24,8 +23,9 @@ std::is_integral<int>::value   // verbose
 
 // You write:
 std::is_integral_v<int>        // clean
-
 ```
+
+It's a small thing, but in template-heavy code you'll write these checks constantly, and the `::value` form adds real noise.
 
 ### Standard Library `_v` Suffixes
 
@@ -40,10 +40,9 @@ Since C++17, the standard library provides `_v` variable templates for all boole
 
 ### Beyond Boolean Traits
 
-Variable templates can hold any type:
+Variable templates aren't limited to `bool`. They can hold any compile-time constant:
 
 ```cpp
-
 // A compile-time constant (not just bool)
 template<typename T>
 constexpr size_t alignment_of_v = alignof(T);
@@ -54,13 +53,13 @@ constexpr const char* type_name_v = "unknown";
 
 template<> constexpr const char* type_name_v<int> = "int";
 template<> constexpr const char* type_name_v<double> = "double";
-
 ```
 
 ### Variable Templates Can Be Specialized
 
-```cpp
+Just like class templates, variable templates support full and partial specialization. This is what makes them useful for compile-time configuration:
 
+```cpp
 template<typename T>
 constexpr bool is_serializable_v = false;  // default: not serializable
 
@@ -69,7 +68,6 @@ constexpr bool is_serializable_v<int> = true;  // int is serializable
 
 template<>
 constexpr bool is_serializable_v<double> = true;  // double too
-
 ```
 
 ---
@@ -78,8 +76,9 @@ constexpr bool is_serializable_v<double> = true;  // double too
 
 ### Q1: Define `template<typename T> constexpr bool is_pointer_v = std::is_pointer<T>::value;`
 
-```cpp
+Defining your own `_v` shorthand is literally one line - this is exactly what the standard library does internally. Here's the pattern applied to several traits at once:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -135,13 +134,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `static_assert` lines at the top verify correctness at compile time - there's no runtime cost. Everything you see in the output was already known to the compiler before the program ran.
 
 **Output:**
 
 ```text
-
 === my_is_pointer_v ===
 int*:        true
 int:         false
@@ -160,13 +159,13 @@ int, double: false
 char:   1
 int:    4
 double: 8
-
 ```
 
 ### Q2: Show that variable templates can be specialized just like class templates
 
-```cpp
+Specialization is where variable templates get really useful. You can set per-type policies at compile time with very little code:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -195,7 +194,7 @@ template<> constexpr int type_priority_v<bool> = 2;
 
 // Partial specialization for pointers (works with variable templates!)
 template<typename T>
-constexpr bool is_serializable_v<T*> = false;  // raw pointers → not serializable
+constexpr bool is_serializable_v<T*> = false;  // raw pointers -> not serializable
 
 // Partial specialization: all const types inherit from base trait
 // (Variable template partial spec works since C++14)
@@ -231,13 +230,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The partial specialization `is_serializable_v<T*>` is worth noticing - it applies to any raw pointer type, not just `int*`. That's the same partial specialization mechanism you'd use with class templates, just with a much shorter definition.
 
 **Output:**
 
 ```text
-
 === is_serializable_v ===
 int:         true
 double:      true
@@ -253,13 +252,13 @@ bool:   2
 char:   0
 
 const int priority: 10
-
 ```
 
 ### Q3: Use a variable template as a shorthand and verify it produces the correct value
 
-```cpp
+If you're ever unsure whether your `_v` shorthand is correct, `static_assert` is your friend. This example shows the pattern for verifying a custom shorthand against both the standard `_v` form and the raw `::value` form:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <cstdint>
@@ -334,13 +333,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The compound traits `is_numeric_v` and `is_signed_integer_v` show how you can build higher-level checks by composing simpler variable template traits - the same way you'd combine booleans, just at compile time.
 
 **Output:**
 
 ```text
-
 === Trait checks ===
 int:      integral=true floating=false numeric=true signed_int=true
 double:   integral=false floating=true numeric=true signed_int=false
@@ -348,7 +347,6 @@ uint32_t: integral=true floating=false numeric=true signed_int=false
 void*:    integral=false floating=false numeric=false signed_int=false
 
 All static_asserts passed — _v shorthands produce correct values!
-
 ```
 
 ---
@@ -356,6 +354,6 @@ All static_asserts passed — _v shorthands produce correct values!
 ## Notes
 
 - Variable templates were introduced in **C++14**, but the `_v` suffixed standard library traits were added in **C++17**.
-- Variable templates support **full and partial specialization** — making them powerful for compile-time configuration.
+- Variable templates support **full and partial specialization** - making them powerful for compile-time configuration.
 - Use `inline constexpr` for variable templates in headers (since C++17) to avoid ODR violations.
 - The `_t` suffix convention is for type aliases (`remove_pointer_t`, `decay_t`), while `_v` is for value shorthands (`is_same_v`, `is_const_v`).

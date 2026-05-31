@@ -10,7 +10,7 @@
 
 ### What Are Callable Traits
 
-C++17 introduced a family of type traits that let you **query callable objects** (functions, lambdas, functors, member pointers) at compile time:
+C++17 introduced a family of type traits that let you **query callable objects** (functions, lambdas, functors, member pointers) at compile time. If you've ever needed to write a higher-order function template and struggled with "what does this callable actually return?", these are your tools:
 
 | Trait | Checks |
 | --- | --- |
@@ -21,10 +21,9 @@ C++17 introduced a family of type traits that let you **query callable objects**
 
 ### Why Not Just Use `decltype(f(args...))`
 
-`std::invoke` handles **all callable forms** uniformly — not just regular function calls:
+The reason these traits exist instead of raw `decltype` is that `std::invoke` handles **all callable forms** uniformly - not just regular function calls. Member function pointers and member data pointers are part of that:
 
 ```cpp
-
 #include <functional>
 
 struct Foo {
@@ -39,15 +38,15 @@ std::invoke(std::plus{}, 1, 2);           // free function object
 std::invoke(&Foo::method, foo, 3.14);     // member function pointer + object
 std::invoke(&Foo::value, foo);            // member data pointer + object
 std::invoke([](int x){ return x*2; }, 5); // lambda
-
 ```
 
-The traits mirror this — `is_invocable<&Foo::method, Foo&, double>` is `true` even though `&Foo::method(foo, 3.14)` won't compile directly.
+The traits mirror this - `is_invocable<&Foo::method, Foo&, double>` is `true` even though `&Foo::method(foo, 3.14)` won't compile directly. That's the key advantage over a raw `decltype`.
 
-### `std::is_invocable` — Check Callability
+### `std::is_invocable` - Check Callability
+
+Before calling a generic callable, you often want to verify at compile time that the call is well-formed. Here is how to do that:
 
 ```cpp
-
 #include <type_traits>
 
 auto lambda = [](int x, double y) -> bool { return x > y; };
@@ -55,18 +54,18 @@ auto lambda = [](int x, double y) -> bool { return x > y; };
 // Can lambda be called with (int, double)?
 static_assert(std::is_invocable_v<decltype(lambda), int, double>);
 
-// Can it be called with (int)?  NO — wrong arity
+// Can it be called with (int)?  No - wrong arity
 static_assert(!std::is_invocable_v<decltype(lambda), int>);
 
-// Can it be called with (string, string)?  NO — wrong types
+// Can it be called with (string, string)?  No - wrong types
 static_assert(!std::is_invocable_v<decltype(lambda), std::string, std::string>);
-
 ```
 
-### `std::invoke_result_t` — Get Return Type
+### `std::invoke_result_t` - Get Return Type
+
+Once you know a call is valid, you can ask what it returns:
 
 ```cpp
-
 // What does lambda(int, double) return?
 using R = std::invoke_result_t<decltype(lambda), int, double>;
 static_assert(std::is_same_v<R, bool>);
@@ -74,14 +73,14 @@ static_assert(std::is_same_v<R, bool>);
 // What does std::plus<int>()(int, int) return?
 using R2 = std::invoke_result_t<std::plus<int>, int, int>;
 static_assert(std::is_same_v<R2, int>);
-
 ```
 
 ### The Old Way vs The New Way
 
-```cpp
+Before C++17, getting the return type of a callable required verbose manual `decltype` expressions - and they couldn't handle member pointers at all:
 
-// OLD (pre-C++17): manual decltype with declval — ugly and incomplete
+```cpp
+// OLD (pre-C++17): manual decltype with declval - ugly and incomplete
 template<typename F, typename... Args>
 using old_result = decltype(std::declval<F>()(std::declval<Args>()...));
 // Problem: doesn't work for member function pointers or member data pointers!
@@ -89,13 +88,13 @@ using old_result = decltype(std::declval<F>()(std::declval<Args>()...));
 // NEW (C++17): clean and handles ALL callable forms
 template<typename F, typename... Args>
 using new_result = std::invoke_result_t<F, Args...>;
-
 ```
 
 ### Constraining Templates with `is_invocable`
 
-```cpp
+You can use `is_invocable` both as a `requires` constraint and inside `if constexpr` to adapt behavior at compile time:
 
+```cpp
 // Higher-order function: only accepts callable with matching signature
 template<typename F, typename... Args>
     requires std::is_invocable_v<F, Args...>
@@ -109,7 +108,6 @@ template<typename F, typename... Args>
 auto apply2(F&& f, Args&&... args) {
     return std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
 }
-
 ```
 
 ---
@@ -118,8 +116,9 @@ auto apply2(F&& f, Args&&... args) {
 
 ### Q1: Use `std::is_invocable_v<F, Args...>` to constrain a function template to callable `F`
 
-```cpp
+This builds a `safe_call` wrapper and an `EventHandler` class that both use the trait to enforce correctness at the call site:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <functional>
@@ -184,13 +183,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
   [safe_call] invoking callable
 Lambda result: 7
   [safe_call] invoking callable
@@ -198,13 +195,13 @@ Functor result: 6
   [safe_call] invoking callable
 std::function result: 42
 Event [200]: OK
-
 ```
 
 ### Q2: Use `invoke_result_t<F, Args...>` to deduce the return type of a callable in a higher-order function
 
-```cpp
+Here is where `invoke_result_t` really earns its keep - it lets you write a `map` function whose return container type is automatically deduced from the transformation:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <functional>
@@ -253,7 +250,7 @@ auto compose(F f, G g) {
 }
 
 int main() {
-    // map: int → string (return type deduced via invoke_result_t)
+    // map: int -> string (return type deduced via invoke_result_t)
     std::vector<int> nums = {1, 2, 3, 4, 5};
     auto strings = map(nums, [](int x) { return std::to_string(x) + "!"; });
 
@@ -262,7 +259,7 @@ int main() {
     for (const auto& s : strings) std::cout << s << " ";
     std::cout << "\n";
 
-    // map: int → double
+    // map: int -> double
     auto doubled = map(nums, [](int x) { return x * 2.5; });
     static_assert(std::is_same_v<decltype(doubled), std::vector<double>>);
     std::cout << "doubled: ";
@@ -287,13 +284,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 map result: 1! 2! 3! 4! 5!
 doubled: 2.5 5 7.5 10 12.5
 
@@ -301,13 +296,13 @@ doubled: 2.5 5 7.5 10 12.5
   Attempt 2 failed
 retry result: 42
 compose(2): 42.000000
-
 ```
 
 ### Q3: Show how these traits replace manual `decltype(std::declval<F>()(std::declval<Args>()...))` patterns
 
-```cpp
+The old `decltype + declval` idiom breaks silently on member pointers. Here is a direct comparison that shows exactly where the old pattern fails and why `invoke_result_t` is the correct replacement:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <functional>
@@ -356,14 +351,14 @@ int main() {
 
     // Member function pointer: OLD fails, NEW works
     // using BadR = old_result_t<decltype(&MyClass::describe), MyClass&, int>;
-    // ^^^ ERROR: can't call &MyClass::describe like a function
+    // ERROR: can't call &MyClass::describe like a function
 
     using GoodR = std::invoke_result_t<decltype(&MyClass::describe), MyClass&, int>;
     static_assert(std::is_same_v<GoodR, std::string>);
 
     // Member data pointer: OLD fails, NEW works
     // using BadR2 = old_result_t<decltype(&MyClass::value), MyClass&>;
-    // ^^^ ERROR
+    // ERROR
 
     using GoodR2 = std::invoke_result_t<decltype(&MyClass::value), MyClass&>;
     static_assert(std::is_same_v<GoodR2, int&>);  // returns reference to member!
@@ -388,19 +383,17 @@ int main() {
     std::cout << "new_apply with member data: " << val << "\n";
 
     std::cout << "\nSummary: invoke_result_t replaces manual decltype+declval\n";
-    std::cout << "  ✓ Handles functions, lambdas, functors, member ptrs\n";
-    std::cout << "  ✓ Cleaner syntax, no declval boilerplate\n";
-    std::cout << "  ✓ Works with std::invoke (the INVOKE concept)\n";
+    std::cout << "  Handles functions, lambdas, functors, member ptrs\n";
+    std::cout << "  Cleaner syntax, no declval boilerplate\n";
+    std::cout << "  Works with std::invoke (the INVOKE concept)\n";
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === is_invocable checks ===
 lambda(int): true
 &MyClass::describe(MyClass&, int): true
@@ -411,10 +404,9 @@ new_apply with member function: value=42 (level 3)
 new_apply with member data: 42
 
 Summary: invoke_result_t replaces manual decltype+declval
-  ✓ Handles functions, lambdas, functors, member ptrs
-  ✓ Cleaner syntax, no declval boilerplate
-  ✓ Works with std::invoke (the INVOKE concept)
-
+  Handles functions, lambdas, functors, member ptrs
+  Cleaner syntax, no declval boilerplate
+  Works with std::invoke (the INVOKE concept)
 ```
 
 ---

@@ -11,12 +11,13 @@
 
 ### What Is `std::variant`
 
-`std::variant<Types...>` is a type-safe union that holds exactly one value from a fixed set of types. Unlike C unions, it tracks which type is currently active and prevents type-punning.
+`std::variant<Types...>` is a type-safe union that holds exactly one value from a fixed set of types. Unlike C unions, it tracks which type is currently active and prevents type-punning. You can think of it as a tagged union where the tag is managed automatically and reading the wrong member is a compile or runtime error rather than silent undefined behavior.
 
 ### Core API
 
-```cpp
+Here's a quick tour of the main operations - creation, access, safe checking, and querying which type is active:
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -41,13 +42,13 @@ if (auto* p = std::get_if<int>(&v)) {
 // Which alternative is active?
 v.index();  // returns 2 (for string)
 std::holds_alternative<std::string>(v);  // true
-
 ```
 
-### `std::visit` — The Visitor Pattern
+### `std::visit` - The Visitor Pattern
+
+`std::visit` is how you write code that handles every possible type in the variant. Pass it a callable that accepts any of the alternatives and it dispatches to the right one at runtime:
 
 ```cpp
-
 std::visit([](auto&& arg) {
     std::cout << arg << "\n";
 }, v);
@@ -62,15 +63,13 @@ std::visit([](auto&& arg) {
     else
         std::cout << "string: " << arg;
 }, v);
-
 ```
 
 ### The Overload Pattern
 
-A reusable technique for creating inline visitors:
+Writing a single generic lambda with `if constexpr` works, but it gets verbose. A cleaner approach is to combine multiple lambdas using the overload pattern - a small helper that inherits all their `operator()` overloads into one type:
 
 ```cpp
-
 template<class... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
 
@@ -83,22 +82,21 @@ std::visit(overloaded{
     [](double d)      { std::cout << "double: " << d; },
     [](const std::string& s) { std::cout << "string: " << s; }
 }, v);
-
 ```
+
+The nice part about the overload pattern is that if you forget to handle one of the variant's alternatives, the compiler tells you - it's a compile error, not a runtime surprise.
 
 ### `std::monostate`
 
 If the first type in a variant has no default constructor, the variant itself can't be default-constructed. `std::monostate` is an empty marker type that solves this:
 
 ```cpp
-
 struct NoDefault {
     NoDefault(int) {}  // no default ctor
 };
 
 // std::variant<NoDefault, int> v;  // ERROR: can't default-construct NoDefault
 std::variant<std::monostate, NoDefault, int> v;  // OK: defaults to monostate
-
 ```
 
 ---
@@ -107,8 +105,9 @@ std::variant<std::monostate, NoDefault, int> v;  // OK: defaults to monostate
 
 ### Q1: Replace a tagged union struct with `std::variant` and show how `std::visit` eliminates type-punning
 
-```cpp
+The old-style tagged union requires you to keep the tag and the active union member in sync manually. `std::variant` does that bookkeeping for you and makes accessing the wrong member a well-defined error instead of UB.
 
+```cpp
 #include <iostream>
 #include <variant>
 #include <string>
@@ -186,13 +185,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the old code's `char str_buf[64]` hack is completely gone - `std::variant` can hold a real `std::string` with no workarounds. And the `std::get<int>` throw at the end shows that even "wrong type" accesses have defined behavior, rather than silently reading garbage bytes.
 
 **Output:**
 
 ```text
-
 int: 42
 value: 42
 value: 3.14
@@ -203,13 +202,13 @@ holds int? 0
 holds string? 1
 Not an int
 Caught: bad variant access
-
 ```
 
 ### Q2: Write an overloaded visitor using the overload pattern and verify all alternatives are handled
 
-```cpp
+The overload pattern really shines when you want each type to have its own handler. Here it's used with a basic value set and also with a simple expression tree to show how `std::visit` can act as a dispatch table for AST nodes:
 
+```cpp
 #include <iostream>
 #include <variant>
 #include <string>
@@ -284,18 +283,18 @@ int main() {
     //     [](int i)            { std::cout << i; },
     //     [](double d)         { std::cout << d; },
     //     [](const std::string& s) { std::cout << s; }
-    //     // Missing bool handler → COMPILE ERROR
+    //     // Missing bool handler -> COMPILE ERROR
     // }, values[0]);
 
     return 0;
 }
-
 ```
+
+The expression tree example is worth studying: each node type in `Expr` maps to exactly one lambda, and `std::visit` dispatches to the right one at runtime. This is the standard "variant as algebraic data type" pattern.
 
 **Output:**
 
 ```text
-
 === Basic overloaded visitor ===
 int: 42
 double: 3.14
@@ -311,13 +310,13 @@ MUL
 
 === visit with return ===
 Description: integer 42
-
 ```
 
 ### Q3: Explain what `std::monostate` is for and demonstrate its use in a default-constructible variant
 
-```cpp
+Here's the concrete problem: you want a `variant` that can start out "empty" before a real value is assigned, but none of the alternative types are default-constructible. `std::monostate` gives you a well-typed empty state to put first in the list.
 
+```cpp
 #include <iostream>
 #include <variant>
 #include <string>
@@ -368,7 +367,7 @@ void describe(const Resource& r) {
 int main() {
     std::cout << std::boolalpha;
 
-    // Default construction → monostate (no resource allocated)
+    // Default construction -> monostate (no resource allocated)
     Resource r;
     std::cout << "After default construction:\n";
     describe(r);
@@ -398,13 +397,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+`std::monostate` is a **unit type** - it has exactly one value, and all instances compare equal. This makes it a clean "nothing here yet" sentinel that plays nicely with `std::visit` (there's exactly one handler for it) and with ordered containers (it compares consistently).
 
 **Output:**
 
 ```text
-
 After default construction:
   Resource: [empty/uninitialized]
 holds monostate: true
@@ -423,7 +422,6 @@ Resetting to monostate:
 === monostate properties ===
 a == b: true
 a < b:  false
-
 ```
 
 ---
@@ -432,5 +430,5 @@ a < b:  false
 
 - **variant vs any vs optional:** `variant` = "one of these specific types" (closed set), `any` = "any type" (open set, type-erased), `optional` = "T or nothing" (one type or empty).
 - **Exception on assignment:** If a variant assignment throws, the variant may enter the **valueless by exception** state (`variant.valueless_by_exception()` returns true). This is the only way a variant can hold no value.
-- **Performance:** `std::visit` with small variant types is typically compiled to a jump table or switch — zero overhead vs manual switch statements.
+- **Performance:** `std::visit` with small variant types is typically compiled to a jump table or switch - zero overhead vs manual switch statements.
 - **C++20:** `std::visit` can accept a return type explicitly: `std::visit<ReturnType>(visitor, variant)`.

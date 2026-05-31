@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-`std::expected<T, E>` holds either a value of type `T` (success) or an error of type `E` (failure). It's a vocabulary type for error handling without exceptions.
+`std::expected<T, E>` holds either a value of type `T` (success) or an error of type `E` (failure). It's a vocabulary type for error handling without exceptions. The key advantage over returning an error code or throwing is that the caller is forced to confront the possibility of failure - you can't accidentally use the result without checking.
 
 ### Basic Usage
 
-```cpp
+Here's the simplest case: a parsing function that used to throw, rewritten to return `expected`. The return value encodes both success and failure:
 
+```cpp
 #include <expected>
 #include <string>
 #include <iostream>
@@ -38,8 +39,9 @@ void demo() {
         std::cout << "Error: " << bad.error() << "\n";  // invalid integer: abc
     }
 }
-
 ```
+
+`std::unexpected(error)` wraps an error value the same way `std::nullopt` signals an empty optional. If you just `return value;`, the compiler constructs the success state.
 
 ### Key API
 
@@ -57,8 +59,9 @@ void demo() {
 
 ### Monadic Operations (Chaining)
 
-```cpp
+The monadic operations let you build a pipeline of steps where each step can fail. If any step returns an error, the rest of the chain short-circuits and propagates that error forward - no nesting required:
 
+```cpp
 auto result = parse_int(input)
     .and_then([](int n) -> std::expected<int, std::string> {
         if (n < 0) return std::unexpected("must be positive");
@@ -69,7 +72,6 @@ auto result = parse_int(input)
         std::cerr << "Error: " << err << "\n";
         return 0;  // recover with default
     });
-
 ```
 
 ---
@@ -78,8 +80,9 @@ auto result = parse_int(input)
 
 ### Q1: Rewrite a function that throws on error to return `std::expected<T, E>`
 
-```cpp
+The pattern is straightforward: replace `throw` with `return std::unexpected(...)`, and return the value directly on success. Using a typed error enum instead of a string means callers can switch on the specific failure mode:
 
+```cpp
 #include <expected>
 #include <string>
 #include <iostream>
@@ -100,7 +103,7 @@ std::string read_file_throwing(const std::string& path) {
     return ss.str();
 }
 
-// AFTER: returns expected — no exceptions!
+// AFTER: returns expected - no exceptions!
 enum class FileError { NotFound, ReadError, Empty };
 
 std::expected<std::string, FileError> read_file_expected(const std::string& path) {
@@ -143,13 +146,13 @@ int main() {
                             .value_or("default config");
     std::cout << "Config: " << content << "\n";
 }
-
 ```
 
 ### Q2: Chain multiple `std::expected` operations using `and_then`
 
-```cpp
+Here's the same pipeline written two ways: first with explicit `if (!x)` checks at every step, then flattened using `and_then`. Both produce the same result. The monadic version is easier to add steps to without increasing nesting depth:
 
+```cpp
 #include <expected>
 #include <string>
 #include <iostream>
@@ -195,13 +198,13 @@ int main() {
         std::cout << "Result: " << *result << "\n";
     }
 
-    // WITH monadic chaining — flat pipeline, no nesting:
+    // WITH monadic chaining - flat pipeline, no nesting:
     {
         auto result = get_input()
-            .and_then(to_int)                    // string → int (or error)
-            .and_then(validate_range)            // int → int (or error)
-            .and_then(compute)                   // int → double (or error)
-            .transform([](double d) {            // double → string
+            .and_then(to_int)                    // string - int (or error)
+            .and_then(validate_range)            // int - int (or error)
+            .and_then(compute)                   // int - double (or error)
+            .transform([](double d) {            // double - string
                 return "Answer: " + std::to_string(d);
             })
             .or_else([](const Error& e) -> std::expected<std::string, Error> {
@@ -211,22 +214,22 @@ int main() {
         std::cout << *result << "\n";
     }
 }
-
 ```
 
 ### Q3: Compare `std::expected` vs `std::optional` for error-propagating pipelines
 
 | Aspect | `std::optional<T>` | `std::expected<T, E>` |
 | --- | --- | --- |
-| **Error info** | None — just "no value" | Rich — carries error of type `E` |
+| **Error info** | None - just "no value" | Rich - carries error of type `E` |
 | **Use case** | Value may or may not exist | Operation can fail with a reason |
 | **Monadic ops** | `and_then`, `transform`, `or_else` (C++23) | Same set + `transform_error` |
 | **Error reporting** | Cannot distinguish WHY it failed | Error type describes the failure |
 | **Performance** | Slightly smaller (no error storage) | Slightly larger (stores error) |
-| **Equivalent** | `expected<T, std::monostate>` ≈ `optional<T>` | — |
+| **Equivalent** | `expected<T, std::monostate>` approx `optional<T>` | - |
+
+The practical rule: use `optional` when "no value" is semantically meaningful on its own (e.g., a cache miss, an optional config key), and use `expected` when the caller needs to know *why* the operation failed:
 
 ```cpp
-
 #include <expected>
 #include <optional>
 #include <string>
@@ -254,11 +257,11 @@ std::expected<int, LookupError> find_user_id_v2(const std::string& name) {
 }
 
 int main() {
-    // optional pipeline — can only say "it failed"
+    // optional pipeline - can only say "it failed"
     auto id = find_user_id("Charlie");
     if (!id) std::cout << "Not found (but why?)\n";
 
-    // expected pipeline — can explain WHY it failed
+    // expected pipeline - can explain WHY it failed
     auto id2 = find_user_id_v2("Charlie");
     if (!id2) {
         switch (id2.error()) {
@@ -268,35 +271,14 @@ int main() {
         }
     }
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `std::unexpected(error)` is used to construct an expected in the error state — similar to how `std::nullopt` creates an empty optional.
-- `expected<void, E>` is valid — useful for functions that have no return value but can fail.
+- `std::unexpected(error)` is used to construct an expected in the error state - similar to how `std::nullopt` creates an empty optional.
+- `expected<void, E>` is valid - useful for functions that have no return value but can fail.
 - `and_then` must return `expected<U, E>` (same error type). Use `transform` to just map the value without changing expected.
-- Prefer `expected` over error codes — it's harder to ignore (no implicit conversion to bool like `int`).
-- `expected` does NOT replace exceptions for truly exceptional cases (out of memory, logic errors) — it's for expected failure paths.
-
-**Illustration:**
-
-```cpp
-
-// Key types: std::expected, std::optional
-
-```
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- Prefer `expected` over error codes - it's harder to ignore (no implicit conversion to bool like `int`).
+- `expected` does NOT replace exceptions for truly exceptional cases (out of memory, logic errors) - it's for expected failure paths.

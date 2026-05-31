@@ -10,7 +10,7 @@
 
 ### What Are These Traits
 
-`std::remove_pointer` and `std::add_pointer` are type transformation traits that manipulate pointer types at compile time:
+`std::remove_pointer` and `std::add_pointer` are type transformation traits that manipulate pointer types at compile time. They are the pointer-level counterparts to the reference traits you've seen elsewhere:
 
 | Trait | Input | Output |
 | --- | --- | --- |
@@ -23,8 +23,9 @@
 
 ### Core Syntax
 
-```cpp
+Let's see the basic transformations in code:
 
+```cpp
 #include <type_traits>
 
 // Remove one pointer level
@@ -36,21 +37,22 @@ using T3 = std::remove_pointer_t<int**>;       // int*
 using T4 = std::add_pointer_t<int>;    // int*
 using T5 = std::add_pointer_t<int&>;   // int*  (reference removed first)
 using T6 = std::add_pointer_t<void>;   // void*
-
 ```
+
+Notice that `add_pointer_t` on a reference type first removes the reference and then adds the pointer. That matches what `decltype(&x)` gives you when `x` is an lvalue.
 
 ### `std::add_lvalue_reference` and `void`
 
-`std::add_lvalue_reference<void>` is valid and returns `void` (not `void&`, which would be illegal). This is achieved via SFINAE internally — the trait gracefully handles types that can't form references:
+One subtle design point worth knowing: `std::add_lvalue_reference<void>` is valid and returns `void` (not `void&`, which would be illegal). This is achieved via SFINAE internally - the trait gracefully handles types that can't form references:
 
 ```cpp
-
 static_assert(std::is_same_v<std::add_lvalue_reference_t<int>, int&>);
 static_assert(std::is_same_v<std::add_lvalue_reference_t<void>, void>);  // no error!
-
 ```
 
 ### Related Traits
+
+Here is the full family of pointer and reference manipulation traits for reference:
 
 | Trait | Purpose |
 | --- | --- |
@@ -67,8 +69,9 @@ static_assert(std::is_same_v<std::add_lvalue_reference_t<void>, void>);  // no e
 
 ### Q1: Use `std::remove_pointer_t` to strip a pointer from a type in a template metafunction
 
-```cpp
+This example builds a `pointee_type` metafunction that works for both raw pointers and smart pointers via specialization:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -138,13 +141,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === describe_pointer ===
 int*:
   is_pointer: true
@@ -157,13 +158,13 @@ int**:
   pointed-to type same as original: false
 
 x after safe_deref(p)=100: 100
-
 ```
 
 ### Q2: Build a type trait that repeatedly removes all pointer levels from `T****` to `T`
 
-```cpp
+`remove_pointer` only strips one level at a time. If you need to strip all levels, you write a recursive trait. The recursion bottoms out at the non-pointer case:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -243,13 +244,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Pointer Depth ===
 int:      0
 int*:     1
@@ -257,13 +256,13 @@ int**:    2
 int****:  4
 
 All static_asserts passed!
-
 ```
 
 ### Q3: Explain how `std::add_lvalue_reference` handles `void` without error
 
-```cpp
+The reason `add_lvalue_reference<void>` doesn't blow up is SFINAE. The implementation tries to form `T&`, and if that expression is ill-formed (as it is for `void`), it falls back to returning `T` unchanged. Here is a simplified version of how that works:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -289,7 +288,7 @@ int main() {
     // Standard behavior:
     static_assert(std::is_same_v<std::add_lvalue_reference_t<int>, int&>);
     static_assert(std::is_same_v<std::add_lvalue_reference_t<int&>, int&>);   // already ref
-    static_assert(std::is_same_v<std::add_lvalue_reference_t<int&&>, int&>);  // && → &
+    static_assert(std::is_same_v<std::add_lvalue_reference_t<int&&>, int&>);  // && -> &
     static_assert(std::is_same_v<std::add_lvalue_reference_t<void>, void>);   // no error!
 
     // Our simplified version matches:
@@ -300,39 +299,36 @@ int main() {
     static_assert(std::is_same_v<std::add_rvalue_reference_t<int>, int&&>);
     static_assert(std::is_same_v<std::add_rvalue_reference_t<void>, void>);
 
-    // And add_pointer — it handles references gracefully:
+    // And add_pointer - it handles references gracefully:
     static_assert(std::is_same_v<std::add_pointer_t<int>, int*>);
     static_assert(std::is_same_v<std::add_pointer_t<int&>, int*>);    // ref stripped
     static_assert(std::is_same_v<std::add_pointer_t<void>, void*>);   // void* is legal
 
     // Why this matters: std::declval<T>() depends on add_rvalue_reference
     // working for void. Since add_rvalue_reference_t<void> is just void,
-    // declval<void>() has return type void — which is valid in C++.
+    // declval<void>() has return type void - which is valid in C++.
 
     std::cout << "=== add_lvalue_reference results ===\n";
-    std::cout << "int → int&:    " << std::is_same_v<std::add_lvalue_reference_t<int>, int&> << "\n";
-    std::cout << "void → void:   " << std::is_same_v<std::add_lvalue_reference_t<void>, void> << "\n";
-    std::cout << "int& → int&:   " << std::is_same_v<std::add_lvalue_reference_t<int&>, int&> << "\n";
-    std::cout << "int&& → int&:  " << std::is_same_v<std::add_lvalue_reference_t<int&&>, int&> << "\n";
+    std::cout << "int -> int&:    " << std::is_same_v<std::add_lvalue_reference_t<int>, int&> << "\n";
+    std::cout << "void -> void:   " << std::is_same_v<std::add_lvalue_reference_t<void>, void> << "\n";
+    std::cout << "int& -> int&:   " << std::is_same_v<std::add_lvalue_reference_t<int&>, int&> << "\n";
+    std::cout << "int&& -> int&:  " << std::is_same_v<std::add_lvalue_reference_t<int&&>, int&> << "\n";
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === add_lvalue_reference results ===
-int → int&:    true
-void → void:   true
-int& → int&:   true
-int&& → int&:  true
-
+int -> int&:    true
+void -> void:   true
+int& -> int&:   true
+int&& -> int&:  true
 ```
 
-**Key Insight:** The trait uses SFINAE — it attempts to form `T&`, and if that fails (as for `void`), it falls back to returning `T` unchanged. This is why these traits are preferred over manually writing `T&` in template code.
+The trait uses SFINAE - it attempts to form `T&`, and if that fails (as for `void`), it falls back to returning `T` unchanged. This is why these traits are preferred over manually writing `T&` in template code.
 
 ---
 

@@ -11,16 +11,14 @@
 
 ### The Standard Concept Hierarchy
 
-C++20 defines a hierarchy of concepts that describe the "regularity" of a type — how value-like it behaves. These concepts build on each other:
+C++20 defines a hierarchy of concepts that describe the "regularity" of a type - how value-like it behaves. Think of it as a ladder: each rung adds one more thing a type must be able to do:
 
 ```cpp
-
 std::destructible
   └── std::movable              (destructible + move constructible + move assignable + swappable)
         └── std::copyable       (movable + copy constructible + copy assignable)
               └── std::semiregular  (copyable + default_initializable)
                     └── std::regular    (semiregular + equality_comparable)
-
 ```
 
 ### What Each Concept Requires
@@ -32,12 +30,11 @@ std::destructible
 | `std::semiregular` | Copyable + default constructible | `int`, `string`, `vector` |
 | `std::regular` | Semiregular + `==` and `!=` | `int`, `string`, `vector` |
 
-### `std::regular` — The Gold Standard for Value Types
+### `std::regular` - The Gold Standard for Value Types
 
-A **regular** type behaves like `int` — you can default-construct it, copy it, compare it for equality, and copies are independent values:
+A **regular** type behaves like `int` - you can default-construct it, copy it, compare it for equality, and copies are independent values. If you're designing a value type, regular is the target:
 
 ```cpp
-
 #include <concepts>
 
 // int is regular:
@@ -48,7 +45,6 @@ static_assert(std::regular<std::string>);
 
 // std::vector<int> is regular:
 static_assert(std::regular<std::vector<int>>);
-
 ```
 
 **Semantic requirements** (beyond syntax):
@@ -59,10 +55,9 @@ static_assert(std::regular<std::vector<int>>);
 
 ### Why These Concepts Matter
 
+The power of this hierarchy is that you can constrain a template to exactly the capabilities it needs - no more, no less:
+
 ```cpp
-
-// Algorithms can require specific levels of "regularity":
-
 // Only needs movable (e.g., unique ownership transfer)
 template<std::movable T>
 void take_ownership(T obj);
@@ -78,13 +73,15 @@ class Optional { T default_value = T{}; };
 // Needs regular (e.g., elements in a set — need == for uniqueness)
 template<std::regular T>
 class UniqueList { /* compares elements for equality */ };
-
 ```
+
+Using the weakest concept that satisfies your needs is good design: it makes your template usable with more types.
 
 ### Types That Fail at Each Level
 
-```cpp
+Here's the hierarchy illustrated by what breaks at each step. This is the most useful mental model to internalize:
 
+```cpp
 #include <concepts>
 #include <memory>
 #include <mutex>
@@ -111,13 +108,13 @@ struct NoEq {
 };
 static_assert(std::semiregular<NoEq>);
 static_assert(!std::regular<NoEq>);
-
 ```
 
 ### Formal Definitions (C++20 Standard)
 
-```cpp
+For completeness, here are the actual concept definitions. Notice how each one builds on the one before:
 
+```cpp
 // Actual concept definitions (simplified from <concepts>):
 template<class T>
 concept movable = std::is_object_v<T> && std::move_constructible<T>
@@ -134,7 +131,6 @@ concept semiregular = std::copyable<T> && std::default_initializable<T>;
 
 template<class T>
 concept regular = std::semiregular<T> && std::equality_comparable<T>;
-
 ```
 
 ---
@@ -143,8 +139,9 @@ concept regular = std::semiregular<T> && std::equality_comparable<T>;
 
 ### Q1: Explain what `std::regular` requires (default constructible, copyable, equality comparable)
 
-```cpp
+The `check_regular_requirements` function here is a handy diagnostic tool - it prints all the sub-requirements so you can see which one is failing for a given type:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <type_traits>
@@ -203,13 +200,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === int ===
   destructible:          true
   move_constructible:    true
@@ -237,13 +232,13 @@ int main() {
   copyable:              false
   semiregular:           false
   REGULAR:               false
-
 ```
 
 ### Q2: Show why `std::unique_ptr` does not satisfy `std::copyable`
 
-```cpp
+`std::unique_ptr` is deliberately move-only. Allowing copies would mean two `unique_ptr`s pointing to the same object - a double-free waiting to happen. The `= delete` on the copy operations is a design choice, not an oversight:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <memory>
@@ -255,9 +250,9 @@ int main() {
     // std::unique_ptr is move-only — it has deleted copy operations
     std::cout << "=== std::unique_ptr<int> ===\n";
     std::cout << "  move_constructible:    " << std::move_constructible<std::unique_ptr<int>> << "\n";  // true
-    std::cout << "  copy_constructible:    " << std::copy_constructible<std::unique_ptr<int>> << "\n";  // FALSE
+    std::cout << "  copy_constructible:    " << std::copy_constructible<std::unique_ptr<int>> << "\n";  // false
     std::cout << "  movable:               " << std::movable<std::unique_ptr<int>> << "\n";             // true
-    std::cout << "  copyable:              " << std::copyable<std::unique_ptr<int>> << "\n";             // FALSE
+    std::cout << "  copyable:              " << std::copyable<std::unique_ptr<int>> << "\n";             // false
 
     // Why? unique_ptr explicitly deletes copy operations:
     // unique_ptr(const unique_ptr&) = delete;
@@ -285,13 +280,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === std::unique_ptr<int> ===
   move_constructible:    true
   copy_constructible:    false
@@ -306,13 +299,13 @@ After move:
   std::mutex copyable: false
   std::thread copyable: false
   std::ifstream copyable: false
-
 ```
 
 ### Q3: Write a generic algorithm constrained on `std::regular` and verify it rejects non-regular types
 
-```cpp
+The concept constraint here does real work - it's not decoration. Without `==` you can't check for duplicates, and without copyability you can't `push_back`. The compiler will tell you exactly which concept fails when you try a non-regular type:
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <vector>
@@ -404,13 +397,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Unique ints: 1 2 3 4
 Unique strings: hello world !
 
@@ -418,14 +409,13 @@ Concept hierarchy verification:
   int:           regular=true
   NoEquality:    regular=false, semiregular=true
   NonCopyable:   regular=false, movable=true
-
 ```
 
 **How this works:**
 
-- `unique_elements` requires `std::regular` because it needs: copy (push_back), equality (!=), default ctor (vector element)
+- `unique_elements` requires `std::regular` because it needs: copy (`push_back`), equality (`!=`), default ctor (vector element)
 - Non-regular types are rejected at compile time with clear concept error messages
-- The hierarchy lets you choose the **minimum** constraint needed — don't require `regular` if you only need `movable`
+- The hierarchy lets you choose the **minimum** constraint needed - don't require `regular` if you only need `movable`
 
 ---
 

@@ -10,26 +10,27 @@
 
 ### Why Nothrow Moves Matter in Generic Code
 
-When writing generic containers or algorithms, you face a critical decision: **use move or copy** to transfer elements? If a move constructor throws mid-way through a batch operation (e.g., vector reallocation), you've corrupted the original data and can't recover.
+When writing generic containers or algorithms, you face a critical decision: **use move or copy** to transfer elements? If a move constructor throws mid-way through a batch operation (e.g., vector reallocation), you've corrupted the original data and can't recover. Move semantics only give you a strong exception guarantee when the move itself can't throw.
 
 `std::is_nothrow_move_constructible_v<T>` lets you query at compile time whether moving `T` is safe, and choose your strategy accordingly.
 
 ### The `std::vector` Problem
 
-During `push_back` when capacity is exceeded, `std::vector` must transfer all elements to a new buffer:
+During `push_back` when capacity is exceeded, `std::vector` must transfer all elements to a new buffer. The dilemma is real:
 
 | Strategy | Safe if move throws? | Performance |
 | --- | --- | --- |
-| Copy all elements | Yes — original still intact | Slow (deep copies) |
-| Move all elements | **No** — can't restore originals | Fast |
-| Move if noexcept, else copy | Yes — best of both | Optimal |
+| Copy all elements | Yes - original still intact | Slow (deep copies) |
+| Move all elements | No - can't restore originals | Fast |
+| Move if noexcept, else copy | Yes - best of both | Optimal |
 
-This is exactly what `std::vector` does internally with `std::move_if_noexcept`.
+This is exactly what `std::vector` does internally with `std::move_if_noexcept`. The standard library literally branches on this trait to give you both safety and performance.
 
 ### Key Traits and Utilities
 
-```cpp
+Here are the tools for working with this pattern:
 
+```cpp
 #include <type_traits>
 #include <utility>
 
@@ -41,13 +42,13 @@ std::is_nothrow_move_assignable_v<T>      // true if T::operator=(T&&) is noexce
 std::move_if_noexcept(x)
 // Returns: T&& if T is nothrow move constructible
 //          const T& otherwise (forces copy)
-
 ```
 
 ### Making Your Types Noexcept-Move
 
-```cpp
+The fix is straightforward - annotate move operations with `noexcept` when they can't throw, which for most types that just move members is always the case:
 
+```cpp
 struct Good {
     std::vector<int> data;
     // Rule: Mark move operations noexcept when they can't throw
@@ -58,23 +59,22 @@ struct Good {
     }
 };
 
-static_assert(std::is_nothrow_move_constructible_v<Good>);  // ✓
-
+static_assert(std::is_nothrow_move_constructible_v<Good>);
 ```
 
 ### Using in Generic Code: `if constexpr` Dispatch
 
-```cpp
+You can make your own generic code branch on this trait the same way the standard library does:
 
+```cpp
 template<typename T>
 void transfer(T& dst, T& src) {
     if constexpr (std::is_nothrow_move_constructible_v<T>) {
-        dst = std::move(src);  // safe — won't throw
+        dst = std::move(src);  // safe - won't throw
     } else {
-        dst = src;  // fallback to copy — strong exception guarantee
+        dst = src;  // fallback to copy - strong exception guarantee
     }
 }
-
 ```
 
 ---
@@ -83,8 +83,9 @@ void transfer(T& dst, T& src) {
 
 ### Q1: Show how `std::vector` uses `is_nothrow_move_constructible` to choose between move and copy on reallocation
 
-```cpp
+The key here is to actually watch the behavior differ. One type has `noexcept` on its move constructor; the other does not. Watch which operations fire during vector reallocation:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -158,13 +159,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 FastWidget nothrow move: true
 SlowWidget nothrow move: false
 
@@ -177,15 +176,15 @@ Triggering reallocation (push_back):
 Triggering reallocation (push_back):
   SlowWidget COPY 10
   SlowWidget COPY 20
-
 ```
 
-**Key Point:** `SlowWidget` elements are **copied** despite having a move constructor, because the move is not `noexcept`. The vector can't risk a throwing move corrupting the source buffer during reallocation.
+`SlowWidget` elements are **copied** despite having a move constructor, because the move is not `noexcept`. The vector can't risk a throwing move corrupting the source buffer during reallocation.
 
 ### Q2: Write a generic swap that uses move only when `is_nothrow_move_constructible` is true
 
-```cpp
+Notice that the `noexcept` on `safe_swap` is itself conditional - the function is only nothrow when the underlying type supports nothrow moves. That's the right way to propagate exception guarantees in generic code:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -198,12 +197,12 @@ void safe_swap(T& a, T& b) noexcept(std::is_nothrow_move_constructible_v<T> &&
 {
     if constexpr (std::is_nothrow_move_constructible_v<T> &&
                   std::is_nothrow_move_assignable_v<T>) {
-        // Safe to move — no exceptions possible
+        // Safe to move - no exceptions possible
         T temp(std::move(a));
         a = std::move(b);
         b = std::move(temp);
     } else {
-        // Fallback to copy — strong exception guarantee
+        // Fallback to copy - strong exception guarantee
         T temp(a);       // copy
         a = b;           // copy
         b = temp;        // copy
@@ -236,7 +235,7 @@ struct NothrowType {
 struct ThrowingType {
     int value;
     ThrowingType(int v) : value(v) {}
-    ThrowingType(ThrowingType&& o) : value(o.value) {  // NO noexcept
+    ThrowingType(ThrowingType&& o) : value(o.value) {  // No noexcept
         std::cout << "  [ThrowingType] MOVE\n";
     }
     ThrowingType(const ThrowingType& o) : value(o.value) {
@@ -271,13 +270,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === safe_swap with NothrowType (uses MOVE) ===
   [NothrowType] MOVE
   [NothrowType] MOVE-ASSIGN
@@ -289,13 +286,13 @@ a=2, b=1
   [ThrowingType] COPY-ASSIGN
   [ThrowingType] COPY-ASSIGN
 c=20, d=10
-
 ```
 
 ### Q3: Trace why `std::string` may not be nothrow-move-constructible on all implementations
 
-```cpp
+This is a subtlety worth knowing: `std::string` itself is guaranteed nothrow-move by the standard, but the more general `std::basic_string` with a custom allocator is not always:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -314,11 +311,11 @@ int main() {
     //
     // 2. Custom allocators with propagate_on_container_move_assignment:
     //    - If allocator doesn't propagate on move, string must allocate
-    //      new buffer and copy characters → can throw std::bad_alloc
+    //      new buffer and copy characters -> can throw std::bad_alloc
     //
     // 3. Small-string optimization (SSO):
-    //    - Short strings stored inline → move = memcpy-like (noexcept ✓)
-    //    - Long strings stored on heap → move = pointer swap (noexcept ✓)
+    //    - Short strings stored inline -> move = memcpy-like (noexcept)
+    //    - Long strings stored on heap -> move = pointer swap (noexcept)
     //    - But: if allocators differ and don't propagate, still must copy
 
     // Demonstrate with custom allocator scenarios:
@@ -357,13 +354,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (typical modern compiler):**
 
 ```text
-
 std::string nothrow-move: true
 basic_string<char> nothrow-move: true
 
@@ -374,10 +369,9 @@ std::string:            true
 std::vector<int>:       true
 std::unique_ptr<int>:   true
 std::shared_ptr<int>:   true
-
 ```
 
-**Key Insight:** `std::string` with the default allocator IS noexcept-move on all conforming C++11+ implementations. The risk arises with **`basic_string` using custom allocators** where `propagate_on_container_move_assignment` is `false_type`. In that case, move construction may need to allocate and copy, potentially throwing `std::bad_alloc`.
+`std::string` with the default allocator IS noexcept-move on all conforming C++11+ implementations. The risk arises with **`basic_string` using custom allocators** where `propagate_on_container_move_assignment` is `false_type`. In that case, move construction may need to allocate and copy, potentially throwing `std::bad_alloc`.
 
 ---
 
@@ -386,4 +380,4 @@ std::shared_ptr<int>:   true
 - **Always mark your move constructors `noexcept`** when they don't allocate or call potentially-throwing operations. This single keyword can dramatically improve performance in `std::vector` and other containers.
 - Use `static_assert(std::is_nothrow_move_constructible_v<MyType>)` as a regression test in your code.
 - `std::move_if_noexcept(x)` is the standard utility that implements the "move-if-safe, copy-if-not" pattern.
-- The `noexcept` specifier is part of the type system since C++17 — it affects overload resolution and function pointer compatibility.
+- The `noexcept` specifier is part of the type system since C++17 - it affects overload resolution and function pointer compatibility.

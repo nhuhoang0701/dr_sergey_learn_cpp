@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Type traits are compile-time predicates and transformations on types. C++20 lets you use them directly in **concepts** and **requires clauses** to constrain templates.
+Type traits are compile-time predicates and transformations on types. C++20 lets you use them directly in **concepts** and **requires clauses** to constrain templates. Think of them as questions you can ask about a type at compile time: "Is this an integer?", "Does it have a trivial copy constructor?", "What happens if I strip the reference off this?"
 
 ### Categories of Type Traits
 
@@ -23,8 +23,9 @@ Type traits are compile-time predicates and transformations on types. C++20 lets
 
 ### Using Traits to Constrain Templates
 
-```cpp
+C++ has given us progressively cleaner ways to gate a template on type properties. Here's how the same constraint looks in each era:
 
+```cpp
 #include <type_traits>
 #include <concepts>
 
@@ -40,30 +41,31 @@ T add_requires(T a, T b) { return a + b; }
 // C++20 style: concept
 template<std::integral T>
 T add_concept(T a, T b) { return a + b; }
-
 ```
 
+For new code, prefer the C++20 style. The `enable_if` version is worth knowing because you'll encounter it in older codebases and in the standard library itself.
+
 ### std::decay_t vs std::remove_cvref_t (C++20)
+
+These two are often confused. The difference is that `decay_t` also converts arrays to pointers and function types to function pointers - it mimics what happens when you pass something by value to a function:
 
 | Trait | Removes | Also does |
 | --- | --- | --- |
 | `remove_reference_t<T>` | References (`&`, `&&`) | Nothing else |
 | `remove_cv_t<T>` | `const`, `volatile` | Nothing else |
 | `remove_cvref_t<T>` (C++20) | References + const/volatile | Nothing else |
-| `decay_t<T>` | References + const/volatile | **Array→pointer**, **function→function pointer** |
+| `decay_t<T>` | References + const/volatile | **Array->pointer**, **function->function pointer** |
 
 ```cpp
-
 // With an array type:
 using T = const int[5];
-// remove_cvref_t<T> → int[5]  (still an array!)
-// decay_t<T>         → int*   (array decayed to pointer)
+// remove_cvref_t<T> -> int[5]  (still an array!)
+// decay_t<T>         -> int*   (array decayed to pointer)
 
 // With a function type:
 using F = void(int);
-// remove_cvref_t<F> → void(int)   (still a function type)
-// decay_t<F>         → void(*)(int) (function pointer)
-
+// remove_cvref_t<F> -> void(int)   (still a function type)
+// decay_t<F>         -> void(*)(int) (function pointer)
 ```
 
 ---
@@ -72,13 +74,14 @@ using F = void(int);
 
 ### Q1: Use `is_integral_v`, `is_same_v`, and `is_base_of_v` to gate a function template
 
-```cpp
+Three different traits, three different use cases. Notice the `remove_cvref_t` in the second example - that's needed so `count_chars` accepts `const std::string&` and `std::string&&` too, not just `std::string`:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
 
-// 1. Gate with is_integral_v — only works with integer types
+// 1. Gate with is_integral_v - only works with integer types
 template<typename T>
     requires std::is_integral_v<T>
 T safe_divide(T numerator, T denominator) {
@@ -86,14 +89,14 @@ T safe_divide(T numerator, T denominator) {
     return numerator / denominator;
 }
 
-// 2. Gate with is_same_v — only works with specific type
+// 2. Gate with is_same_v - only works with specific type
 template<typename T>
     requires std::is_same_v<std::remove_cvref_t<T>, std::string>
 size_t count_chars(T&& s) {
     return s.size();
 }
 
-// 3. Gate with is_base_of_v — only works with derived classes
+// 3. Gate with is_base_of_v - only works with derived classes
 struct Shape {
     virtual double area() const = 0;
     virtual ~Shape() = default;
@@ -121,26 +124,26 @@ int main() {
     // is_integral_v:
     std::cout << safe_divide(10, 3) << "\n";    // 3
     std::cout << safe_divide(100, 0) << "\n";   // 0
-    // safe_divide(3.14, 2.0);  // ❌ ERROR: double is not integral
+    // safe_divide(3.14, 2.0);  // ERROR: double is not integral
 
     // is_same_v:
     std::cout << count_chars(std::string("hello")) << "\n";  // 5
-    // count_chars(42);  // ❌ ERROR: int is not string
+    // count_chars(42);  // ERROR: int is not string
 
     // is_base_of_v:
     Circle c(5.0);
     Square s(3.0);
     print_area(c);  // Area: 78.5398
     print_area(s);  // Area: 9
-    // print_area(42);  // ❌ ERROR: int does not derive from Shape
+    // print_area(42);  // ERROR: int does not derive from Shape
 }
-
 ```
 
 ### Q2: Explain the difference between `std::decay_t` and `std::remove_cvref_t`
 
-```cpp
+The two traits diverge when arrays and function types are involved. For plain references and cv-qualifiers they do the same thing, but `decay_t` goes further. The `typeid(...).name()` output is implementation-defined but still shows the difference:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -156,42 +159,39 @@ void show_decay() {
 }
 
 int main() {
-    // Case 1: Simple reference — both strip it
+    // Case 1: Simple reference - both strip it
     std::cout << "const int& :\n";
     show_decay<const int&>();
-    // decay_t → int, remove_cvref_t → int  (SAME)
+    // decay_t -> int, remove_cvref_t -> int  (SAME)
 
-    // Case 2: Array — decay converts to pointer!
+    // Case 2: Array - decay converts to pointer!
     std::cout << "int[5] :\n";
     show_decay<int[5]>();
-    // decay_t → int*, remove_cvref_t → int[5]  (DIFFERENT!)
+    // decay_t -> int*, remove_cvref_t -> int[5]  (DIFFERENT!)
 
-    // Case 3: Function — decay converts to function pointer!
+    // Case 3: Function - decay converts to function pointer!
     std::cout << "void(int) :\n";
     show_decay<void(int)>();
-    // decay_t → void(*)(int), remove_cvref_t → void(int)  (DIFFERENT!)
+    // decay_t -> void(*)(int), remove_cvref_t -> void(int)  (DIFFERENT!)
 
-    // Case 4: Pointer — both leave it alone
+    // Case 4: Pointer - both leave it alone
     std::cout << "const int* :\n";
     show_decay<const int*>();
-    // decay_t → const int*, remove_cvref_t → const int*  (SAME)
+    // decay_t -> const int*, remove_cvref_t -> const int*  (SAME)
 
     // Rule of thumb:
     // - Use decay_t when you want what "pass-by-value" gives you
     // - Use remove_cvref_t when you just want to strip qualifiers/refs
 }
-
 ```
 
-**Summary:**
-
-- `decay_t` mimics what happens when you pass an argument by value — arrays become pointers, functions become function pointers, and cv-qualifiers/references are stripped.
-- `remove_cvref_t` only strips `const`, `volatile`, and references — it preserves array and function types.
+`decay_t` mimics what happens when you pass an argument by value to a template - arrays become pointers, functions become function pointers, and cv-qualifiers/references are stripped. `remove_cvref_t` only strips `const`, `volatile`, and references - it preserves array and function types.
 
 ### Q3: Write a custom type trait that detects if a type has a `.size()` member
 
-```cpp
+This is the classic SFINAE detection pattern, shown in both the C++11/14 style and the cleaner C++20 concept form. The `std::void_t<...>` trick works by substituting the expression into a template - if the expression is ill-formed (no `.size()`), substitution fails and the `false_type` specialization is selected:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -229,11 +229,11 @@ void print_size(const T& container) {
 
 int main() {
     // Test the trait
-    static_assert(has_size_v<std::vector<int>>);       // ✅ has .size()
-    static_assert(has_size_v<std::string>);             // ✅ has .size()
-    static_assert(!has_size_v<int>);                    // ❌ no .size()
-    static_assert(!has_size_v<int*>);                   // ❌ no .size()
-    static_assert(has_size_v<std::array<int, 5>>);     // ✅ has .size()
+    static_assert(has_size_v<std::vector<int>>);       // has .size()
+    static_assert(has_size_v<std::string>);             // has .size()
+    static_assert(!has_size_v<int>);                    // no .size()
+    static_assert(!has_size_v<int*>);                   // no .size()
+    static_assert(has_size_v<std::array<int, 5>>);     // has .size()
 
     // Test the concept
     static_assert(Sizable<std::vector<int>>);
@@ -244,33 +244,16 @@ int main() {
     print_size(v);                  // Size: 3
     std::cout << safe_empty_check(v) << "\n";  // 0 (false)
 
-    // print_size(42);  // ❌ ERROR: int doesn't satisfy Sizable
+    // print_size(42);  // ERROR: int doesn't satisfy Sizable
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Always prefer `_v` variable templates (`is_integral_v<T>`) over `::value` — shorter and clearer.
+- Always prefer `_v` variable templates (`is_integral_v<T>`) over `::value` - shorter and clearer.
 - Always prefer `_t` alias templates (`remove_const_t<T>`) over `::type`.
-- C++20 concepts are the modern replacement for SFINAE-based `enable_if` — prefer concepts when targeting C++20.
-- `std::void_t<...>` (C++17) is the key trick for SFINAE detection traits — it maps any valid expression to `void`.
+- C++20 concepts are the modern replacement for SFINAE-based `enable_if` - prefer concepts when targeting C++20.
+- `std::void_t<...>` (C++17) is the key trick for SFINAE detection traits - it maps any valid expression to `void`.
 - Custom traits follow the convention: struct name inherits from `std::true_type` or `std::false_type`, with a `_v` variable template shorthand.
-
-**How this works:**
-
-- A custom type trait using partial specialization that detects if a type has a .size() member.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-The `std::in_place` family of tags tells containers to **construct objects directly in their storage** instead of creating a temporary and moving it in.
+The `std::in_place` family of tags tells containers to **construct objects directly in their storage** instead of creating a temporary and moving it in. These tags carry no data - they exist purely to select a different constructor overload that forwards arguments straight to the contained object.
 
 ### The Tag Types
 
@@ -21,8 +21,9 @@ The `std::in_place` family of tags tells containers to **construct objects direc
 
 ### Why In-Place Construction Matters
 
-```cpp
+Without `in_place`, you're constructing a temporary and then moving it into the container's storage - that's two operations. With `in_place`, you forward the constructor arguments directly into the container's internal buffer:
 
+```cpp
 #include <optional>
 #include <string>
 
@@ -42,24 +43,25 @@ std::optional<Heavy> opt1 = Heavy("hello");
 // With in_place: construct directly inside optional's storage
 std::optional<Heavy> opt2(std::in_place, "hello");
 // Output: Constructed (no move at all!)
-
 ```
+
+The difference matters most for non-movable types, or any type with an expensive move. For trivially copyable types the compiler will usually optimize the move away anyway.
 
 ### With std::variant
 
-```cpp
+`variant` needs the extra `in_place_type<T>` or `in_place_index<I>` tags because it can hold multiple alternative types and needs to know which one you're constructing:
 
+```cpp
 #include <variant>
 #include <string>
 
-// variant with ambiguous types — need to specify which one
+// variant with ambiguous types - need to specify which one
 std::variant<int, double, std::string> v1(std::in_place_type<std::string>, 5, 'A');
 // Constructs string("AAAAA") directly in variant's storage
 
 // By index instead of type:
 std::variant<int, double, std::string> v2(std::in_place_index<2>, "hello");
 // Index 2 = std::string
-
 ```
 
 ---
@@ -68,8 +70,9 @@ std::variant<int, double, std::string> v2(std::in_place_index<2>, "hello");
 
 ### Q1: Construct a `std::optional<MyType>` in-place using `std::in_place`
 
-```cpp
+Here you can see all three ways to get in-place construction with `optional` - the constructor with `std::in_place`, and the `emplace()` member called after construction. The important thing to notice is that the constructor arguments go directly after the tag:
 
+```cpp
 #include <iostream>
 #include <optional>
 #include <string>
@@ -87,10 +90,10 @@ struct Connection {
 };
 
 int main() {
-    // 1. Without in_place — temporary + move
+    // 1. Without in_place - temporary + move
     // std::optional<Connection> conn1 = Connection("localhost", 8080, {"opt1"});
 
-    // 2. With in_place — construct directly inside optional
+    // 2. With in_place - construct directly inside optional
     std::optional<Connection> conn2(std::in_place, "localhost", 8080,
                                      std::initializer_list<std::string>{"ssl", "compress"});
 
@@ -109,26 +112,22 @@ int main() {
     // 4. No unnecessary copies or moves!
     // Output: only "Connection constructed" messages, no "Copied" or "Moved"
 }
-
 ```
 
-**How this works:**
-
-- `std::in_place` is a tag that selects the in-place constructor overload.
-- The arguments after `std::in_place` are forwarded directly to `Connection`'s constructor.
-- The object is constructed directly in `optional`'s internal aligned storage — zero copies, zero moves.
+`std::in_place` is a tag that selects the in-place constructor overload. The arguments after `std::in_place` are forwarded directly to `Connection`'s constructor, and the object is constructed directly in `optional`'s internal aligned storage - zero copies, zero moves.
 
 ### Q2: Emplace into a `std::variant` using `std::in_place_type<T>`
 
-```cpp
+`variant` requires the type tag because a bare argument like `42` would be ambiguous if the variant holds both `int` and `double`. With `in_place_type<double>`, you're unambiguous and also get direct construction:
 
+```cpp
 #include <iostream>
 #include <variant>
 #include <string>
 #include <complex>
 
 int main() {
-    // Problem: variant<int, double> — passing 42 is ambiguous
+    // Problem: variant<int, double> - passing 42 is ambiguous
     // (could be int or double)
 
     // Solution: use in_place_type to specify exactly which type
@@ -143,7 +142,7 @@ int main() {
     std::variant<int, double, std::string> v3(std::in_place_index<0>, 99);
     std::cout << "v3 holds int: " << std::get<0>(v3) << "\n";  // 99
 
-    // With std::any — in_place_type disambiguates and avoids moves
+    // With std::any - in_place_type disambiguates and avoids moves
     // std::any a(std::in_place_type<std::complex<double>>, 3.0, 4.0);
 
     // Emplace after construction
@@ -155,21 +154,15 @@ int main() {
     v4.emplace<1>(3.14);  // index 1 = double
     std::cout << "v4 now holds double: " << std::get<double>(v4) << "\n";
 }
-
 ```
 
-**How this works:**
-
-- `std::in_place_type<T>` tells the variant which alternative to activate and construct.
-- Arguments are forwarded to `T`'s constructor, avoiding temporary creation.
-- `std::in_place_index<I>` does the same but uses the position in the variant's type list.
+`std::in_place_type<T>` tells the variant which alternative to activate and construct. Arguments are forwarded to `T`'s constructor, avoiding temporary creation. `std::in_place_index<I>` does the same but uses the position in the variant's type list.
 
 ### Q3: Explain why in-place construction avoids the move/copy of passing a temporary
 
-**Answer:**
+This example uses a `Tracker` type that logs every constructor and destructor call. Run through the three blocks mentally before reading the output - the "without in_place" path has an extra move and an extra destruction:
 
 ```cpp
-
 #include <iostream>
 #include <optional>
 #include <string>
@@ -204,56 +197,45 @@ int main() {
 
     std::cout << "\n=== With in_place (direct construction) ===\n";
     {
-        // Only ONE construction — directly inside optional's storage
+        // Only ONE construction - directly inside optional's storage
         // No temporary, no move, no extra destruction
         std::optional<Tracker> opt(std::in_place, "Beta");
     }
 
     std::cout << "\n=== emplace (same as in_place, but after construction) ===\n";
     {
-        std::optional<Tracker> opt;  // empty — no construction
+        std::optional<Tracker> opt;  // empty - no construction
         opt.emplace("Gamma");         // construct directly in storage
     }
 }
-
 ```
 
 **Output (conceptual):**
 
 ```text
-
 === Without in_place ===
   Constructed: Alpha
-  Moved: Alpha          ← extra move!
-  Destroyed:            ← temporary destroyed
+  Moved: Alpha          <- extra move!
+  Destroyed:            <- temporary destroyed
   Destroyed: Alpha
 
 === With in_place ===
-  Constructed: Beta     ← only this! No move.
+  Constructed: Beta     <- only this! No move.
   Destroyed: Beta
 
 === emplace ===
-  Constructed: Gamma    ← only this!
+  Constructed: Gamma    <- only this!
   Destroyed: Gamma
-
 ```
 
-**Key insight:** `in_place` forwards constructor arguments through the container's constructor to construct the object directly in the container's internal buffer — no temporary object is ever created.
+`in_place` forwards constructor arguments through the container's constructor to construct the object directly in the container's internal buffer - no temporary object is ever created.
 
 ---
 
 ## Notes
 
 - `emplace()` does the same thing as `in_place` but for assignment after construction.
-- `std::in_place` is a `constexpr` variable of type `std::in_place_t` — it's just a tag, carries no data.
+- `std::in_place` is a `constexpr` variable of type `std::in_place_t` - it's just a tag, carries no data.
 - `std::expected<T, E>` (C++23) also supports `std::in_place` for the value and `std::unexpect` for the error.
 - `std::any` uses `std::in_place_type<T>` because it can hold any type and needs to know which one to construct.
-- Performance benefit is greatest for non-movable types or types with expensive moves — for trivially copyable types, the compiler usually optimizes away the move anyway.
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- Performance benefit is greatest for non-movable types or types with expensive moves - for trivially copyable types, the compiler usually optimizes away the move anyway.

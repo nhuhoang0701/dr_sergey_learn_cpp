@@ -10,10 +10,9 @@
 
 ### What Is `std::underlying_type`
 
-Every enum in C++ has an **underlying integer type**. `std::underlying_type_t<E>` gives you that type at compile time:
+Every enum in C++ has an **underlying integer type**. `std::underlying_type_t<E>` gives you that type at compile time. This matters because `enum class` deliberately hides the integer - there's no implicit conversion - so you need an explicit way to get at the raw value when you really need it.
 
 ```cpp
-
 #include <type_traits>
 #include <cstdint>
 
@@ -23,21 +22,18 @@ enum OldEnum { A, B, C };  // unscoped, usually int
 
 static_assert(std::is_same_v<std::underlying_type_t<Color>, uint8_t>);
 static_assert(std::is_same_v<std::underlying_type_t<Status>, int>);
-
 ```
 
 ### `std::to_underlying` (C++23)
 
-C++23 provides a cleaner way to cast an enum to its underlying type:
+C++23 provides a cleaner way to cast an enum to its underlying type, so you don't have to write the full `static_cast` every time:
 
 ```cpp
-
 // C++23
 auto val = std::to_underlying(Color::Red);  // uint8_t(0)
 
 // Equivalent to:
 auto val2 = static_cast<std::underlying_type_t<Color>>(Color::Red);
-
 ```
 
 ### Why Use These
@@ -55,8 +51,9 @@ auto val2 = static_cast<std::underlying_type_t<Color>>(Color::Red);
 
 ### Q1: Cast an enum class value to its underlying integer type safely using `std::to_underlying` (C++23)
 
-```cpp
+Notice how `std::to_underlying` preserves the exact underlying type - the result for `Priority` is `uint8_t`, not just some random `int`. That precision matters for serialization and generic code.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -115,13 +112,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `Permissions::All = 7` result comes from `Read(1) | Write(2) | Execute(4)` - bitwise OR works in the enum definition because the enum's underlying type is an integer even when the enum class itself doesn't expose that implicitly.
 
 **Output:**
 
 ```text
-
 Priority::High = 3
 ErrorCode::NotFound = -1
 Permissions::All = 7
@@ -132,13 +129,13 @@ Serialization sizes:
   Priority:    1 byte(s)
   ErrorCode:   4 byte(s)
   Permissions: 2 byte(s)
-
 ```
 
 ### Q2: Show a pre-C++23 cast using `static_cast<std::underlying_type_t<E>>(e)`
 
-```cpp
+Before C++23 you needed a helper function - and it's genuinely useful to write one rather than spelling out the full cast every time. This example also shows `underlying_type_t` used as a storage type inside a generic class:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <cstdint>
@@ -210,13 +207,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `EnumRange` class is a good illustration of why `underlying_type_t` is worth knowing: it lets you store enum values as their integer type internally (so you can compare them with `>=` and `<=`) while keeping the public interface in terms of the enum itself.
 
 **Output:**
 
 ```text
-
 Warning value: 3
 Error value: 4
 Restored: INFO
@@ -224,13 +221,13 @@ Restored: INFO
 Is Info important? false
 Is Error important? true
 Is Fatal important? true
-
 ```
 
 ### Q3: Implement a bitflag type based on enum class using `underlying_type` for the storage
 
-```cpp
+Bitwise operators on `enum class` don't come for free - you have to define them. Here the trick is always: cast to the underlying integer, operate, cast back. `underlying_type_t` makes that pattern concise and generic enough to work for any enum:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <cstdint>
@@ -334,13 +331,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+One caution worth noting: these operator templates are constrained to `is_enum_v<E>`, which means they apply to all enums in the translation unit. In production code you'd want to narrow the constraint to specific flag enums to avoid accidentally enabling bitwise operations on something like a `Color` enum.
 
 **Output:**
 
 ```text
-
 mode = RW
 After |= Execute: RWX
 Has Read? true
@@ -350,7 +347,6 @@ After toggle Hidden: RXH
 
 Raw value: 13
 Underlying type size: 4 bytes
-
 ```
 
 ---

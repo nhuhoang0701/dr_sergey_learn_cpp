@@ -13,7 +13,6 @@
 `std::is_nothrow_move_constructible<T>` is a type trait that checks whether type `T` can be move-constructed without throwing exceptions. It's `true` when the move constructor is declared `noexcept` (or is trivial).
 
 ```cpp
-
 #include <type_traits>
 #include <string>
 #include <vector>
@@ -21,7 +20,6 @@
 static_assert(std::is_nothrow_move_constructible_v<int>);           // true: trivial
 static_assert(std::is_nothrow_move_constructible_v<std::string>);   // true: noexcept move
 static_assert(std::is_nothrow_move_constructible_v<std::vector<int>>); // true
-
 ```
 
 ### Why Does `std::vector` Care
@@ -29,16 +27,14 @@ static_assert(std::is_nothrow_move_constructible_v<std::vector<int>>); // true
 When `std::vector` needs to **reallocate** (e.g., during `push_back` when capacity is exceeded), it must transfer elements from the old buffer to the new one. It has two options:
 
 ```cpp
+// Option A: MOVE elements (fast, but if a move throws mid-transfer,
+//           old buffer is already partially destroyed -> data loss!)
 
-Option A: MOVE elements (fast, but if a move throws mid-transfer,
-          old buffer is already partially destroyed → data loss!)
-
-Option B: COPY elements (slow, but if a copy throws,
-          old buffer is intact → strong exception guarantee preserved)
-
+// Option B: COPY elements (slow, but if a copy throws,
+//           old buffer is intact -> strong exception guarantee preserved)
 ```
 
-`std::vector` uses **move** (Option A) only if `is_nothrow_move_constructible_v<T>` is `true`. Otherwise, it falls back to **copy** (Option B).
+`std::vector` uses **move** (Option A) only if `is_nothrow_move_constructible_v<T>` is `true`. Otherwise, it falls back to **copy** (Option B). This is one of the most impactful places that `noexcept` on a move constructor has a real performance effect.
 
 ### The Strong Exception Guarantee
 
@@ -46,27 +42,28 @@ The C++ standard requires that `push_back` provides the **strong exception guara
 
 > If an exception is thrown, the container is left in its previous valid state.
 
+Here's why this forces the conditional behavior:
+
 ```cpp
+// Reallocation with MOVE:
+//   [old buffer: A B C D]
+//   Transfer: A->new, B->new, C fails! (throws)
+//   Problem: A and B are already moved-from in old buffer
+//            -> old buffer is corrupted -> CANNOT restore previous state!
+//            -> strong guarantee VIOLATED
 
-Reallocation with MOVE:
-  [old buffer: A B C D]
-  Transfer: A→new, B→new, C fails! (throws)
-  Problem: A and B are already moved-from in old buffer
-           → old buffer is corrupted → CANNOT restore previous state!
-           → strong guarantee VIOLATED
-
-Reallocation with COPY:
-  [old buffer: A B C D]
-  Transfer: A→new, B→new, C fails! (throws)
-  Old buffer still has: A B C D (untouched, they were copied)
-  → Destroy new buffer, keep old → strong guarantee PRESERVED ✓
-
+// Reallocation with COPY:
+//   [old buffer: A B C D]
+//   Transfer: A->new, B->new, C fails! (throws)
+//   Old buffer still has: A B C D (untouched, they were copied)
+//   -> Destroy new buffer, keep old -> strong guarantee PRESERVED
 ```
 
 ### The Decision Logic
 
-```cpp
+The actual implementation uses `std::move_if_noexcept`, which neatly encodes the three-way decision:
 
+```cpp
 // Simplified logic inside vector::push_back / resize:
 if constexpr (std::is_nothrow_move_constructible_v<T>) {
     // Safe to move — no exception possible
@@ -78,18 +75,15 @@ if constexpr (std::is_nothrow_move_constructible_v<T>) {
     // Move-only type that might throw — move anyway (best effort)
     std::uninitialized_move(old_begin, old_end, new_begin);
 }
-
 ```
 
 The actual implementation uses `std::move_if_noexcept`:
 
 ```cpp
-
 // std::move_if_noexcept<T>(x):
-//   If T is nothrow-move-constructible → return std::move(x)  (rvalue)
-//   Else if T is copy-constructible    → return x              (lvalue → copy)
-//   Else                               → return std::move(x)  (last resort)
-
+//   If T is nothrow-move-constructible -> return std::move(x)  (rvalue)
+//   Else if T is copy-constructible    -> return x              (lvalue -> copy)
+//   Else                               -> return std::move(x)  (last resort)
 ```
 
 ### Performance Impact
@@ -103,8 +97,9 @@ The actual implementation uses `std::move_if_noexcept`:
 
 ### How to Ensure `noexcept` Move
 
-```cpp
+The rule is simple: if your move constructor does nothing that can throw, mark it `noexcept`. The compiler won't infer it from the body:
 
+```cpp
 struct Good {
     std::vector<int> data;
     std::string name;
@@ -122,7 +117,6 @@ struct Fixed {
     Fixed(Fixed&&) noexcept {}  // Explicitly noexcept
 };
 static_assert(std::is_nothrow_move_constructible_v<Fixed>);
-
 ```
 
 ---
@@ -131,8 +125,9 @@ static_assert(std::is_nothrow_move_constructible_v<Fixed>);
 
 ### Q1: Show that `std::vector` uses `is_nothrow_move_constructible` to choose move vs copy during realloc
 
-```cpp
+This is a live demonstration - you can see the move/copy counts directly. The only difference between `FastType` and `SlowType` is the `noexcept` annotation on the move constructor:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <type_traits>
@@ -207,32 +202,30 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === FastType (noexcept move) ===
 After realloc: moves=2, copies=0
 
 === SlowType (throwing move) ===
 After realloc: moves=0, copies=2
-
 ```
 
 **How this works:**
 
-- `FastType` has `noexcept` move → vector moves existing elements during reallocation (0 copies)
-- `SlowType` has potentially-throwing move → vector falls back to copying (0 moves)
+- `FastType` has `noexcept` move - vector moves existing elements during reallocation (0 copies)
+- `SlowType` has potentially-throwing move - vector falls back to copying (0 moves)
 - The difference is entirely determined by `is_nothrow_move_constructible_v<T>`
 - This can have **massive** performance impact for types with expensive copies (e.g., types containing `vector`, `string`, etc.)
 
 ### Q2: Write a move constructor that is conditionally `noexcept` based on member nothrow properties
 
-```cpp
+The `noexcept(expression)` syntax lets you propagate `noexcept` status automatically rather than hard-coding it. If any member's move might throw, the whole class correctly reports it might throw too:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <vector>
@@ -316,25 +309,22 @@ int main() {
                   "Pair<int, MayThrow> should NOT be nothrow moveable");
 
     // This affects vector performance:
-    std::cout << "Pair<int, string> → vector will MOVE during realloc: "
+    std::cout << "Pair<int, string> -> vector will MOVE during realloc: "
               << std::boolalpha
               << std::is_nothrow_move_constructible_v<Pair<int, std::string>> << "\n";
 
-    std::cout << "Pair<int, MayThrow> → vector will COPY during realloc: "
+    std::cout << "Pair<int, MayThrow> -> vector will COPY during realloc: "
               << !std::is_nothrow_move_constructible_v<Pair<int, MayThrow>> << "\n";
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
-Pair<int, string> → vector will MOVE during realloc: true
-Pair<int, MayThrow> → vector will COPY during realloc: true
-
+Pair<int, string> -> vector will MOVE during realloc: true
+Pair<int, MayThrow> -> vector will COPY during realloc: true
 ```
 
 **How this works:**
@@ -349,51 +339,44 @@ Pair<int, MayThrow> → vector will COPY during realloc: true
 
 The **strong exception guarantee** promises:
 
-> If an operation throws, the program state is unchanged — as if the operation never happened.
+> If an operation throws, the program state is unchanged - as if the operation never happened.
 
 **Why this forces conditional move/copy:**
 
 **Scenario:** `vector::push_back` triggers reallocation (size == capacity):
 
 ```cpp
-
-Step 1: Allocate new buffer (bigger)
-Step 2: Transfer elements from old buffer to new buffer
-Step 3: Destroy old buffer elements
-Step 4: Deallocate old buffer
-
+// Step 1: Allocate new buffer (bigger)
+// Step 2: Transfer elements from old buffer to new buffer
+// Step 3: Destroy old buffer elements
+// Step 4: Deallocate old buffer
 ```
 
 **If Step 2 uses MOVE and element N's move throws:**
 
 ```cpp
+// Old buffer:  [A_moved  B_moved  C_moved  D ... ]  <- A,B,C are moved-from (destroyed)
+// New buffer:  [A        B        C        FAIL  ]  <- exception during D's move
 
-Old buffer:  [A_moved  B_moved  C_moved  D ... ]  ← A,B,C are moved-from (destroyed)
-New buffer:  [A        B        C        💥    ]  ← exception during D's move
-
-Problem: We can't restore old buffer because A,B,C are moved-from!
-         Strong guarantee VIOLATED.
-         Even if we catch the exception, old data is lost.
-
+// Problem: We can't restore old buffer because A,B,C are moved-from!
+//          Strong guarantee VIOLATED.
+//          Even if we catch the exception, old data is lost.
 ```
 
 **If Step 2 uses COPY and element N's copy throws:**
 
 ```cpp
+// Old buffer:  [A  B  C  D  E  F]  <- ALL original objects still intact (we copied, not moved)
+// New buffer:  [A  B  C  FAIL   ]  <- exception during D's copy
 
-Old buffer:  [A  B  C  D  E  F]  ← ALL original objects still intact (we copied, not moved)
-New buffer:  [A  B  C  💥     ]  ← exception during D's copy
-
-Solution: Destroy partial new buffer, deallocate it, and keep old buffer.
-          Container state is exactly as before push_back.
-          Strong guarantee PRESERVED ✓
-
+// Solution: Destroy partial new buffer, deallocate it, and keep old buffer.
+//           Container state is exactly as before push_back.
+//           Strong guarantee PRESERVED
 ```
 
 **The conditional decision:**
 
 ```cpp
-
 #include <iostream>
 #include <type_traits>
 #include <utility>
@@ -409,9 +392,9 @@ void demonstrate_move_if_noexcept(T& obj) {
     using result_type = decltype(std::move_if_noexcept(obj));
 
     if constexpr (std::is_rvalue_reference_v<result_type>) {
-        std::cout << "  → Will MOVE (noexcept or move-only)\n";
+        std::cout << "  -> Will MOVE (noexcept or move-only)\n";
     } else {
-        std::cout << "  → Will COPY (for safety)\n";
+        std::cout << "  -> Will COPY (for safety)\n";
     }
 }
 
@@ -439,13 +422,13 @@ int main() {
     MoveOnly c;
 
     std::cout << "NoexceptMove (safe to move):";
-    demonstrate_move_if_noexcept(a);  // → MOVE
+    demonstrate_move_if_noexcept(a);  // -> MOVE
 
     std::cout << "ThrowingMove (unsafe, can copy):";
-    demonstrate_move_if_noexcept(b);  // → COPY (for strong guarantee)
+    demonstrate_move_if_noexcept(b);  // -> COPY (for strong guarantee)
 
     std::cout << "MoveOnly (unsafe, must move):";
-    demonstrate_move_if_noexcept(c);  // → MOVE (no choice)
+    demonstrate_move_if_noexcept(c);  // -> MOVE (no choice)
 
     std::cout << "\nConclusion:\n";
     std::cout << "  The strong exception guarantee requires copying when move\n";
@@ -454,22 +437,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
-NoexceptMove (safe to move):  → Will MOVE (noexcept or move-only)
-ThrowingMove (unsafe, can copy):  → Will COPY (for safety)
-MoveOnly (unsafe, must move):  → Will MOVE (noexcept or move-only)
+NoexceptMove (safe to move):  -> Will MOVE (noexcept or move-only)
+ThrowingMove (unsafe, can copy):  -> Will COPY (for safety)
+MoveOnly (unsafe, must move):  -> Will MOVE (noexcept or move-only)
 
 Conclusion:
   The strong exception guarantee requires copying when move
   may throw, because a failed move corrupts the source.
   Mark your move constructors noexcept to get move performance!
-
 ```
 
 ---

@@ -10,19 +10,20 @@
 
 ### Why `using` Over `typedef`
 
-C++11 introduced `using` alias declarations as a modern replacement for `typedef`. Both create type aliases, but `using` is strictly more powerful:
+C++11 introduced `using` alias declarations as a modern replacement for `typedef`. Both create type aliases, but `using` is strictly more powerful. The key upgrade is **alias templates** - something `typedef` simply cannot do.
 
 | Feature | `typedef` | `using` |
 | --- | --- | --- |
-| Simple type alias | ✓ | ✓ |
-| Function pointer alias | ✓ (ugly syntax) | ✓ (cleaner) |
+| Simple type alias | Yes | Yes |
+| Function pointer alias | Yes (ugly syntax) | Yes (cleaner) |
 | **Alias templates** (template aliases) | **No** | **Yes** |
 | Readability | Poor for complex types | Left-to-right reading |
 
 ### Syntax Comparison
 
-```cpp
+The readability difference is most visible with function pointers - `typedef` buries the name in the middle of the declaration, while `using` puts it cleanly on the left:
 
+```cpp
 // Simple alias
 typedef unsigned long ulong;       // old
 using ulong = unsigned long;       // new (clearer: name = type)
@@ -38,13 +39,13 @@ using IntArray = int[10];           // new
 // Complex nested type
 typedef std::map<std::string, std::vector<int>> MapType;   // old
 using MapType = std::map<std::string, std::vector<int>>;   // new
-
 ```
 
 ### Alias Templates (Only With `using`)
 
-```cpp
+This is the real reason to prefer `using`. You can parameterize a type alias over a template parameter, which `typedef` fundamentally can't do:
 
+```cpp
 // This is IMPOSSIBLE with typedef:
 template<typename T>
 using Vec = std::vector<T>;
@@ -58,8 +59,9 @@ struct VecTypedef {
     typedef std::vector<T> type;
 };
 VecTypedef<int>::type v;  // ugly!
-
 ```
+
+The `::type` suffix required by the struct workaround is a real pain - you'd need `typename VecTypedef<T>::type` inside templates, which is both noisy and requires an extra `typename` keyword. Alias templates eliminate all of that.
 
 ---
 
@@ -67,8 +69,9 @@ VecTypedef<int>::type v;  // ugly!
 
 ### Q1: Rewrite a complex nested typedef chain using `using` alias declarations
 
-```cpp
+Pay attention to how much easier it is to read the `using` versions, especially for the function pointer and member function pointer cases:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <vector>
@@ -128,23 +131,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Alice: 95 87 92
 Bob: 88 91 76
 Widget::process(3.14) = 6
-
 ```
 
 ### Q2: Show how template aliases (alias templates) cannot be expressed with `typedef`
 
-```cpp
+This example demonstrates all the common alias template patterns, then shows the `typedef` struct workaround you'd be stuck with without `using`:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <map>
@@ -226,13 +227,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The difference in call site ergonomics is stark: `Vec<int>` vs `VecOld<int>::type`. In a template function body the `typedef` form also requires a `typename` prefix, adding even more noise.
 
 **Output:**
 
 ```text
-
 Vec<int>: 1 2 3
 StringMap: Alice=95.5
 Ptr: 42
@@ -241,13 +242,13 @@ Func: add(3,4)=7
 (typedef way requires ::type everywhere)
 1.1 2.2 3.3
 hello world
-
 ```
 
 ### Q3: Write a type alias that abstracts an allocator-aware container's iterator type
 
-```cpp
+Alias templates are useful for hiding verbose iterator types so your function signatures stay readable. If you later swap the underlying container or add a custom allocator, all code using the alias updates automatically:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <list>
@@ -334,18 +335,17 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The comment at the end points to the real payoff: if you ever need to switch `FastVec` to use a pool allocator, you change one line in the alias definition and everything else recompiles correctly. Without the alias layer, you'd have to track down every `std::vector<T>::iterator` mention by hand.
 
 **Output:**
 
 ```text
-
 Found: 30 at index 2
 Found: world
 
 Alias templates make allocator-aware code clean.
-
 ```
 
 ---
@@ -353,6 +353,6 @@ Alias templates make allocator-aware code clean.
 ## Notes
 
 - **Always prefer `using` over `typedef`** in modern C++. There is no case where `typedef` is better.
-- `using` aliases are identical to `typedef` for simple cases — they produce the same type, not a new type.
+- `using` aliases are identical to `typedef` for simple cases - they produce the same type, not a new type.
 - Alias templates participate in template argument deduction and work naturally with concepts.
-- For class members, `using` also handles inheriting constructors (`using Base::Base;`) and bringing base class names into scope (`using Base::method;`) — different uses of the same keyword.
+- For class members, `using` also handles inheriting constructors (`using Base::Base;`) and bringing base class names into scope (`using Base::method;`) - different uses of the same keyword.

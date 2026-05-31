@@ -14,16 +14,15 @@
 
 ### The Problem with `std::type_info`
 
-The `typeid()` operator returns a `const std::type_info&`, but `type_info`:
+The `typeid()` operator returns a `const std::type_info&`, but `type_info` has some annoying limitations that prevent it from being used as a map key directly:
 
 - Is not copyable (only references to it exist)
 - Has no `<` operator guaranteed to work as a map key
 - Has no `std::hash` specialization
 
-`std::type_index` solves all of these:
+`std::type_index` solves all of these. It stores a pointer to the underlying `type_info` and provides all the operators containers need:
 
 ```cpp
-
 #include <typeindex>
 #include <unordered_map>
 #include <map>
@@ -38,13 +37,13 @@ std::type_index idx2 = typeid(double);
 
 std::map<std::type_index, std::string> ordered;        // uses operator<
 std::unordered_map<std::type_index, std::string> hash;  // uses std::hash
-
 ```
 
 ### Core Pattern: Type Registry
 
-```cpp
+The most common use of `std::type_index` is a type-keyed registry - a map from a type to something that knows how to work with that type at runtime:
 
+```cpp
 #include <typeindex>
 #include <unordered_map>
 #include <functional>
@@ -52,14 +51,13 @@ std::unordered_map<std::type_index, std::string> hash;  // uses std::hash
 
 struct Base { virtual ~Base() = default; };
 
-// Factory registry: type_index → factory function
+// Factory registry: type_index -> factory function
 std::unordered_map<std::type_index, std::function<std::unique_ptr<Base>()>> registry;
 
 template<typename T>
 void register_type() {
     registry[typeid(T)] = []() { return std::make_unique<T>(); };
 }
-
 ```
 
 ---
@@ -68,8 +66,9 @@ void register_type() {
 
 ### Q1: Build a registry from `std::type_index` to factory functions using unordered_map
 
-```cpp
+This example builds a real shape registry where you can look up a factory by either a compile-time type or a runtime `type_index` value:
 
+```cpp
 #include <iostream>
 #include <typeindex>
 #include <unordered_map>
@@ -162,13 +161,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the registry supports both paths: `create<Circle>()` at compile time (where the type is known), and `create(idx)` at runtime (where you only have a `type_index` value, perhaps deserialized or passed through a plugin system).
 
 **Output:**
 
 ```text
-
 Registered types: 3
 
 Circle area: 78.5397
@@ -178,13 +177,13 @@ Triangle area: 9
 Runtime creation:
   Circle area: 78.5397
   Triangle area: 9
-
 ```
 
 ### Q2: Show that `std::type_index` wraps `std::type_info` for comparison and hashing
 
-```cpp
+Here you can see the contrast between raw `type_info` (useful but limited) and `type_index` (container-ready):
 
+```cpp
 #include <iostream>
 #include <typeindex>
 #include <typeinfo>
@@ -220,7 +219,7 @@ int main() {
     std::cout << "idx_int == idx_dbl:  " << (idx_int == idx_dbl) << "\n";
     std::cout << "idx_int < idx_dbl:   " << (idx_int < idx_dbl) << "\n";
 
-    // Hash support → works in unordered containers
+    // Hash support -> works in unordered containers
     std::cout << "\n=== hashing ===\n";
     std::cout << "hash(int):    " << std::hash<std::type_index>{}(idx_int) << "\n";
     std::cout << "hash(double): " << std::hash<std::type_index>{}(idx_dbl) << "\n";
@@ -251,13 +250,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The duplicate `typeid(int)` insertion is silently ignored by the set - two `type_index` values are equal if and only if they refer to the same type, so the set correctly keeps only one entry for `int`.
 
 **Output (names are implementation-defined):**
 
 ```text
-
 === type_info ===
 int name: int
 double name: double
@@ -283,13 +282,13 @@ hash(double): 12345678901234567
   struct C
   class std::string
   int
-
 ```
 
 ### Q3: Implement a simple event dispatcher keyed on listener type using `type_index`
 
-```cpp
+This is a practical pattern you'll recognize from UI frameworks and game engines: a dispatcher that routes events to the right handlers based on the event's type at runtime.
 
+```cpp
 #include <iostream>
 #include <typeindex>
 #include <unordered_map>
@@ -374,13 +373,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `std::any` wrapper lets all handler types live in the same vector, while `type_index` ensures each event type routes only to its own subscribers. Emitting an unregistered event type simply finds nothing in the map and returns silently.
 
 **Output:**
 
 ```text
-
 Registered event types: 3
 
 Handler 1: Click at (100,200)
@@ -391,7 +390,6 @@ Key pressed: 'A'
 Window resized to 1920x1080
 
 UnknownEvent emitted (no handlers)
-
 ```
 
 ---
@@ -401,4 +399,4 @@ UnknownEvent emitted (no handlers)
 - **`typeid` and polymorphism:** For polymorphic types (with virtual functions), `typeid(*ptr)` gives the dynamic type. For non-polymorphic types, it gives the static type.
 - `type_index` is constructed from `type_info`, not from a type directly. Always write `std::type_index(typeid(T))` or `typeid(T)` (implicit conversion).
 - **`type_info::name()`** returns implementation-defined strings. Don't rely on them for serialization or cross-compiler compatibility.
-- `type_index` comparison reflects the program's type system — two `type_index` values are equal if and only if they refer to the same type in the same program execution.
+- `type_index` comparison reflects the program's type system - two `type_index` values are equal if and only if they refer to the same type in the same program execution.
