@@ -9,14 +9,13 @@
 
 ## Topic Overview
 
-When the compiler parses a template, it performs name lookup in **two phases**:
+When the compiler parses a template, it performs name lookup in **two phases**. This is one of those rules that feels abstract until you hit a mysterious compile error - then it suddenly makes a lot of sense.
 
 ### Phase 1: Template Definition Time
 
 **Non-dependent names** (names that don't depend on template parameters) are looked up immediately when the template is defined.
 
 ```cpp
-
 void helper() { std::cout << "global helper\n"; }
 
 template<typename T>
@@ -24,8 +23,9 @@ void foo(T x) {
     helper();  // Non-dependent: looked up NOW at definition time
     x.bar();   // Dependent: looked up later at instantiation time
 }
-
 ```
+
+The compiler can resolve `helper()` right away because it doesn't involve `T` at all. `x.bar()` has to wait because the compiler doesn't yet know what `T` is.
 
 ### Phase 2: Template Instantiation Time
 
@@ -33,10 +33,9 @@ void foo(T x) {
 
 ### The typename Disambiguator
 
-When a dependent name refers to a **type**, you must use `typename`:
+When a dependent name refers to a **type**, you must use `typename` - otherwise the compiler assumes it's a value:
 
 ```cpp
-
 template<typename T>
 void process(T& container) {
     // T::iterator could be a type or a static member
@@ -45,21 +44,18 @@ void process(T& container) {
 
     // C++20 relaxes this requirement in some contexts
 }
-
 ```
 
 ### The template Disambiguator
 
-When a dependent name calls a **template member**, you must use `template`:
+When a dependent name calls a **template member**, you must use `template` to tell the compiler that the following `<` is not the less-than operator:
 
 ```cpp
-
 template<typename T>
 void call_method(T& obj) {
-    // obj.method<int>() — compiler thinks < is less-than operator!
+    // obj.method<int>() - compiler thinks < is less-than operator!
     obj.template method<int>();  // Correct: .template disambiguates
 }
-
 ```
 
 ---
@@ -68,8 +64,9 @@ void call_method(T& obj) {
 
 ### Q1: Show a dependent name that requires the `typename` keyword to parse correctly
 
-```cpp
+Without `typename`, the compiler defaults to treating `Container::const_iterator` as a value - which causes a parse error. The `typename` keyword is your explicit promise that this dependent name is a type:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <map>
@@ -116,20 +113,20 @@ int main() {
     auto sz = get_size(v);
     std::cout << "Size: " << sz << "\n";  // 3
 }
-
 ```
 
 **How this works:**
 
-- `Container::const_iterator` is a dependent name — it depends on the template parameter `Container`.
-- Without `typename`, the compiler parses it as a non-type (value/variable) — which breaks the code.
+- `Container::const_iterator` is a dependent name - it depends on the template parameter `Container`.
+- Without `typename`, the compiler parses it as a non-type (value/variable) - which breaks the code.
 - `typename` explicitly tells the compiler: "I promise this is a type."
 - C++20 relaxed the requirement in many common contexts (variable declarations, return types, parameter types), but the programmer can still write `typename` for clarity.
 
 ### Q2: Use the `template` keyword to disambiguate a dependent template member
 
-```cpp
+When `parser` has a dependent type, the compiler can't tell whether `parser.parse<int>` means "call the template `parse` with `int`" or "compare `parser.parse` against `int` with less-than." The `.template` keyword resolves the ambiguity:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -171,7 +168,7 @@ struct Container {
 
 template<typename C>
 void convert_from(const C& c) {
-    // c.convert<int>()  — ambiguous
+    // c.convert<int>()  - ambiguous
     auto result = c.template convert<int>();
     std::cout << "Converted: " << result << "\n";
 }
@@ -183,7 +180,6 @@ int main() {
     Container<std::string> c;
     convert_from(c);
 }
-
 ```
 
 **How this works:**
@@ -200,21 +196,22 @@ Non-dependent names are resolved at definition time for two critical reasons:
 
 **1. Early error detection:**
 
-```cpp
+If the compiler waited until instantiation to check non-dependent names, you'd only find bugs in templates that were actually used - leaving latent errors in unused code paths. Phase 1 catches them immediately:
 
+```cpp
 template<typename T>
 void foo() {
     undeclared_function();  // ERROR: caught at definition time (Phase 1)
     // No need to wait for instantiation to find this bug
 }
 // Even if foo() is never instantiated, this error is detected
-
 ```
 
 **2. Preventing silent behavior changes:**
 
-```cpp
+Without Phase 1 lookup, adding a new overload later in a file could silently change what an already-defined template calls. That would be a nightmare to debug:
 
+```cpp
 void helper() { std::cout << "Version A\n"; }
 
 template<typename T>
@@ -226,39 +223,38 @@ void foo() {
 void helper(int) { std::cout << "Version B\n"; }
 
 // If foo<int>() used instantiation-time lookup for helper(),
-// it might find Version B instead — changing behavior silently!
+// it might find Version B instead - changing behavior silently!
 // Phase 1 lookup prevents this.
-
 ```
 
 **3. Examples of dependent vs non-dependent:**
 
-```cpp
+Here's a quick side-by-side showing which lookup phase applies to each name:
 
+```cpp
 int global = 42;
 
 template<typename T>
 struct Demo {
     void method() {
-        std::cout << global;     // Non-dependent → Phase 1 lookup
-        T x;                     // Dependent → Phase 2 lookup
-        x.member();              // Dependent → Phase 2 (ADL possible)
-        typename T::type y;      // Dependent → Phase 2
-        foo();                   // Non-dependent → Phase 1
-        this->bar();             // Dependent (this->) → Phase 2
+        std::cout << global;     // Non-dependent -> Phase 1 lookup
+        T x;                     // Dependent -> Phase 2 lookup
+        x.member();              // Dependent -> Phase 2 (ADL possible)
+        typename T::type y;      // Dependent -> Phase 2
+        foo();                   // Non-dependent -> Phase 1
+        this->bar();             // Dependent (this->) -> Phase 2
     }
 };
-
 ```
 
-**Rule of thumb:** If a name involves `T` (or depends on it in any way), it's dependent → Phase 2. Otherwise it's non-dependent → Phase 1.
+**Rule of thumb:** If a name involves `T` (or depends on it in any way), it's dependent -> Phase 2. Otherwise it's non-dependent -> Phase 1.
 
 ---
 
 ## Notes
 
-- MSVC historically didn't implement two-phase lookup correctly — it delayed all lookups to Phase 2. Use `/permissive-` to enable standard-conformant behavior.
-- C++20 significantly relaxed `typename` requirements — in most positions where only a type is valid, `typename` is now optional.
+- MSVC historically didn't implement two-phase lookup correctly - it delayed all lookups to Phase 2. Use `/permissive-` to enable standard-conformant behavior.
+- C++20 significantly relaxed `typename` requirements - in most positions where only a type is valid, `typename` is now optional.
 - `this->` makes a name dependent, which can be useful in templates to access base class members: `this->inherited_method()`.
-- ADL only applies during Phase 2 for dependent function calls — not during Phase 1.
-- Two-phase lookup is the reason template definition must be in headers (or visible at definition point) — the compiler needs to resolve non-dependent names immediately.
+- ADL only applies during Phase 2 for dependent function calls - not during Phase 1.
+- Two-phase lookup is the reason template definition must be in headers (or visible at definition point) - the compiler needs to resolve non-dependent names immediately.

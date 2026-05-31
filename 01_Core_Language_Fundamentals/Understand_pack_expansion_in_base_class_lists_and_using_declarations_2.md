@@ -1,4 +1,4 @@
-# Understand pack expansion in base class lists and using declarations — Part 2
+# Understand pack expansion in base class lists and using declarations - Part 2
 
 **Category:** Core Language Fundamentals  
 **Item:** #780  
@@ -12,8 +12,9 @@ This continues the pack expansion topic, focusing on variadic CRTP, bringing met
 
 ### Variadic CRTP (Curiously Recurring Template Pattern)
 
-```cpp
+When you want static polymorphism from multiple mixins, you can combine CRTP with pack expansion. Each mixin takes the derived type as a template parameter, so it can call back into the derived class without virtual functions:
 
+```cpp
 // Each mixin takes the Derived type for static polymorphism
 template<typename Derived>
 struct Printable {
@@ -40,15 +41,15 @@ struct Entity : Mixins<Entity<Mixins...>>... {
 
 Entity<Printable, Serializable> e;
 e.name = "Player";
-e.print();       // calls Printable<Entity>::print() → Entity::do_print()
-e.serialize();   // calls Serializable<Entity>::serialize() → Entity::do_serialize()
-
+e.print();       // calls Printable<Entity>::print() -> Entity::do_print()
+e.serialize();   // calls Serializable<Entity>::serialize() -> Entity::do_serialize()
 ```
 
 ### Using Pack Expansion to Bring Methods Into Scope
 
-```cpp
+When bases all have a function with the same name, you need the `using` expansion or name hiding will block all but one. Here's the pattern in its simplest form:
 
+```cpp
 template<typename... Bases>
 struct Combined : Bases... {
     using Bases::method...;  // C++17: all 'method' overloads visible
@@ -60,13 +61,13 @@ struct StrProcessor  { void method(const std::string& s) { std::cout << "str: " 
 Combined<IntProcessor, StrProcessor> c;
 c.method(42);       // IntProcessor::method
 c.method("hello");  // StrProcessor::method
-
 ```
 
 ### Mixin Composition Pattern
 
-```cpp
+Fold expressions and pack expansion work together to call a method on each policy base in order - no manual unrolling needed:
 
+```cpp
 template<typename... Policies>
 struct Widget : Policies... {
     using Policies::apply...;  // bring all apply() overloads
@@ -76,17 +77,17 @@ struct Widget : Policies... {
         (Policies::apply(), ...);  // fold expression
     }
 };
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Use variadic CRTP: template<typename... Bases> struct Derived : Bases... {};
+### Q1: Use variadic CRTP to inherit from a parameter pack of CRTP mixin bases
+
+The `GameEntity` below composes any combination of CRTP mixins. Each mixin accesses the concrete derived type through `static_cast`, so all the dispatch is resolved at compile time with no virtual function overhead.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 
@@ -135,9 +136,8 @@ int main() {
     // Can compose with subset:
     GameEntity<HasName> simple;
     simple.show_name();    // Name: Hero
-    // simple.show_health(); // ERROR — no HasHealth base
+    // simple.show_health(); // ERROR - no HasHealth base
 }
-
 ```
 
 **How this works:**
@@ -145,12 +145,13 @@ int main() {
 - Each CRTP base receives the derived type, enabling static polymorphism.
 - `GameEntity<Mixins...>` expands to `GameEntity : HasName<GameEntity>, HasHealth<GameEntity>, HasPosition<GameEntity>`.
 - Each mixin can access derived members via `static_cast<const Derived*>(this)`.
-- No virtual functions needed — all dispatch is resolved at compile time.
+- No virtual functions needed - all dispatch is resolved at compile time.
 
 ### Q2: Use `using Bases::method...;` to bring methods from all base classes into scope
 
-```cpp
+Without the `using` expansion, the `Dispatcher` would only see one `process` - name hiding would block the others. The pack expansion in the using-declaration is what makes the whole design work:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -181,7 +182,6 @@ int main() {
 
     // Overload resolution works across all bases
 }
-
 ```
 
 **How this works:**
@@ -192,8 +192,9 @@ int main() {
 
 ### Q3: Show a mixin composition that applies N independent policy bases via pack expansion
 
-```cpp
+The fold expression `(Policies::apply(), ...)` calls `apply()` on each base in left-to-right order. The composition is entirely type-driven - adding or removing a policy is just changing the template argument list.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -238,7 +239,7 @@ int main() {
 
     std::cout << "\n";
 
-    // Minimal service — just logging and auth
+    // Minimal service - just logging and auth
     Service<LogPolicy, AuthPolicy> minimal;
     minimal.configure();
     // Configuring service:
@@ -246,7 +247,6 @@ int main() {
     //   [AuthPolicy] Auth required
     // Service ready!
 }
-
 ```
 
 **How this works:**
@@ -254,23 +254,15 @@ int main() {
 - Each policy is an independent struct with an `apply()` method.
 - `Service<Policies...>` inherits from all policies via pack expansion.
 - `(Policies::apply(), ...)` is a fold expression that calls each policy's `apply()` in order.
-- The composition is fully type-safe and resolved at compile time — no virtual function overhead.
+- The composition is fully type-safe and resolved at compile time - no virtual function overhead.
 - Adding or removing policies is just changing the template arguments.
 
 ---
 
 ## Notes
 
-- Variadic CRTP enables zero-cost mixin composition — all dispatch is compile-time.
+- Variadic CRTP enables zero-cost mixin composition - all dispatch is compile-time.
 - `using Bases::name...;` in using-declarations requires C++17.
 - Fold expressions (`(expr, ...)`) require C++17 and are the cleanest way to apply an operation to each pack element.
-- If two bases have the same method with the same signature, you'll get an ambiguity error — resolve with explicit qualification.
+- If two bases have the same method with the same signature, you'll get an ambiguity error - resolve with explicit qualification.
 - Empty Base Optimization (EBO) means empty policy classes add zero size overhead to the composed type.
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

@@ -9,18 +9,19 @@
 
 ## Topic Overview
 
-`__has_include` is a **preprocessor feature test** introduced in C++17 that checks whether a header file is available before `#include`-ing it. It enables writing portable code that gracefully falls back to alternative libraries.
+`__has_include` is a **preprocessor feature test** introduced in C++17 that checks whether a
+header file is available before `#include`-ing it. It lets you write portable code that
+gracefully falls back to alternative libraries instead of failing to compile on older toolchains.
 
 ### Syntax
 
-```cpp
+Both forms evaluate to `1` (truthy) if the header exists and can be included, `0` otherwise.
+The check happens entirely at preprocessing time - it has zero runtime cost.
 
+```cpp
 #if __has_include(<header>)       // angle-bracket form (system/standard headers)
 #if __has_include("header.h")     // quote form (project-local headers)
-
 ```
-
-Both forms evaluate to `1` (truthy) if the header exists and can be included, `0` otherwise. The check is performed **at preprocessing time** — it has zero runtime cost.
 
 ### Common Use Cases
 
@@ -31,10 +32,13 @@ Both forms evaluate to `1` (truthy) if the header exists and can be included, `0
 | `__has_include(<format>)` | Use `std::format` if supported (C++20) |
 | `__has_include("config.h")` | Detect project-specific configuration headers |
 
-### Basic Pattern — Fallback to Boost
+### Basic Pattern - Fallback to Boost
+
+Here's the classic use: check whether the standard header exists, and if not, fall through to
+a Boost equivalent. The `#error` at the bottom makes sure you get a clear message rather than
+cryptic missing-type errors later:
 
 ```cpp
-
 #if __has_include(<optional>)
     #include <optional>
     using opt = std::optional<int>;
@@ -44,15 +48,15 @@ Both forms evaluate to `1` (truthy) if the header exists and can be included, `0
 #else
     #error "No optional implementation available"
 #endif
-
 ```
 
 ### Combining with Feature-Test Macros
 
-`__has_include` tells you the header **exists** but not whether a specific feature **is implemented**. Combine with `__cpp_lib_*` macros for precise checks:
+Here's the thing: `__has_include` only tells you the header **exists**, not whether a
+specific feature is actually implemented. A compiler might ship a stub `<optional>` that
+doesn't define everything yet. Combine it with `__cpp_lib_*` macros for a precise check:
 
 ```cpp
-
 #if __has_include(<optional>)
     #include <optional>
     #if defined(__cpp_lib_optional) && __cpp_lib_optional >= 201606L
@@ -65,20 +69,24 @@ Both forms evaluate to `1` (truthy) if the header exists and can be included, `0
 #else
     #define HAS_STD_OPTIONAL 0
 #endif
-
 ```
+
+Think of this as a two-gate check: gate one confirms the file is there, gate two confirms
+the implementation is complete.
 
 ### Limitations
 
-1. **No version checking** — `__has_include(<optional>)` cannot distinguish between a partial C++17 `<optional>` and a complete one.
-2. **No content inspection** — it only checks if the file exists, not what it defines.
-3. **Preprocessor only** — cannot be used in `if constexpr` or runtime expressions.
-4. **Compiler-dependent** — older compilers may not support `__has_include` at all; wrap in `#ifdef __has_include`.
+1. **No version checking** - `__has_include(<optional>)` cannot distinguish between a partial C++17 `<optional>` and a complete one.
+2. **No content inspection** - it only checks if the file exists, not what it defines.
+3. **Preprocessor only** - cannot be used in `if constexpr` or runtime expressions.
+4. **Compiler-dependent** - older compilers may not support `__has_include` at all; wrap in `#ifdef __has_include`.
 
 ### Portability Guard
 
-```cpp
+When you need to support compilers old enough to not know `__has_include` itself, wrap the
+whole thing in an `#ifdef`. The pattern below is safe even on a pre-C++17 compiler:
 
+```cpp
 #ifdef __has_include                         // guard for pre-C++17 compilers
     #if __has_include(<span>)
         #include <span>
@@ -90,7 +98,6 @@ Both forms evaluate to `1` (truthy) if the header exists and can be included, `0
     #define HAS_SPAN 0
     // provide a polyfill or disable the feature
 #endif
-
 ```
 
 ---
@@ -99,8 +106,10 @@ Both forms evaluate to `1` (truthy) if the header exists and can be included, `0
 
 ### Q1: Use `__has_include(<optional>)` to provide a fallback to `boost::optional` on older compilers
 
-```cpp
+The goal here is a compatibility header that makes the rest of your code blissfully unaware
+of which `optional` it's using. Notice how user code only ever touches `compat::optional`:
 
+```cpp
 // ---- optional_compat.h ----
 #pragma once
 
@@ -145,19 +154,20 @@ int main() {
     compat::optional<int> empty;
     std::cout << "Has value? " << (empty ? "yes" : "no") << "\n";
 }
-
 ```
 
 **How it works:**
 
 - The preprocessor first checks if `<optional>` exists; if so, aliases `std::optional` into `compat::`.
 - If not, it tries `<boost/optional.hpp>` as a fallback.
-- User code only uses `compat::optional<T>` — swapping implementations is transparent.
+- User code only uses `compat::optional<T>` - swapping implementations is transparent.
 
 ### Q2: Show `__has_include` combined with `__cpp_lib_optional` for a complete feature check
 
-```cpp
+This is the two-step pattern in practice. Step one confirms the header is present; step two
+confirms the implementation actually delivers the feature at the required version level:
 
+```cpp
 #include <iostream>
 
 // Step 1: Check header availability
@@ -196,7 +206,6 @@ int main() {
     std::cout << "any holds double: " << std::any_cast<double>(a) << "\n";
 #endif
 }
-
 ```
 
 **How it works:**
@@ -209,14 +218,13 @@ int main() {
 
 **Answer:**
 
-1. **No version granularity:** `__has_include(<optional>)` returns 1 if the file exists at all — even if the compiler ships a broken or incomplete `<optional>`. You cannot write `__has_include(<optional> >= 201606L)`.
+1. **No version granularity:** `__has_include(<optional>)` returns 1 if the file exists at all - even if the compiler ships a broken or incomplete `<optional>`. You cannot write `__has_include(<optional> >= 201606L)`.
 
 2. **No content introspection:** The preprocessor does not parse the included file; it only checks the filesystem. A header could define none of the expected types and `__has_include` would still succeed.
 
-3. **Solution — feature-test macros:** The standard defines `__cpp_lib_*` macros (e.g., `__cpp_lib_optional`, `__cpp_lib_ranges`) with version numbers. Always combine:
+3. **Solution - feature-test macros:** The standard defines `__cpp_lib_*` macros (e.g., `__cpp_lib_optional`, `__cpp_lib_ranges`) with version numbers. Always combine them with `__has_include`:
 
 ```cpp
-
 #if __has_include(<ranges>)
     #include <ranges>
     #if defined(__cpp_lib_ranges) && __cpp_lib_ranges >= 202110L
@@ -225,12 +233,11 @@ int main() {
         // Basic C++20 ranges only
     #endif
 #endif
-
 ```
 
 4. **Cannot check non-header resources:** Only works on files that would be found by `#include`. Cannot test for compiler builtins, command-line defines, or linked libraries.
 
-5. **Preprocessor-time only:** Cannot be used inside `if constexpr` or template metaprogramming — it is purely a preprocessing directive.
+5. **Preprocessor-time only:** Cannot be used inside `if constexpr` or template metaprogramming - it is purely a preprocessing directive.
 
 ---
 
@@ -238,5 +245,5 @@ int main() {
 
 - Always guard `__has_include` with `#ifdef __has_include` for portability with pre-C++17 compilers.
 - The full list of standard library feature-test macros is in `<version>` (C++20) or the SD-6 document.
-- `__has_include` is useful in library code that must support multiple platforms — application code that targets a fixed C++ standard usually doesn't need it.
+- `__has_include` is useful in library code that must support multiple platforms - application code that targets a fixed C++ standard usually doesn't need it.
 - Both GCC, Clang, and MSVC support `__has_include` as an extension even in C++14 mode.

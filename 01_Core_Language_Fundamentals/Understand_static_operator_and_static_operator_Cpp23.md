@@ -12,8 +12,9 @@ C++23 allows `operator()` and `operator[]` to be `static`. This eliminates the i
 
 ### Static operator()
 
-```cpp
+Before C++23, even a completely stateless lambda still had an implicit `this` parameter in its `operator()`. C++23 lets you mark it `static` to make the intent explicit and remove that hidden argument entirely:
 
+```cpp
 #include <algorithm>
 #include <vector>
 #include <iostream>
@@ -22,9 +23,9 @@ C++23 allows `operator()` and `operator[]` to be `static`. This eliminates the i
 auto old_cmp = [](int a, int b) { return a < b; };
 // sizeof(old_cmp) == 1, but operator() takes hidden this* parameter
 
-// C++23: static lambda — no this pointer at all
+// C++23: static lambda - no this pointer at all
 auto new_cmp = [](int a, int b) static { return a < b; };
-// Truly stateless — no this pointer in generated code
+// Truly stateless - no this pointer in generated code
 
 struct Comparator {
     static bool operator()(int a, int b) { return a < b; }
@@ -36,13 +37,13 @@ int main() {
     std::sort(v.begin(), v.end(), new_cmp);
     for (int x : v) std::cout << x << " "; // 1 1 3 4 5
 }
-
 ```
 
 ### Static operator[]
 
-```cpp
+`static operator[]` is useful for table-style access where you want subscript syntax but there's no per-instance state to read. Notice you still need an instance to call it through (or use the type name), but the implementation doesn't touch `this`:
 
+```cpp
 #include <array>
 #include <iostream>
 
@@ -66,7 +67,6 @@ int main() {
     Matrix m;
     m[1, 2] = 42.0;  // C++23 multidimensional subscript
 }
-
 ```
 
 ---
@@ -83,8 +83,9 @@ A lambda can be `static` only if it has no captures. `[x](int a) static { ... }`
 
 ### Q3: What's the benefit for C interop
 
-```cpp
+A captureless static lambda can decay to a raw function pointer, making it directly passable to C APIs like `qsort`:
 
+```cpp
 // A captureless static lambda can decay to a function pointer:
 auto cmp = [](const void* a, const void* b) static -> int {
     return *(const int*)a - *(const int*)b;
@@ -94,7 +95,6 @@ auto cmp = [](const void* a, const void* b) static -> int {
 
 // Before C++23: captureless lambdas could already convert to function pointers
 // But the static keyword makes the intent explicit and may optimize better
-
 ```
 
 ---

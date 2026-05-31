@@ -10,25 +10,31 @@
 
 ### The Key Difference
 
+The two `substr` methods share the same name but behave completely differently. One copies data onto the heap; the other just adjusts a pointer.
+
 | Method | Returns | Allocates? | Cost |
 | --- | --- | --- | --- |
-| `std::string::substr(pos, len)` | A new `std::string` (copy) | **Yes** — always heap allocates (unless SSO) | O(n) where n = substring length |
-| `std::string_view::substr(pos, len)` | A new `std::string_view` (pointer + length) | **No** — just adjusts pointer/length | O(1) constant time |
+| `std::string::substr(pos, len)` | A new `std::string` (copy) | Yes - always heap allocates (unless SSO) | O(n) where n = substring length |
+| `std::string_view::substr(pos, len)` | A new `std::string_view` (pointer + length) | No - just adjusts pointer/length | O(1) constant time |
+
+Here's the core idea in code - same call site, very different runtime behavior:
 
 ```cpp
-
 std::string s = "Hello, World!";
 std::string_view sv = s;
 
-auto sub1 = s.substr(7, 5);    // Returns std::string "World" — ALLOCATES
-auto sub2 = sv.substr(7, 5);   // Returns std::string_view pointing into s — ZERO COST
+auto sub1 = s.substr(7, 5);    // Returns std::string "World" - ALLOCATES
+auto sub2 = sv.substr(7, 5);   // Returns std::string_view pointing into s - ZERO COST
 
 // sub1 owns its own memory (independent copy)
-// sub2 is just a pointer into s's buffer (dependent — s must stay alive!)
-
+// sub2 is just a pointer into s's buffer (dependent - s must stay alive!)
 ```
 
+`sub2` is essentially two numbers: a pointer and a length. It's incredibly cheap, but it's also borrowed from `s`.
+
 ### When to Use Each
+
+If the table feels like a lot, it boils down to one question: do you need to own the data, or just read it?
 
 | Scenario | Use |
 | --- | --- |
@@ -39,16 +45,16 @@ auto sub2 = sv.substr(7, 5);   // Returns std::string_view pointing into s — Z
 
 ### The Dangling View Danger
 
-`string_view` does NOT own its data. If the underlying string is destroyed, the view **dangles**:
+`string_view` does NOT own its data. If the underlying string is destroyed, the view dangles. This is the most common mistake people make with `string_view`:
 
 ```cpp
-
 std::string_view get_name() {
     std::string temp = "Alice";
     return temp;  // DANGLING! temp is destroyed, view points to freed memory
 }
-
 ```
+
+The compiler may not warn you. The program may even appear to work sometimes. Don't rely on it.
 
 ---
 
@@ -56,8 +62,9 @@ std::string_view get_name() {
 
 ### Q1: Show that `std::string::substr` always allocates while `std::string_view::substr` is zero-cost
 
-```cpp
+This benchmark makes the performance gap concrete. Watch how the same loop runs orders of magnitude faster when you switch from `string` to `string_view`:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -78,7 +85,7 @@ int main() {
     // Measure string_view::substr (zero-copy)
     auto t3 = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < 1'000'000; ++i) {
-        auto sub = sv.substr(100, 500);  // Just pointer arithmetic — no allocation
+        auto sub = sv.substr(100, 500);  // Just pointer arithmetic - no allocation
         (void)sub;
     }
     auto t4 = std::chrono::high_resolution_clock::now();
@@ -102,26 +109,26 @@ int main() {
     static_assert(std::is_same_v<decltype(copy), std::string>);
     static_assert(std::is_same_v<decltype(view), std::string_view>);
 
-    // string owns its data — modify original, copy is unaffected:
+    // string owns its data - modify original, copy is unaffected:
     original[0] = 'A';
     std::cout << "copy[0]: " << copy[0] << "\n";  // 'x' (independent copy)
     std::cout << "view[0]: " << view[0] << "\n";  // 'A' (reflects original's change!)
 
     return 0;
 }
-
 ```
 
-**How this works:**
+Notice the last two lines - they nail down the ownership difference. The copy doesn't see the change; the view does, because it was never its own data.
 
 - `string::substr` calls `new` internally (or uses SSO for small strings), copies characters, and returns an independent `std::string`. This is O(n) with heap allocation.
-- `string_view::substr` simply constructs a new `string_view{data() + pos, len}` — two pointer operations, O(1), zero allocation.
+- `string_view::substr` simply constructs a new `string_view{data() + pos, len}` - two pointer operations, O(1), zero allocation.
 - The view reflects changes to the original (it's not a copy), while the string copy is independent.
 
 ### Q2: Demonstrate a dangling view bug from calling `string_view::substr` on a temporary string
 
-```cpp
+These are real bugs. The compiler usually won't stop you from writing them:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -167,7 +174,7 @@ void process_safe() {
     std::string b = " world";
     std::string result = a + b;         // Store the concatenation
     std::string_view sv = result;       // View into stored result
-    std::cout << sv << "\n";            // OK — result is alive
+    std::cout << sv << "\n";            // OK - result is alive
 }
 
 int main() {
@@ -177,33 +184,35 @@ int main() {
     std::cout << "Extension: " << ext << "\n";  // ".pdf"
 
     auto ext_view = get_extension_view_SAFE(file);
-    std::cout << "Extension view: " << ext_view << "\n";  // ".pdf" (valid — file is alive)
+    std::cout << "Extension view: " << ext_view << "\n";  // ".pdf" (valid - file is alive)
 
     process_safe();
 
     return 0;
 }
-
 ```
 
-**Key rules to avoid dangling views:**
+The safe versions follow a simple mental model: if you're going to return a view, the caller must own the underlying data. If the callee owns the data, return a `std::string`.
 
-1. **Never return `string_view` pointing to a local variable.**
-2. **Never create `string_view` from a temporary `std::string`** (dies at end of statement).
-3. **Ensure the source string outlives all views** into it.
-4. **When in doubt, return `std::string`** (safe but slower).
+Key rules to avoid dangling views:
+
+1. Never return `string_view` pointing to a local variable.
+2. Never create `string_view` from a temporary `std::string` (dies at end of statement).
+3. Ensure the source string outlives all views into it.
+4. When in doubt, return `std::string` (safe but slower).
 
 ### Q3: Use `string_view::substr` in a parser hot path
 
-```cpp
+Here's where `string_view::substr` really pays off. A CSV parser that does zero allocations during the parse itself:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <charconv>
 
-// CSV parser using string_view — zero allocations during parsing!
+// CSV parser using string_view - zero allocations during parsing!
 struct CSVParser {
     std::string_view data;
 
@@ -218,7 +227,7 @@ struct CSVParser {
 
             std::string_view line = data.substr(pos, line_end - pos);
 
-            // Split line by commas — all string_view::substr, zero allocation
+            // Split line by commas - all string_view::substr, zero allocation
             std::size_t col_start = 0;
             while (col_start < line.size()) {
                 std::size_t comma = line.find(',', col_start);
@@ -242,7 +251,7 @@ std::pair<std::string_view, std::string_view> parse_kv(std::string_view line) {
 }
 
 int main() {
-    // CSV parsing — the CSV data string is kept alive throughout
+    // CSV parsing - the CSV data string is kept alive throughout
     std::string csv_data = "name,age,city\nAlice,30,NYC\nBob,25,LA\nCharlie,35,Chicago\n";
     CSVParser parser{csv_data};
     auto table = parser.parse();
@@ -266,13 +275,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Allocation comparison:**
+Notice the key discipline: `csv_data` stays alive for the entire lifetime of `table`. All the views inside `table` point into that one string. The moment `csv_data` is gone, all those views dangle.
 
-- **With `std::string::substr`**: N rows × M columns × average cell length bytes allocated. For a 1MB CSV: thousands of allocations.
-- **With `std::string_view::substr`**: **Zero** allocations for substring operations. Only the `vector` grows. The entire parse operates on views into the original data.
+Allocation comparison:
+
+- With `std::string::substr`: N rows x M columns x average cell length bytes allocated. For a 1MB CSV: thousands of allocations.
+- With `std::string_view::substr`: Zero allocations for substring operations. Only the `vector` grows. The entire parse operates on views into the original data.
 
 ---
 
@@ -280,15 +290,13 @@ int main() {
 
 ### C++23: `std::string::substr` Rvalue Overload
 
-C++23 adds an rvalue-qualified `substr` that **moves** instead of copying:
+C++23 adds an rvalue-qualified `substr` that moves instead of copying - you get the efficiency of a view but still own the data:
 
 ```cpp
-
 // C++23
 std::string s = "Hello World";
 auto sub = std::move(s).substr(6);  // Moves the buffer, no allocation!
 // sub == "World", s is in moved-from state
-
 ```
 
 ---
@@ -299,4 +307,4 @@ auto sub = std::move(s).substr(6);  // Moves the buffer, no allocation!
 - `string_view::substr` = fast (O(1)) but dangerous (dangling if source dies).
 - In parser hot paths, `string_view::substr` can be 100-300x faster.
 - Always ensure the source string outlives all `string_view` references.
-- C++23 adds rvalue `string::substr` that moves the buffer — best of both worlds.
+- C++23 adds rvalue `string::substr` that moves the buffer - best of both worlds.

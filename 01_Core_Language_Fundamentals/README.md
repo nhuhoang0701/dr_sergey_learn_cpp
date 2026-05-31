@@ -1,6 +1,6 @@
 # Core Language Fundamentals
 
-Foundational C++ language features: types, initialization, control flow, attributes, and language rules that every C++ developer must master.
+This is the bedrock. Everything else in the project leans on the rules collected here: how types behave, how objects get initialized, how control flow and attributes work, and the quiet language rules that decide whether your code does what you think it does. None of it is glamorous, but it's the stuff that separates "it compiled" from "I know why it compiled." Work through these first.
 
 **Topics:** 67
 
@@ -76,13 +76,15 @@ Foundational C++ language features: types, initialization, control flow, attribu
 
 ## Notes
 
-- Initialization rules are one of the most error-prone areas in C++ — master brace-init vs parentheses differences early
-- ADL (argument-dependent lookup) is essential for understanding how operators and free functions are found
-- The rule of 0/3/5 governs implicit special member generation — review it before writing any class
-- olatile is NOT a synchronization mechanism — use std::atomic for thread-safe access
-- Structured bindings (C++17) simplify working with tuples, pairs, and aggregates
-- constinit (C++20) prevents the static initialization order fiasco for non-constexpr globals
-- einterpret_cast almost always violates strict aliasing — prefer std::bit_cast (C++20)
-- Scoped enums (enum class) prevent implicit conversions and name pollution
-- Understand that member initializer list order follows declaration order, not list order
-- Static local variable initialization is thread-safe since C++11 (magic statics)
+A few things worth carrying with you as you read this section:
+
+- Initialization is one of the most error-prone corners of C++ - get the brace-init vs parentheses differences straight early, before bad habits set in.
+- ADL (argument-dependent lookup) is the key to understanding how operators and free functions actually get found - it shows up everywhere once you notice it.
+- The rule of 0/3/5 governs which special members the compiler writes for you - review it before writing any class that owns a resource.
+- `volatile` is NOT a synchronization mechanism - reach for `std::atomic` whenever threads are involved.
+- Structured bindings (C++17) make working with tuples, pairs, and aggregates far more pleasant.
+- `constinit` (C++20) heads off the static initialization order fiasco for globals that aren't `constexpr`.
+- `reinterpret_cast` almost always violates strict aliasing - prefer `std::bit_cast` (C++20) when you just need to reinterpret bits.
+- Scoped enums (`enum class`) shut down implicit conversions and stop names leaking into the surrounding scope.
+- Remember that member initializer list order follows *declaration* order, not the order you wrote in the list.
+- Static local variable initialization has been thread-safe since C++11 - the so-called "magic statics."

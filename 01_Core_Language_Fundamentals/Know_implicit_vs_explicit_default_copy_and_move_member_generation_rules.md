@@ -10,7 +10,7 @@
 
 ### The Six Special Member Functions
 
-Every class potentially has these six special member functions:
+Every class has six functions the compiler might write for you behind the scenes. Knowing *which* ones it writes - and when it quietly stops writing them - is one of those things that separates "my class works by accident" from "my class works because I understand it":
 
 | # | Function | Signature |
 | --- | --- | --- |
@@ -21,52 +21,55 @@ Every class potentially has these six special member functions:
 | 5 | Move constructor | `T(T&&)` |
 | 6 | Move assignment | `T& operator=(T&&)` |
 
-The compiler can **implicitly generate** any of these, but the rules for when it does are complex and critical to understand.
+The compiler can **implicitly generate** any of these. The catch is that declaring one of them yourself can switch off the automatic generation of others, in ways that aren't always obvious.
 
 ### The Generation Rules Table (The "Rule of Zero/Three/Five" Foundation)
 
+This table is the whole topic in one grid. Read it as "if you declare the thing on the left, here's what you still get for free":
+
 | You declare... | Default ctor | Destructor | Copy ctor | Copy assign | Move ctor | Move assign |
 | --- | --- | --- | --- | --- | --- | --- |
-| Nothing | ✅ implicit | ✅ implicit | ✅ implicit | ✅ implicit | ✅ implicit | ✅ implicit |
-| Any constructor | ❌ suppressed | ✅ implicit | ✅ implicit | ✅ implicit | ✅ implicit | ✅ implicit |
-| Destructor | ✅ implicit | user | ✅ implicit* | ✅ implicit* | ❌ suppressed | ❌ suppressed |
-| Copy constructor | ❌ suppressed | ✅ implicit | user | ✅ implicit* | ❌ suppressed | ❌ suppressed |
-| Copy assignment | ✅ implicit | ✅ implicit | ✅ implicit* | user | ❌ suppressed | ❌ suppressed |
-| Move constructor | ❌ suppressed | ✅ implicit | =delete | =delete | user | ❌ suppressed |
-| Move assignment | ✅ implicit | ✅ implicit | ✅ implicit* | ✅ implicit* | ❌ suppressed | user |
+| Nothing | implicit | implicit | implicit | implicit | implicit | implicit |
+| Any constructor | suppressed | implicit | implicit | implicit | implicit | implicit |
+| Destructor | implicit | user | implicit* | implicit* | suppressed | suppressed |
+| Copy constructor | suppressed | implicit | user | implicit* | suppressed | suppressed |
+| Copy assignment | implicit | implicit | implicit* | user | suppressed | suppressed |
+| Move constructor | suppressed | implicit | =delete | =delete | user | suppressed |
+| Move assignment | implicit | implicit | implicit* | implicit* | suppressed | user |
 
-`*` = deprecated implicit generation (C++11) — works but the committee considers it a defect. Use `= default` explicitly.
+`*` = generation that's *deprecated* (since C++11) - it still happens, but the committee treats it as a defect, so spell it out with `= default`.
 
 ### Key Rules
 
-1. **Declaring ANY constructor** (including parameterized) suppresses the implicit default constructor.
-2. **Declaring a destructor** suppresses implicit move operations.
-3. **Declaring a copy operation** suppresses implicit move operations.
-4. **Declaring a move operation** suppresses implicit copy operations (they become `= delete`).
-5. **`= default`** explicitly requests the compiler-generated version.
-6. **`= delete`** explicitly disables a function.
+If the table feels like a lot, it boils down to six rules you can actually remember:
+
+1. **Declaring any constructor** (even a parameterized one) suppresses the implicit default constructor.
+2. **Declaring a destructor** suppresses the implicit move operations.
+3. **Declaring a copy operation** suppresses the implicit move operations.
+4. **Declaring a move operation** suppresses the implicit copy operations (they become `= delete`).
+5. **`= default`** asks for the compiler-generated version explicitly.
+6. **`= delete`** turns a function off explicitly.
 
 ### The Rule of Zero
 
-If your class doesn't directly manage resources, **don't declare any special members** — let the compiler generate them all:
+The happiest path: if your class doesn't directly own a raw resource, declare *none* of the six and let the members manage themselves:
 
 ```cpp
-
 struct Person {
     std::string name;
     int age;
     // Rule of Zero: compiler generates all 6 correctly
     // because std::string and int handle themselves
 };
-
 ```
+
+`std::string` already knows how to copy, move, and destroy itself - so by declaring nothing, you inherit all of that correctness for free. This is the design you should reach for by default.
 
 ### The Rule of Five
 
-If you declare **any** of destructor/copy constructor/copy assignment, declare **all five**:
+But the moment you *do* manage a resource by hand - and so need a destructor, copy constructor, or copy assignment - you've signed up to write **all five**. Half-doing it is how you get double-frees and silent copies:
 
 ```cpp
-
 class Buffer {
     int* data_;
     std::size_t size_;
@@ -95,7 +98,6 @@ public:
         std::swap(a.size_, b.size_);
     }
 };
-
 ```
 
 ---
@@ -104,8 +106,9 @@ public:
 
 ### Q1: Show that declaring any constructor suppresses the implicit default constructor
 
-```cpp
+The lesson here is rule #1 in action - and its escape hatch. `Widget` declares a constructor and loses its default one; `Restored` shows you how to get it back with `= default`:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -122,7 +125,7 @@ struct Widget {
 struct Gadget {
     int value;
     std::string name;
-    // No constructors declared → default constructor is implicitly generated
+    // No constructors declared -> default constructor is implicitly generated
 };
 
 struct Restored {
@@ -151,27 +154,27 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How this works:**
 
-- `Widget` declares `Widget(int)` → the compiler no longer generates `Widget()`.
-- Attempting `Widget w;` produces a compile error.
-- `Restored` declares `Restored(int)` too, but explicitly adds `Restored() = default;` to get the default constructor back.
-- This rule applies regardless of constructor type: copy constructor, move constructor, conversion constructor — any user-declared constructor suppresses the default constructor.
+- `Widget` declares `Widget(int)`, so the compiler stops generating `Widget()`.
+- Writing `Widget w;` is therefore a hard compile error.
+- `Restored` also declares `Restored(int)`, but adds `Restored() = default;` to bring the default constructor back.
+- This applies to *any* user-declared constructor - copy, move, conversion - they all suppress the default one.
 
 ### Q2: Demonstrate that declaring a destructor suppresses implicit move constructor generation
 
-```cpp
+This is the single most common gotcha in the whole topic, and it's nasty because it doesn't break compilation - it silently turns your moves into copies. Watch what happens to `WithDestructor`:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
 
 struct NoDestructor {
     std::string data;
-    // No user-declared destructor → move operations are implicitly generated
+    // No user-declared destructor -> move operations are implicitly generated
 };
 
 struct WithDestructor {
@@ -223,32 +226,30 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 NoDestructor move constructible: 1
 WithDestructor move constructible: 1
 WithDestructor nothrow move constructible: 0
 After move, nd.data.size() = 0
 After 'move', wd.data.size() = 1000
-
 ```
 
 **How this works:**
 
-- `NoDestructor` has all special members implicitly generated → `std::move` triggers the move constructor → string is moved (source becomes empty).
-- `WithDestructor` has a user-declared destructor → move constructor is NOT generated → `std::move(wd)` casts to rvalue, but overload resolution picks the **copy constructor** (which accepts `const T&`) → string is COPIED, not moved.
-- This is a **silent performance bug** — the code compiles and runs correctly, but moves are silently degraded to copies.
-- `= default` on the destructor still counts as user-declared — it still suppresses moves!
+- `NoDestructor` gets all six members implicitly, so `std::move` genuinely moves the string and leaves the source empty (size 0).
+- `WithDestructor` has a user-declared destructor, which suppresses the move constructor. `std::move(wd)` still produces an rvalue, but with no move constructor available, overload resolution falls back to the **copy constructor** (`const T&` happily binds an rvalue). The string is *copied*.
+- Notice the tell: `is_move_constructible_v` is still `1` (because copy can stand in for move), but `is_nothrow_move_constructible_v` is `0`. That gap is your warning sign.
+- And yes - even `~T() = default;` counts as "user-declared" and suppresses the moves.
 
 ### Q3: Use `= default` and `= delete` to control generation
 
-```cpp
+Once you understand suppression, `= default` and `= delete` let you dial in *exactly* which operations a type supports. Three common shapes - move-only, copy-only, and neither:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -259,7 +260,7 @@ public:
     explicit FileHandle(int fd) : fd_(fd) {}
     ~FileHandle() { if (fd_ >= 0) { /* close(fd_); */ } }
 
-    // Delete copy operations — file handles shouldn't be duplicated
+    // Delete copy operations - file handles shouldn't be duplicated
     FileHandle(const FileHandle&) = delete;
     FileHandle& operator=(const FileHandle&) = delete;
 
@@ -304,8 +305,8 @@ private:
 //
 // | Class       | Default | Dtor    | Copy ctor | Copy =  | Move ctor | Move =  |
 // |-------------|---------|---------|-----------|---------|-----------|---------|
-// | FileHandle  | ❌      | user    | =delete   | =delete | user      | user    |
-// | SharedState | ❌      | default | =default  | =default| =delete   | =delete |
+// | FileHandle  | (none)  | user    | =delete   | =delete | user      | user    |
+// | SharedState | (none)  | default | =default  | =default| =delete   | =delete |
 // | Singleton   | =default| =default| =delete   | =delete | =delete   | =delete |
 
 int main() {
@@ -323,15 +324,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How this works:**
 
-- `= default` tells the compiler: "Generate the default version of this function."
-- `= delete` tells the compiler: "This function exists in overload resolution but cannot be called."
-- Deleted functions participate in overload resolution — calling one is a compile error (not SFINAE).
-- The combination of `= default` and `= delete` gives you complete control over which operations are allowed.
+- `= default` says "give me the compiler's version of this function."
+- `= delete` says "this function exists for overload resolution, but calling it is an error."
+- That distinction matters: a deleted function still *participates* in overload resolution, so it can be selected and then rejected - giving you a clear, intentional error rather than silently falling through to something else.
+- Mixing `= default` and `= delete` is how you express precisely "this type is move-only" or "this type is a singleton."
 
 ---
 
@@ -339,8 +339,9 @@ int main() {
 
 ### Detecting Suppressed Moves with Type Traits
 
-```cpp
+The reliable way to *catch* an accidentally-suppressed move is `std::is_nothrow_move_constructible_v` - a `false` here usually means "your move silently became a copy":
 
+```cpp
 #include <type_traits>
 #include <iostream>
 #include <string>
@@ -359,15 +360,14 @@ int main() {
     std::cout << "C nothrow_move: " << std::is_nothrow_move_constructible_v<C> << "\n"; // false (copies!)
     std::cout << "D nothrow_move: " << std::is_nothrow_move_constructible_v<D> << "\n"; // true
 }
-
 ```
 
 ---
 
 ## Notes
 
-- **Rule of Zero:** If you don't manage resources directly, declare nothing — compiler does it right.
-- **Rule of Five:** If you declare destructor, copy ctor, or copy assignment, declare all five.
-- Declaring a destructor (even `= default`) suppresses move operations — this is the most common gotcha.
-- Use `std::is_nothrow_move_constructible_v` to verify moves weren't silently replaced by copies.
-- `= delete` participates in overload resolution — a deleted function is a better match than no function, producing a clear error.
+- **Rule of Zero:** if you don't manage resources directly, declare nothing - the compiler gets all six right.
+- **Rule of Five:** if you declare a destructor, copy constructor, or copy assignment, declare all five.
+- Declaring a destructor - *even `= default`* - suppresses the move operations. This is the most common gotcha by far.
+- Use `std::is_nothrow_move_constructible_v` to confirm your moves weren't silently downgraded to copies.
+- `= delete` participates in overload resolution - a deleted function beats "no function," which is what gives you a clean, pointed error.

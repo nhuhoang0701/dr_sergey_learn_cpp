@@ -12,26 +12,25 @@
 
 A **function-local static variable** is declared with `static` inside a function. Key rules:
 
-1. **Initialized exactly once** — the first time execution passes through the declaration.
-2. **Thread-safe initialization** (C++11+) — if multiple threads call the function simultaneously, only one thread performs initialization; others block until it's done.
-3. **Lifetime** — from first initialization until program exit.
-4. **Destruction** — at program exit, in **reverse order** of construction (registered with `atexit`).
+1. **Initialized exactly once** - the first time execution passes through the declaration.
+2. **Thread-safe initialization** (C++11+) - if multiple threads call the function simultaneously, only one thread performs initialization; others block until it's done.
+3. **Lifetime** - from first initialization until program exit.
+4. **Destruction** - at program exit, in **reverse order** of construction (registered with `atexit`).
+
+These rules together make function-local statics the standard solution for thread-safe, lazily-initialized singletons:
 
 ```cpp
-
 Logger& get_logger() {
     static Logger instance("app.log");  // Created once, first time called
     return instance;                     // Thread-safe in C++11+
 }
-
 ```
 
 ### How The Compiler Implements Thread Safety
 
-The compiler emits a hidden guard variable:
+Under the hood, the compiler emits a hidden guard variable and synchronization around the first initialization. The conceptual expansion looks like this:
 
 ```cpp
-
 // Conceptual compiler output for the above:
 Logger& get_logger() {
     static bool __guard = false;  // Hidden guard variable
@@ -48,21 +47,21 @@ Logger& get_logger() {
     }
     return *reinterpret_cast<Logger*>(__storage);
 }
-
 ```
+
+After the first initialization the guard check is just a single compare - the overhead is minimal for hot paths.
 
 ### Why This Obsoletes Double-Checked Locking
 
-Before C++11, the common pattern for thread-safe singletons was "double-checked locking":
+Before C++11, the common pattern for thread-safe singletons was "double-checked locking." It was broken, and C++11 static locals replaced it for good:
 
 ```cpp
-
 // Pre-C++11 BROKEN pattern:
 Singleton* instance = nullptr;
 std::mutex mtx;
 
 Singleton* get_instance() {
-    if (!instance) {                    // First check (no lock — may see partial write!)
+    if (!instance) {                    // First check (no lock - may see partial write!)
         std::lock_guard lock(mtx);
         if (!instance) {                // Second check (under lock)
             instance = new Singleton(); // BUG: reorder! Pointer assigned before construction
@@ -70,7 +69,6 @@ Singleton* get_instance() {
     }
     return instance;
 }
-
 ```
 
 **This is broken** because without memory barriers, the compiler/CPU may assign to `instance` before the `Singleton` constructor finishes. Another thread sees a non-null pointer but reads an unconstructed object.
@@ -83,8 +81,9 @@ C++11 fixed this by making `static` local initialization inherently thread-safe.
 
 ### Q1: Show that a function-local static is initialized exactly once, even with concurrent callers
 
-```cpp
+Watch the construction count - no matter how many threads race to call `get_resource()`, the constructor runs exactly once:
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -133,23 +132,22 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (order may vary):**
 
 ```text
-
 Constructing resource #1 on thread 140234567890
 Thread 0 got resource #1
 Thread 3 got resource #1
 Thread 1 got resource #1
 ...
 Total constructions: 1
-
 ```
 
-**How this works:**
+Nine threads blocked while the first one finished construction, then all proceeded with the same instance.
+
+How this works:
 
 - The first thread to reach `static ExpensiveResource instance;` starts construction.
 - All other threads **block** (wait) until construction completes.
@@ -158,10 +156,9 @@ Total constructions: 1
 
 ### Q2: The double-checked locking problem and why C++11 obsoletes it
 
-**The double-checked locking problem (DCLP):**
+The problem with the pre-C++11 pattern is subtle - it's a CPU-level reordering issue, not just a compiler issue:
 
 ```cpp
-
 #include <mutex>
 #include <memory>
 
@@ -178,8 +175,8 @@ public:
                 instance = new Singleton(); // PROBLEM!
                 // The compiler/CPU may reorder this as:
                 // 1. Allocate memory
-                // 2. Assign pointer to instance  ← another thread sees non-null
-                // 3. Call constructor             ← but object isn't constructed yet!
+                // 2. Assign pointer to instance  <- another thread sees non-null
+                // 3. Call constructor             <- but object isn't constructed yet!
             }
         }
         return instance;  // May return pointer to unconstructed object
@@ -191,17 +188,16 @@ public:
         return instance;
     }
 };
-
 ```
 
-**Why DCLP fails without C++11 atomics:**
+Why DCLP fails without C++11 atomics:
 
 1. `instance = new Singleton()` involves three steps: allocate, construct, assign.
 2. The CPU may **reorder** assign before construct (out-of-order execution).
 3. Another thread executing the first `if` check sees `instance != nullptr` and skips the lock.
-4. It then uses a pointer to **uninitialized memory** → UB.
+4. It then uses a pointer to **uninitialized memory** - undefined behavior.
 
-**Why C++11 static locals fix this permanently:**
+Why C++11 static locals fix this permanently:
 
 - The compiler inserts the proper memory barriers and guard variables.
 - No user-written locking or atomic operations needed.
@@ -209,8 +205,9 @@ public:
 
 ### Q3: Demonstrate that destructors of static locals are called at exit in reverse order
 
-```cpp
+The reverse-destruction rule mirrors stack unwinding. First in, last out:
 
+```cpp
 #include <iostream>
 
 struct Tracer {
@@ -248,13 +245,11 @@ int main() {
     // Destructors called in REVERSE order of construction:
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Initialization order ===
   Construct: First
   Construct: Second
@@ -264,40 +259,31 @@ int main() {
   Destroy:   Third
   Destroy:   Second
   Destroy:   First
-
 ```
 
-**How this works:**
+How this works:
 
 - Each static local is registered with `atexit()` (or equivalent) when constructed.
 - `atexit` handlers run in LIFO (last-in-first-out) order at program exit.
-- **Danger:** If "Third" depends on "First" during its destruction, and "First" is already destroyed → UB.
-- This is the **static destruction order fiasco** — the mirror image of the initialization order fiasco.
+- **Danger:** If "Third" depends on "First" during its destruction, and "First" is already destroyed - undefined behavior.
+- This is the **static destruction order fiasco** - the mirror image of the initialization order fiasco.
 
-**Mitigation:**
+Mitigation - the "leaky singleton" intentionally skips cleanup to avoid destruction order issues:
 
 ```cpp
-
-// "Leaky singleton" — intentionally never destroyed to avoid destruction order issues
+// "Leaky singleton" - intentionally never destroyed to avoid destruction order issues
 Tracer& get_immortal() {
     static Tracer* instance = new Tracer("Immortal");
-    return *instance;  // Leaked — but never destroyed, so no dangling references
+    return *instance;  // Leaked - but never destroyed, so no dangling references
 }
-
 ```
 
 ---
 
 ## Notes
 
-- C++11 guarantees thread-safe initialization of function-local statics — use this instead of manual locking.
+- C++11 guarantees thread-safe initialization of function-local statics - use this instead of manual locking.
 - Double-checked locking is obsoleted by `static` locals. Don't write DCLP in modern C++.
 - Static locals are destroyed in reverse construction order at program exit.
-- Beware the destruction order fiasco — if globals/statics depend on each other during cleanup.
+- Beware the destruction order fiasco - if globals/statics depend on each other during cleanup.
 - Compiler flag `-fno-threadsafe-statics` (GCC/Clang) disables the thread-safety overhead for embedded/single-threaded code.
-
-```cpp
-
-// Your practice code
-
-```

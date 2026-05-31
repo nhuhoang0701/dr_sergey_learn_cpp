@@ -10,54 +10,52 @@
 
 ### What Are Delegating Constructors
 
-A **delegating constructor** is a constructor that calls another constructor of the same class in its member-initializer list. Introduced in C++11, they eliminate duplicate initialization logic:
+A **delegating constructor** is a constructor that calls another constructor of the same class in its member-initializer list. Introduced in C++11, they eliminate duplicate initialization logic. Instead of copying the same member setup across three constructors, you write it once:
 
 ```cpp
-
 struct Widget {
     int x, y;
     std::string name;
 
-    // Primary constructor — does the real work
+    // Primary constructor - does the real work
     Widget(int x, int y, std::string name) : x(x), y(y), name(std::move(name)) {}
 
-    // Delegating constructors — forward to primary
+    // Delegating constructors - forward to primary
     Widget() : Widget(0, 0, "default") {}                    // delegates
     Widget(int x) : Widget(x, 0, "unnamed") {}               // delegates
     Widget(std::string name) : Widget(0, 0, std::move(name)) {} // delegates
 };
-
 ```
 
 ### Rules
 
-1. A delegating constructor's initializer list can **only** contain the delegation call — no other member initializers.
+1. A delegating constructor's initializer list can **only** contain the delegation call - no other member initializers.
 2. The delegated-to constructor **fully initializes** the object (including all members) before the delegating constructor body runs.
-3. **Self-delegation** (directly or indirectly) is ill-formed (no diagnostic required — could infinite-loop).
+3. **Self-delegation** (directly or indirectly) is ill-formed (no diagnostic required - could infinite-loop).
+
+You can't mix delegation with member initialization in the same initializer list:
 
 ```cpp
-
 struct Bad {
     int x, y;
     // ERROR: can't mix delegation with member initializers
     // Bad(int a) : Bad(a, 0), x(a) {}  // ill-formed!
 };
-
 ```
 
 ### Exception Safety: The Critical Difference
 
-When a **delegating constructor's body** throws an exception, the destructor **IS called** because the delegated-to constructor already completed — the object is considered fully constructed.
-
-When a **non-delegating constructor** throws, the destructor **is NOT called** because the object was never fully constructed.
+This is the part people most often miss. The key question is: "Was the object fully constructed before the throw?" That determines whether the destructor runs.
 
 ```cpp
-
-Non-delegating ctor throws → no destructor call (members destructed individually)
-Delegating ctor's TARGET throws → no destructor call (object never constructed)
-Delegating ctor's BODY throws → destructor IS called (object was constructed by target)
-
+Non-delegating ctor throws -> no destructor call (members destructed individually)
+Delegating ctor's TARGET throws -> no destructor call (object never constructed)
+Delegating ctor's BODY throws -> destructor IS called (object was constructed by target)
 ```
+
+When a **delegating constructor's body** throws an exception, the destructor **IS called** because the delegated-to constructor already completed - the object is considered fully constructed.
+
+When a **non-delegating constructor** throws, the destructor **is NOT called** because the object was never fully constructed.
 
 ---
 
@@ -65,8 +63,9 @@ Delegating ctor's BODY throws → destructor IS called (object was constructed b
 
 ### Q1: Write a class where three constructors delegate to a single primary constructor
 
-```cpp
+The `DatabaseConnection` class shows the real-world payoff: all the validation logic lives in one place, and the convenience constructors just pick sensible defaults:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -80,7 +79,7 @@ class DatabaseConnection {
     bool connected_ = false;
 
 public:
-    // Primary constructor — accepts all parameters
+    // Primary constructor - accepts all parameters
     DatabaseConnection(std::string host, int port, std::string user, std::string db)
         : host_(std::move(host)), port_(port),
           user_(std::move(user)), database_(std::move(db)) {
@@ -124,13 +123,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Connected to localhost:5432 as admin db=default
 Connected to prod-server:5432 as admin db=default
 Connected to staging:5433 as deploy db=default
@@ -141,13 +138,13 @@ Disconnecting from db.example.com
 Disconnecting from staging
 Disconnecting from prod-server
 Disconnecting from localhost
-
 ```
 
 ### Q2: Exception in a delegating constructor calls the destructor
 
-```cpp
+This is the exception safety rule in action. Notice the destructor fires even though the delegating body threw - because the primary constructor already completed successfully:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <stdexcept>
@@ -160,7 +157,7 @@ struct Resource {
         std::cout << "  [Primary ctor] Constructed: " << name << "\n";
     }
 
-    // Delegating constructor — body runs AFTER primary ctor completes
+    // Delegating constructor - body runs AFTER primary ctor completes
     Resource(std::string n, bool should_throw)
         : Resource(std::move(n))  // Primary ctor runs first (object is now "constructed")
     {
@@ -194,13 +191,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Case 1: Normal construction ===
   [Primary ctor] Constructed: Normal
   [Delegating ctor body] Running for: Normal
@@ -209,17 +204,15 @@ int main() {
 === Case 2: Exception in delegating ctor ===
   [Primary ctor] Constructed: Failing
   [Delegating ctor body] Running for: Failing
-  [Destructor] Destroyed: Failing      ← DESTRUCTOR CALLED!
+  [Destructor] Destroyed: Failing      <- DESTRUCTOR CALLED!
 Caught: Error in delegating ctor!
-
 ```
 
-**Why:** Once the delegated-to constructor completes successfully, the object is considered **fully constructed**. If the delegating constructor's body then throws, the object must be properly cleaned up → destructor runs.
+**Why:** Once the delegated-to constructor completes successfully, the object is considered **fully constructed**. If the delegating constructor's body then throws, the object must be properly cleaned up - destructor runs.
 
-This is different from a non-delegating constructor:
+This is different from a non-delegating constructor, where a throw means the object never finished construction and the destructor does NOT run (only already-constructed members are cleaned up):
 
 ```cpp
-
 struct NoDelegation {
     std::string s;
     NoDelegation() : s("hello") {
@@ -228,13 +221,13 @@ struct NoDelegation {
         // But s.~string() IS called (member was constructed)
     }
 };
-
 ```
 
 ### Q3: Eliminating duplicated initialization logic
 
-```cpp
+Here the delegation chain creates a clean funnel: every `HttpClient` ends up at one constructor, where all validation lives:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -247,7 +240,7 @@ class HttpClient {
     std::string auth_token_;
     bool verbose_;
 
-    // Shared validation/setup — called once from the primary constructor
+    // Shared validation/setup - called once from the primary constructor
     void validate() {
         if (base_url_.empty()) throw std::invalid_argument("URL cannot be empty");
         if (timeout_ms_ <= 0) throw std::invalid_argument("Timeout must be positive");
@@ -255,7 +248,7 @@ class HttpClient {
     }
 
 public:
-    // PRIMARY constructor — single point of initialization
+    // PRIMARY constructor - single point of initialization
     HttpClient(std::string url, int timeout_ms, int retries, std::string token, bool verbose)
         : base_url_(std::move(url)), timeout_ms_(timeout_ms),
           max_retries_(retries), auth_token_(std::move(token)), verbose_(verbose)
@@ -295,24 +288,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Benefits over pre-C++11 approach:**
+Benefits over pre-C++11 approach:
 
-- **No `init()` method** — all initialization flows through one constructor.
-- **No code duplication** — validation and setup logic exists once.
-- **Member initializer lists are used** — more efficient than default-construct-then-assign.
-- **Exception safety is centralized** — the primary constructor handles all error checking.
+- **No `init()` method** - all initialization flows through one constructor.
+- **No code duplication** - validation and setup logic exists once.
+- **Member initializer lists are used** - more efficient than default-construct-then-assign.
+- **Exception safety is centralized** - the primary constructor handles all error checking.
 
 ---
 
 ## Notes
 
-- Delegating constructors must **only** delegate — no other member initializers in the list.
+- Delegating constructors must **only** delegate - no other member initializers in the list.
 - Self-delegation (direct or indirect cycles) is undefined behavior.
 - The body of a delegating constructor runs **after** the target constructor completes.
 - If the delegating body throws, the destructor runs (object was fully constructed by target).
 - Prefer one "primary" constructor with all parameters; delegate from simpler constructors.
-
-```text

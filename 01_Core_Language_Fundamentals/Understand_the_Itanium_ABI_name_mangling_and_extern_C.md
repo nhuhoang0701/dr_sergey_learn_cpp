@@ -8,19 +8,19 @@
 
 ## Topic Overview
 
-C++ allows function overloading — multiple functions with the same name but different parameters. Since the linker only sees symbol names, the compiler **mangles** function names to encode parameter types, namespaces, and templates into the symbol.
+C++ allows function overloading - multiple functions with the same name but different parameters. Since the linker only sees symbol names, the compiler **mangles** function names to encode parameter types, namespaces, and templates into the symbol.
 
 ### What Is Name Mangling
 
-```cpp
+Here is what the same base name `foo` looks like to the linker under the Itanium ABI - each overload becomes a distinct symbol.
 
+```cpp
 void foo(int);           // mangled: _Z3fooi
 void foo(double);        // mangled: _Z3food
 void foo(int, double);   // mangled: _Z3fooId
 namespace ns {
     void foo(int);       // mangled: _ZN2ns3fooEi
 }
-
 ```
 
 The Itanium ABI (used by GCC, Clang, and most non-MSVC compilers) defines a specific mangling scheme:
@@ -34,10 +34,11 @@ The Itanium ABI (used by GCC, Clang, and most non-MSVC compilers) defines a spec
 | `N...E` | Namespace scope |
 | `I...E` | Template arguments |
 
-### extern "C" — Disable Mangling
+### extern "C" - Disable Mangling
+
+When you need a function to be callable from C - or from any language that can link against a C ABI - you tell the compiler to skip mangling entirely.
 
 ```cpp
-
 // Without extern "C": name is mangled
 void cpp_func(int x);      // symbol: _Z8cpp_funci
 
@@ -50,13 +51,15 @@ extern "C" {
     void cleanup();
     int process(const char* data, int len);
 }
-
 ```
+
+The block form is convenient for declaring a whole C API at once.
 
 ### Why extern "C" Matters
 
-```cpp
+The classic pattern for a header that works in both C and C++ puts the `extern "C"` block behind a preprocessor guard.
 
+```cpp
 // header.h — used by both C and C++
 #ifdef __cplusplus
 extern "C" {
@@ -68,10 +71,9 @@ int  my_library_process(const char* data);
 #ifdef __cplusplus
 }
 #endif
-
 ```
 
-This pattern allows the same header to work in both C and C++ code.
+C compilers see no `extern "C"` (they don't need it); C++ compilers wrap the declarations to suppress mangling, so the symbols match the ones the C compiler produced.
 
 ---
 
@@ -79,8 +81,9 @@ This pattern allows the same header to work in both C and C++ code.
 
 ### Q1: Use c++filt to demangle a mangled symbol name from a linker error
 
-```cpp
+When the linker complains about an undefined reference, the name looks like line noise. `c++filt` translates it back to human-readable C++.
 
+```cpp
 // Consider this C++ code:
 namespace graphics {
     class Renderer {
@@ -103,17 +106,18 @@ namespace graphics {
 //   Compiler Explorer                     — shows both mangled and demangled
 
 // Example mangled names and their demangled forms:
-// _Z3fooi                    → foo(int)
-// _Z3food                    → foo(double)
-// _ZN2ns3barEid              → ns::bar(int, double)
+// _Z3fooi                    -> foo(int)
+// _Z3food                    -> foo(double)
+// _ZN2ns3barEid              -> ns::bar(int, double)
 // _ZN5MyApp6Widget4drawERKSt6vectorIiSaIiEE
-//                             → MyApp::Widget::draw(std::vector<int, std::allocator<int>> const&)
-// _Z8templateIiEvT_           → void template_<int>(int)
+//                             -> MyApp::Widget::draw(std::vector<int, std::allocator<int>> const&)
+// _Z8templateIiEvT_           -> void template_<int>(int)
 
 // Practical usage: pipe linker errors through c++filt
 // $ g++ main.cpp -o main 2>&1 | c++filt
-
 ```
+
+Once you know this trick, linker errors become much easier to read. The mangled name tells you exactly which overload was missing.
 
 **How this works:**
 
@@ -127,8 +131,9 @@ namespace graphics {
 
 The linker identifies functions **solely by their symbol name**. If two functions had the same symbol, the linker couldn't distinguish them. Name mangling solves this by encoding the parameter types into the symbol name.
 
-```cpp
+Notice how the four `process` overloads below produce four completely different symbols for the linker.
 
+```cpp
 // These four functions all have the same base name "process"
 // but the linker sees four DIFFERENT symbols:
 
@@ -141,7 +146,6 @@ void process(const char* s);   // _Z7processPKc
 // - Number of characters in the name (7 for "process")
 // - Parameter types: i=int, d=double, PKc=pointer-to-const-char
 // - This is why the linker can resolve the correct overload
-
 ```
 
 **What's encoded:**
@@ -154,16 +158,17 @@ void process(const char* s);   // _Z7processPKc
 
 **What's NOT encoded:**
 
-- Return type (for non-template functions) — this is why C++ doesn't allow overloading by return type alone
+- Return type (for non-template functions) - this is why C++ doesn't allow overloading by return type alone
 - Parameter names
 
 ### Q3: Show that extern "C" disables name mangling and the implications for function overloading
 
-```cpp
+The trade-off is direct: no mangling means the linker can't tell overloads apart, so `extern "C"` functions can't be overloaded. The C-compatible API pattern at the bottom shows how to expose a clean C interface while keeping the implementation in full C++.
 
+```cpp
 #include <iostream>
 
-// With extern "C": no mangling → no overloading!
+// With extern "C": no mangling -> no overloading!
 extern "C" void greet(int x) {
     std::cout << "greet(int): " << x << "\n";
 }
@@ -206,13 +211,14 @@ int main() {
     engine_process(e, "hello");
     destroy_engine(e);
 }
-
 ```
+
+The opaque `void*` handle is the standard trick for hiding a C++ object behind a C API - callers never see the `Engine` type, just the plain functions.
 
 **How this works:**
 
-- `extern "C"` produces unmangled symbols — the linker sees just `greet`, not `_Z5greeti`.
-- Without mangling, there's no way to distinguish overloads — so **overloading is forbidden** with `extern "C"`.
+- `extern "C"` produces unmangled symbols - the linker sees just `greet`, not `_Z5greeti`.
+- Without mangling, there's no way to distinguish overloads - so overloading is forbidden with `extern "C"`.
 - Templates and namespaced functions cannot be `extern "C"` (they require mangling).
 - The C-compatible API pattern wraps C++ objects in opaque `void*` pointers with `extern "C"` functions.
 
@@ -220,8 +226,8 @@ int main() {
 
 ## Notes
 
-- MSVC uses a different mangling scheme (not Itanium ABI) — names start with `?` instead of `_Z`.
-- `extern "C"` still allows using C++ features in the function body — only the linkage/name changes.
-- `extern "C"` functions can still throw exceptions (but C callers won't handle them — use `noexcept`).
+- MSVC uses a different mangling scheme (not Itanium ABI) - names start with `?` instead of `_Z`.
+- `extern "C"` still allows using C++ features in the function body - only the linkage/name changes.
+- `extern "C"` functions can still throw exceptions (but C callers won't handle them - use `noexcept`).
 - You can nest `extern "C"` inside namespaces, but the symbol won't include the namespace.
 - Use `__attribute__((visibility("default")))` (GCC/Clang) or `__declspec(dllexport)` (MSVC) to control which symbols are exported from shared libraries.

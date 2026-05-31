@@ -12,8 +12,9 @@ C++26 allows `_` (underscore) as a placeholder variable name that can be declare
 
 ### Before C++26
 
-```cpp
+Before C++26, ignoring unwanted values from a structured binding was awkward. You had to invent names, and then suppress the warnings those invented names generated:
 
+```cpp
 #include <tuple>
 #include <iostream>
 
@@ -25,13 +26,13 @@ void old_style() {
     (void)unused1; (void)unused2;  // Suppress warnings manually
     std::cout << x << "\n";
 }
-
 ```
 
 ### C++26 Placeholder
 
-```cpp
+Now `_` can appear multiple times in the same scope - the compiler understands that each one is a separate unnamed slot you're deliberately ignoring:
 
+```cpp
 #include <tuple>
 #include <iostream>
 
@@ -51,13 +52,13 @@ void examples() {
     int a = 1, b = 2;
     auto f = [a, _=std::move(b)]() { return a; };  // _ discards b's name
 }
-
 ```
 
 ### Structured Bindings
 
-```cpp
+The most common use case is structured bindings where you only care about some of the values. Prefer a real name when you actually use the value - use `_` only when you genuinely don't:
 
+```cpp
 // Most common use: structured binding placeholders
 if (auto [iter, _] = my_map.insert({key, value}); !_) {
     // Note: _ IS the bool, but we can't use it after declaring _ twice
@@ -67,7 +68,6 @@ if (auto [iter, _] = my_map.insert({key, value}); !_) {
 if (auto [iter, inserted] = my_map.insert({key, value}); inserted) {
     // Use inserted when you need it, _ when you don't
 }
-
 ```
 
 ---
@@ -80,7 +80,7 @@ No. When `_` is declared multiple times in the same scope, each declaration refe
 
 ### Q2: How does this differ from [[maybe_unused]]
 
-`[[maybe_unused]]` suppresses warnings for a named variable you might or might not use. `_` signals you will NEVER use the value. `_` is also shorter and can appear multiple times. `[[maybe_unused]] auto x = f();` vs `auto _ = f();`.
+`[[maybe_unused]]` suppresses warnings for a named variable you might or might not use. `_` signals you will NEVER use the value. `_` is also shorter and can appear multiple times. The contrast is: `[[maybe_unused]] auto x = f();` versus `auto _ = f();`.
 
 ### Q3: What about existing code that uses _ as a variable name
 
@@ -92,5 +92,5 @@ Code that uses `_` as a regular variable name (single occurrence) continues to w
 
 - `_` as a placeholder is borrowed from Python, Rust, Go, and other languages.
 - Primary motivation: structured bindings where you only need some values.
-- Only variable declarations are affected — `_` as a function/type name is unchanged.
+- Only variable declarations are affected - `_` as a function/type name is unchanged.
 - GCC 14+, Clang 18+ support this feature.

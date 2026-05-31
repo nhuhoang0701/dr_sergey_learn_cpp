@@ -12,8 +12,9 @@ A **function-try-block** wraps the entire function body (including the member in
 
 ### Syntax
 
-```cpp
+The key difference from a regular try-catch is where the `try` keyword goes - it moves before the colon of the initializer list, not inside the constructor body:
 
+```cpp
 // Normal try-catch: CANNOT catch member initializer exceptions
 MyClass(int x) : member(x) {
     try { /* body */ } catch (...) { /* only catches body exceptions */ }
@@ -29,14 +30,13 @@ catch (const std::exception& e) {
     std::cerr << "Init failed: " << e.what() << "\n";
     // IMPORTANT: for constructors, the exception is ALWAYS rethrown
 }
-
 ```
 
 ### Critical Rule: Constructor Function-Try-Blocks Always Rethrow
 
-When a constructor's function-try-block catches an exception, the catch handler **implicitly rethrows** the exception when it exits — you cannot swallow it. This is because:
+When a constructor's function-try-block catches an exception, the catch handler **implicitly rethrows** the exception when it exits - you cannot swallow it. This is because:
 
-1. The object is only partially constructed — member lifetimes haven't begun or have been destroyed.
+1. The object is only partially constructed - member lifetimes haven't begun or have been destroyed.
 2. Returning a "valid" object from a half-constructed state would be undefined behavior.
 3. The standard mandates: if control reaches the end of a constructor's catch handler, the current exception is rethrown.
 
@@ -49,8 +49,9 @@ You **can** throw a different exception from the catch handler, but you cannot p
 - Throw a **different** exception (wrapping the original)
 - **NOT**: access member variables (they may be destroyed)
 
-```cpp
+Here is a small example showing the allowed pattern - catch the member init failure and translate it into a higher-level exception:
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -69,12 +70,11 @@ try : logger("") {   // will throw!
 }
 catch (const std::exception& e) {
     std::cerr << "Application init failed: " << e.what() << "\n";
-    // Cannot access 'logger' here — it was never fully constructed
+    // Cannot access 'logger' here -- it was never fully constructed
     // Exception is automatically rethrown when catch exits
     // Or throw a different exception:
     throw std::runtime_error("Application startup failed");
 }
-
 ```
 
 ---
@@ -83,8 +83,9 @@ catch (const std::exception& e) {
 
 ### Q1: Write a constructor with a function-try-block to catch exceptions from member initializers
 
-```cpp
+This example initializes two members in sequence - if either one throws, the function-try-block catches it and can re-wrap it before propagating:
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -112,7 +113,7 @@ class Server
     Cache cache;
 
 public:
-    // Function-try-block — catches exceptions from db and cache initialization
+    // Function-try-block -- catches exceptions from db and cache initialization
     Server(const std::string& dbConn, int cacheSize)
     try : db(dbConn), cache(cacheSize) {
         std::cout << "Server initialized successfully\n";
@@ -133,18 +134,17 @@ int main() {
     } catch (...) {}
 
     try {
-        Server s2("", 100);    // Database throws — caught by function-try-block
+        Server s2("", 100);    // Database throws -- caught by function-try-block
     } catch (const std::exception& e) {
         std::cout << "Caught: " << e.what() << "\n";
     }
 
     try {
-        Server s3("localhost", -1);   // Cache throws — caught and re-wrapped
+        Server s3("localhost", -1);   // Cache throws -- caught and re-wrapped
     } catch (const std::exception& e) {
         std::cout << "Caught: " << e.what() << "\n";
     }
 }
-
 ```
 
 **How it works:**
@@ -160,8 +160,8 @@ int main() {
 When a constructor throws during member initialization:
 
 1. **Already-constructed members are destroyed** (in reverse order).
-2. **The object's lifetime never began** — the memory is allocated but no valid object exists.
-3. **Referencing members in the catch handler is undefined behavior** — they've been destroyed.
+2. **The object's lifetime never began** - the memory is allocated but no valid object exists.
+3. **Referencing members in the catch handler is undefined behavior** - they've been destroyed.
 
 If the language allowed swallowing the exception:
 
@@ -169,8 +169,9 @@ If the language allowed swallowing the exception:
 - Calling any member function or accessing any data member would be UB.
 - Destructors would run on objects that were never fully constructed.
 
-```cpp
+The standard comment in the code below explains exactly what the spec says:
 
+```cpp
 struct Bad {
     std::vector<int> data;
 
@@ -189,24 +190,22 @@ struct Bad {
         //   is rethrown."
     }
 };
-
 ```
 
-The same rule applies to **destructor** function-try-blocks — if a member destructor throws and you catch it, the exception is rethrown (though throwing destructors should be avoided entirely).
+The same rule applies to **destructor** function-try-blocks - if a member destructor throws and you catch it, the exception is rethrown (though throwing destructors should be avoided entirely).
 
 ### Q3: Show a case where a function-try-block in a destructor catches an exception from a member destructor
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 
 // WARNING: Throwing destructors are extremely dangerous.
-// This example is educational only — never do this in production.
+// This example is educational only -- never do this in production.
 
 struct ThrowingMember {
     ~ThrowingMember() noexcept(false) {   // must opt out of noexcept
-        std::cout << "ThrowingMember destructor — throwing!\n";
+        std::cout << "ThrowingMember destructor -- throwing!\n";
         throw std::runtime_error("member dtor threw");
     }
 };
@@ -233,13 +232,12 @@ public:
 int main() {
     try {
         Container c;
-        // c goes out of scope → Container's dtor function-try-block runs
+        // c goes out of scope -> Container's dtor function-try-block runs
     }
     catch (const std::exception& e) {
         std::cout << "Main caught: " << e.what() << "\n";
     }
 }
-
 ```
 
 **How it works:**
@@ -252,13 +250,13 @@ int main() {
 
 - If the destructor is called during stack unwinding (another exception is active), the rethrow calls `std::terminate()`.
 - This is why destructors should **always** be `noexcept` (the default since C++11).
-- Function-try-blocks on destructors are useful only for logging — they cannot prevent the exception from propagating.
+- Function-try-blocks on destructors are useful only for logging - they cannot prevent the exception from propagating.
 
 ---
 
 ## Notes
 
 - Function-try-blocks work on any function (not just constructors/destructors), but for non-constructor functions they behave like a normal try-catch around the entire body.
-- In a constructor's catch handler, you **cannot** access `this`, base subobjects, or member variables — their lifetimes have ended.
+- In a constructor's catch handler, you **cannot** access `this`, base subobjects, or member variables - their lifetimes have ended.
 - In practice, function-try-blocks are rare. Prefer RAII and `noexcept` destructors to avoid needing them.
 - The only practical use case: **wrapping/translating exceptions** from member constructors (e.g., converting a low-level DB exception into a higher-level application exception).

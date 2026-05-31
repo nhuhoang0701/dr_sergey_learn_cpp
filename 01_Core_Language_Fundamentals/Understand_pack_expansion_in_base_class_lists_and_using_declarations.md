@@ -13,8 +13,9 @@ Pack expansion (`...`) can be used in base class lists and `using` declarations 
 
 ### Pack Expansion in Base Class Lists
 
-```cpp
+You can inherit from every type in a parameter pack with a single `...`. The result is a type that combines all of the bases' members:
 
+```cpp
 // Inherit from all types in the pack
 template<typename... Bases>
 struct Derived : Bases... {
@@ -29,13 +30,13 @@ Derived<A, B, C> obj;
 obj.a();  // from A
 obj.b();  // from B
 obj.c();  // from C
-
 ```
 
 ### Pack Expansion in Using Declarations (C++17)
 
-```cpp
+Inheriting from multiple bases is only half the story. If those bases all define the same function name, name hiding will leave only one visible - unless you expand the `using` declaration too:
 
+```cpp
 // Bring operator() from all bases into scope
 template<typename... Bases>
 struct Overloaded : Bases... {
@@ -51,13 +52,13 @@ auto visitor = Overloaded{
     [](double x) { std::cout << "double: " << x << "\n"; },
     [](auto x)   { std::cout << "other: " << x << "\n"; }
 };
-
 ```
 
 ### Pack Expansion in Lambda Captures
 
-```cpp
+Packs can also appear in lambda capture lists, giving you a closure that stores each pack element as a separate member:
 
+```cpp
 template<typename... Args>
 auto make_tuple_printer(Args... args) {
     // Capture the entire pack by value
@@ -69,7 +70,6 @@ auto make_tuple_printer(Args... args) {
 
 auto printer = make_tuple_printer(1, 2.5, "hello");
 printer();  // Output: 1 2.5 hello
-
 ```
 
 ---
@@ -78,8 +78,9 @@ printer();  // Output: 1 2.5 hello
 
 ### Q1: Expand a pack in a base class list: struct Derived : Bases... {} and explain the implications
 
-```cpp
+The `Entity` template below lets you bolt on any combination of mixins at the call site. Each mixin contributes its methods to `Entity`, and you can use a subset just by changing the template arguments.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -112,9 +113,8 @@ int main() {
     // Can also use with subset:
     Entity<Logger> simple("NPC");
     simple.log("Created");
-    // simple.serialize(); // ERROR — no Serializer base
+    // simple.serialize(); // ERROR - no Serializer base
 }
-
 ```
 
 **How this works:**
@@ -122,17 +122,18 @@ int main() {
 - `struct Entity : Mixins...` expands the parameter pack into a list of base classes.
 - For `Entity<Logger, Serializer, Validator>`, this becomes `Entity : Logger, Serializer, Validator`.
 - Each base contributes its members to the derived class.
-- **Implications:** Empty Base Optimization (EBO) applies — empty bases add no size. If two bases have same-named members, name hiding/ambiguity rules apply. Construction order follows the pack order (left to right).
+- **Implications:** Empty Base Optimization (EBO) applies - empty bases add no size. If two bases have same-named members, name hiding/ambiguity rules apply. Construction order follows the pack order (left to right).
 
 ### Q2: Use `using Bases::operator()...;` to bring all operator() overloads into scope
 
-```cpp
+This is the canonical `Overloaded` pattern that makes `std::visit` readable. Without the `using` expansion, name hiding would leave you with only one `operator()` visible - the whole trick depends on bringing all of them in at once.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <variant>
 
-// The overloaded pattern — THE canonical use of pack expansion in using-declarations
+// The overloaded pattern - THE canonical use of pack expansion in using-declarations
 template<typename... Ts>
 struct Overloaded : Ts... {
     using Ts::operator()...;  // C++17: bring ALL operator() into scope
@@ -160,7 +161,6 @@ int main() {
     }, v);
     // Output: int: 42
 }
-
 ```
 
 **How this works:**
@@ -172,8 +172,9 @@ int main() {
 
 ### Q3: Expand a pack in a lambda capture list and show the resulting closure layout
 
-```cpp
+Think of `[args...]` as telling the compiler to create a separate data member in the closure struct for each element of the pack. The comment in the example makes the closure's internal layout explicit.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -214,7 +215,6 @@ int main() {
     auto g = capture_by_move(10, 3.14, std::string("world"));
     g();  // Output: 10 3.14 world
 }
-
 ```
 
 **How this works:**
@@ -228,6 +228,6 @@ int main() {
 ## Notes
 
 - Pack expansion in using-declarations requires **C++17**. Base class list expansion works since C++11.
-- The `Overloaded` pattern is the most common real-world use — essential for `std::visit` with `std::variant`.
-- C++20 added init-capture pack expansion: `[...x = expr]` — enables move-capturing packs into lambdas.
+- The `Overloaded` pattern is the most common real-world use - essential for `std::visit` with `std::variant`.
+- C++20 added init-capture pack expansion: `[...x = expr]` - enables move-capturing packs into lambdas.
 - If two bases in the pack have the same member name, you'll get ambiguity errors unless resolved by `using`.

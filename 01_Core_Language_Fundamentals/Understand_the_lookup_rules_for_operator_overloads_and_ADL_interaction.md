@@ -23,8 +23,9 @@ All candidates from all three sources participate in overload resolution.
 
 ### ADL for Operators
 
-```cpp
+Because of ADL, you can define your operator alongside your type in its namespace, and the compiler will find it automatically whenever that type is involved - no `using` directive needed.
 
+```cpp
 namespace math {
     struct Vector { double x, y; };
 
@@ -39,13 +40,13 @@ int main() {
     auto v3 = v1 + v2;  // ADL finds math::operator+
     // No "using namespace math;" needed!
 }
-
 ```
 
 ### Why This Matters
 
-```cpp
+The same mechanism is what makes `std::cout << w` work for your own types. The `operator<<` lives in your namespace, and ADL brings it into scope because `w` is your type.
 
+```cpp
 namespace lib {
     struct Widget {};
     std::ostream& operator<<(std::ostream& os, const Widget& w) {
@@ -57,7 +58,6 @@ int main() {
     lib::Widget w;
     std::cout << w;  // ADL finds lib::operator<< via Widget's namespace
 }
-
 ```
 
 ---
@@ -66,8 +66,9 @@ int main() {
 
 ### Q1: Show that `a + b` looks up operator+ via ADL in the namespaces of both a and b
 
-```cpp
+ADL considers the associated namespaces of every argument. Here the operator lives in `ns_b` - the namespace of the second argument - and the call still succeeds.
 
+```cpp
 #include <iostream>
 
 namespace ns_a {
@@ -97,26 +98,28 @@ int main() {
     // If operator+ were in ns_a instead, it would also be found:
     // ADL searches namespaces of ALL argument types
 }
-
 ```
+
+ADL casts a wide net by design - it searches all associated namespaces so that operators can live alongside their types rather than at the global scope.
 
 **How this works:**
 
-- When the compiler sees `a + b`, it collects the **associated namespaces** of both operands.
+- When the compiler sees `a + b`, it collects the associated namespaces of both operands.
 - For `ns_a::TypeA`, the associated namespace is `ns_a`.
 - For `ns_b::TypeB`, the associated namespace is `ns_b`.
-- ADL searches both `ns_a` and `ns_b` for `operator+` — it finds it in `ns_b`.
+- ADL searches both `ns_a` and `ns_b` for `operator+` - it finds it in `ns_b`.
 
 ### Q2: Explain why defining operator+ inside a namespace is found by ADL but not by unqualified lookup
 
 **Answer:**
 
-**Unqualified lookup** searches outward from the call site through enclosing scopes: the function body → enclosing class → enclosing namespace → global namespace. It does NOT search unrelated namespaces.
+**Unqualified lookup** searches outward from the call site through enclosing scopes: the function body -> enclosing class -> enclosing namespace -> global namespace. It does NOT search unrelated namespaces.
 
 **ADL** adds the namespaces associated with the argument types to the search.
 
-```cpp
+Without ADL, every operator call would need a `using namespace math;` or a fully qualified `math::operator+(a, b)` - clearly impractical for library types.
 
+```cpp
 namespace math {
     struct Complex { double re, im; };
 
@@ -130,11 +133,11 @@ namespace other {
         math::Complex a{1, 2}, b{3, 4};
 
         // Unqualified lookup from 'other::test':
-        //   Searches: other → global → NOT math (it's unrelated)
+        //   Searches: other -> global -> NOT math (it's unrelated)
         //   Doesn't find operator+ through ordinary lookup!
 
         // ADL kicks in:
-        //   Arguments are math::Complex → searches math namespace
+        //   Arguments are math::Complex -> searches math namespace
         //   Finds math::operator+(Complex, Complex)!
 
         auto c = a + b;  // Works thanks to ADL
@@ -146,15 +149,15 @@ namespace other {
 int main() {
     other::test();
 }
-
 ```
 
-**Key insight:** Without ADL, operators defined in a library's namespace could only be used with fully qualified syntax or `using` declarations — making operator overloading impractical.
+**Key insight:** Without ADL, operators defined in a library's namespace could only be used with fully qualified syntax or `using` declarations - making operator overloading impractical.
 
 ### Q3: Show a case where ADL finds an unexpected operator from an unrelated namespace
 
-```cpp
+This example illustrates the subtlety: ADL only searches namespaces that are directly associated with the argument types. Including a type from another namespace does not automatically pull that namespace's operators into scope for unrelated types.
 
+```cpp
 #include <iostream>
 
 namespace lib_a {
@@ -198,26 +201,27 @@ int main() {
 
     // BUT if we use a lib_b::Wrapper:
     lib_b::Wrapper w1{{1}}, w2{{2}};
-    // ADL for Wrapper searches lib_b → finds lib_b::operator+ for Token too!
+    // ADL for Wrapper searches lib_b -> finds lib_b::operator+ for Token too!
     // This can cause surprising results when lib_b defines operators for
     // types from lib_a
 }
-
 ```
+
+The takeaway is that the associated namespace is determined by the static type of the argument, not by which namespaces that type happens to use internally. Keep operators in the same namespace as the type they operate on, and the behavior stays predictable.
 
 **How this works:**
 
-- ADL only searches namespaces **associated with the argument types**.
-- For `lib_a::Token`, only `lib_a` is searched — `lib_b`'s `operator+` is invisible.
-- But if argument types involve `lib_b` types, `lib_b` enters the search — potentially finding unexpected overloads.
-- This is why operators should be defined in the **same namespace as the type they operate on**.
+- ADL only searches namespaces associated with the argument types.
+- For `lib_a::Token`, only `lib_a` is searched - `lib_b`'s `operator+` is invisible.
+- But if argument types involve `lib_b` types, `lib_b` enters the search - potentially finding unexpected overloads.
+- This is why operators should be defined in the same namespace as the type they operate on.
 
 ---
 
 ## Notes
 
-- **Best practice:** Define operators in the same namespace as the types they operate on — this is the namespace ADL will search.
-- Hidden friend pattern: `friend operator+` defined inside the class body — found only via ADL, not by ordinary lookup. This limits the scope of the operator.
-- `std::swap` customization relies on ADL: `using std::swap; swap(a, b);` — finds your custom swap via ADL.
+- Best practice: define operators in the same namespace as the types they operate on - this is the namespace ADL will search.
+- Hidden friend pattern: `friend operator+` defined inside the class body - found only via ADL, not by ordinary lookup. This limits the scope of the operator.
+- `std::swap` customization relies on ADL: `using std::swap; swap(a, b);` - finds your custom swap via ADL.
 - C++20 changed how `operator<=>` and comparison operators are looked up, adding rewritten candidates.
 - `operator<<` for output streaming should be in the type's namespace for ADL to work with `std::cout`.

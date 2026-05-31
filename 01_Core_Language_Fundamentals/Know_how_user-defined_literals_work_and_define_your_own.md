@@ -10,22 +10,21 @@
 
 ### What Are User-Defined Literals
 
-User-defined literals (UDLs) let you create custom suffixes for literal values, enabling expressive, type-safe syntax like `42_km`, `"hello"_s`, or `3.14_deg`.
+User-defined literals (UDLs) let you bolt a custom *suffix* onto a literal value, so a bare number or string can carry meaning and type with it. Instead of an anonymous `5.0`, you write `5.0_km` and get back an actual `Kilometers` object:
 
 ```cpp
-
 auto distance = 5.0_km;     // Returns a Kilometers object
 auto greeting = "hello"_s;   // Returns a std::string
 auto angle = 90_deg;         // Returns a Radians value
-
 ```
+
+The payoff is readable, type-safe code: the unit lives in the value, not in a comment.
 
 ### Syntax
 
-UDLs are defined as `operator""` functions:
+You create a UDL by defining a specially-named `operator""` function. Which signature you write depends on what kind of literal you want to attach the suffix to:
 
 ```cpp
-
 // For integer literals: 42_suffix
 ReturnType operator""_suffix(unsigned long long value);
 
@@ -44,28 +43,29 @@ ReturnType operator""_suffix(const char* raw_digits);
 // Template form (compile-time): 123_suffix
 template<char... Digits>
 ReturnType operator""_suffix();
-
 ```
+
+A practical note: for numeric suffixes you usually want *both* the `unsigned long long` and `long double` overloads, so that `42_km` and `42.0_km` both compile.
 
 ### Suffix Naming Rules
 
-1. **User suffixes MUST start with `_` (underscore)** — suffixes without `_` are reserved for the standard library.
-2. Suffixes starting with `_` followed by an uppercase letter are reserved for implementations.
-3. Examples: `_km` ✅, `_m` ✅, `km` ❌ (reserved), `_Km` ❌ (reserved for impl)
+There's one rule you must never forget, and a couple of corollaries:
+
+1. **Your suffixes MUST start with `_`** - suffixes without a leading underscore are reserved for the standard library.
+2. A `_` followed by an uppercase letter is reserved for the *implementation* (the compiler/stdlib).
+3. So: `_km` is good, `_m` is good, `km` is forbidden (reserved), `_Km` is forbidden (reserved for the implementation).
 
 ### Standard Library Literals
 
-The standard library provides these (in inline namespaces):
+The reason suffixes-without-underscore are reserved is that the standard library uses them. They live in inline namespaces you opt into:
 
 ```cpp
-
 using namespace std::literals;
 
 auto s = "hello"s;           // std::string (std::string_literals)
 auto sv = "hello"sv;         // std::string_view (std::string_view_literals)
 auto dur = 100ms;            // std::chrono::milliseconds (std::chrono_literals)
 auto cx = 3.0 + 4.0i;       // std::complex<double> (std::complex_literals)
-
 ```
 
 ---
@@ -74,12 +74,13 @@ auto cx = 3.0 + 4.0i;       // std::complex<double> (std::complex_literals)
 
 ### Q1: Define `operator""_km` and `operator""_m` to create type-safe distance values
 
-```cpp
+This is the canonical "strong units" example. The whole point is that `Kilometers` and `Meters` are *separate types*, so the compiler refuses to let you mix them by accident:
 
+```cpp
 #include <iostream>
 #include <compare>
 
-// Strong type for distance — prevents mixing units
+// Strong type for distance - prevents mixing units
 struct Kilometers {
     double value;
     auto operator<=>(const Kilometers&) const = default;
@@ -138,21 +139,20 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How this works:**
 
-- `operator""_km(long double)` handles floating-point literals like `42.195_km`.
-- `operator""_km(unsigned long long)` handles integer literals like `100_km`.
-- `Kilometers` and `Meters` are **distinct types** — the compiler prevents accidental mixing.
-- Arithmetic is only defined within the same unit type.
-- Explicit conversion functions enable intentional unit conversion.
+- The `long double` overload catches floating-point literals like `42.195_km`; the `unsigned long long` overload catches integer ones like `100_km`. You need both.
+- Because `Kilometers` and `Meters` are **distinct types**, the type system itself blocks accidental mixing.
+- Arithmetic is only defined within a single unit, so `km + km` works but `km + m` does not.
+- When you genuinely want to cross units, you do it deliberately through the conversion functions.
 
 ### Q2: Show a compile error when kilometers and meters are mixed without conversion
 
-```cpp
+Here's the safety net in action - leave out a conversion and the code simply won't build:
 
+```cpp
 #include <iostream>
 
 struct Kilometers { double value; };
@@ -178,47 +178,43 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**The compiler enforces type safety** — since `Kilometers` and `Meters` are different types, you cannot accidentally add them without an explicit conversion. This is the power of strong typing with UDLs.
+That refusal to compile is the *feature*. Mixing kilometers and meters is exactly the kind of bug that has crashed real spacecraft - strong typing with UDLs turns it from a silent runtime error into a compile error you can't miss.
 
 ### Q3: Explain the restrictions on user-defined literal suffixes
 
-**Rules for UDL suffix names:**
+Pulling the rules together in one place:
 
-1. **Must start with `_` (underscore):** `_km`, `_deg`, `_px` — all valid.
-   - Suffixes WITHOUT `_` are reserved for the C++ standard: `s` (string), `sv` (string_view), `ms` (milliseconds), `i` (complex), etc.
-   - Using reserved suffixes is **ill-formed; no diagnostic required** — the compiler might accept it but behavior is undefined in future standards.
+1. **Must start with `_`:** `_km`, `_deg`, `_px` are all fine.
+   - Suffixes *without* `_` belong to the standard: `s`, `sv`, `ms`, `i`, and so on.
+   - Using a reserved suffix is **ill-formed, no diagnostic required** - your compiler might accept it today, but a future standard could break you with no warning.
 
-2. **Must NOT start with `_` followed by uppercase:** `_Km`, `_DEG` — reserved for the implementation (compiler/standard library).
+2. **Must not be `_` followed by uppercase:** `_Km`, `_DEG` are reserved for the implementation.
 
-3. **Must NOT contain double underscore:** `__km` — reserved for implementation.
+3. **Must not contain a double underscore:** `__km` is reserved for the implementation.
 
-4. **Allowed parameter types are fixed:**
+4. **The parameter types are a fixed menu:**
+   - `unsigned long long` - integer literals
+   - `long double` - floating-point literals
+   - `const char*, std::size_t` - string literals
+   - `char` - character literals
+   - `const char*` - the raw literal operator
+   - `template<char...>` - the raw literal operator template
 
-   - `unsigned long long` — for integer literals
-   - `long double` — for floating-point literals
-   - `const char*, std::size_t` — for string literals
-   - `char` — for character literals
-   - `const char*` — raw literal operator
-   - Template `<char...>` — raw literal operator template
+5. **UDLs can't be ordinary templates** (the only template form is the `template<char...>` raw numeric form).
 
-5. **UDLs cannot be templates** (except the raw `template<char...>` form for numeric literals).
-
-6. **UDLs must be non-member functions or friend functions** — they cannot be member functions.
+6. **UDLs must be non-member or friend functions** - never member functions.
 
 ```cpp
-
 // VALID:
 long double operator""_deg(long double d) { return d * 3.14159265358979 / 180.0; }
 
-// INVALID (reserved — no underscore):
+// INVALID (reserved - no underscore):
 // long double operator""deg(long double d);  // ERROR or reserved
 
-// INVALID (reserved — underscore + uppercase):
+// INVALID (reserved - underscore + uppercase):
 // long double operator""_Deg(long double d);  // Reserved for implementation
-
 ```
 
 ---
@@ -227,12 +223,13 @@ long double operator""_deg(long double d) { return d * 3.14159265358979 / 180.0;
 
 ### Compile-Time UDL with Template Parameter Pack
 
-```cpp
+The `template<char...>` form gets the literal's digits as individual characters at compile time, so you can fold them into a value entirely during compilation - here, a binary literal:
 
+```cpp
 #include <iostream>
 #include <cstdint>
 
-// Compile-time binary literal: 1010_b → 10
+// Compile-time binary literal: 1010_b -> 10
 template<char... Digits>
 constexpr uint64_t operator""_b() {
     static_assert(((Digits == '0' || Digits == '1') && ...), "Binary digits only!");
@@ -249,13 +246,15 @@ int main() {
     constexpr auto byte = 11111111_b;
     static_assert(byte == 255);
 }
-
 ```
+
+Note the `static_assert` inside: a non-binary digit fails to *compile*, not at runtime.
 
 ### String UDL for Regex
 
-```cpp
+The string form receives both the pointer and the length, which is exactly what `std::regex` wants - so `"..."_re` reads as "this string literal *is* a regex":
 
+```cpp
 #include <regex>
 #include <iostream>
 #include <string>
@@ -272,13 +271,13 @@ int main() {
         std::cout << test << " is a valid email\n";
     }
 }
-
 ```
 
 ### Chrono-style Duration UDLs
 
-```cpp
+The chrono literals are the standard library's own UDLs, and they're worth studying because they show how nicely typed durations compose and compare across units:
 
+```cpp
 #include <iostream>
 #include <chrono>
 
@@ -298,15 +297,14 @@ int main() {
         std::cout << "Timeout is less than 1 second\n";
     }
 }
-
 ```
 
 ---
 
 ## Notes
 
-- UDL suffixes must start with `_` — no underscore = reserved for the standard library.
-- Provide both `unsigned long long` and `long double` overloads to handle `42_km` and `42.0_km`.
-- UDLs enable **strong typing** that catches unit-mixing bugs at compile time.
-- The standard library provides `""s`, `""sv`, `""ms`, `""h`, `""i` etc.
-- Use `constexpr` UDLs for compile-time computation (e.g., binary literals, hex parsing).
+- UDL suffixes must start with `_` - no underscore means it's reserved for the standard library.
+- Provide both the `unsigned long long` and `long double` overloads so `42_km` and `42.0_km` both work.
+- UDLs give you **strong typing** that catches unit-mixing bugs at compile time.
+- The standard library ships `""s`, `""sv`, `""ms`, `""h`, `""i`, and more.
+- Use `constexpr` UDLs for compile-time work like binary literals or hex parsing.

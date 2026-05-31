@@ -10,7 +10,7 @@
 
 ### When Is a Destructor Implicitly Deleted
 
-The compiler generates an implicit destructor for any class that doesn't declare one. However, the implicit destructor is defined as **deleted** if any of these conditions hold:
+The compiler generates an implicit destructor for any class that doesn't declare one. However, the implicit destructor is defined as **deleted** if any of these conditions hold. Think of it as the compiler saying "I can't write a safe destructor for you here":
 
 1. **A non-static data member has a deleted or inaccessible destructor.**
 2. **A direct or virtual base class has a deleted or inaccessible destructor.**
@@ -26,12 +26,11 @@ When the destructor is deleted, you cannot:
 
 ### `unique_ptr` and Incomplete Types
 
-The most common real-world encounter with deleted destructors involves `std::unique_ptr<IncompleteType>`:
+The most common real-world encounter with deleted destructors involves `std::unique_ptr<IncompleteType>`. Here's the classic Pimpl trap:
 
 ```cpp
-
 // header.h
-class Impl;  // Forward declaration — incomplete type
+class Impl;  // Forward declaration - incomplete type
 
 class Widget {
     std::unique_ptr<Impl> pImpl;  // OK to declare
@@ -41,13 +40,11 @@ public:
     // But Impl is incomplete here, so unique_ptr<Impl>::~unique_ptr() can't call delete.
     // Result: the implicit destructor is DELETED (or a compile error).
 };
-
 ```
 
 The fix is to **declare the destructor in the header** and **define it in the .cpp** where `Impl` is complete:
 
 ```cpp
-
 // header.h
 class Widget {
     std::unique_ptr<Impl> pImpl;
@@ -60,9 +57,10 @@ public:
 #include "header.h"
 class Impl { /* full definition */ };
 Widget::Widget() : pImpl(std::make_unique<Impl>()) {}
-Widget::~Widget() = default;  // Defined here — Impl is complete!
-
+Widget::~Widget() = default;  // Defined here - Impl is complete!
 ```
+
+The out-of-line `= default` looks redundant, but it moves the code generation to the point where the type is complete.
 
 ---
 
@@ -70,10 +68,9 @@ Widget::~Widget() = default;  // Defined here — Impl is complete!
 
 ### Q1: List the conditions that cause the implicit destructor to be deleted
 
-The implicit destructor `~T()` is **deleted** if:
+Each condition below maps to one of the four rules. They all compile as shown - the comments tell you what would fail and why:
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 
@@ -103,7 +100,7 @@ struct B : PrivateDtor {
 union U {
     std::string s;  // std::string has non-trivial destructor
     int i;
-    // ~U() is implicitly DELETED — compiler doesn't know whether to destroy s or i
+    // ~U() is implicitly DELETED - compiler doesn't know whether to destroy s or i
     // User must provide a destructor manually
 };
 
@@ -132,8 +129,9 @@ int main() {
     std::cout << "sizeof(U): " << sizeof(U) << "\n";
     return 0;
 }
-
 ```
+
+If the table feels like a lot, the common thread is: the compiler can't delete something it doesn't know how to delete.
 
 **Summary table:**
 
@@ -146,13 +144,14 @@ int main() {
 
 ### Q2: Show that a class with `unique_ptr<IncompleteType>` needs an out-of-line destructor
 
-```cpp
+This is one of the most confusing compiler errors you'll encounter in real codebases. The key insight is that `unique_ptr`'s destructor needs a complete type at the point where the destructor body is generated:
 
+```cpp
 // === widget.h ===
 #include <memory>
 #include <string>
 
-class Impl;  // Forward declaration — incomplete type
+class Impl;  // Forward declaration - incomplete type
 
 class Widget {
     std::unique_ptr<Impl> pImpl_;
@@ -162,7 +161,7 @@ public:
 
     // REQUIRED: declare destructor (but don't define here)
     // Without this, the compiler generates ~Widget() in every TU that includes this header
-    // Since Impl is incomplete here, unique_ptr can't call delete → compilation error
+    // Since Impl is incomplete here, unique_ptr can't call delete - compilation error
     ~Widget();
 
     // Also need to declare move operations (destructor suppresses implicit moves)
@@ -177,7 +176,7 @@ public:
 // #include "widget.h"
 #include <iostream>
 
-// Full definition of Impl — now the type is complete
+// Full definition of Impl - now the type is complete
 class Impl {
 public:
     int state = 0;
@@ -188,7 +187,7 @@ public:
 Widget::Widget(std::string name)
     : pImpl_(std::make_unique<Impl>()), name_(std::move(name)) {}
 
-Widget::~Widget() = default;  // OK — Impl is complete here
+Widget::~Widget() = default;  // OK - Impl is complete here
 
 Widget::Widget(Widget&& other) noexcept = default;
 Widget& Widget::operator=(Widget&& other) noexcept = default;
@@ -208,20 +207,22 @@ int main() {
     std::cout << "Name: " << w2.name() << "\n";
     return 0;
 }
-
 ```
 
-**Why this happens:**
+All the special member definitions live in the `.cpp` file, which is the one place that sees the full `Impl` definition.
+
+Why this happens:
 
 - `std::unique_ptr<T>::~unique_ptr()` calls `delete` on the stored `T*`.
 - To call `delete`, the compiler must know the **complete type** of `T` (to call its destructor and compute size).
-- In the header, `Impl` is only forward-declared (incomplete) → the compiler can't generate `~Widget()`.
+- In the header, `Impl` is only forward-declared (incomplete) - the compiler can't generate `~Widget()`.
 - Defining `~Widget() = default` in the `.cpp` where `Impl` is fully defined resolves this.
 
 ### Q3: Explain why deleting the destructor prevents both stack and heap allocation
 
-```cpp
+You might think "just don't call `delete`" - but the compiler needs confidence that it *can* call the destructor before it lets you create the object at all:
 
+```cpp
 #include <iostream>
 #include <new>
 
@@ -233,7 +234,7 @@ struct NoDelete {
 int main() {
     // Stack allocation: FAILS
     // NoDelete x;  // ERROR: use of deleted function '~NoDelete()'
-    // Compiler must call destructor when x goes out of scope — can't!
+    // Compiler must call destructor when x goes out of scope - can't!
 
     // Heap allocation with delete: FAILS
     // NoDelete* p = new NoDelete{42};
@@ -247,7 +248,7 @@ int main() {
     alignas(NoDelete) unsigned char buf[sizeof(NoDelete)];
     NoDelete* placed = new (buf) NoDelete{42};
     std::cout << placed->value << "\n";  // 42
-    // But you can NEVER destroy it properly — memory leak on heap, UB on stack
+    // But you can NEVER destroy it properly - memory leak on heap, UB on stack
 
     // Even in containers: FAILS
     // std::vector<NoDelete> v;  // ERROR: vector needs to destroy elements
@@ -256,22 +257,23 @@ int main() {
     // Because for regular `new NoDelete{42}`, the compiler generates code like:
     //   1. allocate memory
     //   2. construct object
-    //   3. (if construction throws) call destructor → oops, deleted!
+    //   3. (if construction throws) call destructor - oops, deleted!
     // Even if the constructor succeeds, the compiler needs confidence that
     // the destructor is callable for exception safety.
 
     return 0;
 }
-
 ```
 
-**Why both stack AND heap are blocked:**
+Placement new into raw memory is the only escape - but then you can never properly clean up, so it's rarely what you want.
+
+Why both stack AND heap are blocked:
 
 - **Stack objects:** At the end of scope, the compiler inserts a call to `~T()`. If `~T()` is deleted, the code won't compile.
 - **Heap objects (`new`/`delete`):** `delete p` calls `~T()` then frees memory. If `~T()` is deleted, `delete` is ill-formed. Even `new` may fail because the compiler generates exception cleanup code that calls the destructor.
 - **The only escape:** Placement new into raw memory (no automatic cleanup), but then you can never properly destroy the object.
 
-**Practical use of `= delete` destructor:**
+Practical use of `= delete` destructor:
 
 - Prevent instantiation entirely (combine with private constructor for tag types)
 - Some memory allocator designs use it to prevent accidental deallocation
@@ -281,7 +283,7 @@ int main() {
 ## Notes
 
 - A deleted destructor makes a type essentially unusable for normal object creation.
-- The #1 real-world case is `unique_ptr<IncompleteType>` in the Pimpl pattern — fix with out-of-line destructor.
-- Unions with non-trivial members get a deleted destructor — prefer `std::variant`.
+- The number one real-world case is `unique_ptr<IncompleteType>` in the Pimpl pattern - fix with out-of-line destructor.
+- Unions with non-trivial members get a deleted destructor - prefer `std::variant`.
 - When you define a destructor (even `= default`) for Pimpl, also define move operations explicitly.
 - Use `std::is_destructible_v<T>` to check at compile time whether a type can be destroyed.

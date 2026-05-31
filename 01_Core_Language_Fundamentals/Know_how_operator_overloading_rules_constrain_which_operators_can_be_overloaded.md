@@ -9,14 +9,16 @@
 
 ### What Is Operator Overloading
 
-C++ lets you redefine the behavior of operators (`+`, `-`, `<<`, `[]`, etc.) for user-defined types. However, there are strict rules governing **which** operators can be overloaded, **how** they must be declared, and **what constraints** apply.
+Operator overloading is C++ letting you teach operators like `+`, `<<`, or `[]` what they should mean for *your* types. It's a great feature, but it comes with guardrails: the language is picky about **which** operators you may overload, **how** you must declare each one, and **what** constraints apply. This page is mostly about those guardrails - knowing them up front saves you from confusing compiler errors later.
 
 ### Operators That CANNOT Be Overloaded
+
+Some operators are off-limits, and there's a reason behind each. Mostly it's because they aren't really "runtime operations" you could redirect to a function:
 
 | Operator | Name | Reason |
 | --- | --- | --- |
 | `::` | Scope resolution | Fundamental to name lookup, not a runtime operation |
-| `.` | Member access | Must always mean "access member" — no alternative semantics |
+| `.` | Member access | Must always mean "access member" - no alternative semantics |
 | `.*` | Pointer-to-member access | Same reason as `.` |
 | `?:` | Ternary conditional | Has unique short-circuit semantics that can't be preserved |
 | `sizeof` | Size query | Compile-time operator, not a function call |
@@ -26,40 +28,41 @@ C++ lets you redefine the behavior of operators (`+`, `-`, `<<`, `[]`, etc.) for
 
 ### Member vs. Free Function Rules
 
+For the operators you *can* overload, the next question is *where*: must it be a member, or is it better as a free function? Here's the cheat sheet, and we'll unpack the two most important rows right after:
+
 | Operator | Must be member? | Typically free? | Notes |
 | --- | --- | --- | --- |
-| `=` (assignment) | **Yes** | — | Prevents hijacking assignment semantics |
-| `()` (call) | **Yes** | — | Defines function objects/functors |
-| `[]` (subscript) | **Yes** | — | C++23 allows multiple parameters |
-| `->` (member access) | **Yes** | — | Must return pointer or proxy |
+| `=` (assignment) | **Yes** | - | Prevents hijacking assignment semantics |
+| `()` (call) | **Yes** | - | Defines function objects/functors |
+| `[]` (subscript) | **Yes** | - | C++23 allows multiple parameters |
+| `->` (member access) | **Yes** | - | Must return pointer or proxy |
 | `->*` | No | No | Rarely overloaded |
 | `<<`, `>>` (stream) | No | **Yes** | Left operand is `std::ostream&`, not your type |
 | `+`, `-`, `*`, `/` | No | **Yes** | Free function enables symmetric conversions |
-| `==`, `<=>` | **Yes** (C++20) | — | Compiler generates `!=`, `<`, `>`, etc. |
-| Conversion `operator T()` | **Yes** | — | Implicit or explicit conversion |
-| `new`, `delete` | May be member or global | — | Controls allocation |
+| `==`, `<=>` | **Yes** (C++20) | - | Compiler generates `!=`, `<`, `>`, etc. |
+| Conversion `operator T()` | **Yes** | - | Implicit or explicit conversion |
+| `new`, `delete` | May be member or global | - | Controls allocation |
 
 ### Why `operator=` Must Be a Member
 
-If `operator=` could be a free function, external code could hijack the assignment semantics of a class:
+The rule that `operator=` has to be a member isn't arbitrary - it's about keeping a class in control of its own assignment. If assignment could be defined from the outside, anyone could quietly rewire how your objects copy themselves:
 
 ```cpp
-
 // If this were allowed (it's NOT):
 MyClass& operator=(MyClass& lhs, const MyClass& rhs);  // ERROR: = must be member
-
 ```
 
-The compiler would have no way to guarantee the class maintains its invariants during assignment.
+By forcing it to be a member, the language guarantees the class author is the one deciding how invariants survive an assignment.
 
 ### Why `operator<<` Is Typically Free
 
-```cpp
+Stream output flips the situation. The left operand of `std::cout << obj` is the *stream*, not your object - and you can't go adding member functions to `std::ostream`:
 
+```cpp
 struct Point {
     double x, y;
 
-    // Can't make operator<< a member — the left operand is std::ostream, not Point!
+    // Can't make operator<< a member - the left operand is std::ostream, not Point!
     // std::ostream& operator<<(std::ostream& os) would mean: point << std::cout; // wrong order!
 };
 
@@ -68,15 +71,17 @@ std::ostream& operator<<(std::ostream& os, const Point& p) {
     return os << "(" << p.x << ", " << p.y << ")";
 }
 // Usage: std::cout << point;  // natural syntax
-
 ```
+
+So the left operand decides the form: when it's not your type, the operator has to live outside your class.
 
 ### The Canonical Operator Patterns
 
-**Arithmetic operators:** Implement `+=` as member, `+` as free function:
+There are well-worn "canonical" shapes for these operators. Following them means you write the logic once and get correct, symmetric behavior for free.
+
+**Arithmetic operators:** put the real work in `+=` (a member), then build `+` on top of it (a free function):
 
 ```cpp
-
 struct Vec2 {
     double x, y;
 
@@ -96,13 +101,11 @@ Vec2 operator+(Vec2 lhs, const Vec2& rhs) {
     lhs += rhs;  // Reuses operator+= (lhs is a copy!)
     return lhs;
 }
-
 ```
 
-**Unary operators:**
+**Unary operators** are smaller but follow the same spirit - mutate-in-place ones return a reference, value-producing ones return a fresh object:
 
 ```cpp
-
 struct Integer {
     int val;
 
@@ -112,15 +115,13 @@ struct Integer {
     Integer  operator++(int)   { auto old = *this; ++val; return old; } // Post-increment
     bool     operator!() const { return val == 0; }             // Logical NOT
 };
-
 ```
 
 ### C++20 Comparison Operators
 
-C++20 dramatically simplifies comparison operators:
+Before C++20, writing all six comparison operators by hand was tedious and bug-prone. The spaceship operator `<=>` collapses that into a single line, and the compiler synthesizes the rest:
 
 ```cpp
-
 #include <compare>
 
 struct Point3D {
@@ -129,13 +130,11 @@ struct Point3D {
     // Generates ==, !=, <, >, <=, >= automatically!
     auto operator<=>(const Point3D&) const = default;
 };
-
 ```
 
-If you need custom logic:
+When the default member-wise comparison isn't what you want, you write `<=>` yourself and pick the ordering category that fits:
 
 ```cpp
-
 struct CaseInsensitiveString {
     std::string data;
 
@@ -153,15 +152,18 @@ struct CaseInsensitiveString {
         return a <=> b;
     }
 };
-
 ```
+
+(The ordering is `weak_ordering` here because two strings that differ only in case compare *equivalent* but aren't truly equal - a perfect fit for the weak category.)
 
 ### Overloading Pitfalls
 
-1. **Don't overload `&&`, `||`, or `,`** — they lose short-circuit evaluation and sequencing guarantees.
-2. **Don't change operator semantics** — `operator+` should add, not subtract.
-3. **Be consistent** — if you overload `==`, overload `!=` too (or use `= default` in C++20).
-4. **Return types matter** — `operator+` should return by value, `operator+=` by reference.
+A few things to never do, learned the hard way by generations of C++ programmers:
+
+1. **Don't overload `&&`, `||`, or `,`** - overloaded versions become ordinary function calls and lose short-circuit / sequencing guarantees.
+2. **Don't change what an operator means** - `operator+` should add. Surprising semantics are how you make code unreadable.
+3. **Be consistent** - if you overload `==`, give it `!=` too (or just `= default` in C++20 and let the compiler do it).
+4. **Mind your return types** - `operator+` returns by value, `operator+=` returns by reference.
 
 ---
 
@@ -169,7 +171,7 @@ struct CaseInsensitiveString {
 
 ### Q1: List operators that cannot be overloaded
 
-The following operators **cannot** be overloaded in C++:
+These are the operators C++ simply won't let you touch, with the reasoning for each:
 
 | Operator | Symbol | Why |
 | --- | --- | --- |
@@ -182,18 +184,17 @@ The following operators **cannot** be overloaded in C++:
 | `alignof` | `alignof` | Compile-time alignment query |
 | `noexcept` | `noexcept` | Compile-time exception specification check |
 
-Additionally, these preprocessing operators cannot be overloaded: `#` (stringize), `##` (token paste).
+And two more that aren't even real operators in the runtime sense: the preprocessor's `#` (stringize) and `##` (token paste).
 
 ### Q2: Explain why `operator=` must be a member and `operator<<` is typically free
 
-**`operator=` must be a non-static member function because:**
+**`operator=` must be a non-static member**, for three reinforcing reasons:
 
-1. **Invariant protection:** The class author must control assignment to maintain class invariants (e.g., resource ownership, reference counts).
-2. **Default generation:** The compiler generates `operator=` if you don't — this only works for member functions.
-3. **Preventing hijacking:** If external code could define `operator=` for your class, it could silently break your type's semantics.
+1. **Invariant protection:** only the class author should decide how assignment preserves things like resource ownership or reference counts.
+2. **Default generation:** the compiler auto-generates `operator=` when you don't write one - and that machinery only works for members.
+3. **Anti-hijacking:** if outsiders could define `operator=` for your type, they could silently break its semantics.
 
 ```cpp
-
 struct Resource {
     int* ptr;
     // Only the class author should decide how assignment works
@@ -205,30 +206,28 @@ struct Resource {
         return *this;
     }
 };
-
 ```
 
-**`operator<<` is typically a free function (or hidden friend) because:**
+**`operator<<` is typically a free function (often a hidden friend)** for the mirror-image reason:
 
-1. **Left operand isn't your type:** `std::cout << obj` means `operator<<(std::cout, obj)`. You can't add a member to `std::ostream`.
-2. **If it were a member of your class,** the syntax would be backwards: `obj << std::cout` (left operand = `this`).
-3. **Hidden friend pattern** is preferred in modern C++:
+1. **The left operand isn't your type:** `std::cout << obj` is really `operator<<(std::cout, obj)`, and you can't add members to `std::ostream`.
+2. **As a member it would read backwards:** `this` would be the left operand, forcing the unnatural `obj << std::cout`.
+3. **Hidden friend** is the modern, tidy way to write it:
 
 ```cpp
-
 struct Color {
     int r, g, b;
     friend std::ostream& operator<<(std::ostream& os, const Color& c) {
         return os << "rgb(" << c.r << "," << c.g << "," << c.b << ")";
     }
 };
-
 ```
 
 ### Q3: Show the canonical form for overloading `operator+` as a free function using `operator+=`
 
-```cpp
+This is the pattern worth memorizing. Notice that every binary arithmetic operator below is a two-line free function that delegates to its compound-assignment member - zero duplicated math:
 
+```cpp
 #include <iostream>
 #include <cmath>
 
@@ -271,7 +270,7 @@ struct Complex {
     }
 };
 
-// operator+ as FREE FUNCTION — takes lhs BY VALUE (it's a copy!)
+// operator+ as FREE FUNCTION - takes lhs BY VALUE (it's a copy!)
 Complex operator+(Complex lhs, const Complex& rhs) {
     lhs += rhs;     // Reuse operator+=
     return lhs;     // Return the modified copy
@@ -303,16 +302,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Why this pattern is canonical:**
+**Why this pattern is the canonical one:**
 
-1. **`operator+=` as member** — modifies `*this`, returns `*this` by reference. Natural semantics.
-2. **`operator+` as free function** — takes `lhs` **by value** (making a copy), applies `+=`, returns the copy.
-3. **No code duplication** — the addition logic is only in `operator+=`.
-4. **Symmetric conversions** — as a free function, implicit conversions work for both operands.
-5. **Efficient** — the copy can be elided (NRVO) in many cases.
+1. **`operator+=` is the member** - it mutates `*this` and returns a reference. Natural, intuitive.
+2. **`operator+` is a free function** taking `lhs` **by value** (a copy you're free to modify), applying `+=`, then returning that copy.
+3. **No duplicated logic** - the actual addition lives only in `operator+=`.
+4. **Symmetric conversions** - because `+` is free, implicit conversions can fire on *either* operand, so `1.0 + c` works as well as `c + 1.0`.
+5. **Still efficient** - that by-value copy is usually elided by NRVO, so you don't pay for it.
 
 ---
 
@@ -320,8 +318,9 @@ int main() {
 
 ### Subscript Operator (C++23 Multidimensional)
 
-```cpp
+`operator[]` used to take exactly one index. C++23 lifts that restriction, so a matrix can finally use `m[r, c]` instead of `m(r, c)`:
 
+```cpp
 #include <vector>
 #include <stdexcept>
 #include <iostream>
@@ -351,13 +350,13 @@ int main() {
     m[1, 2] = 42.0;             // C++23 multidimensional subscript
     std::cout << m[1, 2] << "\n"; // 42
 }
-
 ```
 
 ### Function Call Operator (Functor)
 
-```cpp
+Overloading `operator()` turns an object into something callable - a *functor*. This is what lets you pass stateful "functions" to algorithms:
 
+```cpp
 #include <iostream>
 #include <algorithm>
 #include <vector>
@@ -374,15 +373,14 @@ int main() {
     auto count = std::count_if(data.begin(), data.end(), Threshold{3.0});
     std::cout << count << " values exceed 3.0\n";  // 2
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Use the **canonical patterns**: `+=` as member, `+` as free function reusing `+=`.
-- In C++20, prefer `operator<=>` with `= default` for comparisons.
-- Use **hidden friends** for stream operators and ADL-only operators.
-- Never overload `&&`, `||`, or `,` — they lose special evaluation semantics.
+- Use the **canonical patterns**: `+=` as member, `+` as a free function that reuses `+=`.
+- In C++20, prefer `operator<=>` with `= default` for comparisons - it writes the boilerplate for you.
+- Use **hidden friends** for stream operators and any ADL-only operators.
+- Never overload `&&`, `||`, or `,` - they quietly lose their special evaluation semantics.
 - `operator[]` gained multi-argument support in C++23.

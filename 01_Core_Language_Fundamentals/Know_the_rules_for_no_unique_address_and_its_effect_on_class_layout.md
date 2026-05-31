@@ -12,8 +12,9 @@
 
 ### The Problem
 
-```cpp
+C++ requires every distinct object to have a unique address - even an empty one. That means an `Empty` member still burns at least one byte (plus alignment padding). Before C++20, the only way around this was inheritance:
 
+```cpp
 #include <iostream>
 #include <functional>
 #include <memory>
@@ -27,20 +28,22 @@ struct WithoutAttr {
 
 struct WithAttr {
     int value;
-    [[no_unique_address]] Empty tag;  // Overlaps with padding — zero waste
+    [[no_unique_address]] Empty tag;  // Overlaps with padding - zero waste
 };
 
 int main() {
     std::cout << sizeof(WithoutAttr) << "\n"; // 8 (int + padding for Empty)
     std::cout << sizeof(WithAttr) << "\n";    // 4 (Empty occupies no space)
 }
-
 ```
+
+With the attribute, the compiler is allowed to overlap the empty member's storage with the surrounding padding.
 
 ### Practical Use: Stateless Allocators and Deleters
 
-```cpp
+The most common real-world use is in smart pointer and container implementations, where the deleter or allocator is often a stateless empty type:
 
+```cpp
 #include <memory>
 #include <iostream>
 
@@ -55,17 +58,17 @@ public:
 };
 
 int main() {
-    // std::default_delete is empty — takes zero extra space
+    // std::default_delete is empty - takes zero extra space
     std::cout << sizeof(SmartPtr<int>) << "\n"; // Same as sizeof(int*)
     // Without [[no_unique_address]], it would be sizeof(int*) + padding
 }
-
 ```
 
 ### Rules and Limitations
 
-```cpp
+Two members of the same type still need distinct addresses, so they can't overlap even with the attribute. Different types, however, can:
 
+```cpp
 struct TwoEmpty {
     [[no_unique_address]] Empty a;
     [[no_unique_address]] Empty b;
@@ -82,8 +85,9 @@ struct DifferentEmpty {
     // Different types CAN overlap
 };
 // sizeof(DifferentEmpty) == 1
-
 ```
+
+If you need two empty members of the same type without the size penalty, derive from one and use the attribute on the other, or use distinct tag types.
 
 ---
 
@@ -99,7 +103,15 @@ EBO allows empty base classes to take zero bytes. `[[no_unique_address]]` extend
 
 ### Q3: What is the MSVC caveat
 
-MSVC (as of VS 2022) uses `[[msvc::no_unique_address]]` instead of the standard attribute due to ABI compatibility concerns. The standard attribute is accepted but ignored. Use a macro: `#ifdef _MSC_VER #define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]] ...`
+MSVC (as of VS 2022) uses `[[msvc::no_unique_address]]` instead of the standard attribute due to ABI compatibility concerns. The standard attribute is accepted but ignored. Use a macro to write portable code:
+
+```cpp
+#ifdef _MSC_VER
+  #define NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+  #define NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+```
 
 ---
 
@@ -107,5 +119,5 @@ MSVC (as of VS 2022) uses `[[msvc::no_unique_address]]` instead of the standard 
 
 - Essential for reducing `sizeof` in allocator-aware containers, smart pointers, and policy-based designs.
 - `std::unique_ptr` uses EBO/`[[no_unique_address]]` internally for the deleter.
-- MSVC requires `[[msvc::no_unique_address]]` — the standard attribute is a no-op on MSVC.
+- MSVC requires `[[msvc::no_unique_address]]` - the standard attribute is a no-op on MSVC.
 - Combined with `std::is_empty_v<T>` for conditional optimization.

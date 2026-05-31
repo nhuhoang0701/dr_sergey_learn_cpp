@@ -30,8 +30,9 @@ Every integer literal in C++ has a type determined by its value and **suffix**. 
 
 ### Type Deduction with auto
 
-```cpp
+`auto` deduces the exact type of the literal, so the suffix is what controls what you get:
 
+```cpp
 auto a = 42;       // int
 auto b = 42L;      // long
 auto c = 42LL;     // long long
@@ -39,16 +40,16 @@ auto d = 42U;      // unsigned int
 auto e = 42ULL;    // unsigned long long
 auto f = 0xFF;     // int (hex literal, no suffix)
 auto g = 0xFFU;    // unsigned int
-
 ```
 
 ### Why Suffixes Matter
 
-```cpp
+Three concrete reasons you'll run into this in real code:
 
+```cpp
 // 1. Overflow prevention
-auto big = 1000000 * 1000000;      // int * int → may overflow!
-auto safe = 1000000LL * 1000000LL; // long long * long long → no overflow
+auto big = 1000000 * 1000000;      // int * int -> may overflow!
+auto safe = 1000000LL * 1000000LL; // long long * long long -> no overflow
 
 // 2. Template argument deduction
 template<typename T> void f(T x);
@@ -60,7 +61,6 @@ f(42U);     // T = unsigned int
 std::vector<int> v(10);
 for (auto i = 0U; i < v.size(); ++i) {}   // no warning: unsigned < size_t
 // for (auto i = 0; i < v.size(); ++i) {} // warning: signed/unsigned comparison
-
 ```
 
 ---
@@ -69,8 +69,9 @@ for (auto i = 0U; i < v.size(); ++i) {}   // no warning: unsigned < size_t
 
 ### Q1: Show that `42LL` has type `long long` while `42` has type `int`, and the impact on `auto` deduction
 
-```cpp
+The `std::is_same_v` checks make the compiler state the types out loud, and the overflow example shows why this matters in practice:
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -88,7 +89,7 @@ int main() {
 
     // Practical impact: overflow behavior
     auto x = 2000000000 * 2;      // int overflow! UB on most platforms
-    auto y = 2000000000LL * 2;    // long long — no overflow → 4000000000
+    auto y = 2000000000LL * 2;    // long long -- no overflow -> 4000000000
 
     std::cout << "int multiply:       " << x << "\n";         // undefined behavior
     std::cout << "long long multiply: " << y << "\n";         // 4000000000
@@ -97,19 +98,19 @@ int main() {
     std::cout << "sizeof(42):   " << sizeof(42) << "\n";     // typically 4
     std::cout << "sizeof(42LL): " << sizeof(42LL) << "\n";   // typically 8
 }
-
 ```
 
 **How it works:**
 
-- `auto` deduces the literal's type directly — suffix determines the type.
+- `auto` deduces the literal's type directly - suffix determines the type.
 - Without a suffix, the literal is `int` (32-bit on most platforms), which can overflow.
 - `LL` suffix forces `long long` (at least 64-bit), preventing overflow for large values.
 
 ### Q2: Use `ULL` to prevent signed/unsigned comparison warnings in template arguments
 
-```cpp
+`v.size()` returns `std::size_t` (unsigned), so comparing it with a plain `0` (signed `int`) triggers a compiler warning. Using an unsigned literal stops the mismatch:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <array>
@@ -130,7 +131,7 @@ bool contains(const std::vector<T>& v, std::size_t index) {
     // return index < v.size();  // OK but index might be wrongly typed
 
     // Clean: use consistent unsigned types
-    return index < v.size();   // both are unsigned → no warning
+    return index < v.size();   // both are unsigned -> no warning
 }
 
 int main() {
@@ -152,28 +153,28 @@ int main() {
     // C++23: use uz suffix for size_t directly
     // for (auto i = 0uz; i < v.size(); ++i) {}
 }
-
 ```
 
 **How it works:**
 
 - `v.size()` returns `std::size_t` (unsigned). Comparing with `int` (signed) triggers `-Wsign-compare`.
 - Using `0ULL` or `0U` makes the comparison value unsigned, suppressing the warning.
-- C++23's `uz` suffix creates `std::size_t` directly — the cleanest solution.
+- C++23's `uz` suffix creates `std::size_t` directly - the cleanest solution.
 
 ### Q3: Write a user-defined literal that creates a `std::chrono::seconds` value from an integer
 
-```cpp
+User-defined literals for integers must take `unsigned long long` - that's why the integer suffixes always produce the widest unsigned type internally. Here you can see the pattern in action:
 
+```cpp
 #include <chrono>
 #include <iostream>
 
-// User-defined literal: integer → chrono::seconds
+// User-defined literal: integer -> chrono::seconds
 constexpr std::chrono::seconds operator""_sec(unsigned long long n) {
     return std::chrono::seconds(n);
 }
 
-// Another: integer → chrono::milliseconds
+// Another: integer -> chrono::milliseconds
 constexpr std::chrono::milliseconds operator""_ms(unsigned long long n) {
     return std::chrono::milliseconds(n);
 }
@@ -198,7 +199,6 @@ int main() {
     std::cout << "Std: " << std_timeout.count() << "s, "
               << std_delay.count() << "ms\n";
 }
-
 ```
 
 **How it works:**
@@ -211,20 +211,8 @@ int main() {
 
 ## Notes
 
-- Avoid lowercase `l` suffix (`42l`) — it looks like `41` (digit one). Use uppercase `42L`.
+- Avoid lowercase `l` suffix (`42l`) - it looks like `41` (digit one). Use uppercase `42L`.
 - Hex literals without suffix follow different type rules: the compiler tries `int`, then `unsigned int`, then `long`, etc.
-- `0` is `int`, not `unsigned` — this matters for overload resolution.
+- `0` is `int`, not `unsigned` - this matters for overload resolution.
 - C++23 `uz` suffix is the definitive fix for the `size_t` comparison problem.
 - Binary literals (`0b1010`) follow the same suffix rules. `0b1010ULL` is `unsigned long long`.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

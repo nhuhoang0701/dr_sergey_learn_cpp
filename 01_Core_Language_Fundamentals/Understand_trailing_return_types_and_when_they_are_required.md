@@ -13,24 +13,25 @@ A **trailing return type** places the return type after the parameter list using
 
 ### Syntax
 
-```cpp
+The two forms below are equivalent for simple cases - the trailing style just moves the type to the right of the parameter list:
 
+```cpp
 // Traditional
 int add(int a, int b) { return a + b; }
 
 // Trailing return type (equivalent)
 auto add(int a, int b) -> int { return a + b; }
-
 ```
 
 ### When Trailing Return Types Are Required
 
 **1. Return type depends on parameter types (pre-C++14):**
 
-```cpp
+In C++11, parameter names aren't in scope at the leading return-type position, but they ARE in scope after the parameter list - which is exactly why trailing return types exist:
 
+```cpp
 // C++11: Can't use 'a' and 'b' in the return type position (they aren't declared yet)
-// auto add(auto a, auto b) → decltype(a + b)  // Won't compile in C++11
+// auto add(auto a, auto b) -> decltype(a + b)  // Won't compile in C++11
 
 // Solution: trailing return type
 template<typename T, typename U>
@@ -38,43 +39,42 @@ auto add(T a, U b) -> decltype(a + b) {
     return a + b;
 }
 // Here a and b ARE in scope after the parameter list
-
 ```
 
 **2. Lambda return types:**
 
-```cpp
+When a lambda body has multiple return paths that would otherwise deduce different types, pinning the return type with `->` keeps things explicit:
 
+```cpp
 auto lambda = [](int a, int b) -> double {
     if (a > b) return a;     // returns double (converted)
     else return a / b;       // returns double (not int division!)
 };
-
 ```
 
 **3. Decltype on member functions:**
 
-```cpp
+Sometimes the return type naturally refers to a member that isn't yet in scope in the leading position:
 
+```cpp
 struct Container {
     std::vector<int> data;
 
     // Return type depends on 'data' which isn't visible in leading position
     auto begin() -> decltype(data.begin()) { return data.begin(); }
 };
-
 ```
 
 ### C++14 Made Many Cases Unnecessary
 
-```cpp
+C++14 added automatic return type deduction, which eliminates the need for trailing return types in most everyday cases:
 
-// C++14: auto return type deduction — no trailing type needed
+```cpp
+// C++14: auto return type deduction - no trailing type needed
 template<typename T, typename U>
 auto add(T a, U b) {
     return a + b;  // Compiler deduces return type
 }
-
 ```
 
 ---
@@ -83,8 +83,9 @@ auto add(T a, U b) {
 
 ### Q1: Write a function whose return type depends on its parameters using a trailing return type
 
-```cpp
+The key insight here is that `decltype(a * b)` in the trailing position can see `a` and `b` because they've already been declared - that's not true in the leading position:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -110,9 +111,9 @@ auto clamp(T value, T lo, T hi) -> decltype(value < lo ? lo : value) {
 }
 
 int main() {
-    auto r1 = multiply(3, 4.5);      // double (int * double → double)
-    auto r2 = multiply(2.0f, 3.0);   // double (float * double → double)
-    auto r3 = safe_divide(10, 3);    // int (int / int → int)
+    auto r1 = multiply(3, 4.5);      // double (int * double -> double)
+    auto r2 = multiply(2.0f, 3.0);   // double (float * double -> double)
+    auto r3 = safe_divide(10, 3);    // int (int / int -> int)
     auto r4 = safe_divide(10.0, 3);  // double
 
     std::cout << "3 * 4.5 = " << r1 << "\n";     // 13.5
@@ -123,7 +124,6 @@ int main() {
     static_assert(std::is_same_v<decltype(r1), double>);
     static_assert(std::is_same_v<decltype(r3), int>);
 }
-
 ```
 
 **How this works:**
@@ -134,23 +134,24 @@ int main() {
 
 ### Q2: Show that `auto f() -> decltype(a+b)` was necessary before C++14 automatic return deduction
 
-```cpp
+This example contrasts the C++11 and C++14 approaches side by side, and also shows cases where trailing return types remain useful even today:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <type_traits>
 
 // ========= C++11: Trailing return type REQUIRED =========
 
-// Without trailing return type — DOESN'T compile in C++11:
+// Without trailing return type - DOESN'T compile in C++11:
 // template<typename T, typename U>
 // decltype(a + b) add_v1(T a, U b) { return a + b; }  // ERROR: a, b not in scope!
 
-// With trailing return type — WORKS in C++11:
+// With trailing return type - WORKS in C++11:
 template<typename T, typename U>
 auto add_v2(T a, U b) -> decltype(a + b) { return a + b; }
 
-// ========= C++14: Auto deduction — no trailing type needed =========
+// ========= C++14: Auto deduction - no trailing type needed =========
 
 template<typename T, typename U>
 auto add_v3(T a, U b) { return a + b; }  // C++14: compiler deduces return type
@@ -168,8 +169,8 @@ auto has_size(T& t) -> decltype(t.size(), void()) {
 }
 
 int main() {
-    auto r1 = add_v2(1, 2.5);   // C++11 style → double
-    auto r2 = add_v3(1, 2.5);   // C++14 style → double
+    auto r1 = add_v2(1, 2.5);   // C++11 style -> double
+    auto r2 = add_v3(1, 2.5);   // C++14 style -> double
 
     std::cout << r1 << " " << r2 << "\n";
 
@@ -179,7 +180,6 @@ int main() {
 
     has_size(v);  // "Has size: 3"
 }
-
 ```
 
 **How this works:**
@@ -190,12 +190,13 @@ int main() {
 
 ### Q3: Use a trailing return type to return a lambda type from a function template
 
-```cpp
+Lambda types are unique and unnameable, which makes trailing return types (and `auto` deduction) essential when you need to return them from functions:
 
+```cpp
 #include <iostream>
 #include <functional>
 
-// The lambda type is unique and unnameable — you need auto/trailing return
+// The lambda type is unique and unnameable - you need auto/trailing return
 // In C++11, you MUST use trailing return type with decltype:
 
 template<typename T>
@@ -239,12 +240,11 @@ int main() {
     first_element(v) = 99;
     std::cout << "v[0] = " << v[0] << "\n";  // 99
 }
-
 ```
 
 **How this works:**
 
-- Lambda types are unique — they can't be written explicitly.
+- Lambda types are unique - they can't be written explicitly.
 - `auto` return type (C++14+) handles this automatically.
 - Trailing return types are still useful when you need to ensure the return is a reference, use SFINAE, or explicitly specify `std::function<>`.
 

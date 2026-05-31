@@ -12,25 +12,26 @@ In C++, when a `case` label in a `switch` statement doesn't end with `break`, ex
 
 ### The Default Behavior Problem
 
-```cpp
+Without any annotation, the compiler can't tell whether a missing `break` is a deliberate design choice or a typo:
 
+```cpp
 switch (x) {
     case 1:
         do_something();
-        // No break! Falls through to case 2 — is this a bug?
+        // No break! Falls through to case 2 -- is this a bug?
     case 2:
         do_other();
         break;
 }
-
 ```
 
 With `-Wextra` or `-Wimplicit-fallthrough`, the compiler warns about the missing `break`. But sometimes fallthrough is intentional.
 
 ### The [[fallthrough]] Attribute (C++17)
 
-```cpp
+Add `[[fallthrough]];` right before the next case label to silence the warning and document the intent:
 
+```cpp
 switch (x) {
     case 1:
         do_something();
@@ -40,7 +41,6 @@ switch (x) {
         break;
 }
 // No warning for the fallthrough from case 1 to case 2
-
 ```
 
 ### Rules for [[fallthrough]]
@@ -52,8 +52,9 @@ switch (x) {
 
 ### Common Pattern: Shared Processing
 
-```cpp
+Fallthrough is particularly natural when higher-severity cases need to do everything a lower-severity case does, plus something more. Here is a logging example where `Fatal` funnels through `Error`, which funnels through `Warning`:
 
+```cpp
 enum class LogLevel { Debug, Info, Warning, Error, Fatal };
 
 void handle_log(LogLevel level, const std::string& msg) {
@@ -73,8 +74,9 @@ void handle_log(LogLevel level, const std::string& msg) {
             break;
     }
 }
-
 ```
+
+Notice the two empty cases at the bottom - when a case has no code of its own before the next label, `[[fallthrough]]` is not needed.
 
 ---
 
@@ -82,8 +84,9 @@ void handle_log(LogLevel level, const std::string& msg) {
 
 ### Q1: Write a switch with intentional fallthrough and add [[fallthrough]] to suppress the warning
 
-```cpp
+The permission model below is a textbook use of fallthrough: each level includes all the capabilities of the level below it:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -123,7 +126,6 @@ int main() {
     std::cout << "None:  " << describe_access(Permission::None) << "\n";
     // "no access"
 }
-
 ```
 
 **How it works:**
@@ -134,8 +136,9 @@ int main() {
 
 ### Q2: Show a real-world case where accidental fallthrough introduced a bug
 
-```cpp
+This is what unintentional fallthrough looks like in practice - the `Ok` case falls straight into the `NotFound` handler:
 
+```cpp
 #include <iostream>
 
 // Bug: HTTP status code handler with accidental fallthrough
@@ -179,13 +182,12 @@ void handle_response_FIXED(HttpStatus status) {
 int main() {
     std::cout << "=== BUGGY ===\n";
     handle_response_BUGGY(HttpStatus::Ok);
-    // Prints BOTH "Success!" AND "Resource not found" — wrong!
+    // Prints BOTH "Success!" AND "Resource not found" -- wrong!
 
     std::cout << "\n=== FIXED ===\n";
     handle_response_FIXED(HttpStatus::Ok);
-    // Prints only "Success!" — correct
+    // Prints only "Success!" -- correct
 }
-
 ```
 
 **The real-world impact:**
@@ -199,7 +201,6 @@ int main() {
 **Answer:**
 
 ```cpp
-
 // Approach 1: [[fallthrough]] (recommended)
 switch (cmd) {
     case Command::Save:
@@ -228,8 +229,9 @@ if (cmd == Command::Save) {
 if (cmd == Command::Save || cmd == Command::Validate) {
     validate();
 }
-
 ```
+
+The three approaches trade off clarity against flexibility. Here is a summary:
 
 **Readability comparison:**
 
@@ -246,6 +248,6 @@ if (cmd == Command::Save || cmd == Command::Validate) {
 ## Notes
 
 - Empty case labels don't need `[[fallthrough]]`: `case 1: case 2: case 3: handle(); break;` is fine.
-- GCC's `-Wimplicit-fallthrough=5` is the strictest level — only accepts the standard `[[fallthrough]]` attribute.
+- GCC's `-Wimplicit-fallthrough=5` is the strictest level - only accepts the standard `[[fallthrough]]` attribute.
 - MSVC uses `/W4` to enable the equivalent warning.
-- Some coding standards (MISRA, CERT) prohibit fallthrough entirely — even with `[[fallthrough]]`.
+- Some coding standards (MISRA, CERT) prohibit fallthrough entirely - even with `[[fallthrough]]`.

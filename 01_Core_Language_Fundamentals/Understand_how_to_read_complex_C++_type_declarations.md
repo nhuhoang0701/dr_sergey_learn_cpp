@@ -16,58 +16,59 @@ C++ inherited its declaration syntax from C, which can lead to notoriously hard-
 Starting from the identifier, read the declaration by spiraling clockwise:
 
 1. Start at the variable name.
-2. Move **right** — read `()` (function) or `[]` (array).
-3. Move **left** — read `*` (pointer) or type qualifiers.
+2. Move **right** - read `()` (function) or `[]` (array).
+3. Move **left** - read `*` (pointer) or type qualifiers.
 4. Repeat until the entire declaration is consumed.
 
 ### Simple Examples
 
-```cpp
+Work through these one at a time and you'll see the pattern click into place:
 
+```cpp
 int *p;              // p is a pointer to int
 int *p[10];          // p is an array of 10 pointers to int
 int (*p)[10];        // p is a pointer to an array of 10 ints
 int (*fp)(int);      // fp is a pointer to a function taking int, returning int
 int *(*fp)(int);     // fp is a pointer to a function taking int, returning pointer to int
-
 ```
 
 ### The `signal` Declaration
 
-```cpp
+The classic example that stumps most readers - but the spiral rule handles it mechanically:
 
+```cpp
 // The most famous complex C declaration:
 void (*signal(int sig, void (*handler)(int)))(int);
-
 ```
 
 Reading with the spiral rule:
 
-1. `signal` — identifier
-2. `(int sig, void (*handler)(int))` — signal is a **function** taking `int` and a pointer-to-function
-3. `*` — which returns a **pointer**
-4. `(int)` — to a **function** taking `int`
-5. `void` — returning `void`
+1. `signal` - identifier
+2. `(int sig, void (*handler)(int))` - signal is a **function** taking `int` and a pointer-to-function
+3. `*` - which returns a **pointer**
+4. `(int)` - to a **function** taking `int`
+5. `void` - returning `void`
 
-In English: "`signal` is a function that takes an `int` and a pointer to a function `(int) → void`, and returns a pointer to a function `(int) → void`."
+In English: "`signal` is a function that takes an `int` and a pointer to a function `(int) -> void`, and returns a pointer to a function `(int) -> void`."
 
 ### Simplification with Type Aliases
 
-```cpp
+Once you spot the repeated type, a `using` alias makes the whole declaration transparent:
 
+```cpp
 // Step 1: Define the function pointer type
-using SignalHandler = void (*)(int);    // pointer to function (int) → void
+using SignalHandler = void (*)(int);    // pointer to function (int) -> void
 
 // Step 2: Rewrite signal with the alias
 SignalHandler signal(int sig, SignalHandler handler);
 // Now it's crystal clear!
-
 ```
 
 ### Modern C++ Alternatives
 
-```cpp
+Modern C++ gives you several ways to avoid writing the raw complex form in the first place:
 
+```cpp
 // Using std::function (runtime overhead but readable)
 #include <functional>
 std::function<void(int)> handler;
@@ -78,10 +79,11 @@ auto signal(int sig, void (*handler)(int)) -> void (*)(int);
 // Using type alias + trailing return
 using Handler = void(*)(int);
 auto signal(int sig, Handler handler) -> Handler;
-
 ```
 
 ### Common Patterns to Recognize
+
+If the table feels like a lot, focus on the const-placement rows first - those trip up the most people:
 
 | Declaration | Meaning |
 | --- | --- |
@@ -105,7 +107,6 @@ auto signal(int sig, Handler handler) -> Handler;
 Step-by-step parsing:
 
 ```cpp
-
 void (*signal(int, void (*fp)(int)))(int);
        ^^^^^^
        Start here: "signal"
@@ -115,7 +116,7 @@ void (*signal(int, void (*fp)(int)))(int);
        Move right: signal is a FUNCTION taking:
 
          - int
-         - void (*fp)(int)  [fp is a pointer to function(int)→void]
+         - void (*fp)(int)  [fp is a pointer to function(int)->void]
 
 void (*signal(int, void (*fp)(int)))(int);
       ^
@@ -128,7 +129,6 @@ void (*signal(int, void (*fp)(int)))(int);
 void (*signal(int, void (*fp)(int)))(int);
 ^^^^
        Move left: ...returning void
-
 ```
 
 **Result:** `signal` is a function that takes `(int, void(*)(int))` and returns `void(*)(int)`.
@@ -137,14 +137,15 @@ In plain English: "signal takes a signal number and a handler function pointer, 
 
 ### Q2: Use a type alias to simplify the above declaration to a readable form
 
-```cpp
+With the alias in place you can read the function signature at a glance - no spiral required:
 
+```cpp
 #include <iostream>
 
 // Original (unreadable):
 // void (*signal(int, void (*fp)(int)))(int);
 
-// Step 1: Identify the repeated type — "pointer to function taking int, returning void"
+// Step 1: Identify the repeated type -- "pointer to function taking int, returning void"
 using SignalHandler = void (*)(int);
 
 // Step 2: Rewrite
@@ -170,19 +171,19 @@ int main() {
     // Call the registered handler
     my_handler(2);   // "Caught signal 2"
 }
-
 ```
 
 **How it works:**
 
 - `using SignalHandler = void (*)(int);` creates a readable alias for the function pointer type.
-- The function signature becomes `SignalHandler my_signal(int, SignalHandler)` — instantly comprehensible.
+- The function signature becomes `SignalHandler my_signal(int, SignalHandler)` - instantly comprehensible.
 - Modern C++ strongly prefers `using` over `typedef` for type aliases.
 
 ### Q3: Show how cdecl.org or a type printer tool can decode complex declarations
 
-```cpp
+When you're stuck on a declaration, you can ask the compiler to name the type for you:
 
+```cpp
 #include <iostream>
 #include <typeinfo>
 
@@ -218,7 +219,7 @@ int main() {
     // "pointer to function(int,int) returning pointer to array of 5 ints"
 
     print_type<void (*(*[3])())(int)>();
-    // Array of 3 pointers to functions returning pointer to function(int)→void
+    // Array of 3 pointers to functions returning pointer to function(int)->void
 
     // Online tool: cdecl.org
     // Input:  "declare signal as function (int, pointer to function (int) returning void)
@@ -230,14 +231,13 @@ int main() {
     using ArrayOf5 = int(*)[5];
     // These are self-documenting and much harder to get wrong.
 }
-
 ```
 
 **How it works:**
 
 - `__cxa_demangle` (GCC/Clang) converts mangled type names to human-readable form.
 - cdecl.org accepts English descriptions and produces C/C++ declarations (and vice versa).
-- The best practice: never write complex declarations — use `using` aliases to break them into readable pieces.
+- The best practice: never write complex declarations - use `using` aliases to break them into readable pieces.
 
 ---
 
@@ -246,4 +246,4 @@ int main() {
 - The `using` alias is strictly better than `typedef` for readability: `using F = int(*)(double);` vs `typedef int(*F)(double);`.
 - `decltype` can capture complex types without writing them: `decltype(&signal) p = &signal;`.
 - C++11 trailing return types help: `auto f() -> int(*)[5]` is more readable than `int (*f())[5]`.
-- When reading legacy C code, cdecl.org is invaluable — bookmark it.
+- When reading legacy C code, cdecl.org is invaluable - bookmark it.

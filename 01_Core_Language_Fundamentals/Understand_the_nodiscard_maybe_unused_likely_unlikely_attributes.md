@@ -8,14 +8,13 @@
 
 ## Topic Overview
 
-C++ attributes provide standardized hints to the compiler. These four are the most commonly used:
+C++ attributes provide standardized hints to the compiler. These four are the most commonly used.
 
 ### [[nodiscard]] (C++17, enhanced C++20)
 
-Warns if the return value is discarded:
+Warns if the return value is discarded. Use this whenever ignoring the return value is almost certainly a bug - error codes are the classic example.
 
 ```cpp
-
 [[nodiscard]] int compute() { return 42; }
 
 compute();  // WARNING: ignoring return value with 'nodiscard' attribute
@@ -30,15 +29,13 @@ send("hello");  // WARNING: Error codes must be checked
 struct [[nodiscard]] ErrorCode { int code; };
 ErrorCode parse(const char* s);
 parse("123");  // WARNING: ignoring nodiscard type
-
 ```
 
 ### [[maybe_unused]] (C++17)
 
-Suppresses unused-variable/parameter warnings:
+Suppresses unused-variable/parameter warnings for code that is intentionally unused in some build configurations - debug-only parameters being the most common case.
 
 ```cpp
-
 void process([[maybe_unused]] int debug_level, int data) {
     // debug_level only used in debug builds
     assert(debug_level >= 0);  // Used only when NDEBUG is not defined
@@ -48,15 +45,13 @@ void process([[maybe_unused]] int debug_level, int data) {
 [[maybe_unused]] static void debug_helper() {
     // Only called in debug builds
 }
-
 ```
 
 ### [[likely]] / [[unlikely]] (C++20)
 
-Hints to the compiler which branch is expected:
+Tells the compiler which branch you expect to be taken most often. This lets it arrange the machine code so the hot path has no branch - improving instruction cache utilization.
 
 ```cpp
-
 if (error_code != 0) [[unlikely]] {
     handle_error(error_code);
 } else [[likely]] {
@@ -69,7 +64,6 @@ switch (state) {
     case State::Error: [[unlikely]]
         recover(); break;
 }
-
 ```
 
 ---
@@ -78,8 +72,9 @@ switch (state) {
 
 ### Q1: Add [[nodiscard]] to an error code return type and show the compiler warning it generates
 
-```cpp
+There are two places to put `[[nodiscard]]`: on the function itself, or on the return type. When placed on the type, the warning applies to every function returning that type - a good fit for `ErrorCode` patterns.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -126,8 +121,9 @@ int main() {
 //            declared with attribute 'nodiscard': 'Must check error code'
 //   warning: ignoring return value of type 'ErrorCode',
 //            declared with attribute 'nodiscard': 'ErrorCode must be handled'
-
 ```
+
+When you genuinely want to discard a `[[nodiscard]]` result, cast to `void` or assign to a `[[maybe_unused]]` variable - both suppress the warning intentionally.
 
 **How this works:**
 
@@ -138,8 +134,9 @@ int main() {
 
 ### Q2: Use [[maybe_unused]] to suppress a warning on a debug-only parameter
 
-```cpp
+In release builds, `assert` expands to nothing, which leaves `debug_context` unused. Without `[[maybe_unused]]` you'd get a warning; with it, the compiler is satisfied.
 
+```cpp
 #include <iostream>
 #include <cassert>
 #include <string>
@@ -150,7 +147,7 @@ void validate_and_process(
     int data)
 {
     assert(!debug_context.empty());  // Only active without NDEBUG
-    // In release builds, debug_context is unused → [[maybe_unused]] suppresses warning
+    // In release builds, debug_context is unused -> [[maybe_unused]] suppresses warning
 
     std::cout << "Processing: " << data << "\n";
 }
@@ -166,7 +163,7 @@ void complex_operation(int x) {
     assert(result > 0);
 
     [[maybe_unused]] auto elapsed = std::chrono::steady_clock::now() - start;
-    // In release: start and elapsed are unused → no warning
+    // In release: start and elapsed are unused -> no warning
 
     std::cout << "Result: " << result << "\n";
 }
@@ -184,19 +181,21 @@ int main() {
     dump_state(100);
     #endif
 }
-
 ```
+
+`[[maybe_unused]]` replaces both the `(void)variable;` trick and platform-specific macros like `UNREFERENCED_PARAMETER` - it's cleaner and works everywhere.
 
 **How this works:**
 
-- `[[maybe_unused]]` tells the compiler: "I know this might be unused — don't warn."
+- `[[maybe_unused]]` tells the compiler: "I know this might be unused - don't warn."
 - Works on: variables, parameters, functions, typedefs, class members, enumerators.
 - Common use: debug-only code, platform-specific code, parameters required by interface but unused in implementation.
 
 ### Q3: Add [[likely]]/[[unlikely]] to a hot code path and inspect the assembly output
 
-```cpp
+The attribute guides the compiler's code layout. In the generated assembly, the likely branch typically falls through (no jump instruction), while the unlikely branch is a taken branch - which is slower on modern CPUs.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <random>
@@ -251,15 +250,16 @@ int main() {
 // Compile with: -std=c++20 -O2
 // Look for: the likely branch falls through (no jump),
 //           the unlikely branch is jumped to (branch taken = rare)
-
 ```
+
+Only reach for `[[likely]]`/`[[unlikely]]` after profiling shows a real bottleneck - the CPU's own branch predictor handles most cases well without help.
 
 **How this works:**
 
 - `[[likely]]` / `[[unlikely]]` guide the compiler's branch prediction and code layout.
-- The compiler arranges the **likely** path with fall-through (no jump) and moves the **unlikely** path away.
+- The compiler arranges the likely path with fall-through (no jump) and moves the unlikely path away.
 - This improves instruction cache utilization and reduces branch misprediction penalties.
-- Effect is most visible at `-O2` or `-O3` — examine with Compiler Explorer to see the jump layout.
+- Effect is most visible at `-O2` or `-O3` - examine with Compiler Explorer to see the jump layout.
 
 ---
 
@@ -267,6 +267,6 @@ int main() {
 
 - `[[nodiscard]]` is essential on: error codes, factory functions, RAII resource handles, locks.
 - `[[maybe_unused]]` replaces the old `(void)variable;` trick and the `UNREFERENCED_PARAMETER` macro.
-- `[[likely]]`/`[[unlikely]]` replace GCC's `__builtin_expect(expr, value)` — standardized in C++20.
-- Don't overuse `[[likely]]`/`[[unlikely]]` — the CPU's branch predictor is usually good enough. Use only on hot paths where profiling shows a benefit.
-- C++23 adds `[[assume(expr)]]` — tells the compiler an expression is always true, enabling further optimization.
+- `[[likely]]`/`[[unlikely]]` replace GCC's `__builtin_expect(expr, value)` - standardized in C++20.
+- Don't overuse `[[likely]]`/`[[unlikely]]` - the CPU's branch predictor is usually good enough. Use only on hot paths where profiling shows a benefit.
+- C++23 adds `[[assume(expr)]]` - tells the compiler an expression is always true, enabling further optimization.
