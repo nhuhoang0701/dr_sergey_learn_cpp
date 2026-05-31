@@ -11,6 +11,8 @@
 
 ### The Low-Level Memory Utilities
 
+These are the building blocks for writing containers, allocators, and memory pools. Most application code never needs them directly, but if you are ever managing raw storage manually, these are the right tools.
+
 | Function | Since | Purpose |
 | --- | --- | --- |
 | `std::construct_at(p, args...)` | C++20 | Construct object in raw memory |
@@ -25,12 +27,12 @@
 
 ### Why Not Just Use `memcpy`
 
-```cpp
+The reason `memcpy` is not enough for non-trivial types is that it copies raw bytes without invoking constructors or destructors. If an object owns heap memory (like `std::string`), you end up with two objects that think they own the same heap block, and the second destructor is a double-free.
 
+```cpp
 memcpy:               Copies raw bytes. OK for trivial types ONLY.
 uninitialized_copy:   Calls copy constructors. Works for ALL types.
                       Exception-safe (destroys already-constructed on throw).
-
 ```
 
 ---
@@ -39,8 +41,9 @@ uninitialized_copy:   Calls copy constructors. Works for ALL types.
 
 ### Q1: Use `std::construct_at` to construct an object in uninitialized storage without placement new
 
-```cpp
+`std::construct_at` (C++20) does exactly what placement `new` does, but it works in `constexpr` contexts and pairs naturally with `std::destroy_at`. In generic container code, this cleaner pairing is the main advantage over raw placement `new`.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -113,13 +116,13 @@ int main() {
 //
 // === Generic factory ===
 // int: 42
-
 ```
 
 ### Q2: Use `std::destroy_at` and `std::destroy_n` for RAII cleanup of placement-new'd objects
 
-```cpp
+Whenever you construct objects manually into raw storage, you are responsible for explicitly destroying them. `std::destroy_at` handles a single object, and `std::destroy_n` handles a contiguous range. The `SensorArray` RAII wrapper at the bottom shows how to bake this into a destructor so cleanup is automatic - the same pattern you will find in the internals of `std::vector`.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -200,13 +203,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain why `std::uninitialized_copy` is preferable to a raw `memcpy` for non-trivial types
 
-```cpp
+The reason `memcpy` is dangerous for non-trivial types comes down to object lifetimes. `memcpy` produces a byte-for-byte duplicate of the source object's state, but the copy's constructor was never called. For something like `std::string`, that means two objects with internal pointers that both believe they own the same heap buffer. Both destructors will then call `free` on the same address - a double-free crash. `std::uninitialized_copy` calls the copy constructor for each element, which is the only correct way to do this. It is also exception-safe: if one constructor throws, the elements already constructed are properly destroyed before the exception propagates.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -242,7 +245,7 @@ int main() {
     // 1. Copies raw bytes — bypasses copy constructor
     // 2. std::string has internal pointers/SSO state — raw byte copy
     //    creates TWO objects "owning" the same heap buffer
-    // 3. When both are destroyed → double-free → crash/corruption
+    // 3. When both are destroyed -> double-free -> crash/corruption
     // 4. No Entry objects were constructed — no valid object lifetime
 
     // ---- GOOD: std::uninitialized_copy ----
@@ -277,7 +280,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -286,6 +288,6 @@ int main() {
 
 - `std::construct_at` (C++20) replaces placement `new` and works in `constexpr` contexts.
 - `std::destroy_at/destroy/destroy_n` (C++17) are the canonical way to end object lifetime in raw storage.
-- `std::uninitialized_copy/move/fill` are exception-safe — they roll back on throw.
+- `std::uninitialized_copy/move/fill` are exception-safe - they roll back on throw.
 - `memcpy` is only legal for trivially copyable types; use `std::uninitialized_copy` for the rest.
 - All these utilities are building blocks for implementing containers, allocators, and memory pools.

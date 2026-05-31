@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-Coroutine frames are heap-allocated by default. For performance-critical code, you can control this allocation via the promise type's `operator new`/`operator delete`.
+Coroutine frames are heap-allocated by default. For performance-critical code, you can control this allocation via the promise type's `operator new`/`operator delete`. This matters in latency-sensitive situations like game loops or networking code, where even a single `::operator new` call per coroutine activation can be too expensive.
 
 ### Default Allocation
 
-```cpp
+By default the compiler calls `::operator new` to allocate the frame, which contains the promise object, all coroutine parameters, local variables, and the current suspension point index. The size is determined by the compiler and is not visible to you.
 
+```cpp
 #include <coroutine>
 
 // By default, the compiler calls ::operator new to allocate the coroutine frame:
@@ -30,13 +31,13 @@ struct Task {
         // Compiler calls ::operator new(frame_size) for the frame
     };
 };
-
 ```
 
 ### Custom Allocation via Promise
 
-```cpp
+To redirect frame allocation, define `operator new` and `operator delete` inside the promise type. The compiler will call those instead of the global ones. Here is a simple pool that recycles fixed-size frame blocks:
 
+```cpp
 #include <coroutine>
 #include <cstddef>
 #include <iostream>
@@ -63,7 +64,7 @@ public:
 
 struct PooledTask {
     struct promise_type {
-        // Custom allocation — called instead of ::operator new
+        // Custom allocation - called instead of ::operator new
         void* operator new(size_t size) {
             return FramePool::allocate(size);
         }
@@ -77,13 +78,15 @@ struct PooledTask {
         void unhandled_exception() {}
     };
 };
-
 ```
+
+The frame allocation is fully transparent to the coroutine body - you just change the promise type and every coroutine that uses that promise type benefits automatically.
 
 ### Heap Allocation Elision (HALO)
 
-```cpp
+Before reaching for custom allocators, it is worth knowing that the compiler may eliminate the heap allocation entirely in simple cases. HALO applies when the frame's lifetime is provably bounded by the calling scope.
 
+```cpp
 // The compiler MAY elide the heap allocation if:
 // 1. The coroutine's lifetime is bounded by the caller
 // 2. The frame size is known at the call site
@@ -95,9 +98,8 @@ Task simple_coroutine() {  // May be stack-allocated (HALO)
 
 void caller() {
     auto t = simple_coroutine();  // Compiler can put frame on caller's stack
-    // t doesn't escape this scope → HALO eligible
+    // t doesn't escape this scope -> HALO eligible
 }
-
 ```
 
 ---
@@ -110,8 +112,9 @@ HALO applies when the compiler can prove the coroutine frame's lifetime is bound
 
 ### Q2: How to pass allocator arguments to coroutine frame allocation
 
-```cpp
+If the first parameter of the coroutine is an allocator, the compiler will forward it to `promise_type::operator new`. This lets you pass a specific allocator per call without global state.
 
+```cpp
 struct AllocTask {
     struct promise_type {
         // If the first coroutine parameter is an allocator, the compiler passes it:
@@ -125,13 +128,13 @@ struct AllocTask {
 AllocTask my_coro(MyAllocator& alloc, int param) {
     co_return;  // alloc is forwarded to promise_type::operator new
 }
-
 ```
 
 ### Q3: What is the `get_return_object_on_allocation_failure` pattern
 
-```cpp
+If you use a non-throwing `operator new` (one that may return `nullptr`), the compiler needs somewhere to go on failure. Defining `get_return_object_on_allocation_failure` as a static function on the promise type tells the compiler what to return to the caller instead of throwing `std::bad_alloc`.
 
+```cpp
 struct NullableTask {
     struct promise_type {
         static NullableTask get_return_object_on_allocation_failure() {
@@ -143,7 +146,6 @@ struct NullableTask {
 };
 // If operator new returns nullptr, get_return_object_on_allocation_failure is called
 // instead of throwing std::bad_alloc
-
 ```
 
 ---

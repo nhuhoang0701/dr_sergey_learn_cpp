@@ -11,7 +11,7 @@
 
 ### What Is a Dangling Pointer
 
-A **dangling pointer** points to memory that has been freed or to an object whose lifetime has ended. Dereferencing it is **undefined behavior**.
+A **dangling pointer** points to memory that has been freed or to an object whose lifetime has ended. Dereferencing it is **undefined behavior** - the value you read might be garbage, it might be a partially overwritten object, or it might look correct today and silently corrupt memory tomorrow.
 
 ### Common Causes
 
@@ -25,12 +25,14 @@ A **dangling pointer** points to memory that has been freed or to an object whos
 
 ### How Ownership Semantics Fix This
 
+The whole idea is that if ownership is tracked automatically, the object stays alive exactly as long as it is needed. You cannot have a dangling pointer if the owner's destructor is what triggers the deletion.
+
 | Ownership Model | Dangling Protection |
 | --- | --- |
-| `unique_ptr` | Single owner — destroyed with scope |
-| `shared_ptr` | Reference counting — alive while any owner exists |
+| `unique_ptr` | Single owner - destroyed with scope |
+| `shared_ptr` | Reference counting - alive while any owner exists |
 | `weak_ptr` | Detects expiry before access |
-| Value semantics | No pointers at all — copies/moves |
+| Value semantics | No pointers at all - copies/moves |
 | `std::optional` | "Nullable value" without pointer indirection |
 
 ---
@@ -39,8 +41,9 @@ A **dangling pointer** points to memory that has been freed or to an object whos
 
 ### Q1: Show a dangling pointer from returning a raw pointer to a local variable
 
-```cpp
+The three "BAD" functions below each represent a different flavour of the same mistake. All of them compile without warnings in some configurations, which is exactly what makes them dangerous. The fixed versions show the right idiom for each case: return by value, return a smart pointer, or return an owning string.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <memory>
@@ -125,13 +128,13 @@ int main() {
 //
 // === Iterator invalidation ===
 // v[0] = 1 (safe via index)
-
 ```
 
 ### Q2: Replace the dangling pointer with a `shared_ptr` return and verify lifetime extension
 
-```cpp
+This example demonstrates the key promise of `shared_ptr`: the object stays alive as long as at least one `shared_ptr` holds a reference to it. Even after `pool` is destroyed and its internal reference drops away, `conn` still holds the connection open. The `use_count` output makes this visible.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -153,9 +156,9 @@ struct Connection {
 // BAD: raw pointer — who owns this? When is it deleted?
 // Connection* create_connection_BAD() {
 //     return new Connection("DB");
-//     // Caller might forget to delete → leak
-//     // Or delete too early → dangling
-//     // Or delete twice → double-free
+//     // Caller might forget to delete -> leak
+//     // Or delete too early -> dangling
+//     // Or delete twice -> double-free
 // }
 
 // GOOD: shared_ptr — lifetime extends as long as any holder exists
@@ -209,13 +212,13 @@ int main() {
 //   [-] Connection 'DB' closed
 //
 // Done.
-
 ```
 
 ### Q3: Use AddressSanitizer to detect a dangling pointer use in an automated test
 
-```cpp
+AddressSanitizer is the practical safety net for any codebase that still uses raw pointers or raw allocation. The test functions here are intentionally not executed (their dangerous lines are commented out), but they demonstrate exactly what ASan intercepts. The real takeaway is the compile flags and the `test_safe_patterns` function that shows what the safe equivalents look like.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -303,7 +306,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -312,6 +314,6 @@ int main() {
 
 - **Dangling pointers are the #1 source of C++ security vulnerabilities** (use-after-free, buffer overflow).
 - Ownership semantics (`unique_ptr`, `shared_ptr`) make dangling impossible by design.
-- `weak_ptr::lock()` returns `nullptr` if the object was destroyed — safe expiry detection.
-- AddressSanitizer has ~2x runtime overhead — suitable for testing, not production.
-- Prefer **value semantics** (return by value, move semantics) over pointers when possible — eliminates the entire category of bugs.
+- `weak_ptr::lock()` returns `nullptr` if the object was destroyed - safe expiry detection.
+- AddressSanitizer has ~2x runtime overhead - suitable for testing, not production.
+- Prefer **value semantics** (return by value, move semantics) over pointers when possible - eliminates the entire category of bugs.

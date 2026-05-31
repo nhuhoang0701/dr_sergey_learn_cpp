@@ -10,14 +10,14 @@
 
 ### What Is `std::allocator_traits`
 
-`std::allocator_traits<Alloc>` is a traits class that wraps any allocator, providing a uniform interface and sensible defaults for operations the allocator doesn't define. You should **never call allocator member functions directly** — always go through `allocator_traits`.
+`std::allocator_traits<Alloc>` is a traits class that wraps any allocator, providing a uniform interface and sensible defaults for operations the allocator doesn't define. You should **never call allocator member functions directly** - always go through `allocator_traits`. That is the whole point of the abstraction: your container or algorithm does not need to care whether the allocator defines a custom `construct()` or not, because `allocator_traits` fills in the right default if it is missing.
 
 ### Why It Matters
 
 | Without `allocator_traits` | With `allocator_traits` |
 | --- | --- |
-| Must call `alloc.allocate(n)` directly | `traits::allocate(alloc, n)` — uniform |
-| Must check if `construct()` exists | `traits::construct()` — defaults to placement new |
+| Must call `alloc.allocate(n)` directly | `traits::allocate(alloc, n)` - uniform |
+| Must check if `construct()` exists | `traits::construct()` - defaults to placement new |
 | Must check if `propagate_on_*` exists | Defaults provided automatically |
 | Writing allocator-aware containers is hard | Straightforward interface |
 
@@ -25,8 +25,8 @@
 
 | Member | Default if not in Alloc |
 | --- | --- |
-| `allocate(a, n)` | Required — must be defined |
-| `deallocate(a, p, n)` | Required — must be defined |
+| `allocate(a, n)` | Required - must be defined |
+| `deallocate(a, p, n)` | Required - must be defined |
 | `construct(a, p, args...)` | `::new((void*)p) T(args...)` |
 | `destroy(a, p)` | `p->~T()` |
 | `max_size(a)` | `numeric_limits<size_type>::max() / sizeof(T)` |
@@ -38,15 +38,16 @@
 
 ### Minimal Allocator Requirements (C++11+)
 
-```cpp
+The good news is that since C++11, you only need to define two things and the rest is handled by `allocator_traits`. Here is the minimum conforming allocator:
 
+```cpp
 template<typename T>
 struct MyAlloc {
     using value_type = T;
-    
+
     MyAlloc() = default;
     template<typename U> MyAlloc(const MyAlloc<U>&) {}
-    
+
     T* allocate(std::size_t n);
     void deallocate(T* p, std::size_t n);
 };
@@ -54,7 +55,6 @@ template<typename T, typename U>
 bool operator==(const MyAlloc<T>&, const MyAlloc<U>&) { return true; }
 template<typename T, typename U>
 bool operator!=(const MyAlloc<T>&, const MyAlloc<U>&) { return false; }
-
 ```
 
 Everything else is filled in by `allocator_traits`.
@@ -65,8 +65,9 @@ Everything else is filled in by `allocator_traits`.
 
 ### Q1: Write a custom allocator that logs every allocation, and plug it into `std::vector`
 
-```cpp
+This example shows two things at once: how little you need to write to get a working allocator, and how `allocator_traits` is the right way to call into it explicitly when you need to.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -78,7 +79,7 @@ struct LoggingAllocator {
 
     LoggingAllocator() = default;
 
-    // Converting constructor — required for rebind
+    // Converting constructor - required for rebind
     template<typename U>
     LoggingAllocator(const LoggingAllocator<U>&) noexcept {}
 
@@ -133,13 +134,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (typical):**
 
 ```text
-
 === vector with LoggingAllocator ===
 [alloc] 1 x 4 bytes = 4 bytes
 [alloc] 2 x 4 bytes = 8 bytes
@@ -157,13 +156,15 @@ Constructed value: 42
 
 max_size: 4611686018427387903
 [dealloc] 8 x 4 bytes = 32 bytes
-
 ```
+
+The growing alloc/dealloc pattern is `vector`'s geometric reallocation at work. Each time capacity doubles, the old buffer is freed and a new one allocated.
 
 ### Q2: Explain how `std::scoped_allocator_adaptor` propagates allocators to nested containers
 
-```cpp
+Without `scoped_allocator_adaptor`, an outer container using your custom allocator will pass that allocator to its own storage, but inner containers (like a `vector<vector<int>>`) will just use `std::allocator` for the inner elements. `scoped_allocator_adaptor` fixes this by automatically forwarding the allocator to nested container constructors.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -234,15 +235,15 @@ int main() {
     std::cout << "\n--- Cleanup ---\n";
     return 0;
 }
-
 ```
 
 **Key concept:** Without `scoped_allocator_adaptor`, the outer vector would use the custom allocator but inner vectors would use `std::allocator<int>`. With it, the allocator propagates to all nested uses.
 
 ### Q3: Show how PMR (`std::pmr`) containers use polymorphic allocators without template bloat
 
-```cpp
+The main downside of classic custom allocators is that they become part of the container's type: `vector<int, MyAlloc>` and `vector<int>` are different types and cannot be passed to the same function. PMR solves this by moving the allocator out of the type and into a runtime pointer. All PMR containers share the same type (`pmr::vector<int>`) regardless of which memory resource they use.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -320,7 +321,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **PMR vs classic allocators:**
@@ -337,7 +337,7 @@ int main() {
 
 ## Notes
 
-- Always use `allocator_traits` instead of calling allocator methods directly — your code will work with any conforming allocator.
+- Always use `allocator_traits` instead of calling allocator methods directly - your code will work with any conforming allocator.
 - `scoped_allocator_adaptor` is essential when nested containers should share the same allocator.
-- PMR (`std::pmr`) is the modern approach — it decouples allocator type from container type, enabling runtime allocator selection.
-- Custom `memory_resource` classes are easier to write than classic allocators — just override 3 virtual functions.
+- PMR (`std::pmr`) is the modern approach - it decouples allocator type from container type, enabling runtime allocator selection.
+- Custom `memory_resource` classes are easier to write than classic allocators - just override 3 virtual functions.

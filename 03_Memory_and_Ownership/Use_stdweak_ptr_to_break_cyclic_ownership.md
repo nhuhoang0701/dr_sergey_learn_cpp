@@ -11,26 +11,22 @@
 
 ### The Cyclic Ownership Problem
 
-When two objects hold `shared_ptr` to each other, neither object's reference count ever reaches zero → **memory leak**.
+When two objects hold `shared_ptr` to each other, neither object's reference count ever reaches zero - which means neither is ever destroyed. This is a straightforward memory leak, and it is silent: no assertion fires, no crash, the objects just never go away.
 
 ```cpp
-
-  A ──shared_ptr──> B
-  ^                 │
-  └──shared_ptr─────┘   ← CYCLE: neither A nor B can be destroyed
-
+  A --shared_ptr--> B
+  ^                 |
+  +--shared_ptr-----+   <- CYCLE: neither A nor B can be destroyed
 ```
 
 ### Solution: `weak_ptr`
 
-`weak_ptr` is a **non-owning** observer of a `shared_ptr`-managed object. It does **not** increase the reference count.
+`weak_ptr` is a **non-owning** observer of a `shared_ptr`-managed object. It does **not** increase the reference count. One direction of the cycle becomes a `weak_ptr`, which means destroying the external reference to `A` really does drop `A`'s count to zero.
 
 ```cpp
-
-  A ──shared_ptr──> B
-  ^                 │
-  └───weak_ptr──────┘   ← No ownership cycle: B doesn't keep A alive
-
+  A --shared_ptr--> B
+  ^                 |
+  +---weak_ptr------+   <- No ownership cycle: B doesn't keep A alive
 ```
 
 | Feature | `shared_ptr` | `weak_ptr` | Raw pointer |
@@ -43,8 +39,9 @@ When two objects hold `shared_ptr` to each other, neither object's reference cou
 
 ### Key API
 
-```cpp
+You create a `weak_ptr` from a `shared_ptr`, then use `lock()` whenever you want to actually use the object. `lock()` either gives you a valid `shared_ptr` (and briefly bumps the ref count for that access) or returns `nullptr` if the object is already gone.
 
+```cpp
 std::shared_ptr<T> sp = std::make_shared<T>(...);
 std::weak_ptr<T> wp = sp;          // Non-owning observer
 
@@ -52,7 +49,6 @@ wp.expired();                       // true if object destroyed
 auto locked = wp.lock();            // Returns shared_ptr<T> or nullptr
 wp.use_count();                     // Number of shared_ptr owners
 wp.reset();                         // Release observation
-
 ```
 
 ---
@@ -61,8 +57,9 @@ wp.reset();                         // Release observation
 
 ### Q1: Demonstrate a parent-child tree where parent holds `shared_ptr<Child>` and child holds `weak_ptr<Parent>`
 
-```cpp
+Parent-child trees are the canonical place where cycles appear. The parent owns the children (so they live as long as the parent), but children only need to *find* their parent occasionally - that is the weak observation direction.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -137,14 +134,14 @@ int main() {
         std::cout << "  c1:   " << c1.use_count() << "\n";    // 2 (main + parent)
         std::cout << "  c2:   " << c2.use_count() << "\n";    // 2 (main + parent)
 
-        std::cout << "\nLeaving scope — all objects destroyed:\n";
+        std::cout << "\nLeaving scope - all objects destroyed:\n";
     }
-    // Output: Parent destroyed, then children — NO LEAK
+    // Output: Parent destroyed, then children - NO LEAK
 
     std::cout << "\n=== Contrast: with shared_ptr back-link (LEAK!) ===\n";
     std::cout << "If Child held shared_ptr<Parent> instead of weak_ptr<Parent>,\n";
     std::cout << "root's use_count would be 3 (main + Alice + Bob),\n";
-    std::cout << "and destroying root in main would leave use_count=2 → never freed!\n";
+    std::cout << "and destroying root in main would leave use_count=2 -> never freed!\n";
 
     return 0;
 }
@@ -159,17 +156,19 @@ int main() {
 //     root: 1
 //     c1: 2
 //     c2: 2
-//   Leaving scope — all objects destroyed:
+//   Leaving scope - all objects destroyed:
 //   [-] Parent 'Root' destroyed
 //   [-] Child 'Alice' destroyed
 //   [-] Child 'Bob' destroyed
-
 ```
+
+With `weak_ptr` on the back-link, `root`'s use count stays at 1. When `root` goes out of scope the count drops to zero, `~Parent` runs, the children vector is cleared, and the children are destroyed in turn.
 
 ### Q2: Use `weak_ptr::lock()` safely and handle the case where the pointed-to object has been destroyed
 
-```cpp
+The reason this trips people up is the temptation to check `expired()` first and then call `lock()`. That is a race condition - the object could expire between those two calls. Always use `lock()` directly and check whether the result is null.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -187,20 +186,20 @@ struct Session {
     }
 };
 
-// An observer that holds a weak_ptr — does not keep the session alive
+// An observer that holds a weak_ptr - does not keep the session alive
 class SessionObserver {
     std::weak_ptr<Session> session_;
 public:
     SessionObserver(std::weak_ptr<Session> s) : session_(std::move(s)) {}
 
     bool try_use() {
-        // lock() returns shared_ptr — extends lifetime during use
+        // lock() returns shared_ptr - extends lifetime during use
         if (auto sp = session_.lock()) {
             sp->process();
             std::cout << "  (use_count during lock: " << sp.use_count() << ")\n";
             return true;
         } else {
-            std::cout << "  Session expired — cannot use\n";
+            std::cout << "  Session expired - cannot use\n";
             return false;
         }
     }
@@ -220,7 +219,7 @@ int main() {
         observer = SessionObserver(session);  // Observe the session
 
         std::cout << "\nSession is alive: " << std::boolalpha << observer.is_alive() << "\n";
-        observer.try_use();  // Works — session exists
+        observer.try_use();  // Works - session exists
 
         std::cout << "\nDestroying session...\n";
     }
@@ -246,14 +245,16 @@ int main() {
 //   Destroying session...
 //   Session 'ABC-123' ended
 //   Session is alive: false
-//   Session expired — cannot use
-
+//   Session expired - cannot use
 ```
+
+Notice that during the `lock()` call the use_count bumps to 2 - the observer temporarily holds a real `shared_ptr` for the duration of the access, keeping the session alive for that window. When the `if` block ends, the temporary `shared_ptr` is destroyed and the count drops back.
 
 ### Q3: Show the overhead of `weak_ptr` compared to raw pointer observers
 
-```cpp
+`weak_ptr` is not free. It is the same size as `shared_ptr` (two pointers: one to the object, one to the control block), and `lock()` involves atomic operations. If the object lifetime is strictly controlled and you can guarantee a raw pointer won't dangle, a raw pointer observer has lower cost. This benchmark makes the difference concrete.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -339,15 +340,16 @@ int main() {
 //   ...
 //   Raw pointer:   ~15 ms
 //   weak_ptr lock: ~120 ms
-
 ```
+
+The atomic increment/decrement in `lock()` is the source of the speed difference. When you need the safety of detecting expiry and the code isn't on a hot path, `weak_ptr` is the right tool. In inner loops where the lifetime is controlled by other means, a raw observer pointer avoids the overhead.
 
 ---
 
 ## Notes
 
-- **Use `weak_ptr` to break cycles** — the "child → parent" direction should be `weak_ptr`.
-- **Always use `lock()`** to access the object — never rely on `expired()` then dereference (TOCTOU race).
-- `weak_ptr` keeps the **control block** alive (not the object) — this matters with `make_shared` where object and control block share a single allocation.
+- **Use `weak_ptr` to break cycles** - the "child -> parent" direction should be `weak_ptr`.
+- **Always use `lock()`** to access the object - never rely on `expired()` then dereference (TOCTOU race).
+- `weak_ptr` keeps the **control block** alive (not the object) - this matters with `make_shared` where object and control block share a single allocation.
 - **Thread safety:** `lock()` is atomic and safe to call from multiple threads.
 - Common patterns: observer pattern, caches, back-references in trees/graphs.

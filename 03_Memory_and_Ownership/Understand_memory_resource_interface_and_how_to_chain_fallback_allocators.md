@@ -10,10 +10,9 @@
 
 ### What Is `std::pmr::memory_resource`
 
-`memory_resource` is an abstract base class (polymorphic interface) for custom allocators:
+`memory_resource` is an abstract base class (polymorphic interface) for custom allocators. The whole idea is that instead of baking the allocator into the container's type, you pass it as a runtime parameter. Here is the interface you implement when you write a custom resource:
 
 ```cpp
-
 class memory_resource {
 protected:
     virtual void* do_allocate(size_t bytes, size_t alignment) = 0;
@@ -24,22 +23,22 @@ public:
     void deallocate(void* p, size_t bytes, size_t alignment = alignof(max_align_t));
     bool is_equal(const memory_resource& other) const noexcept;
 };
-
 ```
+
+Three virtual functions. That is the whole contract. If you can implement those three, you have a fully usable PMR allocator.
 
 ### Chaining with Upstream (Fallback) Allocators
 
-Many `memory_resource` implementations accept an **upstream** resource as fallback:
+Many `memory_resource` implementations accept an **upstream** resource as fallback. When the primary resource runs out, it forwards to the upstream. You can read this as a priority chain - try the fast resource first, fall back to the general-purpose one only when necessary:
 
 ```cpp
-
 monotonic_buffer_resource(buffer, size, upstream)
-         ↓ (overflow)
+         | (overflow)
+         v
     upstream resource (e.g., new_delete_resource)
-
 ```
 
-This creates a **chain**: try the primary allocator first, fall back to the upstream on overflow.
+This creates a **chain**: try the primary allocator first, fall back to the upstream on overflow. You can make this chain as long as you want, and you can put `null_memory_resource()` at the end if you want to guarantee that overflow is an error rather than a silent heap allocation.
 
 ### Standard Memory Resources
 
@@ -53,13 +52,15 @@ This creates a **chain**: try the primary allocator first, fall back to the upst
 
 ### Why Virtual Dispatch Instead of Templates
 
+The template allocator model (the classic `std::allocator<T>`) bakes the allocator into the container type. Two `vector<int>` with different allocators are literally different types and cannot be assigned to each other. PMR avoids this by using virtual dispatch - all `pmr::vector<int>` are the same type, regardless of which `memory_resource` backs them.
+
 | Feature | Template Allocator (`std::allocator<T>`) | PMR (`memory_resource`) |
 | --- | --- | --- |
-| Part of container type | Yes | **No** |
-| Runtime swappable | No | **Yes** |
-| Can store in same vector | No (`vector<int, A>` ≠ `vector<int, B>`) | **Yes** |
+| Part of container type | Yes | No |
+| Runtime swappable | No | Yes |
+| Can store in same vector | No (`vector<int, A>` != `vector<int, B>`) | Yes |
 | Overhead | Zero (inlined) | Virtual call per alloc |
-| ABI stable | No (different types) | **Yes** |
+| ABI stable | No (different types) | Yes |
 
 ---
 
@@ -67,8 +68,9 @@ This creates a **chain**: try the primary allocator first, fall back to the upst
 
 ### Q1: Build a fallback chain: try stack buffer first, fall back to `new_delete_resource` on overflow
 
-```cpp
+Watch how all the containers in the second half of this example use the same `memory_resource*` parameter but the backing memory differs. That is the whole point - same container type, runtime-selectable storage.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -76,7 +78,7 @@ This creates a **chain**: try the primary allocator first, fall back to the upst
 #include <string>
 
 int main() {
-    // Stack buffer — small, fast, no heap allocation
+    // Stack buffer - small, fast, no heap allocation
     std::array<std::byte, 256> stack_buffer;
 
     // Chain: monotonic uses stack_buffer first,
@@ -101,7 +103,7 @@ int main() {
     std::cout << "\nAdding 100 more ints (overflows stack buffer)...\n";
     for (int i = 10; i < 110; ++i) v.push_back(i);
     std::cout << "Size: " << v.size() << ", capacity: " << v.capacity() << "\n";
-    // Overflow → fallback to new_delete_resource (heap allocation)
+    // Overflow - fallback to new_delete_resource (heap allocation)
 
     // Multiple containers sharing the same chain
     std::cout << "\n=== Multiple containers, one chain ===\n";
@@ -138,18 +140,20 @@ int main() {
         for (int i = 0; i < 100; ++i) small_vec.push_back(i);  // will overflow
     } catch (const std::bad_alloc& e) {
         std::cout << "Caught overflow: " << e.what() << "\n";
-        std::cout << "(null_memory_resource threw — no fallback allowed)\n";
+        std::cout << "(null_memory_resource threw - no fallback allowed)\n";
     }
 
     return 0;
 }
-
 ```
+
+The `null_memory_resource` pattern at the end is a useful testing technique: put it as the final fallback and your tests will immediately tell you if any allocation slipped past your intended budget.
 
 ### Q2: Implement a custom `memory_resource` that counts total bytes allocated and deallocated
 
-```cpp
+Implementing `memory_resource` is simpler than most people expect - three virtual functions, and you delegate the real work to an upstream. This makes it easy to add instrumentation as a layer in the chain rather than replacing the allocator entirely.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -172,7 +176,7 @@ protected:
         if (current_usage_ > peak_usage_) peak_usage_ = current_usage_;
 
         std::cout << "  [+alloc] " << bytes << " bytes (align " << alignment
-                  << ") — current: " << current_usage_ << "\n";
+                  << ") - current: " << current_usage_ << "\n";
 
         return upstream_->allocate(bytes, alignment);
     }
@@ -182,7 +186,7 @@ protected:
         ++num_deallocs_;
         current_usage_ -= bytes;
 
-        std::cout << "  [-dealloc] " << bytes << " bytes — current: " << current_usage_ << "\n";
+        std::cout << "  [-dealloc] " << bytes << " bytes - current: " << current_usage_ << "\n";
 
         upstream_->deallocate(p, bytes, alignment);
     }
@@ -218,14 +222,14 @@ int main() {
         v.push_back(4);
         v.push_back(5);
         std::cout << "Vector size: " << v.size() << "\n";
-    }   // vector destroyed — deallocates
+    }   // vector destroyed - deallocates
 
     counter.print_stats();
 
     std::cout << "\n--- String operations ---\n";
     {
         std::pmr::string s("A long string that definitely allocates on the heap", &counter);
-        s += " — and grows even more!";
+        s += " - and grows even more!";
         std::cout << "String length: " << s.length() << "\n";
     }
 
@@ -233,13 +237,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The stats printout shows reallocation clearly: a vector that grows by push-back will allocate, then allocate a larger block, then deallocate the old one. You can see the doubling strategy in the numbers.
 
 ### Q3: Explain why `memory_resource` uses virtual dispatch while `std::allocator` uses templates
 
-```cpp
+This example shows the concrete consequence of the design difference: with template allocators, two containers using different allocators cannot go into the same collection. With PMR, they can because `pmr::vector<int>` is always the same type.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -247,7 +253,7 @@ int main() {
 // The fundamental difference:
 
 // Template approach: allocator is part of the TYPE
-// std::vector<int, std::allocator<int>>  ≠  std::vector<int, MyAllocator<int>>
+// std::vector<int, std::allocator<int>>  !=  std::vector<int, MyAllocator<int>>
 // These are different types! Can't store in same container, can't pass to same function.
 
 // Virtual dispatch approach: allocator is a RUNTIME parameter
@@ -269,7 +275,7 @@ int main() {
 
     std::cout << "=== PMR (same TYPE, different allocators) ===\n";
 
-    // All are std::pmr::vector<int> — same type!
+    // All are std::pmr::vector<int> - same type!
     std::array<std::byte, 1024> buf;
     std::pmr::monotonic_buffer_resource mono(buf.data(), buf.size());
 
@@ -305,19 +311,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The virtual call overhead is typically negligible compared to the cost of the allocation itself, so in most real code the PMR trade-off is a clear win when you need runtime flexibility.
 
 ---
 
 ## Notes
 
-- The `memory_resource` interface has only 3 virtual functions — simple to implement.
-- Chain resources with upstream parameters: fast primary → slower fallback.
+- The `memory_resource` interface has only 3 virtual functions - simple to implement.
+- Chain resources with upstream parameters: fast primary - slower fallback.
 - Use `null_memory_resource()` as the final fallback to guarantee no silent heap allocation.
-- `monotonic_buffer_resource` is the fastest — good for short-lived, batch-style allocation patterns.
+- `monotonic_buffer_resource` is the fastest - good for short-lived, batch-style allocation patterns.
 - PMR containers propagate their allocator to nested containers automatically (unlike classic allocator).
-
-// Your practice code
-
-```text

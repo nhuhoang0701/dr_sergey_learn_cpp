@@ -10,16 +10,14 @@
 
 ### What Is Placement `new`
 
-Placement `new` constructs an object **at a specific memory address** without allocating memory:
+Placement `new` constructs an object **at a specific memory address** without allocating memory. Regular `new` does two things: allocate then construct. Placement `new` does only the second part - you supply the memory yourself.
 
 ```cpp
-
 void* buffer = /* some pre-allocated memory */;
 T* obj = new (buffer) T(args...);  // construct T at buffer's address
-
 ```
 
-Regular `new` = allocate + construct. Placement `new` = **construct only**.
+This separation is what makes memory pools, custom containers, and type-erased buffers possible.
 
 ### When to Use It
 
@@ -33,13 +31,14 @@ Regular `new` = allocate + construct. Placement `new` = **construct only**.
 
 ### Critical Rules
 
+The main thing to internalize is the asymmetry: placement `new` borrows memory from you and hands it back unchanged. You own cleanup on both sides.
+
 1. **Memory must be properly aligned** for the type
 2. **Memory must be large enough** for the type
-3. **You must manually call the destructor** — `delete` would try to free the memory
+3. **You must manually call the destructor** - `delete` would try to free the memory
 4. Placement `new` is **not replaceable** (unlike regular `operator new`)
 
 ```cpp
-
 Regular new:              Placement new:
 ┌─────────────────┐       ┌─────────────────┐
 │ 1. allocate     │       │ (buffer exists)  │
@@ -51,7 +50,6 @@ delete:                   Placement cleanup:
 │ 1. destroy ~T() │       │ 1. destroy ~T()  │
 │ 2. deallocate   │       │ (don't free!)    │
 └─────────────────┘       └─────────────────┘
-
 ```
 
 ---
@@ -60,8 +58,9 @@ delete:                   Placement cleanup:
 
 ### Q1: Use placement `new` to construct an object in pre-allocated aligned storage
 
-```cpp
+This example shows three progressively more sophisticated patterns. Method 2 using `std::construct_at` is the C++20-preferred spelling - it does the same thing as placement `new` but is constexpr-friendly and slightly harder to misuse.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <new>
@@ -96,11 +95,11 @@ int main() {
         // Use the object
         std::cout << "Using: " << w->name << " (id=" << w->id << ")\n";
 
-        // MUST manually destroy — never use delete!
+        // MUST manually destroy - never use delete!
         w->~Widget();   // explicit destructor call
     }
 
-    // Method 2: Using std::construct_at (C++20) — preferred
+    // Method 2: Using std::construct_at (C++20) - preferred
     std::cout << "\n=== Using std::construct_at (C++20) ===\n";
     {
         alignas(Widget) std::byte buffer[sizeof(Widget)];
@@ -134,13 +133,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Stack-allocated aligned buffer ===
 Buffer address: 0x7ffe...
 Buffer size: 40 bytes
@@ -164,13 +161,15 @@ All constructed. Destroying in reverse:
   Widget(12, "Item2") destroyed
   Widget(11, "Item1") destroyed
   Widget(10, "Item0") destroyed
-
 ```
+
+Reverse-order destruction in Method 3 mirrors what the compiler does for local arrays - a good habit to adopt whenever you control destruction order manually.
 
 ### Q2: Explain why you must call the destructor explicitly when using placement `new`
 
-```cpp
+The reason is straightforward once you see what the destructor owns. The buffer is your memory and you handle its lifetime. But the object constructed inside that buffer may own its own resources - heap-allocated strings, arrays, file handles - and those need cleanup through the destructor. Skipping the destructor leaks those resources. Calling `delete` instead crashes because `delete` tries to free memory it did not allocate.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <cstddef>
@@ -224,20 +223,20 @@ int main() {
 
     // Summary:
     std::cout << "\n=== Rules ===\n";
-    std::cout << "Placement new → explicit destructor call (p->~T())\n";
-    std::cout << "Regular new   → delete (calls dtor + frees memory)\n";
+    std::cout << "Placement new -> explicit destructor call (p->~T())\n";
+    std::cout << "Regular new   -> delete (calls dtor + frees memory)\n";
     std::cout << "NEVER use delete on placement-new objects!\n";
-    std::cout << "NEVER skip destructor — owned resources will leak!\n";
+    std::cout << "NEVER skip destructor - owned resources will leak!\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Show a use case in a memory pool where placement `new` avoids heap fragmentation
 
-```cpp
+Here is the payoff of the whole technique. The pool makes one large allocation up front. All individual objects are constructed inside that block, so the heap sees one allocation and one deallocation, regardless of how many objects come and go. Cache locality is also improved because all objects are contiguous in memory.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <new>
@@ -263,7 +262,7 @@ public:
             if (!occupied_[i]) {
                 occupied_[i] = true;
                 ++count_;
-                // Placement new — construct in pre-allocated memory
+                // Placement new - construct in pre-allocated memory
                 return new (slot(i)) T(std::forward<Args>(args)...);
             }
         }
@@ -278,7 +277,7 @@ public:
         size_t index = (addr - base) / sizeof(T);
 
         if (index < N && occupied_[index]) {
-            obj->~T();  // Explicit destructor — must not use delete!
+            obj->~T();  // Explicit destructor - must not use delete!
             occupied_[index] = false;
             --count_;
         }
@@ -317,7 +316,7 @@ int main() {
     ObjectPool<Particle, 5> pool;
     std::cout << "Pool capacity: " << pool.capacity() << "\n\n";
 
-    // Create particles — no heap allocation! All in contiguous pre-allocated block
+    // Create particles - no heap allocation! All in contiguous pre-allocated block
     Particle* p1 = pool.create(1.0f, 2.0f, "alpha");
     Particle* p2 = pool.create(3.0f, 4.0f, "beta");
     Particle* p3 = pool.create(5.0f, 6.0f, "gamma");
@@ -345,7 +344,6 @@ int main() {
     std::cout << "\n=== Pool destructor cleans up remaining ===\n";
     return 0;
 }
-
 ```
 
 ---
@@ -353,7 +351,7 @@ int main() {
 ## Notes
 
 - Placement `new` is the mechanism behind `std::construct_at`, `std::allocator::construct`, and all custom containers.
-- In C++20, prefer `std::construct_at` and `std::destroy_at` over raw placement new — they're constexpr-friendly and clearer.
-- Never use `delete` on a placement-new object — it will try to free memory that wasn't `operator new`-allocated.
+- In C++20, prefer `std::construct_at` and `std::destroy_at` over raw placement new - they're constexpr-friendly and clearer.
+- Never use `delete` on a placement-new object - it will try to free memory that wasn't `operator new`-allocated.
 - Always ensure the buffer outlives the constructed objects.
 - Placement `new` is the only form of `operator new` that **cannot be replaced** (it's a no-op that just returns the pointer).

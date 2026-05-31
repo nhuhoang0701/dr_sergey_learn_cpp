@@ -10,6 +10,8 @@
 
 ### Stack vs Heap Comparison
 
+The performance difference between stack and heap is not about philosophy - it is physics. Stack allocation is one instruction (adjust the stack pointer). Heap allocation walks a free-list, acquires a lock, possibly calls into the OS, and returns. Cache locality follows the same pattern: stack variables are already hot in L1; heap variables are scattered across memory addresses.
+
 | Feature | Stack | Heap |
 | --- | --- | --- |
 | **Speed** | ~1 CPU instruction (adjust SP) | System call / allocator walk |
@@ -29,14 +31,17 @@
 3. Size is unknown at compile time
 4. Object is polymorphic (dynamic type)
 
+When none of those conditions apply, the stack is almost always faster, simpler, and less error-prone.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Benchmark a hot loop that allocates on heap vs stack and quantify the difference
 
-```cpp
+The numbers you get here vary by machine, but the ratio is reliable: heap allocation in a tight loop is dramatically slower than stack allocation. The cache-locality section at the end is equally illuminating - scattered heap pointers kill performance even when the allocation cost itself is not the bottleneck.
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <memory>
@@ -114,13 +119,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `unique_ptr` heap case is typically close to raw `new`/`delete` because the wrapper adds no allocation overhead - it just calls `new` internally. The gap you see is real allocator cost, not C++ abstraction overhead.
 
 ### Q2: Explain why large local arrays can cause stack overflow and how to detect it
 
-```cpp
+Stack overflow from a large local array is one of those bugs that is completely silent in small test cases and only surfaces in production when call stacks are deeper. Thread stacks are often much smaller than the main stack, which makes this doubly dangerous in multithreaded code.
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <cstddef>
@@ -139,7 +146,7 @@ void demonstrate_stack_limits() {
     std::cout << "Small array (4 KB): OK\n";
 
     // This would CRASH on many platforms (~4 MB):
-    // int huge_array[1000000];  // ~4 MB — may exceed stack!
+    // int huge_array[1000000];  // ~4 MB - may exceed stack!
     // huge_array[0] = 1;  // STACK OVERFLOW
 
     // Even worse in recursive functions:
@@ -179,13 +186,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `-Wframe-larger-than=N` compiler flag is underused but very practical: set it to something like 4096 and the compiler will warn any time a function's stack frame exceeds that threshold.
 
 ### Q3: Demonstrate using `std::array` or a local `vector` with `reserve` as `alloca` alternatives
 
-```cpp
+`alloca` and VLAs allocate on the stack at runtime but with no bounds checking and no portability guarantee. The small-buffer optimization (SBO) pattern shown below is the idiomatic C++ alternative: stay on the stack for small inputs, fall back to the heap transparently for large ones.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <vector>
@@ -199,7 +208,7 @@ int main() {
 
 // Better alternatives:
 
-// Method 1: std::array — compile-time size, stack-allocated
+// Method 1: std::array - compile-time size, stack-allocated
 template<size_t N>
 void process_fixed(int seed) {
     std::array<int, N> data;
@@ -209,7 +218,7 @@ void process_fixed(int seed) {
               << "sum=" << std::accumulate(data.begin(), data.end(), 0LL) << "\n";
 }
 
-// Method 2: Vector with reserve — heap, but one allocation
+// Method 2: Vector with reserve - heap, but one allocation
 void process_dynamic(size_t n, int seed) {
     std::vector<int> data;
     data.reserve(n);  // Single allocation, no reallocations
@@ -220,7 +229,7 @@ void process_dynamic(size_t n, int seed) {
               << "sum=" << std::accumulate(data.begin(), data.end(), 0LL) << "\n";
 }
 
-// Method 3: Small buffer optimization — try stack, fall back to heap
+// Method 3: Small buffer optimization - try stack, fall back to heap
 template<size_t StackSize = 256>
 void process_sbo(size_t n, int seed) {
     // Stack buffer for small inputs
@@ -262,19 +271,20 @@ int main() {
     std::cout << "std::array:     Stack, compile-time size, zero overhead\n";
     std::cout << "vector+reserve: Heap, runtime size, one allocation\n";
     std::cout << "SBO pattern:    Stack when small, heap when large\n";
-    std::cout << "alloca/VLA:     Non-standard, no bounds check — AVOID\n";
+    std::cout << "alloca/VLA:     Non-standard, no bounds check - AVOID\n";
 
     return 0;
 }
-
 ```
+
+The SBO pattern is exactly what `std::string` and `std::function` use internally - small strings are stored in-object on the stack; larger ones spill to the heap. You can replicate the same strategy in your own types when you know the typical size at design time.
 
 ---
 
 ## Notes
 
-- Stack allocation is ~100x faster than heap — prefer it for small, short-lived objects.
+- Stack allocation is ~100x faster than heap - prefer it for small, short-lived objects.
 - The compiler can often optimize stack objects better (escape analysis, register allocation).
-- `std::array` is the modern C++ replacement for C arrays — same performance, safer interface.
+- `std::array` is the modern C++ replacement for C arrays - same performance, safer interface.
 - Use `vector::reserve()` to avoid multiple reallocations when the size is known.
 - The small buffer optimization (SBO) pattern is used internally by `std::string`, `std::function`, and others.

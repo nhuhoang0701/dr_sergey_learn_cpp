@@ -11,17 +11,21 @@
 
 ### What Is Over-Alignment
 
-Every type has a **natural alignment** (`alignof(T)`). Over-aligned types request alignment **stricter** than the default maximum alignment (`alignof(std::max_align_t)`, typically 16 bytes):
+Every type has a **natural alignment** (`alignof(T)`). Over-aligned types request alignment **stricter** than the default maximum alignment (`alignof(std::max_align_t)`, typically 16 bytes). You run into over-alignment as soon as you start working with SIMD registers, cache-line isolation, or hardware buffers - all of which have strict address requirements that the default allocator does not satisfy.
+
+Here is what over-aligned types look like in code:
 
 ```cpp
-
 struct Normal { double d; };              // alignof = 8 (natural)
 struct alignas(32) Wide { float v[8]; };  // alignof = 32 (over-aligned for SIMD)
 struct alignas(64) CacheLine { int data[16]; };  // alignof = 64 (one cache line)
-
 ```
 
+The `alignas` specifier is just a promise to the compiler: "I need this type to start on a boundary that is a multiple of N."
+
 ### Why Over-Alignment Matters
+
+Different hardware features impose different alignment requirements. If you hand a misaligned pointer to a SIMD load instruction, you get either a fault or a silent performance penalty, depending on the CPU generation. Cache-line alignment is different - it is not about correctness but about avoiding false sharing between threads.
 
 | Use Case | Required Alignment |
 | --- | --- |
@@ -34,10 +38,10 @@ struct alignas(64) CacheLine { int data[16]; };  // alignof = 64 (one cache line
 
 ### `std::aligned_alloc` (C11/C++17)
 
+When you need a raw byte buffer at a specific alignment, the C11/C++17 function is:
+
 ```cpp
-
 void* aligned_alloc(size_t alignment, size_t size);
-
 ```
 
 **Constraints:**
@@ -46,17 +50,17 @@ void* aligned_alloc(size_t alignment, size_t size);
 - `size` must be a **multiple of `alignment`** (unlike `posix_memalign`)
 - Freed with `std::free()`
 
+The size constraint is the one that trips people up most often. If you want 100 bytes aligned to 64, you have to round 100 up to 128 before passing it in.
+
 ### C++17 Aligned `operator new`
 
-Before C++17, `new T` for over-aligned types was **undefined behavior** — the default `operator new` only guaranteed `alignof(std::max_align_t)`. C++17 added:
+Before C++17, `new T` for over-aligned types was **undefined behavior** - the default `operator new` only guaranteed `alignof(std::max_align_t)`. C++17 fixed this by adding an overload that carries the alignment requirement along:
 
 ```cpp
-
 void* operator new(std::size_t size, std::align_val_t align);
-
 ```
 
-Now `new T` for over-aligned `T` **automatically** calls the aligned version.
+Now `new T` for over-aligned `T` **automatically** calls the aligned version. You do not need to do anything special; the compiler wires it up for you. This is the preferred path for heap-allocating over-aligned class types in C++17 and later.
 
 ---
 
@@ -64,8 +68,9 @@ Now `new T` for over-aligned `T` **automatically** calls the aligned version.
 
 ### Q1: Declare an SIMD-friendly struct with `alignas(32)` and verify alignment with `alignof`
 
-```cpp
+The key thing to watch here is that both the stack-allocated instance and the heap-allocated one come back with the correct alignment - the compiler handles both cases in C++17.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
@@ -73,7 +78,7 @@ Now `new T` for over-aligned `T` **automatically** calls the aligned version.
 
 // SIMD-friendly struct for AVX operations (256-bit = 32 bytes)
 struct alignas(32) AVXVector {
-    float data[8];  // 8 × 4 bytes = 32 bytes, fits one AVX register
+    float data[8];  // 8 x 4 bytes = 32 bytes, fits one AVX register
 };
 
 // Cache-line aligned struct to prevent false sharing
@@ -118,13 +123,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Alignment verification ===
 alignof(float):        4
 alignof(double):       8
@@ -143,13 +146,15 @@ Aligned to 32? YES
 === Heap-allocated alignment (C++17) ===
 Heap AVXVector address: 0x55e...e0
 Aligned to 32? YES
-
 ```
+
+Both stack and heap allocations come out correctly aligned. In C++17, that is the expected behavior - nothing extra needed on your part.
 
 ### Q2: Show that `new T` handles over-alignment in C++17 with aligned `operator new`
 
-```cpp
+The `Tracked` struct below overrides the aligned `operator new` just to make the call visible. In real code you would not do this - C++17 routes it automatically.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
@@ -181,7 +186,7 @@ struct alignas(128) Tracked {
 };
 
 int main() {
-    // Normal type: uses standard operator new (alignment ≤ max_align_t)
+    // Normal type: uses standard operator new (alignment <= max_align_t)
     std::cout << "=== Normal type ===\n";
     Normal* n = new Normal{42};
     std::cout << "address: " << n << "\n";
@@ -217,13 +222,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the `Tracked` output shows the aligned overload being called - and that `delete` also uses the aligned version. Mismatch between aligned `new` and unaligned `delete` would be UB, so the compiler pairs them correctly.
 
 ### Q3: Use `std::aligned_alloc` and explain the restriction that `size` must be a multiple of `alignment`
 
-```cpp
+The size restriction is the main gotcha with `std::aligned_alloc`. The fix is simple: round `size` up to the next multiple of `alignment` before the call. The example below shows both the correct usage and a practical SIMD buffer allocation.
 
+```cpp
 #include <iostream>
 #include <cstdlib>
 #include <cstdint>
@@ -300,19 +307,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The MSVC row in the table is worth remembering: `_aligned_malloc` requires `_aligned_free`, not plain `free`. Mixing them is UB and typically a runtime crash.
 
 ---
 
 ## Notes
 
-- **Prefer `new T` for over-aligned types in C++17** — it handles alignment automatically.
+- **Prefer `new T` for over-aligned types in C++17** - it handles alignment automatically.
 - Use `std::aligned_alloc` when you need raw byte buffers with specific alignment (e.g., SIMD, DMA).
-- On Windows/MSVC, `std::aligned_alloc` may not be available — use `_aligned_malloc`/`_aligned_free` instead.
+- On Windows/MSVC, `std::aligned_alloc` may not be available - use `_aligned_malloc`/`_aligned_free` instead.
 - `alignas` applies to types and variables; `alignof` queries the alignment requirement.
 - Cache line alignment (`alignas(64)`) prevents false sharing in multithreaded code.
-
-// Your practice code
-
-```text

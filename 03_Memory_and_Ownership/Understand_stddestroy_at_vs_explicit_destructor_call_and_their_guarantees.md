@@ -10,6 +10,8 @@
 
 ### The Low-Level Object Lifetime Functions (C++17/20)
 
+Whenever you work with raw storage - placement new, object pools, manual variant-like containers - you need a way to end object lifetimes without freeing memory. These are the standard tools for that:
+
 | Function | Since | Purpose |
 | --- | --- | --- |
 | `std::destroy_at(p)` | C++17 | Destroy object at `p` |
@@ -28,8 +30,9 @@
 
 ### Why `destroy_at` is Safer for Arrays
 
-```cpp
+This is the subtlety that trips people up. When you have an array `T arr[N]` placed in raw storage, calling `arr->~T()` only destroys the first element - it does not loop over the rest. `std::destroy_at` on the array pointer handles all elements correctly in C++20.
 
+```cpp
 // T arr[5];
 
 // Explicit: ONLY destroys item at arr
@@ -38,7 +41,6 @@ arr->~T();
 
 // destroy_at on array pointer: destroys ALL elements (C++20)
 std::destroy_at(&arr);  // calls ~T() for each element
-
 ```
 
 ---
@@ -47,8 +49,9 @@ std::destroy_at(&arr);  // calls ~T() for each element
 
 ### Q1: Use `std::destroy_at` instead of `p->~T()` and explain why `destroy_at` is safer for arrays
 
-```cpp
+Watch how section 3 (the explicit destructor approach) still needs a manual loop, while section 4 using `std::destroy` is both shorter and correct without any iteration logic on your side.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <new>
@@ -101,14 +104,14 @@ int main() {
         new (&arr[1]) Widget("Y");
         new (&arr[2]) Widget("Z");
 
-        // Destroys all elements in range — generic, safe
+        // Destroys all elements in range - generic, safe
         std::destroy(arr, arr + 3);
     }
 
     std::cout << "\n=== 5. Why destroy_at is better in templates ===\n";
     // In templates, p->~T() can have parsing issues:
-    //   p->~T()       — might confuse parser with dependent names
-    //   destroy_at(p) — always works, no disambiguation needed
+    //   p->~T()       - might confuse parser with dependent names
+    //   destroy_at(p) - always works, no disambiguation needed
 
     return 0;
 }
@@ -136,13 +139,15 @@ int main() {
 //   Destroyed: X
 //   Destroyed: Y
 //   Destroyed: Z
-
 ```
+
+Section 5's comment about parsing issues in templates is worth expanding on: inside a template, when `T` is a dependent type, `p->~T()` requires disambiguation with `template` keyword in some contexts. `std::destroy_at(p)` sidesteps that problem entirely.
 
 ### Q2: Show that calling the destructor directly twice is undefined behavior
 
-```cpp
+Double destruction is UB even for types where it "looks" harmless. For types that own resources (like `std::string` internally), double destruction typically means a double-free, which corrupts the heap. The safe pattern shown below uses a boolean flag - exactly what `std::optional` and similar wrappers do internally.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <new>
@@ -172,8 +177,8 @@ int main() {
     // p->~Tracked();       // Also UB
 
     // What can happen with double destruction:
-    // 1. std::string's destructor frees internal buffer twice → heap corruption
-    // 2. Double-free detected by allocator → crash
+    // 1. std::string's destructor frees internal buffer twice - heap corruption
+    // 2. Double-free detected by allocator - crash
     // 3. Appears to "work" with trivial types (still technically UB)
     // 4. Memory corruption that manifests much later
 
@@ -217,13 +222,15 @@ int main() {
 // Constructed: Safely Managed
 // Destroyed: data='Safely Managed'
 // Double destroy safely avoided.
-
 ```
+
+The `SafeSlot` pattern here is essentially a manual `std::optional<Tracked>`. In production code you would just use `std::optional`, but understanding the flag-based guard is important for cases where you are managing raw storage yourself.
 
 ### Q3: Implement a manually managed object pool using `construct_at` and `destroy_at`
 
-```cpp
+This pulls everything together. The pool owns raw storage; `construct_at` and `destroy_at` manage the lifetimes of individual objects within that storage. Notice that the pool's destructor uses `destroy_at` to clean up any objects that were not explicitly returned before the pool itself goes out of scope.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <new>
@@ -233,7 +240,7 @@ int main() {
 
 template<typename T, size_t Capacity>
 class ObjectPool {
-    // Raw storage — no constructors called
+    // Raw storage - no constructors called
     alignas(T) unsigned char storage_[Capacity * sizeof(T)];
     std::bitset<Capacity> in_use_;
 
@@ -309,7 +316,7 @@ int main() {
     std::cout << "\nActive: " << pool.active_count()
               << "/" << pool.capacity() << "\n\n";
 
-    // Destroy one — slot is recycled
+    // Destroy one - slot is recycled
     pool.destroy(b);
     std::cout << "\nAfter destroying Mage: "
               << pool.active_count() << "/" << pool.capacity() << "\n\n";
@@ -321,7 +328,7 @@ int main() {
     std::cout << "\nActive: " << pool.active_count()
               << "/" << pool.capacity() << "\n";
 
-    // Pool full — returns nullptr
+    // Pool full - returns nullptr
     Actor* f = pool.construct("Ghost", 1);
     std::cout << "Allocate when full: " << (f ? "success" : "nullptr") << "\n";
 
@@ -353,8 +360,9 @@ int main() {
 //   [-] Actor 'Healer' destroyed
 //   [-] Actor 'Archer' destroyed
 //   [-] Actor 'Thief' destroyed
-
 ```
+
+The `bitset` tracks which slots are live. The pool destructor sweeps all slots and calls `destroy_at` on any that are still occupied - a safety net for objects that the caller forgot to return. In a production pool you might prefer a callback or an assertion here, but the sweep-on-destroy approach gives safe cleanup by default.
 
 ---
 
@@ -363,5 +371,5 @@ int main() {
 - `std::destroy_at` is the canonical way to end an object's lifetime in uninitialized memory.
 - `std::construct_at` (C++20) replaces placement new in `constexpr` contexts.
 - Calling a destructor twice on the same object is always UB, even for trivially destructible types (in the standard's formal model).
-- Use `std::destroy(first, last)` to destroy a range — it handles each element and is exception-safe.
+- Use `std::destroy(first, last)` to destroy a range - it handles each element and is exception-safe.
 - Object pools eliminate per-object allocation overhead: one big allocation, many construct/destroy cycles.

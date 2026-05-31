@@ -11,13 +11,15 @@
 
 ### What Is RAII
 
-**RAII (Resource Acquisition Is Initialization)** is the foundational C++ idiom:
+**RAII (Resource Acquisition Is Initialization)** is the foundational C++ idiom. The name is a little awkward - a clearer way to say it is "tie resource lifetime to object lifetime." Here is the whole idea:
 
 - **Constructor** acquires the resource
 - **Destructor** releases the resource
-- Resource lifetime is tied to object scope — guaranteed cleanup even on exceptions
+- Resource lifetime is tied to object scope - guaranteed cleanup even on exceptions
 
 ### RAII Works for ALL Resources
+
+This is the point people sometimes miss. RAII is not just about memory. Any resource that needs to be released - file handles, mutexes, sockets, GPU textures, database connections - can and should be managed with RAII.
 
 | Resource Type | Acquire | Release | RAII Wrapper |
 | --- | --- | --- | --- |
@@ -31,38 +33,34 @@
 
 ### Why It Matters
 
-Without RAII, you need manual cleanup at every exit point:
+Without RAII, you need manual cleanup at every exit point. Every early return, every exception path, every error branch - all of them require you to remember to release every resource you acquired. One forgotten cleanup is a leak or a crash.
 
 ```cpp
-
 // BAD: manual cleanup
 void process() {
     FILE* f = fopen("data.txt", "r");
     int* buf = new int[100];
-    
+
     if (error1) { delete[] buf; fclose(f); return; }  // cleanup
     if (error2) { delete[] buf; fclose(f); return; }  // cleanup again!
     if (error3) { delete[] buf; fclose(f); return; }  // and again!
-    
+
     delete[] buf; fclose(f);  // normal exit cleanup
 }
-
 ```
 
-With RAII, cleanup is automatic:
+With RAII, there is only one version of the cleanup code, and the compiler runs it unconditionally:
 
 ```cpp
-
-// GOOD: RAII — no manual cleanup needed
+// GOOD: RAII - no manual cleanup needed
 void process() {
     auto f = UniqueFile(fopen("data.txt", "r"));
     auto buf = std::make_unique<int[]>(100);
-    
+
     if (error1) return;  // automatic cleanup
     if (error2) return;  // automatic cleanup
     if (error3) return;  // automatic cleanup
 }   // automatic cleanup
-
 ```
 
 ---
@@ -71,8 +69,9 @@ void process() {
 
 ### Q1: Write an RAII wrapper for a C file handle (`FILE*`) that closes on destruction
 
-```cpp
+A good RAII wrapper should be move-only (you cannot copy a file handle), and should expose just enough interface to use the underlying resource. Notice how the destructor is the only place `fclose` is called.
 
+```cpp
 #include <iostream>
 #include <cstdio>
 #include <string>
@@ -145,7 +144,7 @@ int main() {
         File f("raii_test.txt", "w");
         f.write("Hello, RAII!\n");
         f.write("Automatic cleanup is beautiful.\n");
-    }   // f.~File() called automatically — file closed
+    }   // f.~File() called automatically - file closed
 
     // RAII: read it back
     {
@@ -177,13 +176,15 @@ int main() {
     std::remove("raii_test.txt");
     return 0;
 }
-
 ```
+
+The exception safety test is the most important part. Even when an exception propagates, the `[File] Closed` message still appears. That is RAII doing its job.
 
 ### Q2: Explain why a destructor must never throw and how `std::terminate` protects the invariant
 
-```cpp
+This is one of those rules that sounds arbitrary until you understand the scenario that makes it necessary. The reason this trips people up is that destructors look like ordinary functions, so it seems like throwing from one should be fine. It is not.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 
@@ -191,7 +192,7 @@ int main() {
 //
 // 1. During stack unwinding (exception propagation), all local objects
 //    are destroyed. If a destructor throws DURING unwinding, we have
-//    two active exceptions. C++ calls std::terminate — game over.
+//    two active exceptions. C++ calls std::terminate - game over.
 //
 // 2. Containers call destructors in loops. If one element's destructor
 //    throws, remaining elements LEAK because the loop aborts.
@@ -207,7 +208,7 @@ struct BadResource {
         std::cout << "  ~BadResource(" << id << ") releasing\n";
         if (id == 2) {
             throw std::runtime_error("destructor threw!");
-            // If this happens during stack unwinding → std::terminate!
+            // If this happens during stack unwinding -> std::terminate!
         }
     }
 };
@@ -242,19 +243,21 @@ int main() {
 
     std::cout << "\n=== Key rules ===\n";
     std::cout << "1. Destructors are implicitly noexcept since C++11\n";
-    std::cout << "2. If a dtor throws during unwinding → std::terminate()\n";
+    std::cout << "2. If a dtor throws during unwinding -> std::terminate()\n";
     std::cout << "3. If cleanup can fail: catch internally, log, don't throw\n";
     std::cout << "4. Design resources so cleanup is infallible\n";
 
     return 0;
 }
-
 ```
+
+The practical takeaway: if your cleanup code can fail (like a network flush), handle the failure inside the destructor by logging or setting an error flag. Never let the exception escape the destructor.
 
 ### Q3: Refactor a function with multiple early returns and manual cleanup into RAII-clean code
 
-```cpp
+Here is a side-by-side comparison of the same logic written three ways. The "before" version has duplicated cleanup at every exit point. The "after" versions eliminate it entirely.
 
+```cpp
 #include <iostream>
 #include <cstdio>
 #include <memory>
@@ -305,7 +308,7 @@ template<typename T>
 using MallocPtr = std::unique_ptr<T, FreeDeleter>;
 
 int process_good(const char* filename) {
-    // Each resource is wrapped — cleanup is automatic
+    // Each resource is wrapped - cleanup is automatic
     UniqueFile f(fopen(filename, "r"));
     if (!f) return -1;
 
@@ -364,15 +367,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+`process_best` is the version to aim for in real code. `std::vector` and `std::string` already manage their memory, so no custom wrappers are needed at all. The only hand-rolled piece is the `UniqueFile` for the C file handle.
 
 ---
 
 ## Notes
 
-- **RAII is THE most important C++ idiom** — it makes resource management automatic and exception-safe.
-- When you write a destructor, think "Rule of Five" — you probably also need copy/move operations.
+- **RAII is THE most important C++ idiom** - it makes resource management automatic and exception-safe.
+- When you write a destructor, think "Rule of Five" - you probably also need copy/move operations.
 - For C APIs, use `unique_ptr` with a custom deleter rather than writing a full wrapper class.
 - `std::lock_guard`, `std::unique_lock`, `std::jthread`, `std::fstream` are all RAII wrappers.
 - RAII + move semantics = zero-overhead resource transfer between scopes.

@@ -10,30 +10,29 @@
 
 ### The Problem: Partial Construction Leaks
 
-When a constructor acquires multiple resources (memory, file handles, locks, etc.), an exception during the second acquisition leaves the first resource leaked. C++ guarantees that **the destructor is NOT called for a partially constructed object**.
+When a constructor acquires multiple resources (memory, file handles, locks, etc.), an exception during the second acquisition leaves the first resource leaked. This is one of those bugs that is easy to write and surprisingly hard to notice. C++ guarantees that **the destructor is NOT called for a partially constructed object**, so you cannot rely on your cleanup code running at all.
 
 ### Why Destructors Don't Run on Partial Construction
 
-The C++ standard says: if a constructor throws, the object never fully existed. Only the destructors of **fully constructed subobjects** (base classes and members constructed before the throw) are called.
+The reason this trips people up is that C++ defines an object's existence as beginning only when its constructor *completes successfully*. If the constructor throws partway through, the object never fully existed, and the runtime will not call its destructor. What it *will* do is destroy any subobjects (base classes and members) that were already fully constructed. Here is the sequence in plain terms:
 
 ```cpp
-
 Constructor of MyClass begins:
 
-  1. Base class constructors run          ← these get destroyed if throw happens later
-  2. Member initializers run in order     ← already-constructed members get destroyed
-  3. Constructor body executes            ← if throw happens here, members ARE destroyed
+  1. Base class constructors run          <- these get destroyed if throw happens later
+  2. Member initializers run in order     <- already-constructed members get destroyed
+  3. Constructor body executes            <- if throw happens here, members ARE destroyed
 
                                             but ~MyClass() is NOT called
-
 ```
+
+So the question becomes: who cleans up resource 1 if resource 2's acquisition throws? The answer is: nobody, unless resource 1 is itself wrapped in an RAII object whose destructor the runtime will call automatically.
 
 ### The Fix: RAII Members
 
-If each resource is wrapped in its own RAII object (smart pointer, file handle wrapper, etc.), then partially-constructed members that were fully initialized **will** have their destructors called:
+If each resource is wrapped in its own RAII object (smart pointer, file handle wrapper, etc.), then partially-constructed members that were fully initialized **will** have their destructors called. That is enough - it means the cleanup happens automatically even when the constructor throws.
 
 ```cpp
-
 class Safe {
     std::unique_ptr<int[]> buf1_;   // RAII member 1
     std::unique_ptr<int[]> buf2_;   // RAII member 2
@@ -43,8 +42,9 @@ public:
         , buf2_(new int[1000])      // ...and this throws,
     {}                               // buf1_'s destructor runs automatically!
 };
-
 ```
+
+The key insight is that `buf1_` is a fully-constructed `unique_ptr` by the time `buf2_`'s initialization starts, so the runtime will call `buf1_`'s destructor if the constructor throws.
 
 ---
 
@@ -52,8 +52,9 @@ public:
 
 ### Q1: Show a constructor that acquires two resources and leaks the first if the second acquisition throws
 
-```cpp
+Here we deliberately write the buggy version to see what goes wrong. Notice that `r1_` and `r2_` are raw pointers - there is nothing the runtime can automatically call to free them.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
@@ -110,13 +111,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Case 1: No failure ===
   Resource 1 acquired
   Resource 2 acquired
@@ -127,15 +126,15 @@ int main() {
 === Case 2: Second resource fails ===
   Resource 1 acquired
   Caught: Second resource failed!
-
 ```
 
-**Key Issue:** Resource 1 is acquired, but when the constructor throws, `~Leaky()` is never called. Resource 1 leaks.
+Notice that in Case 2 there is no "Resource 1 released" line - it leaked. `~Leaky()` was never called because the object never fully existed, and the raw pointer `r1_` had no RAII destructor to rely on.
 
 ### Q2: Fix it using RAII wrappers for each resource so the destructor cleans up on partial construction
 
-```cpp
+The fix is to change `r1_` and `r2_` from raw pointers to `unique_ptr`. Once `r1_`'s `unique_ptr` is fully constructed, the runtime owns responsibility for destroying it - even if the constructor throws later.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -162,7 +161,7 @@ public:
                              std::unique_ptr<Resource>()
                            : std::make_unique<Resource>(2))  // Acquire second
     {
-        // Note: the above ternary is unwieldy — usually you'd do:
+        // Note: the above ternary is unwieldy - usually you'd do:
     }
 
     ~Safe() {
@@ -235,13 +234,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === SafeV2: No failure ===
   Resource 1 acquired
   Resource 2 acquired
@@ -253,24 +250,24 @@ int main() {
   Resource 1 acquired
   Caught: Second resource failed!
   Resource 1 released
-
 ```
 
-**Key Fix:** When the constructor body throws, all fully-constructed members have their destructors called. `unique_ptr<Resource>` is fully constructed and will destroy Resource 1.
+This time "Resource 1 released" appears even in the failure case. The `unique_ptr` member was fully constructed before the throw, so the runtime called its destructor and the resource was freed properly.
 
 ### Q3: Explain why partially constructed objects do not have their destructor called
 
-The C++ standard defines an object's lifetime as beginning when its constructor **completes successfully**. If the constructor throws:
+The C++ standard defines an object's lifetime as beginning when its constructor **completes successfully**. If the constructor throws, here is exactly what gets cleaned up and what does not:
 
 | What happens | Destructor called? |
 | --- | --- |
-| Base class subobjects (already constructed) | **Yes** — in reverse order |
-| Member subobjects (already constructed) | **Yes** — in reverse declaration order |
-| The object itself (~MyClass) | **No** — it never existed |
+| Base class subobjects (already constructed) | **Yes** - in reverse order |
+| Member subobjects (already constructed) | **Yes** - in reverse declaration order |
+| The object itself (~MyClass) | **No** - it never existed |
 | Array elements (partially constructed array) | **Yes** for completed elements |
 
-```cpp
+This example makes the sequence concrete. Watch the output to see exactly which destructors run and which do not.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 
@@ -316,24 +313,22 @@ int main() {
     }
 
     // What we observe:
-    // 1. Base() constructed ✓
-    // 2. MemberA() constructed ✓
-    // 3. MemberB() constructed ✓
-    // 4. MemberC() throws ✗
-    // 5. ~MemberB() called (reverse order) ✓
-    // 6. ~MemberA() called ✓
-    // 7. ~Base() called ✓
+    // 1. Base() constructed
+    // 2. MemberA() constructed
+    // 3. MemberB() constructed
+    // 4. MemberC() throws
+    // 5. ~MemberB() called (reverse order)
+    // 6. ~MemberA() called
+    // 7. ~Base() called
     // 8. ~MyClass() NOT called (object never fully existed)
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === Construction attempt ===
   Base()
   MemberA()
@@ -343,19 +338,20 @@ int main() {
   ~MemberA()
   ~Base()
   Exception caught
-
 ```
+
+Notice that `~MemberC()` does not appear - MemberC's constructor threw, so MemberC was never fully constructed. `~MyClass()` also does not appear. But `~MemberB()` and `~MemberA()` do appear because those members were fully constructed before the throw. This is exactly why each resource must be its own RAII wrapper - the wrapper's destructor will run even during partial construction.
 
 **Rules:**
 
 1. **The object's destructor is never called** because the object's lifetime never began.
 2. **Already-constructed subobjects ARE destroyed** in reverse order of construction.
-3. This is why **each resource must be its own RAII wrapper** — the wrapper's destructor WILL run even during partial construction.
+3. This is why **each resource must be its own RAII wrapper** - the wrapper's destructor WILL run even during partial construction.
 
 ---
 
 ## Notes
 
-- The function-try-block (`try`/`catch` around the entire constructor) can catch exceptions from member initializers, but it must rethrow — you cannot "fix" a failed construction.
+- The function-try-block (`try`/`catch` around the entire constructor) can catch exceptions from member initializers, but it must rethrow - you cannot "fix" a failed construction.
 - `std::make_unique` and `std::make_shared` are single-allocation calls, so they don't have the "first alloc succeeds, second throws" problem within themselves.
 - In member initializer lists, construction order follows **declaration order in the class**, not the order in the initializer list. Be careful of dependencies between members.

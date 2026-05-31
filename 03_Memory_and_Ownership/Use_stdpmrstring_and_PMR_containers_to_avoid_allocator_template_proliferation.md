@@ -10,33 +10,31 @@
 
 ### The Problem: Allocator Template Proliferation
 
-With traditional allocators, each allocator type creates a **different container type**:
+With traditional allocators, each allocator type creates a **different container type**. That sounds like a minor detail, but it means you cannot pass one to a function expecting the other:
 
 ```cpp
-
 std::vector<int, MyAlloc<int>>   vec1;  // Type A
-std::vector<int, PoolAlloc<int>> vec2;  // Type B — DIFFERENT type!
+std::vector<int, PoolAlloc<int>> vec2;  // Type B - DIFFERENT type!
 // vec1 = vec2;  // ERROR: different types!
-
 ```
 
 This means functions that accept `std::vector<int>` can't accept `std::vector<int, CustomAlloc<int>>`.
 
 ### PMR Solution: Type-Erased Allocators
 
-`std::pmr` containers use `std::pmr::polymorphic_allocator`, which type-erases the allocator:
+`std::pmr` containers use `std::pmr::polymorphic_allocator`, which type-erases the allocator. The allocator strategy becomes a runtime parameter instead of a compile-time type parameter, so all PMR containers of the same element type are the same type regardless of which memory resource backs them:
 
 ```cpp
-
 std::pmr::vector<int> vec1(&arena);     // Uses arena
 std::pmr::vector<int> vec2(&pool);      // Uses pool
 // SAME TYPE! Can be assigned, passed to same function
-
 ```
+
+If the table below feels like a lot, the one-line summary is: with PMR, the allocator is a runtime detail, not part of the type.
 
 | Traditional | PMR |
 | --- | --- |
-| `std::vector<int, A>` ≠ `std::vector<int, B>` | `std::pmr::vector<int>` — always same type |
+| `std::vector<int, A>` != `std::vector<int, B>` | `std::pmr::vector<int>` - always same type |
 | Allocator is part of TYPE | Allocator is runtime parameter |
 | Every allocator = new template instantiation | One instantiation, any resource |
 
@@ -46,8 +44,9 @@ std::pmr::vector<int> vec2(&pool);      // Uses pool
 
 ### Q1: Allocate a `std::pmr::string` from a monotonic buffer and verify no heap allocation occurs
 
-```cpp
+This example overrides `operator new` to count heap allocations, then shows that strings backed by a PMR arena never touch the heap. It also compares against regular `std::string` so the difference is concrete.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <string>
@@ -65,7 +64,7 @@ void operator delete(void* p, size_t) noexcept { std::free(p); }
 int main() {
     std::cout << "=== PMR string with monotonic buffer ===\n\n";
 
-    // Stack buffer — no heap involved
+    // Stack buffer - no heap involved
     char buffer[256];
     std::pmr::monotonic_buffer_resource arena(buffer, sizeof(buffer));
 
@@ -99,13 +98,15 @@ int main() {
 //
 // Heap allocations: 0
 // Regular string heap allocs: 2-3 (long strings that exceed SSO)
-
 ```
+
+The PMR strings serve their allocations out of `buffer` on the stack - `operator new` is never called. The regular strings that exceed the small-string optimization threshold each trigger a heap allocation.
 
 ### Q2: Explain why `std::pmr::vector<T>` and `std::vector<T>` have the same template type for element type
 
-```cpp
+The key insight here is that two `pmr::vector<int>` objects are the same type even when they use completely different memory resources at runtime. That is what makes it possible to pass them both to the same function - something traditional allocators make impossible.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -159,13 +160,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `v1` and `v2` backed by different arenas are still the same type and both pass into `process` without any overload or conversion. This is the whole value proposition of PMR.
 
 ### Q3: Show how polymorphic allocators allow runtime selection of allocation strategy
 
-```cpp
+Here the same `build_data` function is called three times with three different memory resources. Because PMR type-erases the allocator, the function signature doesn't change - the strategy is a runtime decision.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -225,27 +228,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+You can swap the memory resource based on a flag, a config value, or profiling data - `build_data` is completely unaware of which backing resource it gets.
 
 ---
 
 ## Notes
 
-- `std::pmr::` aliases provide type-erased allocator containers — same type regardless of allocator strategy.
+- `std::pmr::` aliases provide type-erased allocator containers - same type regardless of allocator strategy.
 - `polymorphic_allocator` uses virtual dispatch (`memory_resource*`), not template parameters.
 - PMR containers propagate their allocator to nested containers (e.g., `pmr::vector<pmr::string>`).
 - Slight runtime cost vs static allocators (virtual function call per allocation), but eliminates template bloat.
-- Use `pmr` when you need runtime allocator selection or want to avoid `N×M` template instantiations.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- Use `pmr` when you need runtime allocator selection or want to avoid `N x M` template instantiations.

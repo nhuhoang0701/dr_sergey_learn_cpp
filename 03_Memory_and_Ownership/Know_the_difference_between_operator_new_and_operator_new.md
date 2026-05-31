@@ -15,33 +15,35 @@ When you write `new T(args)`, the compiler does two things:
 1. **Calls `operator new(sizeof(T))`** to allocate raw memory
 2. **Calls `T`'s constructor** on that memory
 
-`operator new` is the **allocation function** — it only allocates bytes, it doesn't construct objects.
+`operator new` is the **allocation function** - it only allocates bytes, it doesn't construct objects. This distinction matters because you can replace or override the allocation step independently of the construction step.
 
 ### Class-Scope vs Global `operator new`
+
+The reason this trips people up is that `operator new` is not one thing - it can be defined at class scope (affecting only that class) or at global scope (affecting everything). The lookup rules determine which one gets called.
 
 | Feature | `T::operator new` (class scope) | `::operator new` (global scope) |
 | --- | --- | --- |
 | Scope | Only for class `T` (and derived unless overridden) | All types, fallback |
 | Lookup | Found first via ADL | Used when no class version exists |
 | Typical use | Pool allocators for specific types | Profiler tracking all allocations |
-| Syntax to force global | `::new T(...)` bypasses class version | — |
+| Syntax to force global | `::new T(...)` bypasses class version | - |
 | Can override | Yes, as static member | Yes, replaceable globally |
 
 ### All Forms of `operator new`
 
-```cpp
+There are several overloads, each serving a different purpose. Placement `new` is non-replaceable - you cannot override it.
 
+```cpp
 void* operator new  (size_t);                    // single-object
 void* operator new[](size_t);                    // array
 void* operator new  (size_t, void* p);           // placement (non-replaceable)
 void* operator new  (size_t, std::nothrow_t);    // non-throwing
 void* operator new  (size_t, std::align_val_t);  // C++17 aligned
-
 ```
 
 ### Key Rules
 
-1. **Class `operator new` is `static`** (even without the keyword) — it runs before the object exists
+1. **Class `operator new` is `static`** (even without the keyword) - it runs before the object exists
 2. **Derived classes inherit** the base's `operator new` unless they define their own
 3. **`::new`** explicitly calls global `operator new`, bypassing class-scope versions
 4. **Always pair**: if you override `operator new`, also override `operator delete`
@@ -52,8 +54,9 @@ void* operator new  (size_t, std::align_val_t);  // C++17 aligned
 
 ### Q1: Explain that `operator new` can be overloaded per class while `::operator new` is global
 
-```cpp
+This example shows all three cases side by side: a class with its own allocator, a call that forces the global allocator, and a type with no override at all.
 
+```cpp
 #include <iostream>
 #include <cstdlib>
 #include <cstddef>
@@ -63,7 +66,7 @@ class Widget {
 public:
     int value;
 
-    // Class-scope operator new — only used for Widget allocations
+    // Class-scope operator new - only used for Widget allocations
     static void* operator new(std::size_t size) {
         std::cout << "[Widget::operator new] allocating " << size << " bytes\n";
         void* p = std::malloc(size);
@@ -100,13 +103,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 --- new Widget(42) uses Widget::operator new ---
 [Widget::operator new] allocating 4 bytes
 [Widget ctor] value=42
@@ -119,19 +120,21 @@ int main() {
 
 --- new int(7) uses global ::operator new (no class override) ---
 int value: 7
-
 ```
+
+Notice that the `::new Widget(99)` case shows no allocation message - the global allocator has no logging. The class-specific one is completely bypassed when you use `::new`.
 
 **Summary:**
 
-- `new Widget(42)` → looks up `Widget::operator new` first (found) → uses it
-- `::new Widget(99)` → explicitly uses global `::operator new`, bypassing class version
-- `new int(7)` → no class-scope `operator new` for `int` → uses global `::operator new`
+- `new Widget(42)` -> looks up `Widget::operator new` first (found) -> uses it
+- `::new Widget(99)` -> explicitly uses global `::operator new`, bypassing class version
+- `new int(7)` -> no class-scope `operator new` for `int` -> uses global `::operator new`
 
 ### Q2: Show how to override global `::operator new` to track all allocations for a profiler
 
-```cpp
+Replacing the global `operator new` is a blunt instrument - it captures every allocation in the program. That is exactly what a profiler needs.
 
+```cpp
 #include <iostream>
 #include <cstdlib>
 #include <cstddef>
@@ -192,13 +195,11 @@ int main() {
     print_stats();
     return 0;
 }
-
 ```
 
 **Output (typical):**
 
 ```text
-
 --- Allocating objects ---
 [global new] 4 bytes (total: 4 bytes, #1)
 [global new] 8 bytes (total: 12 bytes, #2)
@@ -213,15 +214,15 @@ int main() {
   Total allocated:  36 bytes
   Num allocations:  3
   Num deallocations:3
-
 ```
 
 **Caution:** Replacing global `operator new` affects ALL allocations in the program, including standard library internals. Use with care in production.
 
 ### Q3: Demonstrate that overriding `operator new` in a derived class does NOT affect other classes
 
-```cpp
+This shows the scope rule in action. `Derived` has its own `operator new`, `DerivedChild` inherits it, and everything else falls back to the global allocator.
 
+```cpp
 #include <iostream>
 #include <cstdlib>
 #include <cstddef>
@@ -256,7 +257,7 @@ public:
 class DerivedChild : public Derived {
 public:
     int z = 0;
-    // Inherits Derived::operator new — will use it
+    // Inherits Derived::operator new - will use it
     ~DerivedChild() override { std::cout << "  ~DerivedChild()\n"; }
 };
 
@@ -291,13 +292,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 --- new Base ---
   ~Base()
 
@@ -322,10 +321,9 @@ Base:         global ::operator new
 Derived:      Derived::operator new  (class-scope)
 DerivedChild: Derived::operator new  (inherited)
 Unrelated:    global ::operator new
-
 ```
 
-**Key takeaway:** `Derived::operator new` only affects `Derived` and its subclasses. `Base` and `Unrelated` are completely unaffected.
+`Derived::operator new` only affects `Derived` and its subclasses. `Base` and `Unrelated` are completely unaffected - their allocations go through the global path as normal.
 
 ---
 
@@ -334,5 +332,5 @@ Unrelated:    global ::operator new
 - **`new T`** = allocate + construct. **`operator new`** = allocate only.
 - If class defines `operator new`, `new T(...)` uses it. Use `::new T(...)` to bypass.
 - Always override both `operator new` and `operator delete` as a pair.
-- `operator new[]` is separate from `operator new` — override both if needed.
+- `operator new[]` is separate from `operator new` - override both if needed.
 - In C++17, `operator new` with `std::align_val_t` is called for over-aligned types automatically.

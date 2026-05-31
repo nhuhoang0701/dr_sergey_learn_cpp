@@ -11,6 +11,8 @@
 
 ### Why Avoid Raw `new`
 
+If you find yourself writing `new` directly in application code, there are usually four things working against you. The factory functions fix all of them.
+
 | Issue | Raw `new` | `make_unique`/`make_shared` |
 | --- | --- | --- |
 | **Exception safety** | Can leak in expressions | Always safe |
@@ -20,8 +22,9 @@
 
 ### Core Pattern
 
-```cpp
+Just write `auto` and let the factory function handle the type. You never have a naked pointer in flight.
 
+```cpp
 // BAD:
 std::unique_ptr<Widget> p1(new Widget(1, 2));
 std::shared_ptr<Widget> p2(new Widget(3, 4));
@@ -29,14 +32,13 @@ std::shared_ptr<Widget> p2(new Widget(3, 4));
 // GOOD:
 auto p1 = std::make_unique<Widget>(1, 2);   // C++14
 auto p2 = std::make_shared<Widget>(3, 4);   // C++11
-
 ```
 
 ### When You Can't Use `make_shared`/`make_unique`
 
-1. Custom deleters → `unique_ptr<T, Deleter>(ptr, deleter)`
-2. Weak pointers keeping control block alive → `shared_ptr(new T)` releases object memory sooner
-3. Aggregate/brace initialization (before C++20) → `unique_ptr<T>(new T{1, 2})`
+1. Custom deleters -> `unique_ptr<T, Deleter>(ptr, deleter)`
+2. Weak pointers keeping control block alive -> `shared_ptr(new T)` releases object memory sooner
+3. Aggregate/brace initialization (before C++20) -> `unique_ptr<T>(new T{1, 2})`
 
 ---
 
@@ -44,8 +46,9 @@ auto p2 = std::make_shared<Widget>(3, 4);   // C++11
 
 ### Q1: Explain why `f(shared_ptr<T>(new T), g())` could leak memory while `f(make_shared<T>(), g())` cannot
 
-```cpp
+This is the classic exception-safety argument for `make_shared`, and it is genuinely subtle. The reason the raw-`new` version can leak is that function arguments may be evaluated in any order (pre-C++17), so the sequence `new T` -> `g() throws` -> `shared_ptr ctor never runs` is legal. Once the raw pointer exists but the `shared_ptr` has not yet taken ownership, nobody owns it. C++17 tightened the rules somewhat, but `make_shared` remains the recommended approach because there is simply no window of unowned memory.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -74,7 +77,7 @@ int main() {
     //   1. new Widget(1)          — allocates on heap
     //   2. g()                    — THROWS!
     //   3. shared_ptr constructor — NEVER REACHED
-    //   → Widget(1) is leaked! No one owns it.
+    //   -> Widget(1) is leaked! No one owns it.
     //
     // C++17 fixed this partially (function args fully evaluated
     // before interleaving), but make_shared is STILL preferred.
@@ -84,9 +87,9 @@ int main() {
     // f(make_shared<Widget>(1), g());
     //
     // Either make_shared completes (Widget is owned) and then g() throws
-    //   → shared_ptr destructor cleans up
+    //   -> shared_ptr destructor cleans up
     // Or g() runs first and throws
-    //   → Widget was never created
+    //   -> Widget was never created
 
     try {
         // This is ALWAYS safe:
@@ -94,13 +97,13 @@ int main() {
         // (Uncomment to see — Widget is either fully managed or never created)
 
         std::cout << "Demo: the leak scenario\n";
-        std::cout << "  Step 1: new Widget(1)  → allocated\n";
-        std::cout << "  Step 2: g()            → throws!\n";
-        std::cout << "  Step 3: shared_ptr()   → never runs\n";
+        std::cout << "  Step 1: new Widget(1)  -> allocated\n";
+        std::cout << "  Step 2: g()            -> throws!\n";
+        std::cout << "  Step 3: shared_ptr()   -> never runs\n";
         std::cout << "  Result: MEMORY LEAK\n\n";
 
         std::cout << "Fix: make_shared bundles allocation + ownership\n";
-        std::cout << "  → no intermediate naked pointer exists\n";
+        std::cout << "  -> no intermediate naked pointer exists\n";
     } catch (const std::exception& e) {
         std::cout << "Caught: " << e.what() << "\n";
     }
@@ -111,13 +114,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Show that `make_shared` performs a single allocation while `shared_ptr<T>(new T)` does two
 
-```cpp
+`make_shared` packs the object and its control block into a single memory block. Two allocations become one, and the object and its reference count end up side by side in memory. The example below makes this concrete by overriding global `operator new` to count calls.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdlib>
@@ -150,8 +153,8 @@ int main() {
     std::cout << "=== shared_ptr(new T) — TWO allocations ===\n";
     alloc_count = 0;
     {
-        // Allocation 1: new Data → heap block for Data object
-        // Allocation 2: shared_ptr ctor → heap block for control block (refcount)
+        // Allocation 1: new Data -> heap block for Data object
+        // Allocation 2: shared_ptr ctor -> heap block for control block (refcount)
         std::shared_ptr<Data> p(new Data(1, 2, 3));
     }
     std::cout << "Total allocations: " << alloc_count << "\n\n";
@@ -175,20 +178,20 @@ int main() {
 }
 // Expected output:
 // === shared_ptr(new T) — TWO allocations ===
-//   [alloc #1] 12 bytes     ← Data object
-//   [alloc #2] ~24-48 bytes ← control block
+//   [alloc #1] 12 bytes     <- Data object
+//   [alloc #2] ~24-48 bytes <- control block
 // Total allocations: 2
 //
 // === make_shared<T>() — ONE allocation ===
-//   [alloc #1] ~36-64 bytes ← Data + control block together
+//   [alloc #1] ~36-64 bytes <- Data + control block together
 // Total allocations: 1
-
 ```
 
 ### Q3: List all the ways `make_unique` differs from `unique_ptr<T>(new T{...})` for array types
 
-```cpp
+The most important difference for arrays is initialization: `make_unique<T[]>(n)` value-initializes all elements (zeros them out), while raw `new T[n]` default-initializes them, which for POD types means garbage. That is a common source of subtle bugs. The other differences are about expressiveness and exception safety.
 
+```cpp
 #include <iostream>
 #include <memory>
 
@@ -235,7 +238,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -243,7 +245,7 @@ int main() {
 ## Notes
 
 - `make_unique` was added in C++14 (one standard after `unique_ptr` itself).
-- `make_shared` coalesces object + control block into one allocation — better performance and cache locality.
+- `make_shared` coalesces object + control block into one allocation - better performance and cache locality.
 - Use raw `new` with smart pointers only when you need custom deleters or aggregate initialization.
 - `make_shared` keeps object memory alive until the last `weak_ptr` dies (control block holds both).
 - `make_unique_for_overwrite` / `make_shared_for_overwrite` (C++20) skip value-initialization for performance.

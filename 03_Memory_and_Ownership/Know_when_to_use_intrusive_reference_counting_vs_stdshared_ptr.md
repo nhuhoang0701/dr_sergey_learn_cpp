@@ -11,10 +11,9 @@
 
 ### The Two-Allocation Problem of `shared_ptr`
 
-When you create a `shared_ptr` from a raw pointer, **two heap allocations** occur:
+When you create a `shared_ptr` from a raw pointer, **two heap allocations** occur: one for the object and one for the control block. `make_shared` merges them into one allocation, but the control block is still a distinct structure sitting alongside the object.
 
 ```cpp
-
 shared_ptr<T> sp(new T);
 
 Allocation 1: T object          Allocation 2: Control block
@@ -24,22 +23,19 @@ Allocation 1: T object          Allocation 2: Control block
                                 │ deleter          │
                                 │ allocator        │
                                 └─────────────────┘
-
 ```
 
 (`make_shared` merges these into one allocation, but the control block is still separate from T's viewpoint.)
 
 ### Intrusive Reference Counting
 
-With intrusive counting, the **reference count lives inside the object itself**:
+With intrusive counting, the **reference count lives inside the object itself**. There is no separate allocation, no second pointer, and no extra indirection.
 
 ```cpp
-
 ┌──────────────────┐
-│ ref_count: 1     │  ← Part of the object
+│ ref_count: 1     │  <- Part of the object
 │ T data           │
 └──────────────────┘
-
 ```
 
 **No separate control block, no extra allocation.**
@@ -51,17 +47,17 @@ With intrusive counting, the **reference count lives inside the object itself**:
 | Allocations | 2 (or 1 with `make_shared`) | **1** (always) |
 | Overhead per pointer | 2 pointers (16 bytes) | **1 pointer** (8 bytes) |
 | Control block | Separate heap object | **Embedded in object** |
-| Can create from raw `T*` | Yes (but dangerous — double ownership) | **Yes, safely** — ref count is in the object |
-| Works with any `T`? | Yes | **No** — T must embed the count |
+| Can create from raw `T*` | Yes (but dangerous - double ownership) | **Yes, safely** - ref count is in the object |
+| Works with any `T`? | Yes | **No** - T must embed the count |
 | Standard library? | Yes (`std::shared_ptr`) | No (Boost `intrusive_ptr`) |
 | Custom deleter? | Yes (type-erased) | Must implement manually |
 
 ### When to Prefer Intrusive Counting
 
-1. **Performance-critical paths** — one fewer allocation, one fewer cache miss
-2. **Interop with C APIs** that pass raw pointers — you can safely recreate the smart pointer
-3. **COM objects** / **OS reference-counted objects** — they already have embedded ref counts
-4. **Memory-constrained systems** — less overhead per pointer
+1. **Performance-critical paths** - one fewer allocation, one fewer cache miss
+2. **Interop with C APIs** that pass raw pointers - you can safely recreate the smart pointer
+3. **COM objects** / **OS reference-counted objects** - they already have embedded ref counts
+4. **Memory-constrained systems** - less overhead per pointer
 
 ---
 
@@ -69,8 +65,9 @@ With intrusive counting, the **reference count lives inside the object itself**:
 
 ### Q1: Explain the two-allocation problem of `shared_ptr` and how intrusive counts solve it
 
-```cpp
+This example makes the memory layout differences concrete and shows why intrusive counting is safer when you need to reconstruct a smart pointer from a raw pointer.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstddef>
@@ -112,13 +109,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The critical difference is the "can safely create smart ptr from raw T* at any time" point. With `shared_ptr`, wrapping a raw pointer in a second `shared_ptr` creates a second independent control block, which causes a double-free. With intrusive counting, the count is in the object, so wrapping the same raw pointer twice is always safe.
 
 ### Q2: Implement a simple `intrusive_ptr` using an atomic ref count embedded in the object
 
-```cpp
+This is a full, working implementation of intrusive reference counting. The `RefCounted` base class provides the embedded counter, and `intrusive_ptr` manages the add/release calls automatically.
 
+```cpp
 #include <iostream>
 #include <atomic>
 #include <utility>
@@ -155,7 +154,7 @@ void intrusive_ptr_release(const T* p) {
     }
 }
 
-// The intrusive_ptr smart pointer — stores only 1 pointer
+// The intrusive_ptr smart pointer - stores only 1 pointer
 template<typename T>
 class intrusive_ptr {
     T* ptr_ = nullptr;
@@ -231,7 +230,7 @@ int main() {
     intrusive_ptr<Document> p1(new Document("Report"));
     std::cout << "After create: use_count=" << p1->use_count() << "\n";
 
-    // Copy — atomic increment
+    // Copy - atomic increment
     {
         intrusive_ptr<Document> p2 = p1;
         std::cout << "After copy:   use_count=" << p1->use_count() << "\n";
@@ -244,7 +243,7 @@ int main() {
     // Safe to create intrusive_ptr from raw pointer!
     Document* raw = p1.get();
     {
-        intrusive_ptr<Document> p4(raw);  // Adds ref — safe!
+        intrusive_ptr<Document> p4(raw);  // Adds ref - safe!
         std::cout << "From raw ptr: use_count=" << p1->use_count() << "\n";
     }
     std::cout << "After p4:     use_count=" << p1->use_count() << "\n";
@@ -257,13 +256,11 @@ int main() {
     std::cout << "\n--- Cleanup ---\n";
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === intrusive_ptr demo ===
 
 sizeof(intrusive_ptr<Document>): 8 bytes (1 pointer)
@@ -280,8 +277,9 @@ After move:   p1=null, p5 use_count=1
 
 --- Cleanup ---
   Document("Report") destroyed
-
 ```
+
+Notice that creating `p4` from a raw pointer safely incremented the count. That is the key advantage over `shared_ptr` for C API interop scenarios.
 
 ### Q3: List use cases where `intrusive_ptr` is preferred over `shared_ptr`
 
@@ -289,14 +287,15 @@ After move:   p1=null, p5 use_count=1
 | --- | --- |
 | **COM objects** (`IUnknown::AddRef/Release`) | Objects already have embedded ref counts |
 | **Kernel / OS handles** | Reference counts are part of the object in the kernel |
-| **Game engines** (entity systems) | Millions of objects — save 1 allocation + 8 bytes per pointer |
+| **Game engines** (entity systems) | Millions of objects - save 1 allocation + 8 bytes per pointer |
 | **C API interop** | Can pass raw pointers and reconstruct smart pointer safely |
 | **Lock-free data structures** | Simpler atomic operations on a single counter |
 | **Embedded systems** | Minimal memory overhead |
 | **Serialization/networking** | Object identity is preserved across raw pointer roundtrips |
 
-```cpp
+The C API interop case is the most compelling. Here is why `shared_ptr` fails in that scenario and `intrusive_ptr` succeeds:
 
+```cpp
 #include <iostream>
 #include <memory>
 
@@ -326,8 +325,8 @@ struct CApiObject : public RefCounted {  // (using RefCounted from Q2)
 
 int main() {
     std::cout << "=== Why intrusive is safer with C interop ===\n";
-    std::cout << "shared_ptr: raw pointer loses control block → double-free risk\n";
-    std::cout << "intrusive:  ref count is IN the object → always safe to rewrap\n";
+    std::cout << "shared_ptr: raw pointer loses control block -> double-free risk\n";
+    std::cout << "intrusive:  ref count is IN the object -> always safe to rewrap\n";
 
     std::cout << "\n=== Memory comparison (1M objects) ===\n";
     constexpr size_t N = 1'000'000;
@@ -338,15 +337,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `std::shared_ptr` is the safe default — use it unless profiling shows it's a bottleneck.
+- `std::shared_ptr` is the safe default - use it unless profiling shows it's a bottleneck.
 - Intrusive ref counting requires **cooperative objects** (they must inherit a base class or embed a counter).
-- Boost provides `boost::intrusive_ptr` — a well-tested production implementation.
+- Boost provides `boost::intrusive_ptr` - a well-tested production implementation.
 - C++26 may introduce `std::retain_ptr` or similar to standardize intrusive counting.
-- Never mix `shared_ptr` and intrusive counting for the same object — pick one ownership strategy.
+- Never mix `shared_ptr` and intrusive counting for the same object - pick one ownership strategy.

@@ -10,15 +10,16 @@
 
 ### What Is SSO
 
-The **Small String Optimization** stores short strings directly inside the `std::string` object (in-situ) rather than allocating heap memory. This avoids heap allocation for the most common case — short strings.
+The **Small String Optimization** stores short strings directly inside the `std::string` object itself - in-situ in the object's footprint - rather than allocating heap memory. This avoids a heap allocation for the most common case: short strings. Since `std::string` typically occupies 32 bytes on a 64-bit machine anyway (to hold the pointer, size, and capacity), those bytes might as well hold small string data directly.
 
 ### How SSO Works Internally
 
-```cpp
+Here is a simplified picture of what the two modes look like in memory. The union lets the same 32 bytes serve double duty: either holding a heap pointer (long mode) or holding the characters directly (short mode).
 
+```cpp
 // Without SSO (all strings heap-allocated):
 struct string {            // 32 bytes on 64-bit
-    char* data;            // → heap buffer
+    char* data;            // -> heap buffer
     size_t size;
     size_t capacity;
 };
@@ -31,10 +32,11 @@ struct string {            // 32 bytes on 64-bit
     };
 };
 // Short strings (up to ~15-22 chars) stored in buf — no heap!
-
 ```
 
 ### SSO Buffer Sizes by Implementation
+
+The exact threshold varies by standard library. If you write code that relies on SSO to avoid allocations, you should test against your specific compiler.
 
 | Implementation | SSO Buffer | Max SSO Length |
 | --- | --- | --- |
@@ -51,14 +53,17 @@ struct string {            // 32 bytes on 64-bit
 | Move = copy (memcpy) | Move = pointer swap (O(1)) |
 | Great cache locality | Pointer indirection |
 
+The move row is the one that surprises people most, so let's come back to it in Q2.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Write a test that verifies short strings (< ~15 chars) don't heap-allocate on major implementations
 
-```cpp
+The trick here is to compare the address of `s.data()` against the address range occupied by the `std::string` object itself. If the data pointer falls inside the object, the string is stored inline and no heap allocation occurred.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -120,13 +125,13 @@ int main() {
 // 16 chars: length=16 [HEAP]
 // SSO threshold: 16 chars (first heap alloc)
 // Max SSO: 15 chars
-
 ```
 
 ### Q2: Explain why moving a small string that uses SSO is not faster than copying
 
-```cpp
+This is one of the trickier implications of SSO, and the reason this trips people up is that "move always wins" is the common intuition. But it only holds when there is a heap pointer to steal. An SSO string has no heap pointer - its data lives inside the object. Moving it requires copying those inline bytes to the destination object and then clearing the source. That is the same work as a copy.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -134,11 +139,11 @@ int main() {
 
 // SSO strings: data is INSIDE the object (no heap pointer to steal)
 //
-// Moving a heap string:   swap pointer + size → O(1), no copy of content
-// Moving an SSO string:   must copy all bytes from src buffer → memcpy → same cost as copy!
+// Moving a heap string:   swap pointer + size -> O(1), no copy of content
+// Moving an SSO string:   must copy all bytes from src buffer -> memcpy -> same cost as copy!
 //
-// After move, source must still be valid ("") → must zero out its buffer
-// Total work: memcpy + zero source ≈ same as copy
+// After move, source must still be valid ("") -> must zero out its buffer
+// Total work: memcpy + zero source ~ same as copy
 
 template<typename Func>
 long long bench(Func f, int iterations) {
@@ -153,7 +158,7 @@ int main() {
 
     std::cout << "=== SSO: move vs copy performance ===\n\n";
 
-    // Short string (SSO) — move ≈ copy
+    // Short string (SSO) — move ~ copy
     {
         std::string src = "Hello";  // 5 chars — SSO
         auto t_copy = bench([&] {
@@ -194,19 +199,19 @@ int main() {
     }
 
     std::cout << "\n=== Key insight ===\n";
-    std::cout << "SSO strings: move ≈ copy (both memcpy the inline buffer)\n";
+    std::cout << "SSO strings: move ~ copy (both memcpy the inline buffer)\n";
     std::cout << "Heap strings: move >> copy (pointer swap vs full copy)\n";
     std::cout << "Don't assume std::move always helps with strings!\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Show how SSO affects the design of string-heavy hot paths in terms of move semantics
 
-```cpp
+Once you know about SSO, it shapes how you approach string-heavy code. The three patterns below - `string_view` for read-only, `reserve` for building, and a fixed-size char array for identifiers - are all responses to SSO's constraints and strengths.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -292,15 +297,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- SSO eliminates heap allocation for short strings — the most common case in practice.
+- SSO eliminates heap allocation for short strings - the most common case in practice.
 - SSO buffer size varies: 15 bytes (GCC/MSVC) or 22 bytes (libc++/Clang).
-- `std::move()` on SSO strings provides **no speedup** — the data must still be copied from the inline buffer.
+- `std::move()` on SSO strings provides **no speedup** - the data must still be copied from the inline buffer.
 - Use `std::string_view` for read-only access to avoid all allocation regardless of length.
 - `sizeof(std::string)` is typically 32 bytes on 64-bit systems, regardless of content length.

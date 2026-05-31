@@ -11,17 +11,17 @@
 
 ### What Were `aligned_storage` and `aligned_union`
 
-```cpp
+Before C++23, if you needed a chunk of raw memory big enough and correctly aligned to hold a `T` without constructing it yet, the standard answer was to reach for these type traits:
 
-// C++11–C++20 way to create properly aligned raw storage
+```cpp
+// C++11-C++20 way to create properly aligned raw storage
 std::aligned_storage_t<sizeof(T), alignof(T)> buffer;
 
 // Aligned storage large enough for any of the listed types
 std::aligned_union_t<0, int, double, std::string> variant_buf;
-
 ```
 
-These provided a **type** with the right `sizeof` and `alignof` for storing objects without constructing them — useful for:
+These provided a **type** with the right `sizeof` and `alignof` for storing objects without constructing them - useful for:
 
 - Type-erased buffers
 - Manual variant/optional implementations
@@ -29,17 +29,20 @@ These provided a **type** with the right `sizeof` and `alignof` for storing obje
 
 ### Why Deprecated in C++23
 
+The reason this trips people up is that `aligned_storage_t` is not `T` - it is a completely unrelated type that happens to have the same size and alignment. Every access through a reinterpret-cast technically risks strict aliasing UB. C++23 deprecated both utilities because a much simpler alternative already existed (C++17's `std::byte` and `alignas`).
+
 | Problem | Detail |
 | --- | --- |
-| **Wrong type** | `aligned_storage_t` is an unrelated type, not `T` — type aliasing issues |
+| **Wrong type** | `aligned_storage_t` is an unrelated type, not `T` - type aliasing issues |
 | **Violates strict aliasing** | Accessing through wrong type is technically UB |
 | **Overly complex** | `alignas` + `std::byte[]` is simpler and correct |
 | **Brittle** | Easy to get size/alignment wrong with the template parameters |
 
 ### The Modern Replacement
 
-```cpp
+Here is the before/after in concrete code. The new form reads almost like English - "give me a `byte` array of the right size, aligned for `T`."
 
+```cpp
 // Old (deprecated C++23):
 std::aligned_storage_t<sizeof(T), alignof(T)> buffer;
 new (&buffer) T(args...);
@@ -48,7 +51,6 @@ new (&buffer) T(args...);
 alignas(T) std::byte buffer[sizeof(T)];
 auto* p = std::construct_at(reinterpret_cast<T*>(buffer), args...);
 std::destroy_at(p);
-
 ```
 
 ---
@@ -57,8 +59,9 @@ std::destroy_at(p);
 
 ### Q1: Implement a type-erased buffer using `alignas` and `std::byte` instead of `aligned_storage`
 
-```cpp
+This is the pattern that replaces the old `aligned_storage` idiom. Watch how the storage is just a plain `byte` array, and the type-erased destroy/copy operations are stored separately as function pointers.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <memory>
@@ -140,25 +143,25 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 int: 42
 string: Hello, type-erased world!
 double: 3.14159
 
 sizeof(SmallBuffer<128>): 144 bytes
-
 ```
+
+The 144 bytes come from the 128-byte storage plus two function pointers. Each `emplace` properly destroys the previous value before constructing the new one.
 
 ### Q2: Explain why `aligned_storage` was deprecated in C++23 and what replaces it
 
-```cpp
+The comparison below makes the difference concrete. The old `aligned_storage` approach requires you to spell the size and alignment as template parameters, which can drift out of sync if `T` changes. The new approach derives both from `T` directly.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <string>
@@ -241,13 +244,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Show a variant-like storage that manually manages construction/destruction in aligned storage
 
-```cpp
+This is the canonical example of why this feature exists - a discriminated union that stores different types in the same piece of memory. Notice how `destroy` only needs special work for types with non-trivial destructors like `std::string`; trivial types like `int` and `double` can be left alone.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <string>
@@ -380,13 +383,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === SimpleVariant with alignas + std::byte ===
 
 Storage size: 48 bytes
@@ -398,17 +399,16 @@ double: 3.14
 string: "Hello, variant!"
 string: "Hello, variant! More text."
 int: 99
-
 ```
+
+When `set(99)` is called after storing a string, `destroy()` properly calls the `std::string` destructor before constructing the `int`. That is the whole lifecycle: `construct_at` - use - `destroy_at`.
 
 ---
 
 ## Notes
 
 - `std::aligned_storage` and `std::aligned_union` are **deprecated in C++23** (P1413R3).
-- The replacement is simply `alignas(T) std::byte storage[sizeof(T)]` — clearer and correct.
+- The replacement is simply `alignas(T) std::byte storage[sizeof(T)]` - clearer and correct.
 - Always use `std::construct_at` / `std::destroy_at` (C++20) for lifetime management in raw storage.
-- For production variant-like types, use `std::variant` — it handles all the complexity.
+- For production variant-like types, use `std::variant` - it handles all the complexity.
 - `alignas` on a `std::byte` array ensures proper alignment for any type you store.
-
-```text

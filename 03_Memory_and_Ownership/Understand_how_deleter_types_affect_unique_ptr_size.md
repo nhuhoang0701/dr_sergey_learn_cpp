@@ -11,11 +11,11 @@
 
 ### `unique_ptr` Stores the Deleter
 
-`std::unique_ptr<T, Deleter>` stores both a pointer to the managed object and the deleter. The **type** of deleter determines the size:
+`std::unique_ptr<T, Deleter>` stores both a pointer to the managed object and the deleter. The **type** of deleter determines the size. This matters when you have arrays of `unique_ptr` or pack them into structs - a bloated deleter multiplies across every instance.
 
 | Deleter Type | Size of `unique_ptr` | Why |
 | --- | --- | --- |
-| `std::default_delete<T>` (default) | `sizeof(T*)` = 8 bytes | **Empty Base Optimization (EBO)** — empty class occupies 0 bytes |
+| `std::default_delete<T>` (default) | `sizeof(T*)` = 8 bytes | **Empty Base Optimization (EBO)** - empty class occupies 0 bytes |
 | Stateless functor / empty lambda | `sizeof(T*)` = 8 bytes | EBO applies |
 | Stateful lambda (captures) | `sizeof(T*) + sizeof(captures)` | Must store captured state |
 | `std::function<void(T*)>` | `sizeof(T*) + sizeof(std::function)` ~= 40+ bytes | Heavy type-erasure overhead |
@@ -23,18 +23,18 @@
 
 ### Empty Base Optimization (EBO)
 
-When the deleter is an **empty class** (no data members), the compiler can overlap it with the pointer using compressed pair / EBO, so it takes **zero extra space**:
+When the deleter is an **empty class** (no data members), the compiler can overlap it with the pointer using compressed pair / EBO, so it takes **zero extra space**. The layout comparison makes this intuitive:
 
 ```cpp
-
 unique_ptr with default_delete:        unique_ptr with function pointer:
 ┌──────────┐                           ┌──────────┐
 │ T* ptr   │  8 bytes                  │ T* ptr   │  8 bytes
 └──────────┘                           │ void(*f) │  8 bytes
                                        └──────────┘
 Total: 8 bytes                         Total: 16 bytes
-
 ```
+
+A function pointer always costs an extra 8 bytes because it is not a type - it is a value that can differ between instances, so it must be stored. An empty class carries no per-instance state, so EBO compresses it to nothing.
 
 ---
 
@@ -42,20 +42,21 @@ Total: 8 bytes                         Total: 16 bytes
 
 ### Q1: Show that `unique_ptr<T, std::default_delete<T>>` has the same size as a raw pointer due to EBO
 
-```cpp
+The `static_assert` at the bottom of this example is the machine-checkable proof that EBO is working. If the default deleter were not empty (or if EBO were not applied), the assertion would fire.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <functional>
 
 struct Widget { int x; double y; };
 
-// Empty deleters (stateless) — size 1 as standalone, but EBO makes them 0 inside unique_ptr
+// Empty deleters (stateless) - size 1 as standalone, but EBO makes them 0 inside unique_ptr
 struct EmptyDeleter {
     void operator()(Widget* p) const { delete p; }
 };
 
-// Stateful deleter — must store state
+// Stateful deleter - must store state
 struct CountingDeleter {
     int count = 0;
     void operator()(Widget* p) {
@@ -91,13 +92,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (64-bit system):**
 
 ```text
-
 === Size comparison ===
 sizeof(Widget*):                              8
 sizeof(unique_ptr<Widget>):                   8
@@ -110,18 +109,20 @@ sizeof(unique_ptr<Widget, function<...>>):    40
 sizeof(std::default_delete<Widget>): 1
 sizeof(EmptyDeleter):                1
 sizeof(CountingDeleter):             4
-
 ```
+
+Notice that `EmptyDeleter` is 1 byte as a standalone object (the minimum required by the standard) but contributes 0 bytes inside `unique_ptr` thanks to EBO.
 
 ### Q2: Show that a stateful lambda deleter causes `unique_ptr` to store both pointer and deleter
 
-```cpp
+Captures are the key distinction here. A captureless lambda is an empty type and gets the EBO treatment. As soon as you capture anything - even a single `int` - the lambda has state and must be stored alongside the pointer.
 
+```cpp
 #include <iostream>
 #include <memory>
 
 int main() {
-    // Captureless lambda — empty, EBO applies
+    // Captureless lambda - empty, EBO applies
     auto stateless_del = [](int* p) {
         std::cout << "  Stateless delete\n";
         delete p;
@@ -129,7 +130,7 @@ int main() {
     using stateless_up = std::unique_ptr<int, decltype(stateless_del)>;
     std::cout << "sizeof(unique_ptr with stateless lambda): " << sizeof(stateless_up) << "\n";
 
-    // Lambda capturing one int by value — stores 4 bytes of state
+    // Lambda capturing one int by value - stores 4 bytes of state
     int log_id = 42;
     auto stateful_del = [log_id](int* p) {
         std::cout << "  Stateful delete (log_id=" << log_id << ")\n";
@@ -138,7 +139,7 @@ int main() {
     using stateful_up = std::unique_ptr<int, decltype(stateful_del)>;
     std::cout << "sizeof(unique_ptr with stateful lambda):  " << sizeof(stateful_up) << "\n";
 
-    // Lambda capturing a string by value — stores sizeof(string) bytes
+    // Lambda capturing a string by value - stores sizeof(string) bytes
     std::string label = "debug";
     auto heavy_del = [label](int* p) {
         std::cout << "  Heavy delete (label=" << label << ")\n";
@@ -149,11 +150,11 @@ int main() {
 
     std::cout << "\n=== In action ===\n";
 
-    // Stateless — same size as raw pointer
+    // Stateless - same size as raw pointer
     stateless_up p1(new int(1), stateless_del);
     std::cout << "p1 value: " << *p1 << "\n";
 
-    // Stateful — pointer + captured int
+    // Stateful - pointer + captured int
     stateful_up p2(new int(2), stateful_del);
     std::cout << "p2 value: " << *p2 << "\n";
 
@@ -161,13 +162,11 @@ int main() {
     // Deleters called on scope exit
     return 0;
 }
-
 ```
 
 **Output (64-bit, typical):**
 
 ```text
-
 sizeof(unique_ptr with stateless lambda): 8
 sizeof(unique_ptr with stateful lambda):  16
 sizeof(unique_ptr with string-capture):   40
@@ -179,18 +178,20 @@ p2 value: 2
 --- Destruction ---
   Stateful delete (log_id=42)
   Stateless delete
-
 ```
+
+The string-capture case blows up to 40 bytes - `sizeof(string)` plus the pointer. If you are thinking "I need a log label in my deleter," consider logging from the destructor of the managed object instead.
 
 ### Q3: Write a zero-size custom deleter for a C `FILE*` and verify `sizeof` equals `sizeof(void*)`
 
-```cpp
+This is the idiomatic way to wrap any C cleanup function - `fclose`, `SDL_DestroyWindow`, `curl_easy_cleanup`, and so on. An empty struct deleter gives you a self-cleaning RAII handle with zero size overhead compared to a raw pointer.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdio>
 
-// Zero-size deleter for FILE* — uses EBO in unique_ptr
+// Zero-size deleter for FILE* - uses EBO in unique_ptr
 struct FileCloser {
     void operator()(FILE* f) const {
         if (f) {
@@ -206,7 +207,7 @@ static_assert(sizeof(FileCloser) == 1, "Empty class is 1 byte standalone");
 // Type alias for convenience
 using UniqueFile = std::unique_ptr<FILE, FileCloser>;
 
-// Same size as raw pointer? YES — EBO kicks in
+// Same size as raw pointer? YES - EBO kicks in
 static_assert(sizeof(UniqueFile) == sizeof(FILE*),
               "UniqueFile should be same size as raw FILE*");
 
@@ -251,13 +252,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 === FILE* with zero-size deleter ===
 
 sizeof(FILE*):          8
@@ -270,32 +269,16 @@ Wrote to file
   Closing file
 Read: Hello from unique_ptr<FILE, FileCloser>!
   Closing file
-
 ```
+
+`FuncPtrFile` at 16 bytes versus `UniqueFile` at 8 bytes - that difference doubles the size of any array or struct holding these handles.
 
 ---
 
 ## Notes
 
 - **Always prefer empty/stateless deleters** for zero-overhead `unique_ptr`. Use a functor class or captureless lambda.
-- Function pointers always add `sizeof(void*)` — they can't EBO because they store different values at runtime.
+- Function pointers always add `sizeof(void*)` - they can't EBO because they store different values at runtime.
 - `std::function` adds even more overhead (~32 bytes) due to type erasure and heap allocation. Avoid it as a deleter.
 - For C API cleanup (fclose, free, SDL_DestroyWindow, etc.), an empty struct deleter is the idiomatic pattern.
 - In C++20, stateless lambdas are default-constructible, so `unique_ptr<T, decltype(lambda)>` works without passing the lambda instance.
-
-**How this works:**
-
-- Write a zero-size custom deleter for a C FILE*.
-- Verify sizeof equals sizeof(void*).
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

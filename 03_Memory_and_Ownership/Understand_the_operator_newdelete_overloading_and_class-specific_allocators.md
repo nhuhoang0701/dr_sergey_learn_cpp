@@ -11,6 +11,8 @@
 
 ### Levels of `new`/`delete` Customization
 
+You can intercept allocation at three different levels. Knowing which level to choose is most of the battle - the global override is a sledgehammer, the class-specific version is a scalpel.
+
 | Level | Scope | How |
 | --- | --- | --- |
 | **Global** | All allocations in program | `void* operator new(size_t)` at global scope |
@@ -19,13 +21,13 @@
 
 ### Lookup Rules
 
-```cpp
+When you write `new MyClass`, the compiler searches for an allocator in a specific order. Class-specific always wins over global.
 
+```cpp
 new MyClass;
 // 1. Look for MyClass::operator new (class-specific)
 // 2. If not found, use ::operator new (global)
 // 3. Global can be replaced by user code
-
 ```
 
 ### All Overloadable Forms
@@ -45,8 +47,9 @@ new MyClass;
 
 ### Q1: Override `operator new` and `operator delete` for a class to use a pool allocator
 
-```cpp
+A pool allocator pre-allocates a fixed number of slots and hands them out in O(1) time without touching the heap. The `PoolAllocated` base class below does the heavy lifting using a bitset to track which slots are free. Notice the size check in `operator new` - that guards against accidental use when a derived class is larger than `T`, in which case it falls back to the global allocator.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cstdlib>
@@ -158,13 +161,13 @@ int main() {
 //   [pool] freeing slot
 //   [pool] freeing slot
 // Final pool usage: 0
-
 ```
 
 ### Q2: Explain the difference between overloading the global `operator new` vs class-specific `operator new`
 
-```cpp
+The global override is shown commented out deliberately - uncommenting it would intercept every allocation in the program, including those inside the standard library. The `Tracked` class shows the surgical version: only `Tracked` uses the custom allocator, everything else is unaffected.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cstdlib>
@@ -249,13 +252,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Show how `nothrow new` (`new(std::nothrow)`) avoids exceptions and returns `nullptr` on failure
 
-```cpp
+Regular `new` throws `std::bad_alloc` on failure. `nothrow new` returns `nullptr` instead - but be careful: the "no throw" part only covers the allocation itself. If the constructor throws, that exception still propagates regardless of the `nothrow` tag.
 
+```cpp
 #include <iostream>
 #include <new>       // std::nothrow
 #include <cstddef>
@@ -332,15 +335,14 @@ int main() {
 // 3. Graceful degradation instead of crash
 // 4. Prefer: try/catch with regular new in most C++ code
 // 5. Best: use containers/smart pointers that handle this
-
 ```
 
 ---
 
 ## Notes
 
-- Class-specific `operator new` is `static` even if not declared so — it must be, since the object doesn't exist yet.
-- Always override `operator delete` when overriding `operator new` — they must be paired.
+- Class-specific `operator new` is `static` even if not declared so - it must be, since the object doesn't exist yet.
+- Always override `operator delete` when overriding `operator new` - they must be paired.
 - Check `size` parameter in class-specific `new` to handle derived classes correctly.
 - Sized deallocation (`operator delete(void*, size_t)`, C++14) helps allocators avoid looking up block size.
-- `new(std::nothrow)` doesn't protect against constructor exceptions — only allocation failure.
+- `new(std::nothrow)` doesn't protect against constructor exceptions - only allocation failure.

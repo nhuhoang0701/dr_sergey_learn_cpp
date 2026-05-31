@@ -11,33 +11,33 @@
 
 ### The Problem: C APIs That Allocate via `T**`
 
-Many C APIs allocate resources and return them through an output pointer parameter:
+Many C APIs allocate resources and return them through an output pointer parameter. That is a common pattern: you hand the API a pointer-to-pointer, and it fills in the actual address. The interface typically looks like this:
 
 ```c
-
 // C-style API: creates a resource, stores pointer in *out
 int create_handle(Handle** out);   // Allocate
 int resize_buffer(Buffer** inout); // Reallocate
 void destroy_handle(Handle* h);    // Free
-
 ```
 
 Before C++23, bridging these with smart pointers was manual and error-prone.
 
 ### `std::out_ptr` and `std::inout_ptr` (C++23)
 
+C++23 gives you two adapters that do the release-call-rewrap dance automatically. Here is what each one is for:
+
 | Adapter | Use Case | On construction | On destruction |
 | --- | --- | --- | --- |
 | `out_ptr(sp)` | C func that **allocates** new resource | Releases current (if any) | Stores new pointer into smart ptr |
 | `inout_ptr(sp)` | C func that **reallocates** existing | Releases + passes old ptr | Stores new pointer into smart ptr |
 
-```cpp
+With these adapters the call site becomes a single, exception-safe expression:
 
-// C++23 — clean, exception-safe
+```cpp
+// C++23 - clean, exception-safe
 std::unique_ptr<Handle, HandleDeleter> h;
 create_handle(std::out_ptr(h));       // h now owns the new handle
 resize_buffer(std::inout_ptr(h));     // h frees old, takes new
-
 ```
 
 ---
@@ -46,8 +46,9 @@ resize_buffer(std::inout_ptr(h));     // h frees old, takes new
 
 ### Q1: Use `std::out_ptr(up)` to pass the address of a `unique_ptr` to a C function that allocates via `void**`
 
-```cpp
+Here we simulate a C API that allocates a resource through an output pointer, then show how `std::out_ptr` wraps the smart pointer cleanly. The `#else` branch shows the equivalent manual steps for pre-C++23 code so you can see exactly what the adapter replaces.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdlib>
@@ -123,13 +124,15 @@ int main() {
     std::cout << "\nDestruction:\n";
     return 0;
 }
-
 ```
+
+When the scope ends, `res` goes out of scope and `CResourceDeleter` calls `c_destroy_resource` automatically - no manual cleanup needed.
 
 ### Q2: Show that `std::inout_ptr` handles functions that may reallocate an existing resource
 
-```cpp
+`inout_ptr` is for the trickier case: the C function takes the old pointer, frees it itself, then writes a new pointer. The adapter has to release ownership from the smart pointer before the call so the C API can take over, then rewrap the new result afterward. Watch how this compares to the manual pre-C++23 approach in the `#else` branch.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdlib>
@@ -213,13 +216,15 @@ int main() {
     std::cout << "\nDestruction:\n";
     return 0;
 }
-
 ```
+
+The three-step manual pattern - `release`, call, `reset` - is exactly what `inout_ptr` encapsulates, and it does so in a way that stays safe even if the C function throws (or if some cleanup between the steps would throw).
 
 ### Q3: Explain why manually releasing and re-wrapping is error-prone compared to these adapters
 
-```cpp
+This example catalogs the specific bugs that appear when you try to do the `out_ptr`/`inout_ptr` job by hand. Each comment block isolates one failure mode so the pattern is easy to recognize in real code.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdlib>
@@ -242,9 +247,9 @@ int main() {
     {
         Handle* raw = nullptr;
         create(&raw);
-        // Oops — forgot to wrap in unique_ptr
+        // Oops - forgot to wrap in unique_ptr
         // raw leaks if we return or throw here!
-        std::free(raw);  // Manual cleanup — brittle
+        std::free(raw);  // Manual cleanup - brittle
     }
 
     // Bug 2: Exception between release and reset
@@ -254,10 +259,10 @@ int main() {
         create(&raw);
         h.reset(raw);
 
-        // Now "resize" — manual release + re-wrap
+        // Now "resize" - manual release + re-wrap
         raw = h.release();  // h no longer owns it
         // If the next line throws, raw leaks!
-        // some_c_function_that_might_fail(&raw);  // THROWS → leak!
+        // some_c_function_that_might_fail(&raw);  // THROWS -> leak!
         h.reset(raw);
     }
 
@@ -270,12 +275,12 @@ int main() {
 
         // Wrong: didn't release before passing to C API
         // create(&raw);     // Creates new handle
-        // h.reset(raw);     // Old handle already freed by reset? No — leaked!
+        // h.reset(raw);     // Old handle already freed by reset? No - leaked!
     }
 
     std::cout << "=== How out_ptr/inout_ptr fix these ===\n\n";
-    std::cout << "out_ptr:    Atomically: release old → get T** → wrap new\n";
-    std::cout << "inout_ptr:  Atomically: release old → pass old to C → wrap new\n";
+    std::cout << "out_ptr:    Atomically: release old -> get T** -> wrap new\n";
+    std::cout << "inout_ptr:  Atomically: release old -> pass old to C -> wrap new\n";
     std::cout << "\nBenefits:\n";
     std::cout << "1. No naked pointer window (exception-safe)\n";
     std::cout << "2. Can't forget to wrap (automatic)\n";
@@ -285,21 +290,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The core issue is that the manual approach has a window between `release()` and `reset()` where the raw pointer is owned by nobody. If anything goes wrong in that window the resource leaks. The adapters eliminate that window entirely.
 
 ---
 
 ## Notes
 
 - `std::out_ptr` (C++23): wraps smart pointer for C APIs that allocate via `T**` output parameters.
-- `std::inout_ptr` (C++23): handles C APIs that reallocate — releases old resource and wraps new one.
-- Both are exception-safe — no naked pointer window where a throw could cause a leak.
+- `std::inout_ptr` (C++23): handles C APIs that reallocate - releases old resource and wraps new one.
+- Both are exception-safe - no naked pointer window where a throw could cause a leak.
 - Works with `unique_ptr`, `shared_ptr`, and any type supporting `release()`/`reset()`.
 - Before C++23, use the manual release-call-reset pattern, being careful about exception safety.
-
-```cpp
-
-// Your practice code
-
-```

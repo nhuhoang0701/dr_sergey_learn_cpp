@@ -10,59 +10,53 @@
 
 ### The Three Rules
 
-These rules govern when and how many special member functions you must define:
+These rules tell you when you need to define special member functions and how many. If you remember only one thing from this topic, make it this: whenever you define one of the "big five," you almost certainly need to think carefully about all five.
 
 | Rule | When | You Must Define |
 | --- | --- | --- |
-| **Rule of Zero** | Class owns no raw resources | **None** — rely on compiler-generated defaults |
+| **Rule of Zero** | Class owns no raw resources | **None** - rely on compiler-generated defaults |
 | **Rule of Three** | Class manages a resource (pre-C++11) | Destructor, Copy Constructor, Copy Assignment |
 | **Rule of Five** | Class manages a resource (C++11+) | Destructor, Copy Ctor, Copy Assignment, Move Ctor, Move Assignment |
 
 ### Rule of Zero (Preferred)
 
-If your class uses only RAII types (`std::string`, `std::vector`, `std::unique_ptr`, etc.), the compiler-generated special members do the right thing:
+If your class uses only RAII types (`std::string`, `std::vector`, `std::unique_ptr`, etc.), the compiler-generated special members do the right thing. You do not have to write anything, and the result is correct and efficient.
 
 ```cpp
-
 struct Person {
     std::string name;
     std::vector<int> scores;
-    // No destructor, no copy/move — compiler generates correct ones
+    // No destructor, no copy/move - compiler generates correct ones
 };
-
 ```
 
 ### Rule of Three (C++03)
 
-If you manually manage a resource (raw `new`, file handle, etc.), the compiler-generated copy constructor and copy assignment perform **shallow copies**, causing double-free:
+If you manually manage a resource (raw `new`, file handle, etc.), the compiler-generated copy constructor and copy assignment perform **shallow copies**, causing double-free. You need to define all three to get deep-copy semantics:
 
 ```cpp
-
 Must define: ~T(), T(const T&), T& operator=(const T&)
-
 ```
 
 ### Rule of Five (C++11+)
 
-C++11 added move semantics. If you define any of the Big Three, the compiler **won't generate** move operations, so you should also define:
+C++11 added move semantics. Here is the tricky part: if you define any of the Big Three, the compiler **won't generate** move operations for you. Without move operations, your type cannot be moved efficiently - it will fall back to copying. So in C++11 and later, if you're managing a resource manually, you should define all five:
 
 ```cpp
-
 Must define: ~T(), T(const T&), T& operator=(const T&),
              T(T&&) noexcept, T& operator=(T&&) noexcept
-
 ```
 
 ### Decision Flowchart
 
+Use this as your starting point whenever you are designing a class:
+
 ```cpp
-
 Does your class manage a raw resource?
-├── NO  → Rule of Zero (define nothing)
-└── YES → Can you wrap it in a RAII type (unique_ptr, etc.)?
-    ├── YES → Rule of Zero (wrap the resource)
-    └── NO  → Rule of Five (define all five)
-
+├── NO  -> Rule of Zero (define nothing)
+└── YES -> Can you wrap it in a RAII type (unique_ptr, etc.)?
+    ├── YES -> Rule of Zero (wrap the resource)
+    └── NO  -> Rule of Five (define all five)
 ```
 
 ---
@@ -71,8 +65,9 @@ Does your class manage a raw resource?
 
 ### Q1: Write a class that correctly follows the Rule of Five with all five special members defined
 
-```cpp
+`DynamicBuffer` owns a raw `char*`, so it must define all five. Notice that the copy assignment uses the copy-and-swap idiom - this gives strong exception safety automatically.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <algorithm>
@@ -172,13 +167,11 @@ int main() {
     std::cout << "\n--- Destruction ---\n";
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 --- Construction ---
   [ctor] "Hello" (5 bytes)
 
@@ -205,21 +198,19 @@ a after move: "(null)"
   [dtor] "Hello"
   [dtor] "moved"
   [dtor] "Hello"
-
 ```
 
 ### Q2: Explain when you can rely on the Rule of Zero (compiler-generated members are sufficient)
 
-The Rule of Zero applies when **all data members are RAII types** that manage their own resources:
+The Rule of Zero applies when **all data members are RAII types** that manage their own resources. The `Employee` class below looks like it might need special handling because of `unique_ptr`, but actually the compiler gets it right automatically - `unique_ptr` makes the class move-only, which is usually what you want.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
 #include <memory>
 
-// Rule of Zero — no special members needed!
+// Rule of Zero - no special members needed!
 class Employee {
     std::string name_;
     int age_;
@@ -233,10 +224,10 @@ public:
         , badge_id_(std::make_unique<int>(id))
     {}
 
-    // No destructor — string, vector, unique_ptr clean up
-    // No copy constructor — unique_ptr makes class move-only (correct!)
-    // No move constructor — compiler generates one
-    // No copy/move assignment — compiler handles it
+    // No destructor - string, vector, unique_ptr clean up
+    // No copy constructor - unique_ptr makes class move-only (correct!)
+    // No move constructor - compiler generates one
+    // No copy/move assignment - compiler handles it
 
     void add_skill(std::string s) { skills_.push_back(std::move(s)); }
 
@@ -263,24 +254,24 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **When Rule of Zero applies:**
 
 | Data Members | Rule |
 | --- | --- |
-| `int`, `double`, POD types | Zero ✓ (trivially copyable) |
-| `std::string`, `std::vector` | Zero ✓ (value semantics) |
-| `std::unique_ptr` | Zero ✓ (move-only, auto cleanup) |
-| `std::shared_ptr` | Zero ✓ (shared ownership) |
-| Raw `T*` with ownership | **Five** — must manage manually |
-| `FILE*`, `int fd` | **Five** — must manage manually |
+| `int`, `double`, POD types | Zero (trivially copyable) |
+| `std::string`, `std::vector` | Zero (value semantics) |
+| `std::unique_ptr` | Zero (move-only, auto cleanup) |
+| `std::shared_ptr` | Zero (shared ownership) |
+| Raw `T*` with ownership | **Five** - must manage manually |
+| `FILE*`, `int fd` | **Five** - must manage manually |
 
 ### Q3: Show how violating the Rule of Three leads to a double-free bug
 
-```cpp
+This is the classic example of why you cannot define only a destructor and ignore copy. The compiler-generated copy gives you a shallow copy - two objects pointing to the same memory - and when both go out of scope, the memory is freed twice.
 
+```cpp
 #include <iostream>
 #include <cstring>
 
@@ -298,8 +289,8 @@ public:
         delete[] data_;  // DOUBLE FREE when copied!
     }
 
-    // NO copy constructor defined — compiler generates shallow copy
-    // NO copy assignment defined — compiler generates shallow copy
+    // NO copy constructor defined - compiler generates shallow copy
+    // NO copy assignment defined - compiler generates shallow copy
 
     const char* c_str() const { return data_; }
 };
@@ -310,51 +301,44 @@ int main() {
     std::cout << "1. Create original:\n";
     BrokenString a("Hello");
 
-    std::cout << "\n2. Copy (shallow — both point to same memory!):\n";
+    std::cout << "\n2. Copy (shallow - both point to same memory!):\n";
     BrokenString b = a;  // Compiler-generated copy: b.data_ = a.data_
     std::cout << "  a.data_ address: " << (void*)a.c_str() << "\n";
     std::cout << "  b.data_ address: " << (void*)b.c_str() << "\n";
-    std::cout << "  Same pointer? " << (a.c_str() == b.c_str() ? "YES — BUG!" : "no") << "\n";
+    std::cout << "  Same pointer? " << (a.c_str() == b.c_str() ? "YES - BUG!" : "no") << "\n";
 
     std::cout << "\n3. Destruction (reverse order):\n";
     // b destructor runs first: delete[] data_ (OK)
-    // a destructor runs second: delete[] data_ (DOUBLE FREE — UB!)
+    // a destructor runs second: delete[] data_ (DOUBLE FREE - UB!)
 
     // NOTE: This program has undefined behavior.
     // Run with -fsanitize=address to see the error clearly.
 
     return 0;
 }
-
 ```
 
 **Output (before crash/UB):**
 
 ```text
-
 === The double-free bug ===
 
 1. Create original:
-
   [ctor] data_=0x... "Hello"
 
-2. Copy (shallow — both point to same memory!):
-
+2. Copy (shallow - both point to same memory!):
   a.data_ address: 0x12345
   b.data_ address: 0x12345
-  Same pointer? YES — BUG!
+  Same pointer? YES - BUG!
 
 3. Destruction (reverse order):
-
   [dtor] deleting data_=0x12345
-  [dtor] deleting data_=0x12345    ← DOUBLE FREE!
-
+  [dtor] deleting data_=0x12345    <- DOUBLE FREE!
 ```
 
-**The fix — implement all three (Rule of Three):**
+The fix is to implement all three (Rule of Three) and give each object its own copy of the data:
 
 ```cpp
-
 class FixedString {
     char* data_;
 public:
@@ -365,14 +349,14 @@ public:
     // 1. Destructor
     ~FixedString() { delete[] data_; }
 
-    // 2. Copy Constructor — deep copy
+    // 2. Copy Constructor - deep copy
     FixedString(const FixedString& other)
         : data_(new char[std::strlen(other.data_) + 1])
     {
         std::strcpy(data_, other.data_);
     }
 
-    // 3. Copy Assignment — deep copy with self-assignment check
+    // 3. Copy Assignment - deep copy with self-assignment check
     FixedString& operator=(const FixedString& other) {
         if (this != &other) {
             delete[] data_;
@@ -382,15 +366,14 @@ public:
         return *this;
     }
 };
-
 ```
 
 ---
 
 ## Notes
 
-- **Always prefer Rule of Zero** — wrap raw resources in RAII wrappers (`unique_ptr` with custom deleter, etc.).
+- **Always prefer Rule of Zero** - wrap raw resources in RAII wrappers (`unique_ptr` with custom deleter, etc.).
 - If you must write a destructor, you almost certainly need copy/move operations too.
-- Mark move operations `noexcept` — containers like `std::vector` only use move if it's `noexcept`.
+- Mark move operations `noexcept` - containers like `std::vector` only use move if it's `noexcept`.
 - The copy-and-swap idiom provides strong exception safety for copy assignment.
 - `= default` and `= delete` let you be explicit about which operations are available.

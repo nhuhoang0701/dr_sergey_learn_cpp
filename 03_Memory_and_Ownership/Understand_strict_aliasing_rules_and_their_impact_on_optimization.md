@@ -16,29 +16,31 @@ The **strict aliasing rule** says: an object of type `T` can only be accessed th
 2. A signed/unsigned variant of `T`
 3. `char`, `unsigned char`, or `std::byte` (the "byte aliasing" exemption)
 
-Violating this rule is **undefined behavior** — the compiler is allowed to assume pointers to unrelated types don't alias, enabling powerful optimizations.
+Violating this rule is **undefined behavior**. The reason this matters so much in practice is that the compiler is allowed - and actively encouraged - to assume pointers to unrelated types can never point at the same memory. That assumption is what unlocks a whole class of powerful optimizations.
 
 ### Why Compilers Care
 
-```cpp
+When the compiler sees `int*` and `float*` in the same function, it knows they can't possibly alias. That means it can freely cache, reorder, and eliminate redundant loads. Here is a simplified illustration:
 
+```cpp
 // The compiler sees:
 void update(int* a, float* b) {
     *a = 1;
     *b = 2.0f;
     // Compiler KNOWS *a is still 1 — int* and float* can't alias
-    // → can reorder, cache in registers, eliminate reloads
+    // -> can reorder, cache in registers, eliminate reloads
 }
-
 ```
+
+If aliasing were allowed between arbitrary types, the compiler would have to re-read `*a` after every write through `*b` just in case they overlap. Strict aliasing is what lets it skip those extra loads.
 
 | Access through | Aliasing allowed? | Standard basis |
 | --- | --- | --- |
-| `T*` → `T` | Yes | Same type |
-| `int*` → `unsigned int` | Yes | Signed/unsigned variant |
-| `char*` → anything | Yes | Byte aliasing exemption |
-| `int*` → `float` | **NO — UB** | Unrelated types |
-| `Base*` → `Derived` | Yes | Polymorphic access |
+| `T*` -> `T` | Yes | Same type |
+| `int*` -> `unsigned int` | Yes | Signed/unsigned variant |
+| `char*` -> anything | Yes | Byte aliasing exemption |
+| `int*` -> `float` | **NO - UB** | Unrelated types |
+| `Base*` -> `Derived` | Yes | Polymorphic access |
 
 ---
 
@@ -46,8 +48,9 @@ void update(int* a, float* b) {
 
 ### Q1: Show that accessing a `float` through an `int*` violates strict aliasing and can be misoptimized
 
-```cpp
+The classic example of this mistake is type-punning by casting a pointer - something that was common before `memcpy` and `bit_cast` were understood as the correct tools. The fast inverse square root hack is the most famous victim. Notice how the "safe" version using `memcpy` expresses the same intent without the UB.
 
+```cpp
 #include <iostream>
 #include <cstring>
 
@@ -69,7 +72,7 @@ float bad_int_bits_of_float(float f) {
 
 // Classic "fast inverse square root" — also UB!
 float fast_inv_sqrt_BAD(float x) {
-    // float → int type punning via pointer cast = UB
+    // float -> int type punning via pointer cast = UB
     int i = *reinterpret_cast<int*>(&x);  // STRICT ALIASING VIOLATION
     i = 0x5f3759df - (i >> 1);
     return *reinterpret_cast<float*>(&i);  // UB again
@@ -109,13 +112,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Use `std::memcpy` or `std::bit_cast` as the correct alternatives for type punning
 
-```cpp
+Both approaches get you the bits of one type reinterpreted as another type without touching the aliasing rules. `memcpy` has been the safe idiom since C++98 and all major compilers optimize it to a no-op register move at `-O1`. `std::bit_cast` (C++20) is the modern replacement - it is `constexpr`, type-safe, and reads like it means. The `show_float_bits` helper at the bottom is a nice practical application of `bit_cast`.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <bit>        // C++20: std::bit_cast
@@ -148,7 +151,7 @@ float bits_to_float_bitcast(uint32_t bits) {
 // Demonstration: examining IEEE 754 representation
 void show_float_bits(float f) {
     uint32_t bits = std::bit_cast<uint32_t>(f);
-    std::cout << std::setw(12) << f << " → 0x"
+    std::cout << std::setw(12) << f << " -> 0x"
               << std::hex << std::setfill('0') << std::setw(8) << bits
               << std::dec << std::setfill(' ')
               << "  sign=" << (bits >> 31)
@@ -164,16 +167,16 @@ int main() {
     float original = 3.14f;
     uint32_t bits = float_to_bits_memcpy(original);
     float roundtrip = bits_to_float_memcpy(bits);
-    std::cout << "memcpy: " << original << " → 0x"
+    std::cout << "memcpy: " << original << " -> 0x"
               << std::hex << bits << std::dec
-              << " → " << roundtrip << "\n";
+              << " -> " << roundtrip << "\n";
 
     // bit_cast approach (C++20)
     uint32_t bits2 = float_to_bits_bitcast(original);
     float roundtrip2 = bits_to_float_bitcast(bits2);
-    std::cout << "bit_cast: " << original << " → 0x"
+    std::cout << "bit_cast: " << original << " -> 0x"
               << std::hex << bits2 << std::dec
-              << " → " << roundtrip2 << "\n";
+              << " -> " << roundtrip2 << "\n";
 
     // constexpr bit_cast!
     constexpr float pi = 3.14159f;
@@ -196,13 +199,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain the `char*` exemption from strict aliasing and why it exists
 
-```cpp
+The exemption exists because byte-level access to any object is fundamental - `memcpy`, `memset`, serialization, and network I/O all need to read an object as raw bytes without caring about its type. However, the exemption is strictly one-way: `char*` can alias anything, but that does not mean any pointer can alias a `char` buffer as if it were a different type. Reading back through an `int*` into a `char` buffer requires that a proper `int` object actually lives there.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <cstddef>
@@ -249,12 +252,12 @@ int main() {
               << static_cast<int>(std::to_integer<int>(bp[0])) << "\n";
 
     // IMPORTANT: The exemption is ONE-WAY!
-    // char* can alias anything → OK
-    // anything can alias char → NOT necessarily OK!
+    // char* can alias anything -> OK
+    // anything can alias char -> NOT necessarily OK!
     // int* CANNOT alias char[] unless the char[] actually contains an int object
 
     std::cout << "\n=== What the exemption DOES NOT allow ===\n";
-    std::cout << "1. char[] → cast to int* → dereference: UB (no int object there)\n";
+    std::cout << "1. char[] -> cast to int* -> dereference: UB (no int object there)\n";
     std::cout << "2. Two unrelated types still can't alias each other\n";
     std::cout << "3. Only char/byte types get the exemption, not short/etc.\n";
 
@@ -276,12 +279,11 @@ int main() {
 // First byte via std::byte: 42
 //
 // === What the exemption DOES NOT allow ===
-// 1. char[] → cast to int* → dereference: UB (no int object there)
+// 1. char[] -> cast to int* -> dereference: UB (no int object there)
 // 2. Two unrelated types still can't alias each other
 // 3. Only char/byte types get the exemption, not short/etc.
 //
 // Safe buffer roundtrip: 42
-
 ```
 
 ---
@@ -290,8 +292,6 @@ int main() {
 
 - Strict aliasing enables major optimizations: register caching, instruction reordering, dead store elimination.
 - Use `-fno-strict-aliasing` (GCC/Clang) to disable, but prefer fixing the code instead.
-- `std::bit_cast` (C++20) is the best modern solution — zero overhead, `constexpr`, no UB.
-- `std::memcpy` is optimized away by all major compilers — no actual copy at `-O1` and above.
+- `std::bit_cast` (C++20) is the best modern solution - zero overhead, `constexpr`, no UB.
+- `std::memcpy` is optimized away by all major compilers - no actual copy at `-O1` and above.
 - Common violation: union type punning is UB in C++ (allowed in C99+). Use `memcpy` or `bit_cast` instead.
-
-```text

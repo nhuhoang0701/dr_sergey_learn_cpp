@@ -11,32 +11,37 @@
 
 ### What Is Arena / Monotonic Allocation
 
-An arena allocator hands out memory sequentially from a buffer. Individual deallocations are no-ops — the entire buffer is freed at once when the arena is destroyed.
+An arena allocator hands out memory sequentially from a buffer - think of a bump pointer that just moves forward. Individual deallocations are no-ops, and the entire buffer is freed at once when the arena is destroyed. That single bulk-free is the whole point.
+
+Here is a mental picture of what that looks like in memory:
 
 ```cpp
-
 Buffer: [████████████████████████████░░░░░░░░░░░░░░░░]
          ^alloc1 ^alloc2 ^alloc3     ^next free
-         
-// No per-object free — entire buffer reset at destruction
 
+// No per-object free — entire buffer reset at destruction
 ```
 
+The filled blocks are live allocations sitting side by side. There is no freelist, no per-block header, and no fragmentation. When the arena goes away, so does everything.
+
 ### How `monotonic_buffer_resource` Works
+
+The table below covers the key characteristics. The two that catch people off guard are the no-op deallocation and the thread-safety limitation.
 
 | Feature | Detail |
 | --- | --- |
 | **Header** | `<memory_resource>` |
-| **Allocation** | Bump pointer — O(1), no fragmentation |
+| **Allocation** | Bump pointer - O(1), no fragmentation |
 | **Deallocation** | No-op (memory recycled only at destruction) |
 | **Upstream** | Optional fallback allocator when buffer is exhausted |
-| **Thread safety** | **Not thread-safe** — single-threaded use only |
+| **Thread safety** | **Not thread-safe** - single-threaded use only |
 | **Best for** | Short-lived, burst allocations (parsing, frame processing) |
 
 ### Key PMR Classes
 
-```cpp
+The typical setup is three lines: give the resource a buffer, then pass it to any PMR container. All containers sharing the same resource draw from the same arena.
 
+```cpp
 // 1. Provide a stack buffer
 char buf[4096];
 std::pmr::monotonic_buffer_resource mbr(buf, sizeof(buf));
@@ -46,8 +51,9 @@ std::pmr::vector<int> vec(&mbr);       // allocates from buf
 std::pmr::string str(&mbr);            // shares same arena
 
 // 3. All memory released when mbr is destroyed
-
 ```
+
+Notice that both `vec` and `str` share the same underlying buffer. Their allocations are simply laid out consecutively inside it.
 
 ---
 
@@ -55,8 +61,9 @@ std::pmr::string str(&mbr);            // shares same arena
 
 ### Q1: Rewrite a function that creates many short-lived objects using a `monotonic_buffer_resource`
 
-```cpp
+The "bad" version is the default you write without thinking about it. The "good" version trades per-object heap calls for a single stack buffer and one cleanup at the end. The nested arena example at the bottom shows that arenas can be layered - an inner arena can use an outer one as its upstream fallback when it runs out of space.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -134,13 +141,13 @@ int main() {
 // === Nested arenas ===
 // Sum: 4950
 // Outer still alive: 3.14
-
 ```
 
 ### Q2: Measure the speedup of an arena allocator vs the default allocator for a parse workload
 
-```cpp
+The benchmark here is straightforward: do the same work N times, once with the default allocator and once with an arena. The arena version re-uses the same stack buffer on every iteration instead of going to the heap. Watch especially the comments explaining the four reasons why it wins.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -198,13 +205,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Explain why `monotonic_buffer_resource` is not thread-safe and how to handle multi-threaded arenas
 
-```cpp
+The reason this is not thread-safe is fundamental: the bump-pointer advance is not atomic. Two threads bumping it at the same time produce a data race - that is undefined behavior, and it does not take much load to trigger it. The code below shows three strategies for dealing with this, ordered from best performance to most flexible.
 
+```cpp
 #include <iostream>
 #include <memory_resource>
 #include <vector>
@@ -291,7 +298,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -302,4 +308,4 @@ int main() {
 - The stack buffer avoids heap allocation entirely for small workloads.
 - Upstream resource (default: `new_delete_resource()`) handles overflow when the buffer is full.
 - Typical speedups: 2x-10x over default allocator for burst allocation patterns.
-- `deallocate()` is a no-op — individual frees do nothing. Memory is only reclaimed at destruction.
+- `deallocate()` is a no-op - individual frees do nothing. Memory is only reclaimed at destruction.

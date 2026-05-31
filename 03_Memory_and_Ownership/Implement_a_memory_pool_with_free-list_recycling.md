@@ -10,40 +10,40 @@
 
 ### What Is a Memory Pool
 
-A memory pool (or object pool) pre-allocates a fixed block of memory and carves it into fixed-size slots. When you "allocate" an object, you get a slot from the pool. When you "deallocate," the slot returns to a **free list** for reuse.
+A memory pool (or object pool) pre-allocates a fixed block of memory and carves it into fixed-size slots. When you "allocate" an object, you get a slot from the pool. When you "deallocate," the slot returns to a **free list** for reuse. The key benefit is that you pay the cost of talking to the OS allocator once at startup, and every individual alloc/free after that is just a pointer manipulation.
 
 ### Why Use a Pool
 
 | Feature | `new`/`delete` | Memory Pool |
 | --- | --- | --- |
-| Allocation speed | Varies (heap walk) | **O(1)** — pop from free list |
-| Deallocation speed | Varies | **O(1)** — push to free list |
-| Fragmentation | Can fragment heap | **None** — fixed-size slots |
-| Cache locality | Scattered | **Excellent** — contiguous block |
+| Allocation speed | Varies (heap walk) | **O(1)** - pop from free list |
+| Deallocation speed | Varies | **O(1)** - push to free list |
+| Fragmentation | Can fragment heap | **None** - fixed-size slots |
+| Cache locality | Scattered | **Excellent** - contiguous block |
 | Thread overhead | Global lock (often) | Can be per-thread |
 
 ### Free-List Recycling
 
-The key idea: when a slot is free, repurpose its own memory to store a pointer to the next free slot. This is an **intrusive linked list** — no extra memory needed:
+The key idea: when a slot is free, repurpose its own memory to store a pointer to the next free slot. This is an **intrusive linked list** - no extra memory needed. The same bytes that will eventually hold your object currently hold a pointer. Here is what it looks like as slots are allocated and freed:
 
 ```cpp
-
 Pool memory: [slot0][slot1][slot2][slot3][slot4]
 
 Free list (all free):
-  free_head → slot0 → slot1 → slot2 → slot3 → slot4 → nullptr
+  free_head -> slot0 -> slot1 -> slot2 -> slot3 -> slot4 -> nullptr
 
 After allocating slot0 and slot1:
-  free_head → slot2 → slot3 → slot4 → nullptr
+  free_head -> slot2 -> slot3 -> slot4 -> nullptr
 
 After freeing slot0:
-  free_head → slot0 → slot2 → slot3 → slot4 → nullptr
-
+  free_head -> slot0 -> slot2 -> slot3 -> slot4 -> nullptr
 ```
+
+Allocation is just "pop the head pointer and return it." Deallocation is just "push this pointer back to the head." Both are O(1) with no heap interaction.
 
 ### Alignment Requirement
 
-Each slot must be at least `sizeof(void*)` bytes and aligned for `void*`, since we store a pointer in freed slots. For the actual objects, we also need proper alignment: `alignof(T)`.
+Each slot must be at least `sizeof(void*)` bytes and aligned for `void*`, since we store a pointer in freed slots. For the actual objects, we also need proper alignment: `alignof(T)`. The slot size and alignment must satisfy both constraints simultaneously.
 
 ---
 
@@ -51,8 +51,9 @@ Each slot must be at least `sizeof(void*)` bytes and aligned for `void*`, since 
 
 ### Q1: Build a typed `MemoryPool<T,N>` that pre-allocates N objects and recycles freed slots via an intrusive list
 
-```cpp
+This is the full implementation. Pay attention to how `allocate` pops the free-list head and how `deallocate` pushes back onto it - those two operations are the entire mechanism.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cassert>
@@ -69,7 +70,7 @@ class MemoryPool {
     // Aligned storage for N slots
     alignas(alignof(T)) std::byte storage_[N * SLOT_SIZE];
 
-    // Free list head — points to first free slot
+    // Free list head - points to first free slot
     void* free_head_ = nullptr;
     size_t allocated_ = 0;
 
@@ -149,11 +150,11 @@ int main() {
     std::cout << "\nAllocated: " << pool.allocated()
               << ", Available: " << pool.available() << "\n\n";
 
-    // Free w2 — slot goes back to free list
+    // Free w2 - slot goes back to free list
     pool.deallocate(w2);
-    std::cout << "\nAfter freeing w2 — Available: " << pool.available() << "\n\n";
+    std::cout << "\nAfter freeing w2 - Available: " << pool.available() << "\n\n";
 
-    // Allocate a new widget — reuses w2's slot
+    // Allocate a new widget - reuses w2's slot
     Widget* w4 = pool.allocate(4, 9.99);
     std::cout << "\nw4 reused slot: " << (w4 == w2 ? "yes" : "no") << "\n";
 
@@ -162,17 +163,15 @@ int main() {
     pool.deallocate(w3);
     pool.deallocate(w4);
 
-    std::cout << "\nFinal — Available: " << pool.available() << "\n";
+    std::cout << "\nFinal - Available: " << pool.available() << "\n";
 
     return 0;
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Pool capacity: 4
 Available: 4
 
@@ -184,7 +183,7 @@ Allocated: 3, Available: 1
 
   Widget(2) destroyed
 
-After freeing w2 — Available: 2
+After freeing w2 - Available: 2
 
   Widget(4, 9.99) constructed
 
@@ -193,14 +192,16 @@ w4 reused slot: yes
   Widget(3) destroyed
   Widget(4) destroyed
 
-Final — Available: 4
-
+Final - Available: 4
 ```
+
+Notice the last line: `w4 reused slot: yes`. The freed slot from w2 was immediately handed back to the next allocation. No heap involvement, no fragmentation.
 
 ### Q2: Show that pool allocation has O(1) amortized alloc/free with no fragmentation
 
-```cpp
+Here we run a microbenchmark comparing the pool against `new`/`delete` for 100,000 operations. We also check the slot spacing to confirm there is no fragmentation.
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <vector>
@@ -282,21 +283,20 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (typical):**
 
 ```text
-
 === 100000 alloc+free operations ===
 Pool:       245 us
 new/delete: 3821 us
 Speedup:    ~15x
 
 Slot spacing: 16 bytes (== sizeof(Small)=16? YES)
-
 ```
+
+The slot spacing being exactly `sizeof(Small)` confirms there is no fragmentation - all objects sit in a perfectly packed contiguous block.
 
 ### Q3: Explain the alignment requirements for storing a free-list pointer inside freed object storage
 
@@ -307,8 +307,9 @@ The intrusive free list stores a `void*` pointer inside each free slot. This imp
 | `sizeof(slot) >= sizeof(void*)` | The pointer must fit in the slot |
 | `alignof(slot) >= alignof(void*)` | The pointer must be properly aligned |
 
-```cpp
+The slot dimensions must satisfy both the object's requirements and the pointer's requirements. For tiny types like `char`, the slot has to be enlarged just to hold the free-list pointer.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <type_traits>
@@ -338,7 +339,7 @@ void check_pool_compatibility() {
 }
 
 // Test types
-struct Tiny { char c; };           // 1 byte — smaller than void*!
+struct Tiny { char c; };           // 1 byte - smaller than void*!
 struct Normal { int x; double y; };  // 16 bytes
 struct alignas(64) CacheLine { int data[16]; };  // 64-byte aligned
 
@@ -359,13 +360,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Output (64-bit system):**
 
 ```text
-
 === Tiny (1 byte) ===
 Type requirements:
   sizeof(T)  = 1, alignof(T)  = 1
@@ -384,14 +383,15 @@ Type requirements:
   sizeof(T)  = 64, alignof(T)  = 64
   sizeof(void*) = 8, alignof(void*) = 8
   -> slot_size = 64, slot_align = 64
-
 ```
+
+For `Tiny`, a 1-byte type wastes 7 bytes per slot just to accommodate the free-list pointer. For types at or above pointer size, there is no overhead.
 
 ---
 
 ## Notes
 
 - Memory pools shine for **same-size, high-frequency allocations** (game entities, network packets, AST nodes).
-- For production use, consider `std::pmr::monotonic_buffer_resource` (no recycling) or `std::pmr::unsynchronized_pool_resource` (pool with recycling) — they implement these patterns and integrate with standard containers.
+- For production use, consider `std::pmr::monotonic_buffer_resource` (no recycling) or `std::pmr::unsynchronized_pool_resource` (pool with recycling) - they implement these patterns and integrate with standard containers.
 - The intrusive free list technique means a freed slot's data is overwritten by the next pointer. Never access an object after returning it to the pool.
 - For multithreaded pools, each thread can have its own pool (thread-local) or use lock-free free lists.

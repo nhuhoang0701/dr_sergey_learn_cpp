@@ -11,10 +11,9 @@
 
 ### What Is `std::assume_aligned`
 
-`std::assume_aligned<N>(ptr)` returns `ptr` with a promise to the compiler that it's aligned to `N` bytes. This enables the optimizer to generate better SIMD/vectorized code.
+`std::assume_aligned<N>(ptr)` returns `ptr` with a promise to the compiler that it is aligned to `N` bytes. The function itself generates zero code - it is a pure hint. The payoff is that the optimizer can then emit SIMD instructions that require alignment guarantees, without inserting the usual runtime alignment checks.
 
 ```cpp
-
 #include <memory>
 
 void process(float* data, size_t n) {
@@ -25,16 +24,17 @@ void process(float* data, size_t n) {
     // Compiler can now use AVX (256-bit) instructions without
     // generating alignment check prologues
 }
-
 ```
+
+Without the hint, the compiler would need to generate a scalar prologue to handle any leading unaligned elements before it can safely enter the vectorized loop. With the hint, it can jump straight into the vectorized body.
 
 ### Why Alignment Matters for SIMD
 
 | Alignment | SIMD Width | Instructions |
 | --- | --- | --- |
 | 16 bytes | SSE (128-bit) | `movaps` (aligned, faster) vs `movups` |
-| 32 bytes | AVX (256-bit) | `vmovaps` — requires 32-byte alignment |
-| 64 bytes | AVX-512 | `vmovaps zmm` — requires 64-byte alignment |
+| 32 bytes | AVX (256-bit) | `vmovaps` - requires 32-byte alignment |
+| 64 bytes | AVX-512 | `vmovaps zmm` - requires 64-byte alignment |
 
 Without alignment info, the compiler must generate:
 
@@ -50,8 +50,9 @@ With `assume_aligned`, steps 1 and 3 can be eliminated.
 
 ### Q1: Apply `std::assume_aligned<32>(ptr)` to a SIMD buffer and inspect the vectorized assembly
 
-```cpp
+The real value of this example is the compile command at the bottom. If you paste the two scale functions into Compiler Explorer with `-O2 -mavx2`, you will see `vmovaps` (aligned) versus `vmovups` (unaligned) in the assembly, plus the presence or absence of the alignment-checking prologue.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstddef>
@@ -128,13 +129,13 @@ int main() {
 // To see the difference, compile with:
 //   g++ -O2 -mavx2 -std=c++20 -S assume_aligned.cpp
 // Compare scale_unaligned vs scale_aligned assembly
-
 ```
 
 ### Q2: Explain the UB if the pointer is not actually aligned to the stated boundary
 
-```cpp
+This is the dangerous side of the feature. `assume_aligned` is a promise, not a check. If the pointer is not actually aligned to the stated boundary, the compiler may generate an instruction like `MOVAPS` that causes a hardware fault on misaligned addresses, or it may fold the alignment assumption into address calculations and silently produce wrong results. There is no runtime error - just undefined behavior.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstdint>
@@ -144,8 +145,8 @@ void demonstrate_misalignment_ub() {
     // If the pointer is NOT actually aligned, behavior is UNDEFINED.
     //
     // What can go wrong:
-    // 1. Compiler generates MOVAPS (aligned move) → SIGBUS/SIGSEGV on misaligned addr
-    // 2. Compiler folds alignment assumptions into address calculations → wrong offsets
+    // 1. Compiler generates MOVAPS (aligned move) -> SIGBUS/SIGSEGV on misaligned addr
+    // 2. Compiler folds alignment assumptions into address calculations -> wrong offsets
     // 3. On some architectures: hardware trap, program crash
     // 4. Silently wrong results (misread data from wrong offset)
 
@@ -183,13 +184,13 @@ int main() {
     demonstrate_misalignment_ub();
     return 0;
 }
-
 ```
 
 ### Q3: Compare `std::assume_aligned` with `__builtin_assume_aligned` for portability
 
-```cpp
+Before C++20, GCC and Clang both had a compiler-specific builtin for this. MSVC used a different approach. The portable wrapper below is a practical pattern you will see in performance-sensitive codebases that need to support multiple compilers.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <cstddef>
@@ -245,15 +246,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `std::assume_aligned<N>(ptr)` is a zero-cost hint — it generates no code, only informs the optimizer.
-- **UB if the pointer is not actually aligned** — always use `alignas`, `aligned_alloc`, or platform APIs.
+- `std::assume_aligned<N>(ptr)` is a zero-cost hint - it generates no code, only informs the optimizer.
+- **UB if the pointer is not actually aligned** - always use `alignas`, `aligned_alloc`, or platform APIs.
 - Enables vectorized SIMD code without runtime alignment checks or scalar prologues.
 - Combine with `alignas(N)` for stack buffers and `std::aligned_alloc` for heap buffers.
 - Check alignment in debug builds with `assert(reinterpret_cast<uintptr_t>(ptr) % N == 0)`.
