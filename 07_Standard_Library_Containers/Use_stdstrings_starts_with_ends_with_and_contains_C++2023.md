@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-C++20 added `starts_with()` and `ends_with()` to `std::string` and `std::string_view`. C++23 added `contains()`. These member functions replace awkward, error-prone idioms with clear, readable checks.
+C++20 added `starts_with()` and `ends_with()` to `std::string` and `std::string_view`, and C++23 followed up with `contains()`. These member functions replace a collection of awkward, error-prone idioms with clear, readable checks that communicate intent at a glance. If you've ever written `s.find(prefix) == 0` and squinted at it wondering what it means, these are the functions you were waiting for.
 
 ### Before vs After
+
+If the table feels like a lot, the headline is simple: the old idioms are either inefficient, verbose, or easy to get subtly wrong. The new functions are none of those things.
 
 | Check | Old way (pre-C++20) | New way |
 | --- | --- | --- |
@@ -23,8 +25,9 @@ C++20 added `starts_with()` and `ends_with()` to `std::string` and `std::string_
 
 ### API Summary
 
-```cpp
+Here's the full picture of what you can call and what each overload accepts:
 
+```cpp
 #include <string>
 #include <string_view>
 
@@ -50,12 +53,11 @@ s.contains(',');           // true
 std::string_view sv = s;
 sv.starts_with("Hello");   // true
 sv.contains("World");      // true
-
 ```
 
 ### Overloads
 
-Each function accepts three overloads:
+Each function comes in three flavors, so you can pass whatever you naturally have on hand:
 
 1. `starts_with(string_view sv)` — check against a string/view
 2. `starts_with(charT c)` — check against a single character
@@ -67,8 +69,9 @@ Each function accepts three overloads:
 
 ### Q1: Replace a substr(0, prefix.size()) == prefix check with str.starts_with(prefix)
 
-```cpp
+The three "old way" functions below each represent a real pattern you'll find in existing code. Pay attention to the comments - each has a genuine downside that `starts_with` avoids.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -139,20 +142,20 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+Both the old and new loops produce identical results, but the new version tells a clearer story. Notice the edge cases too - an empty prefix or suffix always returns `true`, which is the mathematically correct behavior (every string trivially starts and ends with nothing).
 
-- `starts_with(prefix)` compares the first `prefix.size()` characters. Returns `false` immediately if the string is shorter than the prefix.
-- **No allocation:** Unlike `substr()`, `starts_with` doesn't create a temporary string.
-- **No over-scanning:** Unlike `find(prefix) == 0`, it only checks position 0.
-- Complexity: O(min(size(), prefix.size())) — compares only as many characters as needed.
+- `starts_with(prefix)` compares the first `prefix.size()` characters and returns `false` immediately if the string is shorter than the prefix - no wasted work.
+- Unlike `substr()`, it doesn't create a temporary string and incur a heap allocation.
+- Unlike `find(prefix) == 0`, it doesn't scan the entire string looking for the pattern anywhere - it only looks at position zero.
+- Complexity: O(min(size(), prefix.size())) - it stops as soon as it can.
 
 ### Q2: Use contains() for a simple substring search and show its readability advantage
 
-```cpp
+The readability argument for `contains()` is real. The old idiom `find() != npos` requires you to remember a magic constant, mentally flip a double negation, and know that `npos` means "not found." `contains()` just says what you mean.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -206,20 +209,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+When you use all three together in the URL analysis block, notice how the conditions read almost like a requirements checklist. That's the goal. Under the hood, `contains(x)` is equivalent to `find(x) != npos` - same semantics, just expressed clearly.
 
-- `contains(x)` is equivalent to `find(x) != npos` — same semantics, but far more readable.
+- `contains(x)` is semantically equivalent to `find(x) != npos` - no behavioral difference, only readability.
 - Available for both `std::string` and `std::string_view`.
-- The readability gain is most obvious in conditions: `if (s.contains("error"))` reads like natural English compared to `if (s.find("error") != std::string::npos)`.
-- `contains()` is C++23-only. For C++20, use `find() != npos` or write a helper.
+- `contains()` is C++23-only. If you're on C++20 or earlier, you'll need `find() != npos` or a small helper function.
 
 ### Q3: Show performance considerations: contains is O(n*m) — use find or Boyer-Moore for large text
 
-```cpp
+For most use cases `contains()` is perfectly fast. The case where you need to think is when you're searching megabyte-sized strings with patterns longer than a few characters. Here's a benchmark that demonstrates the difference.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <algorithm>
@@ -229,9 +231,9 @@ int main() {
 int main() {
     // === Performance characteristics ===
     //
-    // starts_with(prefix):  O(m)     — compare m chars at position 0
-    // ends_with(suffix):    O(m)     — compare m chars at end
-    // contains(pattern):    O(n*m)   — find() internally (naive search)
+    // starts_with(prefix):  O(m)     - compare m chars at position 0
+    // ends_with(suffix):    O(m)     - compare m chars at end
+    // contains(pattern):    O(n*m)   - find() internally (naive search)
     //   where n = string length, m = pattern length
     //
     // For SHORT strings and patterns, this is perfectly fine.
@@ -263,7 +265,7 @@ int main() {
         std::cout << "std::search:    found=" << found << "  time=" << us << " us\n";
     }
 
-    // === Method 3: Boyer-Moore (C++17) — O(n/m) best case ===
+    // === Method 3: Boyer-Moore (C++17) - O(n/m) best case ===
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         auto it = std::search(large_text.begin(), large_text.end(),
@@ -274,7 +276,7 @@ int main() {
         std::cout << "Boyer-Moore:    found=" << found << "  time=" << us << " us\n";
     }
 
-    // === Method 4: Boyer-Moore-Horspool (C++17) — simpler, often faster ===
+    // === Method 4: Boyer-Moore-Horspool (C++17) - simpler, often faster ===
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         auto it = std::search(large_text.begin(), large_text.end(),
@@ -296,33 +298,29 @@ int main() {
     // | Algorithm            | Preprocessing | Search      | Best case   |
     // |---------------------|---------------|-------------|-------------|
     // | Naive (find/contains)| O(1)         | O(n*m)      | O(n)        |
-    // | Boyer-Moore          | O(m + σ)     | O(n*m) worst| O(n/m)      |
-    // | Boyer-Moore-Horspool | O(σ)         | O(n*m) worst| O(n/m)      |
+    // | Boyer-Moore          | O(m + sigma) | O(n*m) worst| O(n/m)      |
+    // | Boyer-Moore-Horspool | O(sigma)     | O(n*m) worst| O(n/m)      |
     // | KMP                  | O(m)         | O(n)        | O(n)        |
     //
-    // σ = alphabet size, n = text length, m = pattern length
+    // sigma = alphabet size, n = text length, m = pattern length
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The practical takeaway from this benchmark: `contains()` and `find()` use a naive search that is O(n×m) in the worst case, but for natural text and short patterns it typically runs in O(n) because mismatches happen quickly. Boyer-Moore (available since C++17 via `std::search`) preprocesses the pattern to skip large chunks of the text. The longer your pattern, the bigger the speedup - that's why its best case is O(n/m). Boyer-Moore-Horspool is a simplified variant with slightly less preprocessing overhead, and it often matches Boyer-Moore in practice.
 
-- `contains()` / `find()` use the naive substring search algorithm: O(n×m) worst case, but typically O(n) for natural text.
-- **Boyer-Moore** (C++17): Preprocesses the pattern to skip large portions of text. Best case O(n/m) — the longer the pattern, the faster it gets.
-- **Boyer-Moore-Horspool**: Simplified Boyer-Moore with only the bad-character heuristic. Slightly less preprocessing, often comparable speed.
-- For `starts_with` and `ends_with`, there's no performance concern — they're always O(m) regardless of string length.
-- **Rule of thumb:** Use `contains()` for strings under a few KB. For document/log searching (MB+), use `std::search` with a Boyer-Moore searcher.
+- `starts_with` and `ends_with` are always O(m) regardless of string length - no performance concern there.
+- Use `contains()` freely for strings in the kilobyte range. Only reach for `std::search` with a Boyer-Moore searcher when you're processing megabyte-scale text with meaningful pattern lengths.
 
 ---
 
 ## Notes
 
 - **`starts_with` / `ends_with`** are C++20. **`contains`** is C++23.
-- All three are `const noexcept` — no exceptions, no allocations, safe to use anywhere.
+- All three are `const noexcept` - no exceptions, no allocations, safe to use anywhere.
 - Available on both `std::string` and `std::string_view` (and `std::basic_string<CharT>`).
-- **Empty patterns:** `starts_with("")` and `ends_with("")` and `contains("")` all return `true` — consistent with mathematical definitions.
+- **Empty patterns:** `starts_with("")`, `ends_with("")`, and `contains("")` all return `true` - consistent with the mathematical definition of prefix/suffix/substring.
 - **Case-insensitive:** None of these functions support case-insensitive comparison. For that, convert both strings to lowercase first, or use `std::ranges::equal` with a custom comparator.
-- **`string_view` advantage:** These functions take `string_view`, so you can pass `const char*`, `string`, or `string_view` — no temporary allocations.
-- **Compiler support:** `starts_with`/`ends_with` — GCC 11+, Clang 12+, MSVC 19.30+. `contains` — GCC 13+, Clang 17+, MSVC 19.34+.
+- **`string_view` advantage:** These functions take `string_view`, so you can pass `const char*`, `string`, or `string_view` without triggering temporary allocations.
+- **Compiler support:** `starts_with`/`ends_with` - GCC 11+, Clang 12+, MSVC 19.30+. `contains` - GCC 13+, Clang 17+, MSVC 19.34+.

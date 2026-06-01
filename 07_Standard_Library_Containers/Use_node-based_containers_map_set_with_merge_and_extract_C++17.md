@@ -9,41 +9,46 @@
 
 ## Topic Overview
 
-C++17 added `extract()` and `merge()` to node-based containers (`map`, `set`, `multimap`, `multiset`, and their `unordered_` variants). These operations transfer **ownership of internal nodes** between containers — no allocation, no copy, no move of the element itself.
+C++17 added `extract()` and `merge()` to node-based containers (`map`, `set`, `multimap`, `multiset`, and their `unordered_` variants). These operations transfer **ownership of internal nodes** between containers - no allocation, no copy, no move of the element itself.
+
+The reason this matters: before C++17, moving an element from one `map` to another required erasing from the source and inserting into the destination - which meant destroying the value and reconstructing it (or at minimum moving it), plus a heap allocation for the new node. With `extract`/`merge`, you literally detach the node from one tree and attach it to another. No memory is allocated or freed; no constructor or destructor runs for the stored value.
+
+There is also a unique capability that `extract` unlocks: **modifying a map key in-place**, which is otherwise impossible because map keys are `const`.
 
 ### What Is a Node
 
-Node-based containers store each element in a separately allocated node (typically a tree node for ordered containers, a linked-list node for unordered). Before C++17, nodes were an implementation detail. Now you can access them directly.
+Node-based containers store each element in a separately allocated node (typically a tree node for ordered containers, a linked-list node for unordered). Before C++17, nodes were an implementation detail. Now you can access them directly:
 
 ```cpp
-
 std::map<int, string> m:
 
   Tree structure (red-black tree):
-       [3, "c"]              ← each box is a heap-allocated node
+       [3, "c"]              <- each box is a heap-allocated node
       /         \
   [1, "a"]    [5, "e"]
      \         /
    [2, "b"] [4, "d"]
 
-  extract(3) → detaches node [3,"c"] from tree
+  extract(3) -> detaches node [3,"c"] from tree
                Returns node_handle owning that memory
                No allocation, no copy, no destruction of "c"
-
 ```
 
-### extract() — Remove and Keep
+The returned `node_handle` owns the node's memory. When you `insert` the handle into another container, the node is simply spliced in - pointer adjustments only, no data movement.
+
+### extract() - Remove and Keep
+
+Here is the core `extract` API. Notice that you can modify `node.key()` - this is the only standard way to change a map key without destroying and recreating the element:
 
 ```cpp
-
 #include <map>
 #include <iostream>
 
 int main() {
     std::map<int, std::string> m = {{1,"a"}, {2,"b"}, {3,"c"}};
 
-    // Extract by key — returns a node_handle
-    auto node = m.extract(2);  // m now has {1,2} — node owns {2,"b"}
+    // Extract by key - returns a node_handle
+    auto node = m.extract(2);  // m now has {1,2} - node owns {2,"b"}
 
     if (!node.empty()) {
         std::cout << node.key() << ": " << node.mapped() << "\n";  // 2: b
@@ -55,17 +60,17 @@ int main() {
         m.insert(std::move(node));  // m = {1,"a"}, {3,"c"}, {20,"b"}
     }
 
-    // Extract by iterator — always succeeds, returns non-empty node
+    // Extract by iterator - always succeeds, returns non-empty node
     auto it = m.find(3);
-    auto node2 = m.extract(it);  // O(1) — iterator already located the node
+    auto node2 = m.extract(it);  // O(1) - iterator already located the node
 }
-
 ```
 
-### merge() — Transfer Nodes Between Containers
+The key-modification pattern (extract -> change key -> re-insert) is exception-safe in a way the old erase+insert pattern was not: while the node is held in `node_handle`, the data is fully owned and cannot be lost even if re-insertion throws.
+
+### merge() - Transfer Nodes Between Containers
 
 ```cpp
-
 #include <map>
 #include <iostream>
 
@@ -75,13 +80,14 @@ int main() {
 
     a.merge(b);
     // a = {1,"a"}, {2,"b"}, {3,"c"}, {4,"d"}, {5,"e"}
-    // b = {3,"C"}  ← duplicate key stayed in source!
+    // b = {3,"C"}  <- duplicate key stayed in source!
 
     // merge() transfers nodes that don't conflict.
     // Conflicting keys (which already exist in target) remain in source.
 }
-
 ```
+
+After `merge`, `b` is left with only the keys that couldn't be transferred because they already existed in `a`. This is the correct behavior for a set-like operation: no data is lost, and no duplicates are silently overwritten.
 
 ### Key API
 
@@ -101,8 +107,9 @@ int main() {
 
 ### Q1: Use node_type extract to move an element from one map to another without allocation
 
-```cpp
+The `Tracked` type here prints every construction, copy, and move. The telling result is what you do NOT see during the extract/insert steps - no "COPIED" or "MOVED" messages appear:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <string>
@@ -151,7 +158,7 @@ int main() {
 
     std::cout << "\n=== Inserting into dest ===\n";
     auto result = dest.insert(std::move(node));
-    // No output! Node was spliced into dest's tree — no copy/move of Tracked!
+    // No output! Node was spliced into dest's tree - no copy/move of Tracked!
 
     std::cout << "  Inserted? " << result.inserted << "\n";
     // Output: Inserted? true
@@ -177,21 +184,23 @@ int main() {
     std::cout << "\n=== Cleanup ===\n";
     return 0;
 }
-
 ```
+
+During "Extracting key 2" and "Inserting into dest", the `Tracked` object never prints anything. That silence is the whole point: zero construction, zero copy, zero move. The node just changed which tree's pointer structure it belongs to.
 
 **How it works:**
 
-- `extract(key)` removes the node from the internal tree and returns a `node_handle` that owns the node's memory. No copy or move of the stored value occurs — the node is simply unlinked from the tree.
-- `insert(std::move(node))` links the node into the destination tree. Again, no copy/move — just pointer manipulation.
+- `extract(key)` removes the node from the internal tree and returns a `node_handle` that owns the node's memory. No copy or move of the stored value occurs - the node is simply unlinked from the tree.
+- `insert(std::move(node))` links the node into the destination tree. Again, no copy/move - just pointer manipulation.
 - The `Tracked` class proves this: no "COPIED" or "MOVED" messages appear during extract/insert.
-- `node.key()` returns a **mutable reference** to the key — this is the only way to change a key in a map without destroying and re-creating the element.
+- `node.key()` returns a **mutable reference** to the key - this is the only way to change a key in a map without destroying and re-creating the element.
 - `extract(key)` returns an empty `node_handle` if the key doesn't exist. Always check `node.empty()`.
 
 ### Q2: Show how merge() transfers nodes from one std::set to another
 
-```cpp
+The interesting behavior here is what happens to duplicate keys: they stay in the source rather than being silently dropped or overwriting the target's entry:
 
+```cpp
 #include <iostream>
 #include <set>
 #include <string>
@@ -221,7 +230,7 @@ int main() {
 
     std::cout << "\nAfter a.merge(b):\n";
     print("  a", a);  // a: {1, 2, 3, 4, 5, 6, 7, 9}
-    print("  b", b);  // b: {3, 5}  ← duplicates stayed in source!
+    print("  b", b);  // b: {3, 5}  <- duplicates stayed in source!
 
     // === Merge with multiset (accepts duplicates) ===
     std::multiset<int> ms = {10, 20};
@@ -229,8 +238,8 @@ int main() {
 
     ms.merge(c);
     std::cout << "\nAfter ms.merge(c):\n";
-    print("  ms", ms);  // ms: {10, 10, 20, 30, 40}  ← multiset keeps both 10s
-    print("  c", c);    // c: {}  ← all transferred (multiset has no conflicts)
+    print("  ms", ms);  // ms: {10, 10, 20, 30, 40}  <- multiset keeps both 10s
+    print("  c", c);    // c: {}  <- all transferred (multiset has no conflicts)
 
     // === Merge between compatible types ===
     // You can merge between different allocators or comparators
@@ -253,20 +262,22 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The multiset example shows the contrast clearly: when the target is a `multiset` (which has no "conflict" concept), every single node transfers successfully and `c` ends up empty. When the target is a `set`, conflicting keys stay behind in the source.
 
 **How it works:**
 
 - `a.merge(b)` attempts to transfer every node from `b` to `a`. For `set`, if a key already exists in `a`, that node **stays in `b`** (no overwrite, no duplication). For `multiset`, all transfers succeed because duplicates are allowed.
-- No allocation, copy, or move of element data — nodes are unlinked from `b`'s tree and linked into `a`'s tree.
+- No allocation, copy, or move of element data - nodes are unlinked from `b`'s tree and linked into `a`'s tree.
 - After merge, `b` contains only the elements that couldn't be transferred (duplicates in set).
-- Merge works between containers with the **same node type** — typically the same container type with the same key/value/comparator types.
+- Merge works between containers with the **same node type** - typically the same container type with the same key/value/comparator types.
 
 ### Q3: Explain why these node operations are useful for lock-free data structures
 
-```cpp
+`extract` and `merge` don't make containers lock-free on their own, but they significantly reduce how long locks need to be held and eliminate memory allocation under the lock. This example walks through three concrete patterns:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <set>
@@ -279,10 +290,10 @@ int main() {
 // Without extract, changing a key requires:
 //   1. Find element
 //   2. Copy the value
-//   3. Erase old entry  ← element briefly doesn't exist!
-//   4. Insert with new key ← may fail (out of memory)
+//   3. Erase old entry  <- element briefly doesn't exist!
+//   4. Insert with new key <- may fail (out of memory)
 // Between steps 3 and 4, the element is GONE.
-// With extract: node is detached → key changed → re-inserted.
+// With extract: node is detached -> key changed -> re-inserted.
 // The element is always owned (either by map or by node_handle).
 
 void key_change_safe() {
@@ -330,7 +341,7 @@ void bulk_transfer() {
         // Build a temporary set outside any lock
         std::set<int> temp;
 
-        {  // Lock hot briefly — just extract
+        {  // Lock hot briefly - just extract
             std::lock_guard lock(hot_mtx);
             hot_set.merge(temp);  // Wait, this is backwards...
             // Actually: extract nodes from hot into temp
@@ -343,7 +354,7 @@ void bulk_transfer() {
             }
         }
 
-        {  // Lock cold briefly — just merge
+        {  // Lock cold briefly - just merge
             std::lock_guard lock(cold_mtx);
             cold_set.merge(temp);  // Transfer all nodes
         }
@@ -364,28 +375,29 @@ int main() {
     bulk_transfer();
 
     std::cout << "\n=== Why node operations help concurrency ===\n";
-    std::cout << "1. No allocation under lock → shorter critical sections\n";
-    std::cout << "2. Node can be modified outside lock → less contention\n";
-    std::cout << "3. No data loss during key changes → exception-safe\n";
-    std::cout << "4. merge() is one operation → simpler lock protocol\n";
-    std::cout << "5. Node handle is move-only → clear ownership\n";
+    std::cout << "1. No allocation under lock -> shorter critical sections\n";
+    std::cout << "2. Node can be modified outside lock -> less contention\n";
+    std::cout << "3. No data loss during key changes -> exception-safe\n";
+    std::cout << "4. merge() is one operation -> simpler lock protocol\n";
+    std::cout << "5. Node handle is move-only -> clear ownership\n";
 
     return 0;
 }
-
 ```
+
+Use Case 2 is the most practically useful: extract under a short lock, release the lock, do expensive work privately on the node, then insert into the destination. The old way required holding the lock while copying the value out, which held the lock longer and risked blocking other threads on a slow memory allocation.
 
 **How it works:**
 
 Note: `extract`/`merge` don't make containers lock-free. They help **reduce lock contention** and improve **exception safety** in concurrent code:
 
-1. **Shorter critical sections:** Extract nodes under a lock (O(log n), no allocation), then process them outside the lock. Without extract, you'd copy data under the lock, erase, release, then insert into another container — more time holding the lock.
+1. **Shorter critical sections:** Extract nodes under a lock (O(log n), no allocation), then process them outside the lock. Without extract, you'd copy data under the lock, erase, release, then insert into another container - more time holding the lock.
 
 2. **No allocation under lock:** `extract` and `merge` never allocate or deallocate memory. This eliminates the risk of a slow malloc/free call while holding a mutex.
 
 3. **Exception safety:** When changing a key, if `insert` fails after `extract`, the node handle still owns the data. With the old erase+insert pattern, if insert throws (e.g., `bad_alloc`), the element is lost.
 
-4. **Transfer semantics:** `merge()` atomically (from the container's perspective) moves nodes between containers. You can lock source, extract into temp, unlock source, lock dest, merge temp into dest, unlock dest — each lock is held briefly.
+4. **Transfer semantics:** `merge()` atomically (from the container's perspective) moves nodes between containers. You can lock source, extract into temp, unlock source, lock dest, merge temp into dest, unlock dest - each lock is held briefly.
 
 ---
 
@@ -394,16 +406,6 @@ Note: `extract`/`merge` don't make containers lock-free. They help **reduce lock
 - **extract() invalidates iterators** to the extracted element only. All other iterators remain valid.
 - **merge() invalidates iterators** to transferred elements in the source container. Iterators in the destination are not invalidated.
 - **Works with unordered containers too:** `unordered_map::extract()`, `unordered_set::merge()`, etc. Same principle, different internal structure (hash table nodes instead of tree nodes).
-- **node_handle is move-only** — you can't copy it. This enforces unique ownership of the node's memory.
+- **node_handle is move-only** - you can't copy it. This enforces unique ownership of the node's memory.
 - **Modifying keys:** `node.key()` is the ONLY standard way to modify a key without destroying and recreating the element. Before C++17, you had to erase and re-insert.
 - **Performance:** Extract/insert are O(log n) for ordered containers, O(1) amortized for unordered. The real win is avoiding allocation/deallocation, which is often the expensive part.
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

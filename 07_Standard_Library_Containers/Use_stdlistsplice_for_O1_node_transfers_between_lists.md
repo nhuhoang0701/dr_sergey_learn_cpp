@@ -1,6 +1,6 @@
 # Use std::list::splice for O(1) node transfers between lists
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #347  
 **Reference:** <https://en.cppreference.com/w/cpp/container/list/splice>  
 
@@ -8,12 +8,11 @@
 
 ## Topic Overview
 
-`std::list::splice` transfers elements between lists by **relinking internal node pointers** — no copying, no moving, no allocation. It's O(1) for transferring a single element or an entire list (O(n) only for a subrange if the implementation needs to update `size()`).
+`std::list::splice` transfers elements between lists by **relinking internal node pointers** - no copying, no moving, no allocation. It is O(1) for transferring a single element or an entire list (O(n) only for a subrange if the implementation needs to update `size()`). This is the operation that makes `std::list` worth reaching for in the specific cases where it wins.
 
 ### splice() Overloads
 
 ```cpp
-
 // 1. Move entire list
 void splice(const_iterator pos, list& other);
 // Moves ALL elements from 'other' into *this before 'pos'.
@@ -29,33 +28,33 @@ void splice(const_iterator pos, list& other,
 // Moves [first, last) from 'other' into *this before 'pos'.
 // O(1) if &other == this, otherwise O(distance(first,last))
 // because size() of both lists must be updated.
-
 ```
 
 ### How It Works Internally
 
-```cpp
+The reason splice is so fast is that it is just pointer surgery. No elements change address, no memory is allocated or freed:
 
+```cpp
 Before splice(pos, other, it):
 
-this:  [A] ←→ [B] ←→ [C]     pos = iterator to C
-other: [X] ←→ [Y] ←→ [Z]     it  = iterator to Y
+this:  [A] <-> [B] <-> [C]     pos = iterator to C
+other: [X] <-> [Y] <-> [Z]     it  = iterator to Y
 
-Step 1: Unlink Y from other:  [X] ←→ [Z]
-Step 2: Link Y before C:      [A] ←→ [B] ←→ [Y] ←→ [C]
+Step 1: Unlink Y from other:  [X] <-> [Z]
+Step 2: Link Y before C:      [A] <-> [B] <-> [Y] <-> [C]
 
 Result:
-this:  [A] ←→ [B] ←→ [Y] ←→ [C]
-other: [X] ←→ [Z]
+this:  [A] <-> [B] <-> [Y] <-> [C]
+other: [X] <-> [Z]
 
 Zero allocation. Zero copy. Just 4 pointer reassignments.
-
 ```
 
 ### Core Example
 
-```cpp
+Watch the sizes change as elements move between lists - notice that `other` becomes empty after a full-list splice:
 
+```cpp
 #include <iostream>
 #include <list>
 #include <string>
@@ -86,13 +85,12 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Important Notes
 
-- **Iterator validity:** Iterators to spliced elements remain valid — they just point to elements now in a different container (or different position).
-- **Self-splice:** You can splice within the same list (rearrange elements).
+- **Iterator validity:** Iterators to spliced elements remain valid - they just point to elements now in a different container (or a different position within the same list).
+- **Self-splice:** You can splice within the same list to rearrange elements.
 - **size() consideration:** Pre-C++11, `list::size()` could be O(n). Since C++11, `size()` must be O(1), so range-splice must count elements to update the sizes of both lists.
 
 ---
@@ -101,8 +99,9 @@ int main() {
 
 ### Q1: Splice a subrange from one list into another at an iterator position in O(1)
 
-```cpp
+Let us walk through all three splice overloads - subrange, single element, and full list - so you can see each one in action:
 
+```cpp
 #include <iostream>
 #include <list>
 #include <string>
@@ -153,21 +152,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `splice(pos, other, first, last)` unlinks nodes `[first, last)` from `other` and inserts them before `pos` in `*this`. No elements are copied, moved, or destroyed — only internal pointers are reassigned.
-- For **single element** splice: O(1) always.
-- For **entire list** splice: O(1) — just reassign head/tail pointers and add sizes.
-- For **subrange** splice: O(distance(first, last)) in C++11+ because both lists' `size()` must be updated (the implementation counts the transferred elements). The actual node relinking is still O(1).
-- Iterators to the spliced elements remain valid and now refer to positions in the destination list.
+The subrange splice counts as O(distance(first, last)) in C++11 and later because both lists' `size()` counters need updating. The actual node relinking is still just four pointer writes - the counting is the expensive part.
 
 ### Q2: Explain why splice invalidates the spliced iterators in the source but not the destination
 
-```cpp
+This is one of the more subtle iterator validity rules in the standard, and it is worth understanding clearly:
 
+```cpp
 #include <iostream>
 #include <list>
 
@@ -192,10 +185,10 @@ int main() {
 
     std::cout << "\nAfter splicing 20 from b to a:\n";
 
-    // it_20 is STILL VALID — it now refers to 20 in list a
+    // it_20 is STILL VALID - it now refers to 20 in list a
     std::cout << "  *it_20 = " << *it_20 << " (now in list a!)\n";  // 20
 
-    // it_2 and it_4 are STILL VALID — they weren't moved
+    // it_2 and it_4 are STILL VALID - they weren't moved
     std::cout << "  *it_2  = " << *it_2 << "\n";   // 2
     std::cout << "  *it_4  = " << *it_4 << "\n";   // 4
 
@@ -217,7 +210,7 @@ int main() {
     // The "invalidation" in the source means:
     //   - The element is no longer IN the source container
     //   - Using source.end() on the iterator would be wrong
-    //   - But dereferencing the iterator still works — it points to the same node
+    //   - But dereferencing the iterator still works - it points to the same node
 
     // === Practical consequence: iterator-based tracking ===
     // You can store iterators as "handles" to elements:
@@ -231,20 +224,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- **Splice does NOT invalidate any iterators.** All iterators to spliced elements remain valid. The C++ standard says: "No iterators or references are invalidated."
-- What changes is which container the element belongs to. An iterator that used to refer to an element in `other` now refers to the same element in `*this` — the node is the same heap object, just linked into a different list.
-- This is because `list` nodes are independently allocated. Splicing just relinks prev/next pointers — the node's memory address doesn't change, so iterators (which are wrappers around node pointers) remain valid.
-- This property makes `std::list` ideal for data structures where you need to move elements between collections while maintaining handles/references to them.
+The reason iterators remain valid is that `splice` does not change the memory address of any node. A list iterator is essentially a pointer to a node. Since the node stays in place and only its prev/next pointers are rewired, every iterator pointing at that node still points at the same memory and the same value - it just belongs to a different list now. This stable-handle property is what makes `unordered_map<Key, list::iterator>` such a powerful combination.
 
 ### Q3: Show a task scheduler using list::splice for efficient priority queue promotion
 
-```cpp
+Here is a more realistic example: a multi-lane task scheduler where promoting a task to a higher priority is O(1) thanks to splice:
 
+```cpp
 #include <iostream>
 #include <list>
 #include <string>
@@ -252,7 +240,7 @@ int main() {
 
 // === Task Scheduler with Priority Promotion ===
 // Tasks live in priority lanes (lists). Promoting a task = splice to higher lane.
-// No allocation, no copy — just O(1) pointer relinking.
+// No allocation, no copy - just O(1) pointer relinking.
 
 struct Task {
     int id;
@@ -264,7 +252,7 @@ class Scheduler {
     static constexpr int NUM_PRIORITIES = 3;
     std::list<Task> lanes[NUM_PRIORITIES];  // [0]=low, [1]=medium, [2]=high
 
-    // Map task_id → iterator (for O(1) lookup)
+    // Map task_id -> iterator (for O(1) lookup)
     using TaskIter = std::list<Task>::iterator;
     std::unordered_map<int, TaskIter> task_map;
     // Also track which lane each task is in:
@@ -297,11 +285,11 @@ public:
         // O(1) splice: move from current lane to higher lane
         lanes[new_priority].splice(lanes[new_priority].end(),
                                    lanes[current], task_it);
-        // Iterator 'task_it' STILL VALID — now in new lane!
+        // Iterator 'task_it' STILL VALID - now in new lane!
         task_lane[id] = new_priority;
 
         std::cout << "Promoted task " << id << " from priority "
-                  << current << " → " << new_priority << "\n";
+                  << current << " -> " << new_priority << "\n";
     }
 
     Task run_next() {
@@ -345,8 +333,8 @@ int main() {
     // [LOW]    1:backup 2:email
 
     // Promote tasks (O(1) splice!)
-    sched.promote(2);   // email: low → medium
-    sched.promote(3);   // compile: medium → high
+    sched.promote(2);   // email: low -> medium
+    sched.promote(3);   // compile: medium -> high
 
     std::cout << "\nAfter promotions:\n";
     sched.print_state();
@@ -369,22 +357,16 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- Each priority level is a `std::list`. Tasks are promoted by `splice`-ing them from one list to another — O(1), no allocation, no copy.
-- A `task_map` stores iterators to each task for O(1) lookup. Since `splice` doesn't invalidate iterators, these handles remain valid after promotion.
-- `run_next()` pops the front of the highest non-empty priority queue.
-- This pattern is common in operating system schedulers, LRU caches (most-recently-used moves to front), and event systems.
+The `task_map` stores a `list::iterator` for each task. When `promote()` moves a task from one lane to another via `splice`, the stored iterator in `task_map` is not updated - it does not need to be, because `splice` does not move the node in memory. The iterator automatically tracks the task to its new list. This is the combination that makes list-based scheduling practical.
 
 ---
 
 ## Notes
 
-- **LRU cache:** The classic use case for `splice`. Move accessed items to the front of a list in O(1). Combined with an `unordered_map<Key, list::iterator>`, this gives O(1) access + O(1) LRU eviction.
+- **LRU cache:** The classic use case for `splice`. Move accessed items to the front of a list in O(1). Combined with an `unordered_map<Key, list::iterator>`, this gives O(1) access and O(1) LRU eviction.
 - **splice within same list:** `a.splice(pos, a, it)` moves element `it` to position `pos` within the same list. O(1).
-- **No exception thrown:** `splice` is `noexcept` — it only manipulates pointers.
+- **No exception thrown:** `splice` is `noexcept` - it only manipulates pointers.
 - **Size update cost:** Range splice between different lists is O(n) in C++11+ because `size()` must be O(1). The actual node relinking is still O(1).
 - **`forward_list::splice_after`:** Similar but works with singly-linked lists. You specify the element *before* the splice point.

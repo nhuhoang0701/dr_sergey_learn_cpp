@@ -11,19 +11,23 @@
 
 `std::forward_list` is a singly-linked list: each node stores one element and one pointer (to the next node). `std::list` is a doubly-linked list: each node has two pointers (next and prev). The trade-off is **memory savings** vs **API restrictions**.
 
+The reason this matters is that linked-list nodes are small, and on a 64-bit system each pointer costs 8 bytes. If your element is also small - say a 4-byte `int` - that pointer overhead is a significant fraction of your per-node cost. `forward_list` cuts that overhead in half.
+
 ### Memory Layout Comparison
 
-```cpp
+Here is a visual reminder of how the two containers differ internally:
 
+```cpp
 std::list (doubly-linked):
-  [prev|data|next] ⟷ [prev|data|next] ⟷ [prev|data|next]
+  [prev|data|next] <-> [prev|data|next] <-> [prev|data|next]
   Per-node overhead: 2 pointers (16 bytes on 64-bit)
 
 std::forward_list (singly-linked):
-  [data|next] → [data|next] → [data|next] → nullptr
+  [data|next] -> [data|next] -> [data|next] -> nullptr
   Per-node overhead: 1 pointer (8 bytes on 64-bit)
-
 ```
+
+One pointer saved per node. It sounds small, but across a million nodes it adds up fast.
 
 ### Key Differences
 
@@ -45,10 +49,13 @@ std::forward_list (singly-linked):
 | `before_begin()`           | Yes (pre-head sentinel)  | N/A                      |
 | Reverse iteration           | **No**                   | Yes (rbegin/rend)        |
 
+If the table feels like a lot, the practical summary is: `forward_list` trades away backward traversal, `push_back`, and O(1) `size()` in exchange for 50% less pointer overhead per node.
+
 ### Core Syntax
 
-```cpp
+The `insert_after` / `erase_after` pattern is the part that trips people up most. Unlike `std::list` which inserts *before* a position, `forward_list` inserts *after* it - because a singly-linked node only knows its successor. Notice also `before_begin()`, the pre-head sentinel that lets you insert or erase at the very front using the same `_after` API:
 
+```cpp
 #include <iostream>
 #include <forward_list>
 #include <list>
@@ -85,13 +92,14 @@ int main() {
 
     return 0;
 }
-
 ```
+
+After sorting and calling `unique()`, each duplicate run is collapsed to one element. Both are O(n log n) and O(n) respectively, done in-place with no extra allocation.
 
 ### Important Notes
 
-- **`before_begin()`** returns an iterator to a position before the first element — necessary because `insert_after` and `erase_after` operate on the element **following** the iterator.
-- `std::forward_list` has **no `size()` member in O(1)** — it was intentionally omitted to keep the container as lightweight as possible. Use `std::distance(fl.begin(), fl.end())` if needed.
+- **`before_begin()`** returns an iterator to a position before the first element - necessary because `insert_after` and `erase_after` operate on the element **following** the iterator.
+- `std::forward_list` has **no `size()` member in O(1)** - it was intentionally omitted to keep the container as lightweight as possible. Use `std::distance(fl.begin(), fl.end())` if needed.
 - `forward_list` saves 50% node overhead vs `list` but loses backward traversal and `push_back`.
 
 ---
@@ -100,8 +108,9 @@ int main() {
 
 ### Q1: Explain the memory savings of forward_list vs list and the API differences (insert_after)
 
-```cpp
+The core insight here is that pointer overhead dominates for small element types. Watch the concrete numbers:
 
+```cpp
 #include <iostream>
 #include <forward_list>
 #include <list>
@@ -179,21 +188,23 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The final `insert_after(before_begin(), 0)` call is the canonical way to prepend an element when you only have the `_after` interface. `before_begin()` gives you a handle to a phantom node that sits conceptually one step before the head.
 
 **Explanation:**
 
 - Each `std::list` node stores 2 pointers (prev + next) = 16 bytes overhead on 64-bit systems.
 - Each `std::forward_list` node stores 1 pointer (next only) = 8 bytes overhead.
-- For small element types, the pointer overhead dominates — `forward_list` saves ~33% memory.
+- For small element types, the pointer overhead dominates - `forward_list` saves ~33% memory.
 - `insert_after`/`erase_after` are necessary because a singly-linked node doesn't know its predecessor. You can only modify the "next" pointer of the node you hold.
 - `before_begin()` provides a handle to insert/erase at the very front.
 
 ### Q2: Benchmark forward_list vs list for many small insertions with rare backward traversal
 
-```cpp
+This benchmark exists to make the trade-off concrete. `forward_list` should pull ahead on `push_front` and forward iteration; `list` wins the moment you need `rbegin`/`rend`:
 
+```cpp
 #include <iostream>
 #include <forward_list>
 #include <list>
@@ -286,20 +297,22 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The benchmark output will depend on your hardware and allocator, but the pattern is consistent: smaller nodes mean slightly less allocation time and slightly better cache density on forward traversal.
 
 **How it works:**
 
-- `forward_list` nodes are smaller → slightly faster allocation and better cache density.
+- `forward_list` nodes are smaller -> slightly faster allocation and better cache density.
 - Forward iteration speed is similar for both (both are pointer-chasing through heap nodes).
 - `forward_list` wins on memory and insertion speed when only forward traversal is needed.
 - `list` wins when you need `push_back`, backward iteration (`rbegin`/`rend`), or O(1) `size()`.
 
 ### Q3: Show that forward_list requires insert_after / erase_after due to single-direction linking
 
-```cpp
+The reason this trips people up is that every other sequence container uses "insert before" semantics, but `forward_list` is physically incapable of doing that without knowing the predecessor. Let the diagram in the comments guide you:
 
+```cpp
 #include <iostream>
 #include <forward_list>
 #include <algorithm>
@@ -310,10 +323,10 @@ int main() {
     // === Why insert_after, not insert? ===
     // In a singly-linked list, each node knows ONLY its successor:
     //
-    //   [10|→] → [20|→] → [30|→] → [40|→] → [50|nullptr]
+    //   [10|->] -> [20|->] -> [30|->] -> [40|->] -> [50|nullptr]
     //
     // If we have an iterator to node [30], we CAN:
-    //   - Read node [30]'s "next" pointer → [40]
+    //   - Read node [30]'s "next" pointer -> [40]
     //   - Change [30]'s "next" to point to a new node
     //
     // But we CANNOT:
@@ -321,10 +334,10 @@ int main() {
     //   - Insert BEFORE [30] (requires modifying [20]'s "next")
 
     // --- Insert after a known position ---
-    auto it = fl.begin();      // → 10
-    std::advance(it, 2);       // → 30
+    auto it = fl.begin();      // -> 10
+    std::advance(it, 2);       // -> 30
     fl.insert_after(it, 35);   // [10, 20, 30, 35, 40, 50]
-    //                          Node 30's "next" now → 35, 35's "next" → 40
+    //                          Node 30's "next" now -> 35, 35's "next" -> 40
 
     std::cout << "After insert_after(30, 35): ";
     for (int x : fl) std::cout << x << " ";
@@ -342,8 +355,8 @@ int main() {
     // Output: After insert_after(before_begin, 5): 5 10 20 30 35 40 50
 
     // --- Erase after a known position ---
-    auto prev = fl.begin();     // → 5
-    std::advance(prev, 3);      // → 30
+    auto prev = fl.begin();     // -> 5
+    std::advance(prev, 3);      // -> 30
     fl.erase_after(prev);       // Erases 35 (the node after 30)
     // [5, 10, 20, 30, 40, 50]
 
@@ -387,12 +400,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The "track previous" loop is the general technique for predicate-based erasure, but note the last line: if you just want to remove by value, `fl.remove(val)` handles the predecessor tracking for you internally.
 
 **How it works:**
 
-- A singly-linked node only knows its **next** neighbor. To insert/erase **before** a node, you'd need to modify the predecessor's "next" pointer — but you don't have access to the predecessor.
+- A singly-linked node only knows its **next** neighbor. To insert/erase **before** a node, you'd need to modify the predecessor's "next" pointer - but you don't have access to the predecessor.
 - Therefore, `std::forward_list` provides `insert_after()` and `erase_after()` instead of `insert()` and `erase()`.
 - `before_begin()` provides a handle to the phantom pre-head position, enabling insertion/erasure at the very front.
 - The manual "track previous" pattern is common when you need to erase elements matching a condition. The simpler alternative is the `remove()` / `remove_if()` member functions which handle predecessor tracking internally.
@@ -405,5 +419,5 @@ int main() {
 - **Use `std::list` when:** You need `push_back`, backward iteration, `splice` with counted transfer, or O(1) `size()`.
 - **Neither for random access:** Both linked lists have O(n) access by index. If you need `[]`, use `std::vector` or `std::deque`.
 - **`std::forward_list::sort()`** is an O(n log n) merge sort. It operates in-place (no extra memory allocation).
-- **`splice_after`** transfers nodes between forward_lists in O(1) — no allocation, no copy.
+- **`splice_after`** transfers nodes between forward_lists in O(1) - no allocation, no copy.
 - **C++20:** `std::erase_if(fl, predicate)` simplifies conditional removal without tracking predecessors.

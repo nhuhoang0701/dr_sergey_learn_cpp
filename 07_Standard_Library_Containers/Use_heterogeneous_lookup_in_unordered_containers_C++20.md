@@ -9,58 +9,59 @@
 
 ## Topic Overview
 
-**Heterogeneous lookup** lets you search an `unordered_map<std::string, V>` using a `std::string_view` or `const char*` **without constructing a temporary `std::string`**. Before C++20, every `find()`, `count()`, or `contains()` call with a non-key type forced an implicit conversion to the key type — meaning a heap allocation for each lookup.
+**Heterogeneous lookup** lets you search an `unordered_map<std::string, V>` using a `std::string_view` or `const char*` **without constructing a temporary `std::string`**. Before C++20, every `find()`, `count()`, or `contains()` call with a non-key type forced an implicit conversion to the key type - meaning a heap allocation for each lookup.
+
+The reason this matters in practice: if you have a hot path doing millions of map lookups using string views or raw string literals, you're paying for millions of unnecessary heap allocations. Each one is small, but they add up, and they also fragment your allocator's free list. Heterogeneous lookup eliminates every single one of those allocations.
 
 ### The Problem (pre-C++20)
 
 ```cpp
-
 std::unordered_map<std::string, int> m = {{"hello", 1}, {"world", 2}};
 
 std::string_view sv = "hello";
 
 // Before C++20 heterogeneous lookup:
-m.find(sv);   // Implicitly constructs std::string("hello") — HEAP ALLOCATION!
+m.find(sv);   // Implicitly constructs std::string("hello") - HEAP ALLOCATION!
 m.count(sv);  // Another temporary string
 m.contains(sv); // Another temporary string
 // For hot loops doing millions of lookups, this is catastrophic.
-
 ```
 
 ### The Solution (C++20)
 
 To enable heterogeneous lookup in unordered containers, you need two things:
 
-1. A **transparent hash** — a hash functor with a nested `is_transparent` type alias that can hash different types.
-2. A **transparent equality** — an equality functor with `is_transparent` that can compare different types.
+1. A **transparent hash** - a hash functor with a nested `is_transparent` type alias that can hash different types.
+2. A **transparent equality** - an equality functor with `is_transparent` that can compare different types.
+
+The `is_transparent` tag is the signal to the container: "I can handle types other than the key type, so please let `find()` accept them directly without constructing a `Key`."
 
 ```cpp
-
 Without heterogeneous lookup:        With heterogeneous lookup:
-                                     
-  find("hello")                        find("hello")
-       │                                    │
-       ▼                                    ▼
-  string("hello")  ← allocation!       hash(const char*)  ← no allocation
-       │                                    │
-       ▼                                    ▼
-  hash(string)                          bucket lookup
-       │                                    │
-       ▼                                    ▼
-  bucket lookup                         equal(string, const char*)
-       │                                    │
-       ▼                                    ▼
-  equal(string, string)                 found!
-       │
-       ▼
-  found!
 
+  find("hello")                        find("hello")
+       |                                    |
+       v                                    v
+  string("hello")  <- allocation!       hash(const char*)  <- no allocation
+       |                                    |
+       v                                    v
+  hash(string)                          bucket lookup
+       |                                    |
+       v                                    v
+  bucket lookup                         equal(string, const char*)
+       |                                    |
+       v                                    v
+  equal(string, string)                 found!
+       |
+       v
+  found!
 ```
 
 ### Enabling Heterogeneous Lookup
 
-```cpp
+The trick for `std::string` keys is that both `std::string` and `const char*` implicitly convert to `std::string_view`, so a single `operator()` overload accepting `string_view` handles all three types:
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -68,7 +69,7 @@ Without heterogeneous lookup:        With heterogeneous lookup:
 
 // Transparent hash: can hash string, string_view, const char*
 struct StringHash {
-    using is_transparent = void;  // ← Required tag type
+    using is_transparent = void;  // <- Required tag type
 
     size_t operator()(std::string_view sv) const {
         return std::hash<std::string_view>{}(sv);
@@ -78,7 +79,7 @@ struct StringHash {
 
 // Transparent equality: can compare across types
 struct StringEqual {
-    using is_transparent = void;  // ← Required tag type
+    using is_transparent = void;  // <- Required tag type
 
     bool operator()(std::string_view a, std::string_view b) const {
         return a == b;
@@ -103,8 +104,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice how clean the call sites look - they're identical to normal `find()` calls. All the machinery is in the type parameters of the map declaration.
 
 ### Which Operations Support Heterogeneous Lookup (C++20)
 
@@ -114,10 +116,12 @@ int main() {
 | `count(K)` | Yes |
 | `contains(K)` | Yes |
 | `equal_range(K)` | Yes |
-| `operator[](K)` | **No** — always requires key type |
+| `operator[](K)` | **No** - always requires key type |
 | `at(K)` | **No** |
 | `erase(K)` | **C++23** only |
 | `insert_or_assign(K,V)` | **No** |
+
+The read-only operations all support it; the mutating operations mostly don't. This makes sense: you're looking things up with a lightweight view, not inserting or erasing with one.
 
 ---
 
@@ -125,8 +129,9 @@ int main() {
 
 ### Q1: Enable heterogeneous lookup in std::unordered_map with a transparent hash and equal
 
-```cpp
+This walks through the three-step setup and then verifies the critical invariant: the hash must produce the same value for `string`, `string_view`, and `const char*` representations of the same text:
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -141,7 +146,7 @@ struct TransparentHash {
         return std::hash<std::string_view>{}(sv);
     }
 
-    // Explicit overloads for clarity (optional — all convert to string_view):
+    // Explicit overloads for clarity (optional - all convert to string_view):
     size_t operator()(const std::string& s) const noexcept {
         return std::hash<std::string_view>{}(s);
     }
@@ -173,20 +178,20 @@ int main() {
     m.emplace("beta", 2);
     m.emplace("gamma", 3);
 
-    // === Lookup with string_view — no allocation ===
+    // === Lookup with string_view - no allocation ===
     std::string_view sv = "beta";
     if (auto it = m.find(sv); it != m.end()) {
         std::cout << "Found '" << it->first << "' = " << it->second << "\n";
     }
     // Output: Found 'beta' = 2
 
-    // === Lookup with const char* — no allocation ===
+    // === Lookup with const char* - no allocation ===
     if (m.contains("gamma")) {
         std::cout << "Contains 'gamma'\n";
     }
     // Output: Contains 'gamma'
 
-    // === Lookup with std::string — also no extra allocation ===
+    // === Lookup with std::string - also no extra allocation ===
     std::string key = "alpha";
     std::cout << "count('alpha') = " << m.count(key) << "\n";
     // Output: count('alpha') = 1
@@ -208,8 +213,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The hash consistency check at the end is not just a demo - it is a correctness requirement. If `hash(a) != hash(b)` for two values that `equal(a, b)` considers equal, the container will silently fail to find elements. Always verify this when writing a custom transparent hash.
 
 **How it works:**
 
@@ -220,8 +226,9 @@ int main() {
 
 ### Q2: Look up a std::string_view key in an unordered_map<std::string, int> without constructing a string
 
-```cpp
+This benchmark uses long keys (to make the allocation cost visible) and many repetitions so the difference in allocation overhead dominates the timing:
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -257,7 +264,7 @@ int main() {
 
     std::string_view lookup_key = "key_number_500_with_some_extra_padding";
 
-    // === Normal map: find(string_view) → allocates temporary string ===
+    // === Normal map: find(string_view) -> allocates temporary string ===
     {
         auto start = std::chrono::steady_clock::now();
         volatile int sum = 0;
@@ -270,7 +277,7 @@ int main() {
         std::cout << "Normal map (allocating):      " << ms << " ms\n";
     }
 
-    // === Heterogeneous map: find(string_view) → zero allocation ===
+    // === Heterogeneous map: find(string_view) -> zero allocation ===
     {
         auto start = std::chrono::steady_clock::now();
         volatile int sum = 0;
@@ -286,7 +293,7 @@ int main() {
     // === Also works with const char* ===
     {
         const char* raw = "key_number_999_with_some_extra_padding";
-        auto it = hetero_map.find(raw);  // const char* → string_view, no allocation
+        auto it = hetero_map.find(raw);  // const char* -> string_view, no allocation
         if (it != hetero_map.end())
             std::cout << "\nFound: " << it->first << " = " << it->second << "\n";
         // Output: Found: key_number_999_with_some_extra_padding = 999
@@ -297,19 +304,21 @@ int main() {
 // Typical output:
 // Normal map (allocating):      ~120 ms
 // Heterogeneous map (no alloc): ~40 ms  (3x faster!)
-
 ```
+
+Three times faster just by enabling two type aliases and switching the map's template parameters. In a text-heavy workload (a parser, a configuration reader, a cache) that difference shows up directly in profiler traces.
 
 **How it works:**
 
 - When `find()` is called with a `std::string_view` on a normal `unordered_map<std::string, int>`, the compiler must construct a temporary `std::string` (heap allocation) because `find()` only accepts `const std::string&`.
-- With heterogeneous lookup enabled, `find()` accepts any type that the hash and equal functors can handle — `string_view` is hashed and compared directly against the stored `std::string` keys without any allocation.
+- With heterogeneous lookup enabled, `find()` accepts any type that the hash and equal functors can handle - `string_view` is hashed and compared directly against the stored `std::string` keys without any allocation.
 - The performance difference is most pronounced with long keys (where string allocation + copying is expensive) and in tight loops with millions of lookups.
 
 ### Q3: Implement a custom transparent hash for a struct with multiple members
 
-```cpp
+The string key case is common, but you may also need heterogeneous lookup for domain types. The pattern generalizes: define a lightweight lookup type that avoids heap allocation, then write hash and equality functors that handle both the full type and the lightweight type:
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <string>
@@ -386,9 +395,9 @@ int main() {
     if (it != salaries.end()) {
         std::cout << "Found: " << it->first.department
                   << " #" << it->first.id
-                  << " → $" << it->second << "\n";
+                  << " -> $" << it->second << "\n";
     }
-    // Output: Found: Engineering #101 → $95000
+    // Output: Found: Engineering #101 -> $95000
 
     // === Check contains with lightweight key ===
     if (salaries.contains(EmployeeKey{"Marketing", 201})) {
@@ -407,14 +416,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The hash consistency check at the end is mandatory to verify. `EmployeeHash::combine` uses the same formula for both types, guaranteeing that `hash(Employee{"Engineering",101}) == hash(EmployeeKey{"Engineering",101})`. If you use a different combine formula for the two overloads, elements will become unfindable - a very subtle bug.
 
 **How it works:**
 
-- `Employee` is the stored key type (owns its `std::string` department). `EmployeeKey` is a lightweight lookup type that uses `std::string_view` instead — no heap allocation.
+- `Employee` is the stored key type (owns its `std::string` department). `EmployeeKey` is a lightweight lookup type that uses `std::string_view` instead - no heap allocation.
 - Both the hash and equality functors handle both types, and the `is_transparent` tag enables the container to call them with `EmployeeKey` directly.
-- The hash function uses a stable combine strategy: for any `Employee` and `EmployeeKey` with the same department/id, the hash values are identical. This is **mandatory** — violating this invariant causes undefined behavior (elements won't be found).
+- The hash function uses a stable combine strategy: for any `Employee` and `EmployeeKey` with the same department/id, the hash values are identical. This is **mandatory** - violating this invariant causes undefined behavior (elements won't be found).
 - Equality cross-compares `string` vs `string_view` via the implicit conversion in `operator==`.
 
 ---
@@ -426,24 +436,3 @@ int main() {
 - **C++23 adds** heterogeneous `erase()` and `extract()` for unordered containers.
 - **Thread safety:** Heterogeneous lookup is read-only (no modifications), so it's as thread-safe as any other `find()`/`count()` call on a const container.
 - **Performance tip:** The biggest wins come in text-heavy workloads (parsers, databases, caches) where keys are looked up by `string_view` slices from a larger buffer.
-
-    return 0;
-}
-
-```cpp
-
-**How this works:**
-
-- A custom transparent hash for a struct with multiple members.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

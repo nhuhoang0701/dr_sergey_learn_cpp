@@ -8,39 +8,45 @@
 
 ## Topic Overview
 
-`std::vector` is the most used C++ container — a dynamic array with contiguous memory. Understanding `reserve`, `emplace_back`, and iterator invalidation is critical for writing correct, performant code.
+`std::vector` is the most used C++ container - a dynamic array backed by contiguous memory. Most of the time it "just works," but there are three specific areas where a shallow understanding leads to real bugs and hidden performance costs: knowing when to `reserve`, choosing `emplace_back` over `push_back`, and respecting iterator invalidation. Let's look at each one.
 
 ### Memory Model
 
-```cpp
+Before diving into the operations, it helps to have the right mental picture of what a vector actually is. There are two numbers that matter - `size` (how many elements exist) and `capacity` (how many elements fit before the vector has to move). They live separately:
 
+```cpp
 vector v = {1, 2, 3}
 
 Stack:               Heap:
 ┌────────────┐       ┌───┬───┬───┬───┬───┐
-│ data ──────────────→│ 1 │ 2 │ 3 │   │   │
+│ data ──────────────>│ 1 │ 2 │ 3 │   │   │
 │ size = 3   │       └───┴───┴───┴───┴───┘
-│ capacity = 5│       ←── size ──→
-└────────────┘       ←──── capacity ─────→
+│ capacity = 5│       <-- size -->
+└────────────┘       <---- capacity ----->
 
-push_back(4): fits in capacity → just writes to slot 3. Size becomes 4.
-push_back(6) after 5: exceeds capacity → allocate new larger buffer, copy all elements, free old buffer.
-
+push_back(4): fits in capacity -> just writes to slot 3. Size becomes 4.
+push_back(6) after 5: exceeds capacity -> allocate new larger buffer, copy all elements, free old buffer.
 ```
 
+The reallocation step is the expensive one - and it silently invalidates every iterator, pointer, and reference you held into the old buffer.
+
 ### Key Operations
+
+Here's a quick reference for the operations you'll use most often. The complexity column is the piece worth remembering.
 
 | Operation | Effect | Complexity |
 | --- | --- | --- |
 | `push_back(x)` | Copy/move x into vector | Amortized O(1) |
 | `emplace_back(args...)` | Construct in-place | Amortized O(1) |
-| `reserve(n)` | Ensure capacity ≥ n (no size change) | O(n) if reallocation |
+| `reserve(n)` | Ensure capacity >= n (no size change) | O(n) if reallocation |
 | `resize(n)` | Change size to n (default-constructs new elements) | O(n) |
 | `shrink_to_fit()` | Request reduce capacity to size | Implementation-defined |
-| `insert(pos, x)` | Insert at position | O(n) — shifts elements |
-| `erase(pos)` | Remove at position | O(n) — shifts elements |
+| `insert(pos, x)` | Insert at position | O(n) - shifts elements |
+| `erase(pos)` | Remove at position | O(n) - shifts elements |
 
 ### Iterator Invalidation Rules
+
+This table is the one that trips people up. The key insight is that any operation that might trigger a reallocation will invalidate *all* iterators - not just the ones near the affected position.
 
 | Operation | Invalidated iterators |
 | --- | --- |
@@ -59,8 +65,9 @@ push_back(6) after 5: exceeds capacity → allocate new larger buffer, copy all 
 
 ### Q1: Explain when iterators are invalidated in a vector and write a bug that demonstrates this
 
-```cpp
+There are two distinct invalidation scenarios worth seeing side by side. The first is the reallocation bug - an iterator saved before a `push_back` that causes a resize. The second is the erase-during-iteration bug, which is one of the most common sources of undefined behavior in production C++ code.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -83,7 +90,7 @@ int main() {
     std::cout << "After reallocation: size=" << v.size()
               << " capacity=" << v.capacity() << "\n";
 
-    // ⚠️ UNDEFINED BEHAVIOR: `it` now points to freed memory!
+    // UNDEFINED BEHAVIOR: `it` now points to freed memory!
     // std::cout << "*it = " << *it << "\n";  // CRASH or garbage
 
     // === BUG: erasing during iteration ===
@@ -115,19 +122,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The reason the erase-during-iteration bug is so common is that the incorrect loop *looks* right at a glance. The fix is subtle: `erase()` returns an iterator to the element that now occupies the erased position, and you need to use that return value instead of incrementing the iterator yourself. The C++20 `std::erase_if` eliminates the pattern entirely and is almost always the right choice when you have access to it.
 
-- **Reallocation invalidation:** When `push_back` exceeds capacity, vector allocates a new buffer, copies/moves elements, and frees the old buffer. Any iterator, pointer, or reference to the old buffer is now **dangling**.
-- **Erase invalidation:** `erase(pos)` shifts all elements after `pos` forward. The iterator at `pos` now points to the next element (or `end()`). Iterators past `pos` are invalidated.
-- **Safe patterns:** Use index-based loops instead of iterators when modifying the vector, or use the iterator returned by `erase()`. C++20's `std::erase`/`std::erase_if` handles this correctly.
+- **Reallocation invalidation:** When `push_back` exceeds capacity, the vector allocates a new buffer, copies/moves all elements, and frees the old one. Any iterator, pointer, or reference into the old buffer is now dangling.
+- **Erase invalidation:** `erase(pos)` shifts elements forward to fill the gap. The iterator at `pos` now refers to what was the next element (or `end()`). Iterators past `pos` are invalidated.
+- **Safe patterns:** Use index-based loops when modifying the vector, use the iterator returned by `erase()`, or use C++20's `std::erase`/`std::erase_if`.
 
 ### Q2: Show that emplace_back avoids an extra move constructor call compared to push_back with a temporary
 
-```cpp
+The difference between `push_back` and `emplace_back` is small but real. The example below uses an instrumented type so you can see exactly which constructors fire for each approach.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -155,14 +162,14 @@ int main() {
     std::cout << "push_back(Widget{\"A\", 1}):\n";
     v.push_back(Widget{"A", 1});
     // Output:
-    //   Constructor: Widget(A, 1)     ← temporary constructed
-    //   Move ctor: Widget(A)          ← moved into vector storage
+    //   Constructor: Widget(A, 1)     <- temporary constructed
+    //   Move ctor: Widget(A)          <- moved into vector storage
 
     // === emplace_back with constructor args ===
     std::cout << "\nemplace_back(\"B\", 2):\n";
     v.emplace_back("B", 2);
     // Output:
-    //   Constructor: Widget(B, 2)     ← constructed directly in vector storage
+    //   Constructor: Widget(B, 2)     <- constructed directly in vector storage
     // No move/copy! One fewer constructor call.
 
     // === push_back with existing object ===
@@ -170,8 +177,8 @@ int main() {
     Widget w{"C", 3};
     v.push_back(std::move(w));
     // Output:
-    //   Constructor: Widget(C, 3)     ← w constructed
-    //   Move ctor: Widget(C)          ← moved into vector
+    //   Constructor: Widget(C, 3)     <- w constructed
+    //   Move ctor: Widget(C)          <- moved into vector
 
     // === Summary ===
     std::cout << "\nAll widgets:\n";
@@ -193,20 +200,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+Notice the `push_back` case triggers two constructor calls (one to build the temporary, one to move it in), while `emplace_back` triggers exactly one (the object is built directly inside the vector's storage). The saving is exactly one move per insertion. For cheap-to-move types like `std::string`, that difference is negligible. For types with heavy copy/move semantics - or no move constructor at all - it genuinely matters.
 
-- `push_back(Widget{"A", 1})`: Creates a temporary Widget, then **move-constructs** it into the vector. Two constructor calls total.
-- `emplace_back("B", 2)`: Forwards the arguments directly to Widget's constructor, constructing the object **in-place** inside the vector's storage. One constructor call total.
-- The saving is exactly one move (or copy) constructor call per insertion.
-- For types with expensive copy/move (e.g., large buffers), `emplace_back` can be significantly faster.
+- `push_back(Widget{"A", 1})`: Constructs a temporary, then move-constructs it into vector storage. Two constructor calls.
+- `emplace_back("B", 2)`: Forwards the arguments to Widget's constructor and builds the object in-place. One constructor call.
+- Prefer `emplace_back` when you're constructing from multiple arguments. For inserting an already-existing object, `push_back` and `emplace_back` are equivalent.
 
 ### Q3: Demonstrate using reserve before a loop to avoid repeated reallocations
 
-```cpp
+Without `reserve`, every time a vector runs out of capacity it allocates a new buffer (typically 2x bigger), copies all existing elements over, and frees the old one. For N elements that's O(log N) reallocations and O(N log N) total element moves. One `reserve` call collapses all of that to a single allocation.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -281,23 +287,23 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The allocation counter is the clearest way to see what's happening. Without `reserve` you'll typically see around 17 allocations for 100,000 elements (1, 2, 4, 8, 16, ... doubling up to 131,072). Each of those copies everything accumulated so far. With `reserve` you get exactly one.
 
-- **Without reserve:** Vector starts with capacity 0(or 1). Each time `push_back` exceeds capacity, a new buffer (typically 2× larger) is allocated, all elements are copied/moved, and the old buffer is freed. For N elements, this causes O(log N) reallocations and O(N log N) total copies.
-- **With reserve:** A single allocation for the exact needed capacity. No reallocations, no copies. O(N) total.
-- **`reserve` vs `resize`:** `reserve` only allocates memory (size stays 0). `resize` also default-constructs elements (size becomes n). Use `reserve` when filling with `push_back`; use `resize` when you need immediate indexed access.
-- **When to use:** Always call `reserve` when you know (or can estimate) the number of elements before a loop.
+The `reserve` vs `resize` distinction is also worth keeping straight. They both make room for N elements, but `resize` actually creates those elements (default-constructing them and setting size to N), while `reserve` only allocates the memory and leaves size at zero. Use `reserve` when you're going to fill the vector with `push_back`; use `resize` when you need immediate random access via `operator[]`.
+
+- **Without reserve:** O(log N) reallocations, O(N log N) total element copies.
+- **With reserve:** One allocation, no copies. O(N) total.
+- As a rule of thumb: if you know (or can estimate) the final size before a fill loop, always call `reserve` first.
 
 ---
 
 ## Notes
 
-- **Growth factor:** Most implementations use 2× (GCC, Clang) or 1.5× (MSVC). Neither is mandated by the standard.
-- **`shrink_to_fit()`** is a non-binding request — the implementation may ignore it.
-- **`emplace_back` pitfall:** `v.emplace_back(v[0])` can be UB if the emplace triggers reallocation — the reference to `v[0]` dangles after reallocation. Use `push_back` or copy first.
-- **Prefer `emplace_back`** when constructing from multiple arguments. For single values, `push_back` is equally efficient (and clearer).
+- **Growth factor:** Most implementations use 2x (GCC, Clang) or 1.5x (MSVC). The standard doesn't mandate a specific factor.
+- **`shrink_to_fit()`** is a non-binding request - the implementation may ignore it.
+- **`emplace_back` pitfall:** `v.emplace_back(v[0])` can be undefined behavior if the emplace triggers reallocation - the reference to `v[0]` dangles after the old buffer is freed. Copy the value first, or use `push_back`.
+- **Prefer `emplace_back`** when constructing from multiple arguments. For single values, `push_back` is equally efficient (and slightly clearer in intent).
 - **C++20 `std::erase` / `std::erase_if`:** Replace the erase-remove idiom. `std::erase(v, 3)` removes all elements equal to 3.
-- **Contiguous memory guarantee:** `&v[0]` is a valid pointer to a C-style array of `v.size()` elements. You can pass it to C APIs.
+- **Contiguous memory guarantee:** `&v[0]` is a valid pointer to a C-style array of `v.size()` elements. You can pass it directly to C APIs.

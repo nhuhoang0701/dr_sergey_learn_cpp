@@ -1,6 +1,6 @@
 # Use priority_queue, stack, and queue as container adaptors
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #69  
 **Reference:** <https://en.cppreference.com/w/cpp/container/priority_queue>  
 
@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Container adaptors **wrap** an underlying container to provide a restricted interface. They are not containers themselves — they have no iterators, no `begin()`/`end()`, and no direct element access. They enforce a specific access pattern.
+Container adaptors **wrap** an underlying container and expose a restricted interface on top of it. They are not containers themselves - they have no iterators, no `begin()`/`end()`, and no direct element access. Their whole point is to enforce a specific access pattern and prevent you from using the container in ways that would break that contract.
 
 ### The Three Adaptors
 
@@ -20,25 +20,26 @@ Container adaptors **wrap** an underlying container to provide a restricted inte
 
 ### Underlying Container Requirements
 
-```cpp
+Each adaptor depends on certain operations from its underlying container. Not every container satisfies every adaptor's needs, so it is worth knowing what is required:
 
+```cpp
 stack needs:     back(), push_back(), pop_back()
-                 → works with: vector, deque, list
+                 // works with: vector, deque, list
 
 queue needs:     front(), back(), push_back(), pop_front()
-                 → works with: deque, list
-                 → NOT vector (no pop_front)
+                 // works with: deque, list
+                 // NOT vector (no pop_front)
 
 priority_queue:  front(), push_back(), pop_back() + random access iterators
-                 → works with: vector, deque
-                 → NOT list (no random access)
-
+                 // works with: vector, deque
+                 // NOT list (no random access)
 ```
 
 ### Core Usage
 
-```cpp
+Here is a quick side-by-side showing all three adaptors in action. Pay attention to which end each one accesses and what `pop()` leaves behind:
 
+```cpp
 #include <iostream>
 #include <stack>
 #include <queue>
@@ -49,7 +50,7 @@ int main() {
     // === Stack (LIFO) ===
     std::stack<int> stk;
     stk.push(1); stk.push(2); stk.push(3);
-    // Internal: [1, 2, 3]  ← top is 3
+    // Internal: [1, 2, 3]  <- top is 3
     std::cout << "Stack top: " << stk.top() << "\n";  // 3
     stk.pop();
     std::cout << "After pop: " << stk.top() << "\n";  // 2
@@ -77,14 +78,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `pop()` does not return anything - it just removes the top or front element. If you need the value, call `top()` or `front()` first, then call `pop()`.
 
 ### Important Notes
 
-- All three have `push()`, `pop()`, `top()` (or `front()`). `pop()` returns void (not the element!).
-- `top()` and `front()` on an empty adaptor is **undefined behavior**.
-- Priority queue internally uses `std::make_heap`, `std::push_heap`, `std::pop_heap`.
+- All three have `push()`, `pop()`, and either `top()` or `front()`. `pop()` always returns void, not the element.
+- Calling `top()` or `front()` on an empty adaptor is undefined behavior - always check `empty()` first.
+- `priority_queue` internally uses `std::make_heap`, `std::push_heap`, and `std::pop_heap` on its underlying container.
 - C++23 adds range constructors for all three adaptors.
 
 ---
@@ -93,8 +95,9 @@ int main() {
 
 ### Q1: Implement Dijkstra's shortest path using std::priority_queue with a custom comparator
 
-```cpp
+Dijkstra's algorithm always processes the nearest unvisited node next. A min-priority queue is the natural tool for that - it gives you the smallest-distance node at every step without scanning the whole distance array. Here is a full implementation:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <queue>
@@ -103,7 +106,7 @@ int main() {
 
 int main() {
     // === Graph as adjacency list ===
-    // Node → vector of (neighbor, weight)
+    // Node -> vector of (neighbor, weight)
     constexpr int N = 6;  // Nodes: 0..5
     using Edge = std::pair<int, int>;  // (neighbor, weight)
     std::vector<std::vector<Edge>> graph(N);
@@ -168,36 +171,34 @@ int main() {
             path.push_back(v);
         for (int j = static_cast<int>(path.size()) - 1; j >= 0; --j) {
             std::cout << path[j];
-            if (j > 0) std::cout << " → ";
+            if (j > 0) std::cout << " -> ";
         }
         std::cout << "\n";
     }
 
     // Expected output:
     // Node 0: dist=0  path: 0
-    // Node 1: dist=4  path: 0 → 1
-    // Node 2: dist=6  path: 0 → 1 → 2
-    // Node 3: dist=2  path: 0 → 3
-    // Node 4: dist=5  path: 0 → 3 → 4  (or 0→1→4)
-    // Node 5: dist=9  path: 0 → 1 → 2 → 5
+    // Node 1: dist=4  path: 0 -> 1
+    // Node 2: dist=6  path: 0 -> 1 -> 2
+    // Node 3: dist=2  path: 0 -> 3
+    // Node 4: dist=5  path: 0 -> 3 -> 4  (or 0->1->4)
+    // Node 5: dist=9  path: 0 -> 1 -> 2 -> 5
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The key design choice here is lazy deletion: instead of updating an existing entry's distance (which `priority_queue` cannot do), you just push a new entry with the better distance. When you pop an entry, you check `if (d > dist[u]) continue` to skip any outdated entries. It is simple and it works well.
 
-- Dijkstra's algorithm greedily processes the nearest unvisited node. A **min-priority_queue** efficiently retrieves the node with the smallest tentative distance.
-- `std::priority_queue<pair<int,int>, vector<...>, std::greater<...>>` creates a min-heap where the smallest `(distance, node)` pair is at the top.
-- **Lazy deletion:** Instead of decreasing keys (which `std::priority_queue` doesn't support), we push new entries and skip stale ones with `if (d > dist[u]) continue`. This is clean and efficient.
+- `std::priority_queue<pair<int,int>, vector<...>, std::greater<...>>` creates a min-heap where the smallest `(distance, node)` pair surfaces first.
+- `std::greater<>` compares pairs lexicographically - first by distance, then by node - which is exactly what we want.
 - Time complexity: O((V + E) log V) with the priority queue.
-- The `std::greater<>` comparator compares `pair` lexicographically: first by distance, then by node number — exactly what we need.
 
 ### Q2: Show how to change the underlying container of a priority_queue from deque to vector
 
-```cpp
+All three adaptors accept a second template parameter that lets you choose the underlying container. The default choices are sensible, but it is good to understand why they were chosen and when you might want to override them:
 
+```cpp
 #include <iostream>
 #include <queue>
 #include <vector>
@@ -255,31 +256,26 @@ int main() {
 
     std::cout << "\nContainer requirements summary:\n";
     std::cout << "  priority_queue: random access + push/pop_back\n";
-    std::cout << "    → vector (default, best cache locality)\n";
-    std::cout << "    → deque (ok, but worse cache behavior)\n";
-    std::cout << "    → list: NO (no random access)\n";
+    std::cout << "    -> vector (default, best cache locality)\n";
+    std::cout << "    -> deque (ok, but worse cache behavior)\n";
+    std::cout << "    -> list: NO (no random access)\n";
     std::cout << "  stack: push/pop/back\n";
-    std::cout << "    → deque (default), vector, list all work\n";
+    std::cout << "    -> deque (default), vector, list all work\n";
     std::cout << "  queue: push_back + pop_front + front\n";
-    std::cout << "    → deque (default), list work\n";
-    std::cout << "    → vector: NO (no efficient pop_front)\n";
+    std::cout << "    -> deque (default), list work\n";
+    std::cout << "    -> vector: NO (no efficient pop_front)\n";
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- The second template parameter of each adaptor specifies the underlying container. You can swap it to any container that satisfies the required operations.
-- `priority_queue` defaults to `vector` because heap operations (`push_heap`, `pop_heap`) require random access iterators and `vector` has the best cache locality for heap traversal.
-- `deque` works for `priority_queue` but is slightly slower because deque's non-contiguous memory hurts cache performance during heap sift operations.
-- `stack` and `queue` default to `deque` because deque efficiently supports both front and back operations. For stack-only usage, `vector` may be slightly faster.
+The reason `priority_queue` defaults to `vector` is that heap operations (`push_heap`, `pop_heap`) require random access iterators, and `vector`'s contiguous memory gives the best cache locality for the heap sift operations. `deque` works but is slightly slower because its non-contiguous segments hurt the traversal. `stack` and `queue` default to `deque` because deque efficiently supports both front and back operations.
 
 ### Q3: Explain why these adaptors do not expose iterators and what that implies for algorithm use
 
-```cpp
+This design decision is intentional. Here is why it matters and what your options are when you need to search or inspect:
 
+```cpp
 #include <iostream>
 #include <stack>
 #include <queue>
@@ -367,23 +363,16 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- Container adaptors deliberately omit `begin()`, `end()`, and iterators to **enforce their access discipline**. A stack should only be accessed from the top; a priority queue should only expose the highest-priority element.
-- This means **no standard algorithm** (`std::find`, `std::sort`, `std::count`, etc.) works with adaptors, because algorithms require iterator ranges.
-- **If you need iteration + priority access:** Use a `std::vector` with `std::make_heap`/`push_heap`/`pop_heap` — you get both heap operations AND the ability to iterate/search the underlying data.
-- The protected member `c` can be accessed via inheritance, but this breaks the abstraction the adaptor provides and should be avoided in production code.
-- The no-iterator design is intentional: it prevents bugs like modifying a priority queue element in-place (which would break the heap invariant).
+If you find yourself needing both heap-ordered access and the ability to iterate or search, reach for `std::vector` with `std::make_heap` / `push_heap` / `pop_heap` directly. You get all the heap operations AND full iterator access. The adaptor's no-iterator design prevents bugs like modifying a priority queue element in-place, which would silently break the heap invariant.
 
 ---
 
 ## Notes
 
-- **`pop()` returns void:** This is a deliberate design choice. Returning the value would require an extra copy/move (exception-unsafe). Always call `top()` before `pop()`.
+- **`pop()` returns void:** This is a deliberate design choice. Returning the value would require an extra copy or move, which is exception-unsafe. Always call `top()` before `pop()`.
 - **Custom comparators:** Use a lambda or functor as the third template parameter of `priority_queue`. With C++20, you can use a lambda directly: `priority_queue<int, vector<int>, decltype([](int a, int b){ return a > b; })>`.
-- **`std::priority_queue` is NOT a sorted container.** It's a heap — only the top element is guaranteed to be the max (or min). Internal order is unspecified.
-- **Thread safety:** Adaptors have the same thread-safety guarantees as their underlying container — none for concurrent modification. Wrap with a mutex if sharing across threads.
-- **C++23:** Adds `std::flat_set` and `std::flat_map` — sorted adaptors over `std::vector` that DO provide iterators. These are the "fixed" version of what container adaptors could have been.
+- **`std::priority_queue` is NOT a sorted container.** It is a heap - only the top element is guaranteed to be the max (or min). The internal order of the remaining elements is unspecified.
+- **Thread safety:** Adaptors have the same thread-safety guarantees as their underlying container - none for concurrent modification. Wrap with a mutex if sharing across threads.
+- **C++23:** Adds `std::flat_set` and `std::flat_map` - sorted adaptors over `std::vector` that DO provide iterators. These are the "fixed" version of what container adaptors could have been.

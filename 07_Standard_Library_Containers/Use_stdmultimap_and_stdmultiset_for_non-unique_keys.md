@@ -1,6 +1,6 @@
 # Use std::multimap and std::multiset for non-unique keys
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #229  
 **Reference:** <https://en.cppreference.com/w/cpp/container/multimap>  
 
@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-`std::multimap` and `std::multiset` are ordered associative containers that allow **duplicate keys**. Unlike `std::map`/`std::set`, which enforce unique keys, multi-containers store every inserted element even when keys collide.
+`std::multimap` and `std::multiset` are ordered associative containers that allow **duplicate keys**. Unlike `std::map`/`std::set`, which enforce unique keys, multi-containers store every inserted element even when keys collide. You use them when the one-entry-per-key constraint of their non-multi counterparts would throw away data you want to keep.
 
 ### multimap vs map
 
@@ -23,6 +23,8 @@
 | `equal_range(key)` | 0 or 1 elements | range of all matches |
 | Ordering | Sorted by key | Sorted by key (insertion order within equal keys) |
 
+Notice that `operator[]` and `at()` are absent from `multimap`. The reason is simple: if a key maps to three values, there is no meaningful single value to return. You must use `equal_range` or `find` instead.
+
 ### multiset vs set
 
 | Feature | `std::set<T>` | `std::multiset<T>` |
@@ -33,8 +35,9 @@
 
 ### Core API
 
-```cpp
+Here is the fundamental usage for both containers:
 
+```cpp
 #include <map>
 #include <set>
 #include <iostream>
@@ -56,7 +59,7 @@ int main() {
     auto [lo, hi] = scores.equal_range("Alice");
     for (auto it = lo; it != hi; ++it)
         std::cout << it->first << ": " << it->second << "\n";
-    // Alice: 87  (sorted? NO — insertion order within equal keys is preserved)
+    // Alice: 87  (sorted? NO - insertion order within equal keys is preserved)
     // Actually: multimap keeps key-equivalent elements in insertion order (C++11+)
 
     // === multiset: duplicate values ===
@@ -71,13 +74,14 @@ int main() {
     std::cout << "count(3) after erase(it): " << ms.count(3) << "\n";  // 2
 
     // erase ALL instances of 5:
-    ms.erase(5);  // removes by value → removes ALL matching
+    ms.erase(5);  // removes by value -> removes ALL matching
     std::cout << "count(5) after erase(5): " << ms.count(5) << "\n";  // 0
 
     return 0;
 }
-
 ```
+
+The erase-by-iterator vs erase-by-value distinction is important to remember: `erase(iterator)` removes one element, while `erase(key)` removes every element with that key. Getting this wrong is a common source of bugs.
 
 ---
 
@@ -85,15 +89,16 @@ int main() {
 
 ### Q1: Use equal_range on a multimap to iterate all values for a given key
 
-```cpp
+`equal_range` is the primary tool for working with multimap. It returns an iterator pair bounding all entries for a given key in one O(log n) call:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <string>
 #include <vector>
 
 int main() {
-    // === Student grade tracker: one student → multiple grades ===
+    // === Student grade tracker: one student -> multiple grades ===
     std::multimap<std::string, int> grades;
 
     grades.insert({"Alice", 92});
@@ -138,25 +143,19 @@ int main() {
     auto [mb, me] = grades.equal_range("Dave");
     if (mb == me)
         std::cout << "\nDave has no grades.\n";
-    // equal_range returns [end, end) for missing keys → empty range
+    // equal_range returns [end, end) for missing keys -> empty range
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `equal_range(key)` returns a `pair<iterator, iterator>` — the half-open range `[first, second)` of all elements with that key.
-- For a missing key, `first == second` (empty range).
-- The iterators are ordered: within equal keys, elements appear in **insertion order** (guaranteed since C++11).
-- Use `it = range_end` to skip to the next key group during grouped iteration.
-- `equal_range` is O(log n) — it performs two binary searches internally.
+The grouped iteration pattern using `it = range_end` to jump past each key group is idiomatic for traversing a multimap without redundant lookups. When `equal_range` returns an empty range (`first == second`), the key simply doesn't exist.
 
 ### Q2: Show the difference between lower_bound/upper_bound iteration and equal_range on multimap
 
-```cpp
+`equal_range` is sugar for a `{lower_bound, upper_bound}` pair, but `lower_bound` and `upper_bound` are individually useful for arbitrary range queries that do not start and end at the same key:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <string>
@@ -222,21 +221,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `lower_bound(key)` → returns iterator to first element **≥ key**
-- `upper_bound(key)` → returns iterator to first element **> key**
-- `equal_range(key)` → returns `{lower_bound(key), upper_bound(key)}` in one call
-- They produce **identical** ranges. `equal_range` is syntactic sugar that may be slightly more efficient (single tree traversal instead of two).
-- `lower_bound` alone is more flexible for arbitrary range queries (e.g., "all keys between A and B").
+Use `equal_range` when you want all entries for exactly one key. Use `lower_bound` + `lower_bound` when you want everything between two key values. The range query at the bottom (`from time 15 to 35`) is a case where `equal_range` would not help because you are spanning multiple keys.
 
 ### Q3: Explain when unordered_multimap outperforms multimap and vice versa
 
 ```cpp
-
 #include <iostream>
 #include <map>
 #include <unordered_map>
@@ -301,10 +292,9 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**When to use each:**
+The benchmark shows raw lookup speed, but the right container depends on what your code needs to do with the data:
 
 | Factor | `multimap` | `unordered_multimap` |
 | --- | --- | --- |
@@ -315,18 +305,18 @@ int main() {
 | **Cache behavior** | Poor (node-based, scattered memory) | Better (bucket array) |
 | **Iterator stability** | All iterators valid after insert/erase | May invalidate on rehash |
 | **Memory overhead** | 3 pointers per node + tree overhead | Hash table + bucket list |
-| **Many duplicates** | O(log n + k) for equal_range (k = count) | All duplicates in same bucket → O(k) |
+| **Many duplicates** | O(log n + k) for equal_range (k = count) | All duplicates in same bucket -> O(k) |
 
 **Choose `unordered_multimap` when:**
 
 - You need only equality-based lookup (no ordering needed)
 - Keys have a good hash function (integers, strings)
-- Dataset is large → O(1) average lookup dominates
+- Dataset is large and O(1) average lookup dominates
 
 **Choose `multimap` when:**
 
 - You need sorted iteration or range queries (`lower_bound`, `upper_bound`)
-- You need **stable iterators** (unordered invalidates on rehash)
+- You need stable iterators (unordered invalidates on rehash)
 - Key type has no natural hash function but has `operator<`
 - Dataset is small (tree overhead negligible, cache difference minimal)
 
@@ -335,8 +325,8 @@ int main() {
 ## Notes
 
 - **`erase(key)` on multimap/multiset removes ALL elements with that key.** To remove just one, use `erase(find(key))`.
-- **`count(key)` is O(log n + k)** where k is the number of duplicates — it must traverse all matches.
+- **`count(key)` is O(log n + k)** where k is the number of duplicates - it must traverse all matches.
 - **C++17 `extract()`** works on multi-containers: `auto nh = mm.extract(mm.find(key));` extracts one node.
 - **C++17 `merge()`** transfers nodes between containers without copying. Works across multi/non-multi containers.
 - Elements with equal keys maintain **insertion order** (guaranteed since C++11).
-- `multiset` can be used as a sorted bag / frequency counter: `count(x)` gives you the frequency.
+- `multiset` can be used as a sorted bag or frequency counter: `count(x)` gives you the frequency of any value.

@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-To work with `std::ranges` algorithms and views, a container must satisfy the `range` concept: it needs `begin()` and `end()` returning iterators and sentinels.
+To work with `std::ranges` algorithms and views, a container must satisfy the `range` concept. The good news is that the bar is actually pretty low: all you need is `begin()` and `end()` that return an iterator and a sentinel the library can work with. Once you clear that bar, your custom type plugs into the entire ranges ecosystem.
 
 ### Minimal Range-Compatible Container
 
-```cpp
+Here's the smallest example that checks out. `StaticVec` is a fixed-size container that stores elements inline. Notice the `static_assert` lines at the bottom - those are your free unit tests that run at compile time and tell you exactly which concept you failed if something is missing.
 
+```cpp
 #include <ranges>
 #include <iterator>
 #include <cstddef>
@@ -26,7 +27,7 @@ class StaticVec {
     size_t size_ = 0;
 
 public:
-    // Iterator type — a simple pointer
+    // Iterator type - a simple pointer
     using iterator = T*;
     using const_iterator = const T*;
 
@@ -55,13 +56,15 @@ int main() {
     for (int x : v | std::views::filter([](int n) { return n > 2; }))
         std::cout << x << " ";  // 3 4 5
 }
-
 ```
+
+Because `T*` satisfies `std::contiguous_iterator`, the compiler promotes your raw-pointer iterators all the way up the hierarchy. You get `sized_range` because `size()` is present, and `contiguous_range` because the data is one flat block of memory. Not bad for about fifteen lines of interface code.
 
 ### Custom Iterator Class
 
-```cpp
+When your data is not contiguous - say, a linked list - you can't use a raw pointer. Instead you write a small iterator class. The key is to advertise what category of iterator you are via `iterator_category`, and to implement exactly the operations that category requires. Here a forward-linked list only needs `++`, `*`, and `==`:
 
+```cpp
 #include <iterator>
 #include <ranges>
 
@@ -91,8 +94,9 @@ public:
 
 static_assert(std::input_iterator<ListView<int>::iterator>);
 static_assert(std::ranges::range<ListView<int>>);
-
 ```
+
+`nullptr` serves as the sentinel here - it represents the past-the-end position. This is totally valid; sentinels do not have to be the same type as the iterator, and they do not have to be a real element address.
 
 ---
 
@@ -100,7 +104,7 @@ static_assert(std::ranges::range<ListView<int>>);
 
 ### Q1: What are the minimum requirements for `std::ranges::range`
 
-A type `R` must have `ranges::begin(r)` and `ranges::end(r)` that return an iterator and a sentinel. The iterator must satisfy `std::input_or_output_iterator`. That's it — no `size()` needed for basic range.
+A type `R` must have `ranges::begin(r)` and `ranges::end(r)` that return an iterator and a sentinel. The iterator must satisfy `std::input_or_output_iterator`. That's it - no `size()` needed for basic range.
 
 ### Q2: What additional concepts enable more algorithms
 
@@ -114,7 +118,7 @@ A sentinel marks the end of a range without being an iterator. It can be a diffe
 
 ## Notes
 
-- Pointers are valid contiguous iterators — `T*` satisfies `std::contiguous_iterator`.
+- Pointers are valid contiguous iterators - `T*` satisfies `std::contiguous_iterator`.
 - Use `static_assert` to verify your container satisfies expected concepts.
 - `std::ranges::to<Container>()` (C++23) materializes any range into a container.
 - Sentinel/iterator type mismatch is the most common issue when writing custom ranges.

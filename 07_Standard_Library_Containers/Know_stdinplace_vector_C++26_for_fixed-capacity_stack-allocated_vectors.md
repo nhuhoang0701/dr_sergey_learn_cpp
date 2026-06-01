@@ -1,6 +1,6 @@
 # Know std::inplace_vector (C++26) for fixed-capacity, stack-allocated vectors
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #176  
 **Standard:** C++26  
 **Reference:** <https://en.cppreference.com/w/cpp/container/inplace_vector>  
@@ -9,19 +9,21 @@
 
 ## Topic Overview
 
-`std::inplace_vector<T, N>` (C++26, P0843) is a dynamically-sized container with a **fixed maximum capacity `N`**, where all storage is allocated **inline** (on the stack or within the containing object). It combines the API of `std::vector` with the performance of `std::array` — no heap allocations, ever.
+`std::inplace_vector<T, N>` (C++26, P0843) is a dynamically-sized container with a **fixed maximum capacity `N`**, where all storage is allocated **inline** (on the stack or within the containing object). It combines the API of `std::vector` with the performance of `std::array` - no heap allocations, ever.
+
+If you've ever worked with embedded systems, real-time audio, or any environment where you cannot afford an allocator call, this is the container you've been wanting. It gives you the push_back/pop_back/iterate API you're used to, backed entirely by stack storage.
 
 ### Key Properties
 
-| Property                     | `std::vector<T>`        | `std::inplace_vector<T,N>` | `std::array<T,N>`     |
+| Property | `std::vector<T>` | `std::inplace_vector<T,N>` | `std::array<T,N>` |
 | --- | --- | --- | --- |
-| Dynamic size                 | Yes (unbounded)        | Yes (bounded by N)         | No (fixed = N)       |
-| Heap allocation              | Yes                    | **Never**                  | Never                |
-| Capacity                     | Dynamic (realloc)      | Fixed at N                 | Fixed at N           |
-| `push_back()`               | Amortized O(1)         | O(1) if size < N           | N/A                  |
-| Can exceed capacity          | Yes (realloc)          | **No** (UB or exception)   | N/A                  |
-| `constexpr` support          | C++20 (limited)        | Full                       | Full                 |
-| Trivially copyable           | No                     | Yes (if T is)              | Yes (if T is)        |
+| Dynamic size | Yes (unbounded) | Yes (bounded by N) | No (fixed = N) |
+| Heap allocation | Yes | **Never** | Never |
+| Capacity | Dynamic (realloc) | Fixed at N | Fixed at N |
+| `push_back()` | Amortized O(1) | O(1) if size < N | N/A |
+| Can exceed capacity | Yes (realloc) | **No** (UB or exception) | N/A |
+| `constexpr` support | C++20 (limited) | Full | Full |
+| Trivially copyable | No | Yes (if T is) | Yes (if T is) |
 
 ### When to Use
 
@@ -32,8 +34,9 @@
 
 ### Core API
 
-```cpp
+The class below is a hand-rolled demonstration since C++26 isn't out yet. The real `std::inplace_vector` will have the same interface. Pay attention to how `alignas(T) std::byte storage_[N * sizeof(T)]` gives us properly aligned raw storage without constructing anything - that's placement new territory.
 
+```cpp
 // NOTE: std::inplace_vector is C++26. As of 2024, use boost::static_vector
 // or implement a simple version.
 
@@ -131,14 +134,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `try_push_back` variant is worth using whenever you're not sure whether the buffer is full - it returns a pointer to the new element on success, or `nullptr` on failure, with no exception overhead.
 
 ### Important Notes
 
-- `std::inplace_vector` **never allocates** heap memory — all storage is within the object itself.
+- `std::inplace_vector` **never allocates** heap memory - all storage is within the object itself.
 - Exceeding capacity with `push_back()` throws `std::bad_alloc`. Use `try_push_back()` for non-throwing insertion.
-- `unchecked_push_back()` has **undefined behavior** if full — use only when you've verified capacity.
+- `unchecked_push_back()` has **undefined behavior** if full - use only when you've verified capacity.
 - The entire object is trivially copyable if `T` is, making it suitable for `memcpy`, serialization, and shared memory.
 - `constexpr`-friendly: can be used in compile-time computations.
 
@@ -148,8 +152,9 @@ int main() {
 
 ### Q1: Use std::inplace_vector<int,16> as a fixed-capacity alternative to std::vector
 
-```cpp
+Here the simplified version uses `std::array` under the hood for brevity. Notice that all standard algorithms work because the storage is contiguous - `std::sort`, `std::accumulate`, and everything else in `<algorithm>` and `<numeric>` just work.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <array>
@@ -210,24 +215,24 @@ int main() {
     // Address check: data() is the object's own memory
     std::cout << "Object at: " << (void*)&v << "\n";
     std::cout << "Data at:   " << (void*)v.data() << "\n";
-    // These are very close (within the same object) — stack allocated!
+    // These are very close (within the same object) - stack allocated!
 
     return 0;
 }
-
 ```
 
 **How it works:**
 
-- `inplace_vector<int, 16>` stores up to 16 ints directly inside the object — on the stack if local, or inline if a member.
+- `inplace_vector<int, 16>` stores up to 16 ints directly inside the object - on the stack if local, or inline if a member.
 - No `new`/`delete` calls ever happen. The `std::array<T, Cap>` member provides the storage.
 - Standard algorithms work directly because the data is contiguous.
 - This is the C++26 standard equivalent of `boost::static_vector` and LLVM's `SmallVector` (without the fallback to heap).
 
 ### Q2: Show the compile error when attempting to exceed the static capacity
 
-```cpp
+The C++26 standard defines three push_back variants with clearly different contracts. Understanding which one to use in which situation is the main API decision point for this container.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <stdexcept>
@@ -252,7 +257,7 @@ public:
 
     // unchecked_push_back: UB if full! (for maximum performance)
     void unchecked_push_back(const T& v) {
-        buf_[sz_++] = v;  // No check — caller must guarantee space
+        buf_[sz_++] = v;  // No check - caller must guarantee space
     }
 
     std::size_t size() const { return sz_; }
@@ -283,13 +288,13 @@ int main() {
     std::cout << "try_push_back: " << std::boolalpha << ok << "\n";
     // Output: try_push_back: false
 
-    // --- Method 3: unchecked_push_back — UNDEFINED BEHAVIOR ---
-    // v.unchecked_push_back(5);  // DON'T DO THIS — writes past buffer!
+    // --- Method 3: unchecked_push_back - UNDEFINED BEHAVIOR ---
+    // v.unchecked_push_back(5);  // DON'T DO THIS - writes past buffer!
 
     // The C++26 standard specifies:
-    // - push_back(val) → throws std::bad_alloc if size() == capacity()
-    // - try_push_back(val) → returns T* (nullptr if full)
-    // - unchecked_push_back(val) → precondition: size() < capacity()
+    // - push_back(val) -> throws std::bad_alloc if size() == capacity()
+    // - try_push_back(val) -> returns T* (nullptr if full)
+    // - unchecked_push_back(val) -> precondition: size() < capacity()
     //
     // Note: There is no "compile error" for exceeding capacity at runtime.
     // The capacity is a compile-time constant, but insertions are runtime operations.
@@ -297,21 +302,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
 
-- The capacity `N` is a compile-time constant, but `push_back()` is a runtime operation — overflow is detected at **runtime**, not compile time.
+- The capacity `N` is a compile-time constant, but `push_back()` is a runtime operation - overflow is detected at **runtime**, not compile time.
 - `push_back()` throws `std::bad_alloc` when full (in the C++26 standard).
-- `try_push_back()` is the non-throwing alternative — returns `nullptr` on failure.
+- `try_push_back()` is the non-throwing alternative - returns `nullptr` on failure.
 - `unchecked_push_back()` is the fastest path but has a precondition (UB if violated).
-- A **compile-time error** only occurs if you attempt to overflow during a `constexpr` evaluation — the compiler rejects UB in constant expressions.
+- A **compile-time error** only occurs if you attempt to overflow during a `constexpr` evaluation - the compiler rejects UB in constant expressions.
 
 ### Q3: Compare inplace_vector with boost::static_vector for pre-C++26 codebases
 
-```cpp
+If you need this feature today, `boost::static_vector` is the nearest drop-in. The migration path to C++26 is intentionally smooth because the API was designed with that compatibility in mind.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <array>
@@ -321,28 +326,28 @@ int main() {
 int main() {
     std::cout << "=== inplace_vector vs boost::static_vector ===\n\n";
 
-    // ┌─────────────────────┬──────────────────────────┬───────────────────────────┐
-    // │ Feature             │ std::inplace_vector<T,N> │ boost::static_vector<T,N> │
-    // ├─────────────────────┼──────────────────────────┼───────────────────────────┤
-    // │ Standard            │ C++26                    │ Boost 1.71+ (2019)        │
-    // │ Header              │ <inplace_vector>         │ <boost/container/...>     │
-    // │ Heap allocation     │ Never                    │ Never                     │
-    // │ Overflow push_back  │ throws std::bad_alloc    │ throws std::bad_alloc     │
-    // │ try_push_back       │ Yes (returns T*)         │ No (Boost 1.84 adds it)  │
-    // │ unchecked_push_back │ Yes (UB if full)         │ No                        │
-    // │ constexpr           │ Full                     │ Partial                   │
-    // │ trivially copyable  │ Yes (if T is)            │ Implementation-dependent  │
-    // │ Ranges support      │ Yes (C++26)              │ Limited                   │
-    // │ Compiler support    │ Not yet (2024)           │ GCC, Clang, MSVC          │
-    // │ No Boost dependency │ Yes                      │ No                        │
-    // └─────────────────────┴──────────────────────────┴───────────────────────────┘
+    // +-----------------------+--------------------------+---------------------------+
+    // | Feature               | std::inplace_vector<T,N> | boost::static_vector<T,N> |
+    // +-----------------------+--------------------------+---------------------------+
+    // | Standard              | C++26                    | Boost 1.71+ (2019)        |
+    // | Header                | <inplace_vector>         | <boost/container/...>     |
+    // | Heap allocation       | Never                    | Never                     |
+    // | Overflow push_back    | throws std::bad_alloc    | throws std::bad_alloc     |
+    // | try_push_back         | Yes (returns T*)         | No (Boost 1.84 adds it)   |
+    // | unchecked_push_back   | Yes (UB if full)         | No                        |
+    // | constexpr             | Full                     | Partial                   |
+    // | trivially copyable    | Yes (if T is)            | Implementation-dependent  |
+    // | Ranges support        | Yes (C++26)              | Limited                   |
+    // | Compiler support      | Not yet (2024)           | GCC, Clang, MSVC          |
+    // | No Boost dependency   | Yes                      | No                        |
+    // +-----------------------+--------------------------+---------------------------+
 
     // Pre-C++26 alternatives:
-    // 1. boost::container::static_vector<T, N>  — closest match
-    // 2. LLVM SmallVector<T, N>                 — falls back to heap if exceeded
-    // 3. absl::InlinedVector<T, N>              — similar to SmallVector
-    // 4. etl::vector<T, N>                      — embedded template library
-    // 5. Manual: std::array<T, N> + size counter — simplest
+    // 1. boost::container::static_vector<T, N>  - closest match
+    // 2. LLVM SmallVector<T, N>                 - falls back to heap if exceeded
+    // 3. absl::InlinedVector<T, N>              - similar to SmallVector
+    // 4. etl::vector<T, N>                      - embedded template library
+    // 5. Manual: std::array<T, N> + size counter - simplest
 
     // Manual polyfill using std::array:
     struct FixedBuf {
@@ -370,7 +375,7 @@ int main() {
     // Output: Manual polyfill: [10, 20, 30]
 
     // Key difference: SmallVector/InlinedVector FALL BACK to heap when N is exceeded
-    // inplace_vector/static_vector NEVER use heap — they throw or return failure
+    // inplace_vector/static_vector NEVER use heap - they throw or return failure
 
     std::cout << "\nMigration path:\n";
     std::cout << "  Pre-C++26: boost::container::static_vector<T, N>\n";
@@ -379,7 +384,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -394,7 +398,7 @@ int main() {
 ## Notes
 
 - **Stack size awareness:** `inplace_vector<LargeStruct, 1000>` allocates `1000 * sizeof(LargeStruct)` bytes on the stack. Watch out for stack overflow with large N or large T.
-- **Trivially copyable:** If T is trivially copyable, so is `inplace_vector<T, N>` — enabling `memcpy`, `memmove`, and use in shared memory / IPC.
+- **Trivially copyable:** If T is trivially copyable, so is `inplace_vector<T, N>` - enabling `memcpy`, `memmove`, and use in shared memory / IPC.
 - **Zero-cost when empty:** An empty `inplace_vector<int, 16>` still occupies `16 * sizeof(int)` + size overhead on the stack.
 - **Embedded systems:** This is the go-to container for embedded C++ where `malloc`/`free` are unavailable or forbidden.
-- **Real-time systems:** Deterministic timing — no allocation jitter, no worst-case realloc stalls.
+- **Real-time systems:** Deterministic timing - no allocation jitter, no worst-case realloc stalls.

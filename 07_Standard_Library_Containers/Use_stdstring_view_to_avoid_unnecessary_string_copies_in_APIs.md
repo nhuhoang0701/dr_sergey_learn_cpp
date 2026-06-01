@@ -1,6 +1,6 @@
 # Use std::string_view to avoid unnecessary string copies in APIs
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #66  
 **Standard:** C++17  
 **Reference:** <https://en.cppreference.com/w/cpp/string/basic_string_view>  
@@ -9,26 +9,27 @@
 
 ## Topic Overview
 
-`std::string_view` (C++17) is a non-owning, lightweight reference to a contiguous sequence of characters. It has the same read-only interface as `std::string` but **never allocates memory**. It's made up of just a pointer and a size — 16 bytes on 64-bit systems.
+`std::string_view` (C++17) is a non-owning, lightweight reference to a contiguous sequence of characters. It has the same read-only interface as `std::string` but **never allocates memory**. It is made up of just a pointer and a size - 16 bytes on 64-bit systems. You use it as a function parameter type any time the function only needs to read characters, not own them.
 
 ### Why string_view
 
-```cpp
+The problem with `const std::string&` is that it only handles `std::string` efficiently. Pass a string literal and you pay for a heap allocation to construct a temporary. `std::string_view` accepts everything without allocating:
 
+```text
                        const std::string&          std::string_view
-                       ─────────────────           ─────────────────
-Accepts std::string    ✅                          ✅
-Accepts "literal"      ✅ (constructs temp string!) ✅ (no copy, no alloc)
-Accepts string_view    ❌ (needs .data() hack)     ✅
-Accepts substring      ❌ (needs substr → alloc)   ✅ (just adjust ptr+len)
+                       -----------------           ----------------
+Accepts std::string    Yes                         Yes
+Accepts "literal"      Yes (constructs temp!)      Yes (no copy, no alloc)
+Accepts string_view    No (needs .data() hack)     Yes
+Accepts substring      No (needs substr -> alloc)  Yes (just adjust ptr+len)
 Memory allocation      Potentially                  Never
-
 ```
 
 ### Core API
 
-```cpp
+Here is the essential usage: passing different string types to a single function, and creating substrings without allocation:
 
+```cpp
 #include <string_view>
 #include <string>
 #include <iostream>
@@ -64,8 +65,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+`remove_prefix` and `remove_suffix` just adjust the internal pointer and size - no bytes are moved or copied.
 
 ### Key Rules
 
@@ -74,8 +76,8 @@ int main() {
 | **Non-owning** | Does not manage lifetime of underlying data |
 | **Read-only** | No `operator[]` modification, no `push_back`, etc. |
 | **Not null-terminated** | `data()` may not be null-terminated (e.g., after `remove_suffix`) |
-| **Implicit from string** | `std::string` → `string_view` is implicit |
-| **Explicit to string** | `string_view` → `std::string` requires explicit constructor |
+| **Implicit from string** | `std::string` -> `string_view` is implicit |
+| **Explicit to string** | `string_view` -> `std::string` requires explicit constructor |
 
 ---
 
@@ -83,15 +85,16 @@ int main() {
 
 ### Q1: Rewrite a function taking const std::string& to take std::string_view and verify no allocation occurs
 
-```cpp
+The biggest win from `string_view` shows up when callers pass literals, substrings, or other non-`std::string` types. This example tracks allocations so you can see the difference directly:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
 
 // === BEFORE: const std::string& ===
 // This forces allocation when called with a string literal:
-//   greet_old("World");  // constructs a temporary std::string → heap allocation!
+//   greet_old("World");  // constructs a temporary std::string -> heap allocation!
 std::string greet_old(const std::string& name) {
     return "Hello, " + name + "!";
 }
@@ -147,11 +150,11 @@ int main() {
 
     std::cout << "greet_old(string):  " << old_allocs << " allocations\n";
     std::cout << "greet_new(string):  " << new_allocs << " allocations\n";
-    // With std::string argument, both are similar — no temporary needed
+    // With std::string argument, both are similar - no temporary needed
 
     // Test with substring (biggest win)
     std::string full = "Hello World!!!!";
-    std::string_view sv = std::string_view(full).substr(6, 5); // "World" — no alloc
+    std::string_view sv = std::string_view(full).substr(6, 5); // "World" - no alloc
 
     AllocCounter::count = 0;
     auto r5 = greet_new(sv);
@@ -160,20 +163,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `const std::string&` forces a temporary `std::string` construction when passed a `const char*` or string literal → heap allocation.
-- `std::string_view` accepts all string-like types without any copying or allocation.
-- The biggest savings come when passing substrings: `string::substr()` allocates; `string_view::substr()` doesn't.
-- **Rule of thumb:** Use `string_view` for function parameters that only READ the string. Use `const string&` only if the function needs to store/own the string.
+The rule of thumb that falls out of this: use `string_view` for any parameter where the function only reads characters. Use `const string&` only if the function needs to store or own the string.
 
 ### Q2: Show the danger of storing a string_view beyond the lifetime of its source string
 
-```cpp
+This is where `string_view` bites people. Because it is non-owning, it is your responsibility to ensure the source data outlives the view. The compiler will not warn you when it doesn't:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -181,7 +179,7 @@ int main() {
 
 // === DANGEROUS: storing string_view as a member ===
 class Logger {
-    std::string_view name_;  // ⚠️ DANGER: non-owning!
+    std::string_view name_;  // WARNING: non-owning!
 public:
     Logger(std::string_view name) : name_(name) {}
     void log(std::string_view msg) {
@@ -191,11 +189,11 @@ public:
 
 std::string_view dangerous_function() {
     std::string local = "temporary";
-    return local;  // ⚠️ DANGLING: local destroyed, view points to freed memory
+    return local;  // WARNING: local destroyed, view points to freed memory
 }
 
 std::string_view also_dangerous() {
-    return std::string("also temporary");  // ⚠️ temporary destroyed at semicolon
+    return std::string("also temporary");  // WARNING: temporary destroyed at semicolon
 }
 
 int main() {
@@ -211,7 +209,7 @@ int main() {
     // === Bug 3: dangling from container reallocation ===
     std::vector<std::string> names = {"Alice"};
     std::string_view first = names[0];  // points to names[0]'s buffer
-    names.push_back("Bob");             // may reallocate → names[0] moves!
+    names.push_back("Bob");             // may reallocate -> names[0] moves!
     // first now dangles if reallocation happened
     // std::cout << first << "\n";  // UNDEFINED BEHAVIOR (maybe)
 
@@ -243,20 +241,15 @@ int main() {
     delete logger;
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `string_view` does NOT own memory. When the source string is destroyed, the view **dangles** — accessing it is undefined behavior.
-- Common traps: returning `string_view` to a local, storing in a member variable, holding a view across container reallocation.
-- **Safe rule:** Use `string_view` only for **transient** use — function parameters and local computations. For storage, use `std::string`.
-- String literals have static lifetime, so `string_view` to a literal is always safe.
+The reason this trips people up is that `string_view` looks and acts exactly like a string, so it is tempting to store it in a struct or return it from a function the same way. The safe mental model: treat `string_view` like a raw pointer with a size - it can dangle, and the compiler will not catch it. String literals are the exception: they have static lifetime and are always safe to hold a `string_view` into.
 
 ### Q3: Explain why string_view::data() is not necessarily null-terminated
 
-```cpp
+This is an important C-interop trap. `std::string` always maintains a null terminator. `std::string_view` does not, and cannot:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -268,41 +261,41 @@ void c_api_function(const char* str) {
 }
 
 int main() {
-    // === Case 1: string_view from string literal — IS null-terminated ===
+    // === Case 1: string_view from string literal - IS null-terminated ===
     std::string_view sv1 = "Hello, World!";
     std::cout << "sv1.data(): " << sv1.data() << "\n";  // OK: underlying literal is null-terminated
     c_api_function(sv1.data());  // Happens to work, but not guaranteed!
 
-    // === Case 2: string_view after remove_suffix — NOT null-terminated ===
+    // === Case 2: string_view after remove_suffix - NOT null-terminated ===
     std::string_view sv2 = "Hello, World!";
     sv2.remove_suffix(8);  // sv2 is now "Hello" (5 chars)
     std::cout << "sv2: " << sv2 << "\n";       // prints "Hello" (operator<< respects size)
-    std::cout << "sv2.data(): " << sv2.data() << "\n";  // prints "Hello, World!" ← STILL reads past the view!
+    std::cout << "sv2.data(): " << sv2.data() << "\n";  // prints "Hello, World!" <- STILL reads past the view!
     std::cout << "sv2.size(): " << sv2.size() << "\n";  // 5
 
-    // c_api_function(sv2.data());  // ⚠️ WRONG: C function reads past the 5-char view
+    // c_api_function(sv2.data());  // WRONG: C function reads past the 5-char view
 
-    // === Case 3: string_view from substr — NOT null-terminated ===
+    // === Case 3: string_view from substr - NOT null-terminated ===
     std::string_view sv3 = std::string_view("Hello, World!").substr(0, 5);
     // sv3.data() points to 'H', but there's no '\0' after 'o'
     // The 'o' is followed by ',' in memory
-    std::cout << "sv3.data() raw: " << sv3.data() << "\n";  // "Hello, World!" — reads too far!
+    std::cout << "sv3.data() raw: " << sv3.data() << "\n";  // "Hello, World!" - reads too far!
 
     // === Case 4: string_view from arbitrary memory ===
     char buffer[] = {'A', 'B', 'C'};  // no null terminator!
     std::string_view sv4(buffer, 3);
     std::cout << "sv4: " << sv4 << "\n";  // "ABC" (safe: operator<< uses size)
-    // c_api_function(sv4.data());  // ⚠️ UNDEFINED BEHAVIOR: no null terminator
+    // c_api_function(sv4.data());  // UNDEFINED BEHAVIOR: no null terminator
 
     // === Safe way to pass string_view to C APIs ===
     // Convert to std::string (which IS null-terminated)
     std::string safe_copy(sv2);  // copies data + adds '\0'
-    c_api_function(safe_copy.c_str());  // ✅ SAFE
+    c_api_function(safe_copy.c_str());  // OK - safe
 
     // === Why this happens ===
     // string_view is {pointer, size}. It has NO control over what comes after size bytes.
-    // remove_prefix/remove_suffix only adjust the pointer/size — they don't insert '\0'.
-    // substr creates a new view with different ptr/size — no null terminator inserted.
+    // remove_prefix/remove_suffix only adjust the pointer/size - they don't insert '\0'.
+    // substr creates a new view with different ptr/size - no null terminator inserted.
     //
     // std::string ALWAYS maintains a null terminator.
     // string_view NEVER guarantees one.
@@ -319,16 +312,9 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `string_view` is `{const char* data, size_t size}` — it does NOT store or maintain a null terminator.
-- When created from a string literal or `std::string`, the underlying data happens to be null-terminated. But `remove_prefix()`, `remove_suffix()`, and `substr()` change the view without inserting `'\0'`.
-- **C APIs** (`printf`, `fopen`, `strlen`) read until `'\0'` — passing `string_view::data()` is dangerous unless you verified null termination.
-- **C++ APIs** (streams, `std::string` constructor, algorithms) use the `size()` and are safe.
-- **Safe conversion:** `std::string(sv)` explicitly copies and adds a null terminator.
+The reason `string_view` can never guarantee null termination is structural: it is just `{const char* data, size_t size}` and has no control over what byte sits immediately after `data + size`. When created from a literal or a `std::string`, the memory happens to have a null there - but `remove_suffix` or `substr` only update the size field. Nothing moves in memory, so no null terminator is inserted. C++ APIs that use `size()` (streams, string constructors, algorithms) are safe; C APIs that read until `'\0'` are not.
 
 ---
 
@@ -336,8 +322,8 @@ int main() {
 
 - **Use `string_view` for parameters**, `std::string` for data members and return values that outlive the function.
 - **`std::string_view` literal:** `"hello"sv` (C++17, `using namespace std::string_view_literals`).
-- **`constexpr`-friendly:** `string_view` operations are `constexpr` — usable in compile-time contexts.
+- **`constexpr`-friendly:** `string_view` operations are `constexpr` - usable in compile-time contexts.
 - **C++20 additions:** `starts_with()`, `ends_with()` added to `string_view`. C++23 adds `contains()`.
-- **Performance:** `string_view` is typically passed by value (16 bytes on 64-bit) — cheaper than `const string&` (which is a pointer + indirection to heap).
+- **Performance:** `string_view` is typically passed by value (16 bytes on 64-bit) - cheaper than `const string&` (which is a pointer plus indirection to heap).
 - **Pitfall with `operator+`:** You can't do `sv + " suffix"` because `string_view` has no `operator+`. Convert first: `std::string(sv) + " suffix"`.
 - **`std::string::operator string_view()`** is implicit. The reverse is explicit (`std::string(sv)`).

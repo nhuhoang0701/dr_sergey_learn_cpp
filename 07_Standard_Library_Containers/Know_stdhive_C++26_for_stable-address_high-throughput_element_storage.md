@@ -1,6 +1,6 @@
 # Know std::hive (C++26) for stable-address, high-throughput element storage
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #190  
 **Standard:** C++26  
 **Reference:** <https://en.cppreference.com/w/cpp/container/hive>  
@@ -11,41 +11,44 @@
 
 `std::hive` (C++26, P0447) is a new container designed for scenarios requiring **stable element addresses** (pointers/references never invalidated by insertion or erasure of other elements) while maintaining **high iteration throughput** via cache-friendly memory layout. It fills a gap between `std::list` (stable addresses, poor cache) and `std::vector` (great cache, no address stability).
 
+The reason this matters so much in practice is that there's a whole class of software - game engines, physics simulations, ECS systems, particle effects - where you need to iterate over thousands of objects every frame while simultaneously adding and removing objects from the middle. Vector invalidates pointers on growth. List is stable but cache-unfriendly. Hive gives you both.
+
 ### How std::hive Works Internally
 
-```cpp
+The core innovation is the **skipfield**: a compact data structure that records which slots are occupied and which are erased, and lets the iterator jump over erased slots in O(1) without visiting each one individually.
 
+```cpp
 Block 1:        Block 2:        Block 3:
 [E][_][E][E]    [E][E][_][E]    [E][E][E][_]
      ^               ^                    ^
   skipfield=1    skipfield=1          skipfield=1
 
 E = occupied element    _ = erased (skipfield marks it)
-
 ```
 
 - **Colony/hive pattern:** Allocates elements in contiguous **blocks** (chunks).
 - **Skipfield:** An auxiliary data structure (jump-counting skipfield) marks erased slots, allowing O(1) skip during iteration.
-- **No reallocation of existing blocks** on insert → **stable addresses**.
-- **Erased slots are reused** by future insertions → low memory fragmentation.
+- **No reallocation of existing blocks** on insert -> **stable addresses**.
+- **Erased slots are reused** by future insertions -> low memory fragmentation.
 
 ### Key Properties
 
-| Property                    | `std::hive`           | `std::vector`         | `std::list`           |
+| Property | `std::hive` | `std::vector` | `std::list` |
 | --- | --- | --- | --- |
-| Address stability           | **Yes**               | No                    | **Yes**               |
-| Cache-friendly iteration    | **Good**              | **Excellent**         | Poor                  |
-| Insert (any position)       | O(1) amortized        | O(n)                  | O(1)                  |
-| Erase (any position)        | O(1)                  | O(n)                  | O(1)                  |
-| Random access `[i]`        | **No**                | O(1)                  | O(n)                  |
-| Memory overhead per element | ~1 byte (skipfield)   | 0                     | 2 pointers            |
-| Preserves insertion order   | **No** (partially)    | Yes                   | Yes                   |
-| Contiguous memory           | Per-block             | Yes                   | No                    |
+| Address stability | **Yes** | No | **Yes** |
+| Cache-friendly iteration | **Good** | **Excellent** | Poor |
+| Insert (any position) | O(1) amortized | O(n) | O(1) |
+| Erase (any position) | O(1) | O(n) | O(1) |
+| Random access `[i]` | **No** | O(1) | O(n) |
+| Memory overhead per element | ~1 byte (skipfield) | 0 | 2 pointers |
+| Preserves insertion order | **No** (partially) | Yes | Yes |
+| Contiguous memory | Per-block | Yes | No |
 
 ### Core API (C++26)
 
-```cpp
+Since `std::hive` isn't in compilers yet (as of 2024), this example demonstrates the conceptual API and simulates the intent with a `vector` + commentary. In real code you'd use `plf::hive` as a polyfill.
 
+```cpp
 // NOTE: std::hive is C++26. As of 2024, use plf::hive (reference implementation)
 // from https://github.com/mattreecebentley/plf_hive as a polyfill.
 
@@ -89,14 +92,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Important Notes
 
 - `std::hive` does **not** support random access (`operator[]`). It's a forward-iterable container.
 - Erased elements leave "holes" that are tracked by the skipfield and reused on subsequent insertions.
-- Iteration order is **not** insertion order — erased-then-reused slots appear at their memory position.
+- Iteration order is **not** insertion order - erased-then-reused slots appear at their memory position.
 - Iterator invalidation: only the erased element's iterator is invalidated. All other iterators remain valid.
 - Block sizing can be tuned with `reshape(min_block_size, max_block_size)` for specific workloads.
 
@@ -106,8 +108,9 @@ int main() {
 
 ### Q1: Explain why std::hive preserves element addresses on insertion unlike std::vector
 
-```cpp
+This is the core property that makes hive valuable. The example below makes the vector problem visible before explaining how hive avoids it through its block-based design.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -130,8 +133,8 @@ int main() {
     // --- Why hive preserves addresses ---
     // std::hive allocates elements in fixed-size BLOCKS.
     // When a new element is inserted:
-    //   1. If there's a reusable erased slot in an existing block → use it
-    //   2. If current block is full → allocate a NEW block
+    //   1. If there's a reusable erased slot in an existing block -> use it
+    //   2. If current block is full -> allocate a NEW block
     //   3. Existing blocks are NEVER moved or reallocated
     //
     // Therefore, pointers to elements in existing blocks remain valid.
@@ -149,23 +152,23 @@ int main() {
     std::cout << "\nHive memory model:\n";
     std::cout << "Block A: [10][ ][30]  (slot 1 was erased, slot 2 reused)\n";
     std::cout << "Block B: [40][50][ ]  (new block, old blocks untouched)\n";
-    std::cout << "Pointer to 10 → always valid (Block A never moves)\n";
+    std::cout << "Pointer to 10 -> always valid (Block A never moves)\n";
 
     return 0;
 }
-
 ```
 
 **Explanation:**
 
-- **`std::vector`:** Stores all elements in one contiguous buffer. When capacity is exceeded, it allocates a larger buffer and **moves/copies all elements** → all pointers, references, and iterators are invalidated.
+- **`std::vector`:** Stores all elements in one contiguous buffer. When capacity is exceeded, it allocates a larger buffer and **moves/copies all elements** -> all pointers, references, and iterators are invalidated.
 - **`std::hive`:** Uses multiple fixed-size blocks. New blocks are allocated independently. Existing blocks are **never moved or reallocated**. Therefore, a pointer to an element remains valid as long as that specific element isn't erased.
 - This is critical for systems like ECS (Entity Component Systems), physics engines, or any scenario where external structures hold pointers into the container.
 
 ### Q2: Show a use case in a game entity system where stable addresses avoid pointer invalidation
 
-```cpp
+This is the canonical motivation for hive. The physics system holds raw pointers to entities. If the entity container ever moves memory, those pointers go stale. Notice how this example uses `std::list` as a stand-in because it also provides stable addresses - but the note at the end explains why hive is better in practice.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <list>
@@ -235,7 +238,7 @@ int main() {
     // Simulate: update physics (accesses entities via pointers)
     physics.update();
 
-    // Kill Enemy1 — erase from container
+    // Kill Enemy1 - erase from container
     auto it = std::find_if(entities.begin(), entities.end(),
         [](const Entity& e) { return e.id == 2; });
     if (it != entities.end()) {
@@ -265,7 +268,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -273,12 +275,13 @@ int main() {
 - The `PhysicsSystem` stores raw pointers to entities in the container.
 - When an entity is erased from the container, other entity pointers must remain valid.
 - `std::vector` would invalidate all pointers on erase (shifts elements) or on growth (reallocation).
-- `std::list` and `std::hive` both provide stable addresses — but `std::hive` iterates much faster due to its block-based layout with skipfields, making it ideal for game loops that iterate all entities every frame.
+- `std::list` and `std::hive` both provide stable addresses - but `std::hive` iterates much faster due to its block-based layout with skipfields, making it ideal for game loops that iterate all entities every frame.
 
 ### Q3: Compare std::hive with a list of chunks (block list) for cache performance
 
-```cpp
+This benchmark builds toward hive by showing how chunking already dramatically improves on `std::list`. The block list is essentially a manual hive without the skipfield optimization. The commentary at the end explains what the skipfield adds on top.
 
+```cpp
 #include <iostream>
 #include <list>
 #include <vector>
@@ -411,25 +414,24 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
 
-- **`std::list`:** Each element is a separate heap allocation → pointer chasing on every iteration → cache miss per element. Very slow for iteration-heavy workloads.
+- **`std::list`:** Each element is a separate heap allocation -> pointer chasing on every iteration -> cache miss per element. Very slow for iteration-heavy workloads.
 - **Block list (manual):** Elements are packed into fixed-size arrays. Iteration within a block is contiguous and cache-friendly. Between blocks, there's one pointer indirection, but far fewer than `std::list`.
 - **`std::hive`** (not yet available in compilers) improves on the block list by:
-  1. Using a **jump-counting skipfield** instead of per-element bool — iteration skips erased slots in O(1) without checking each slot individually.
+  1. Using a **jump-counting skipfield** instead of per-element bool - iteration skips erased slots in O(1) without checking each slot individually.
   2. Automatic block sizing and growth.
   3. Slot reuse for new insertions.
-- Typical benchmark: `std::hive` iterates 3-10× faster than `std::list`, and within 1.5-2× of `std::vector` for dense workloads.
+- Typical benchmark: `std::hive` iterates 3-10x faster than `std::list`, and within 1.5-2x of `std::vector` for dense workloads.
 
 ---
 
 ## Notes
 
-- **`std::hive` is C++26** — not yet available in any major compiler (as of 2024). Use `plf::hive` (the reference implementation by Matt Bentley) as a polyfill.
-- **Best use cases:** Game entity systems, particle systems, physics simulations, memory pools — any scenario with frequent insert/erase and iteration where pointers to elements must remain valid.
+- **`std::hive` is C++26** - not yet available in any major compiler (as of 2024). Use `plf::hive` (the reference implementation by Matt Bentley) as a polyfill.
+- **Best use cases:** Game entity systems, particle systems, physics simulations, memory pools - any scenario with frequent insert/erase and iteration where pointers to elements must remain valid.
 - **Not suitable for:** Sorted data (no random access), small collections (overhead not worth it), or when insertion order must be preserved.
 - **Skipfield:** The key innovation. A jump-counting skipfield stores the number of consecutive erased slots, allowing the iterator to skip them in O(1) rather than checking each slot.
 - **`reshape(min, max)`:** Tunes block size range. Smaller blocks waste less memory with few elements; larger blocks improve iteration throughput.

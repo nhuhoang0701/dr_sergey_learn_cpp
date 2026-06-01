@@ -1,6 +1,6 @@
 # Use std::flat_set (C++23) for sorted unique storage with better cache behavior
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #351  
 **Standard:** C++23  
 **Reference:** <https://en.cppreference.com/w/cpp/container/flat_set>  
@@ -9,58 +9,60 @@
 
 ## Topic Overview
 
-`std::flat_set` (C++23) is a sorted associative container adaptor that stores unique elements in a **sorted contiguous sequence** (by default `std::vector`). It provides the same interface as `std::set` but uses a flat sorted array instead of a red-black tree.
+`std::flat_set` (C++23) is a sorted associative container adaptor that stores unique elements in a **sorted contiguous sequence** (by default `std::vector`). It provides the same interface as `std::set` but uses a flat sorted array instead of a red-black tree. The trade-off is simple: lookups and iteration get faster (sometimes dramatically so), while individual inserts and erases get slower.
 
-### flat_set vs std::set — Internal Structure
+### flat_set vs std::set - Internal Structure
+
+The difference in structure explains every performance characteristic that follows. `std::set` builds a tree where each node is a separate heap allocation. `std::flat_set` keeps everything in one contiguous block:
 
 ```cpp
-
 std::set<int> (red-black tree):        std::flat_set<int> (sorted vector):
-                                       
-      [5]                              Memory: [1][3][5][7][9]  ← contiguous!
-     /   \                             
-   [3]   [7]    ← each node is        Binary search over contiguous array
-   / \   / \       a separate heap     → cache-friendly lookups
- [1] [4][6] [9]   allocation           → O(log n) with excellent cache behavior
 
+      [5]                              Memory: [1][3][5][7][9]  <- contiguous!
+
+     /   \
+   [3]   [7]    <- each node is        Binary search over contiguous array
+   / \   / \       a separate heap     -> cache-friendly lookups
+ [1] [4][6] [9]   allocation           -> O(log n) with excellent cache behavior
 ```
 
 ### Performance Comparison
 
 | Operation | `std::set` | `std::flat_set` | Why |
 | --- | --- | --- | --- |
-| Lookup | O(log n) — tree walk | O(log n) — binary search | flat_set faster: cache-friendly contiguous memory |
-| Insert | O(log n) — tree rebalance | O(n) — shift elements | set faster: O(log n) vs O(n) |
-| Erase | O(log n) — tree rebalance | O(n) — shift elements | set faster |
-| Iteration | O(n) — pointer chasing | O(n) — sequential scan | flat_set much faster: no cache misses |
-| Memory per element | ~40-64 bytes (node + pointers) | sizeof(T) only | flat_set: 8-16× less memory |
-| Iterator stability | Stable (never invalidated by insert/erase of others) | **ALL invalidated** on insert/erase | set much better |
+| Lookup | O(log n) - tree walk | O(log n) - binary search | flat_set faster: cache-friendly contiguous memory |
+| Insert | O(log n) - tree rebalance | O(n) - shift elements | set faster: O(log n) vs O(n) |
+| Erase | O(log n) - tree rebalance | O(n) - shift elements | set faster |
+| Iteration | O(n) - pointer chasing | O(n) - sequential scan | flat_set much faster: no cache misses |
+| Memory per element | ~40-64 bytes (node + pointers) | sizeof(T) only | flat_set: 8-16x less memory |
+| Iterator stability | Stable (never invalidated by insert/erase of others) | ALL invalidated on insert/erase | set much better |
 
 ### When to Use flat_set
 
-- **Read-heavy workloads:** Many lookups, few inserts/erases → flat_set wins
-- **Build once, query many times:** Fill with data, then only search → ideal for flat_set
-- **Small to medium sets (< ~10K elements):** O(n) insert is fast for small n
-- **Memory-constrained:** flat_set uses dramatically less memory
-- **Iteration-heavy:** Sequential memory access is much faster
+- **Read-heavy workloads:** Many lookups, few inserts or erases - flat_set wins here.
+- **Build once, query many times:** Fill with data once, then only search - ideal for flat_set.
+- **Small to medium sets (< ~10K elements):** O(n) insert is fast for small n.
+- **Memory-constrained:** flat_set uses dramatically less memory than a tree-based set.
+- **Iteration-heavy:** Sequential memory access is much faster than following pointers.
 
 ### When to Use std::set
 
-- **Frequent insert/erase:** O(log n) vs O(n) matters above ~1000 elements
-- **Iterator stability required:** flat_set invalidates ALL iterators on mutation
-- **Need `extract()`/`merge()`:** Only available on node-based containers
+- **Frequent insert/erase:** O(log n) vs O(n) makes a real difference above ~1000 elements.
+- **Iterator stability required:** flat_set invalidates ALL iterators on mutation.
+- **Need `extract()`/`merge()`:** Only available on node-based containers.
 
 ### Core Usage
 
-```cpp
+The interface is intentionally identical to `std::set` - you can often swap one for the other with a single type change:
 
+```cpp
 // Note: requires C++23 compiler with <flat_set> support
 #include <iostream>
 #include <flat_set>
 #include <vector>
 
 int main() {
-    // Basic usage — same API as std::set
+    // Basic usage - same API as std::set
     std::flat_set<int> fs = {5, 3, 8, 1, 9, 3};
     // Internal: sorted vector [1, 3, 5, 8, 9] (duplicate 3 removed)
 
@@ -78,7 +80,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -87,8 +88,9 @@ int main() {
 
 ### Q1: Replace a std::set<int> with std::flat_set<int> and measure lookup speedup for hot workloads
 
-```cpp
+Since `std::flat_set` may not be available on all compilers yet, this example simulates it with a sorted `std::vector` so you can observe the cache difference yourself:
 
+```cpp
 #include <iostream>
 #include <set>
 #include <vector>
@@ -193,46 +195,39 @@ int main() {
 // std::set      lookups: ~120 ms
 // flat_set      lookups: ~35 ms  (3-4x faster!)
 // Memory: set ~3200 KB, flat_set ~400 KB (8x less)
-
 ```
 
-**How it works:**
-
-- `std::set` stores elements in a red-black tree where each node is separately heap-allocated. Lookups require following pointers through scattered memory → many **cache misses**.
-- `flat_set` stores elements in a contiguous sorted array. Binary search reads sequential/nearby memory → **cache-friendly**, 3-4× faster for lookups.
-- The speedup comes entirely from cache behavior: binary search touches O(log n) elements, and in a contiguous array, these are nearby in physical memory.
-- Memory savings are dramatic: ~40 bytes per node in `std::set` vs 4 bytes per `int` in `flat_set`.
+The 3-4x speedup comes entirely from cache behavior. Binary search touches O(log n) elements in both cases, but in a contiguous array those elements are nearby in physical memory, so they often land in the same or adjacent cache lines. In a tree, those O(log n) nodes are scattered across the heap - each one is a likely cache miss.
 
 ### Q2: Explain that flat_set uses a sorted contiguous sequence: O(n) insert for O(log n) cache-friendly lookup
 
-**`flat_set` stores elements in a sorted `std::vector<T>` (or any specified container).**
+Understanding exactly what happens on insert is important because it is where `flat_set` pays its price:
 
-**Lookup — O(log n) but fast:**
+**Lookup - O(log n) but fast:**
 
-Binary search over a contiguous array. Each comparison accesses memory near the previous comparison (within the same cache line or adjacent cache lines). A 64-byte cache line holds 16 ints — so a binary search through 100K ints touches ~17 elements across ~5-6 cache lines.
+Binary search over a contiguous array. Each comparison accesses memory near the previous comparison (within the same cache line or adjacent cache lines). A 64-byte cache line holds 16 ints - so a binary search through 100K ints touches ~17 elements across ~5-6 cache lines.
 
-Compare with `std::set`: binary search through a tree touches ~17 nodes, each on a separate heap allocation → 17 cache misses.
+Compare with `std::set`: binary search through a tree touches ~17 nodes, each on a separate heap allocation - 17 cache misses.
 
-**Insert — O(n) because of shifting:**
+**Insert - O(n) because of shifting:**
 
 ```cpp
-
 flat_set: [1, 3, 5, 7, 9]     insert(4):
 
-Step 1: Binary search → position 2     O(log n)
+Step 1: Binary search -> position 2     O(log n)
 Step 2: Shift elements right:           O(n)
          [1, 3, _, 5, 7, 9]
 Step 3: Write value:
          [1, 3, 4, 5, 7, 9]
 
 Total: O(n) per insert (dominated by shift)
-
 ```
 
 **Batch construction is fast:**
 
-```cpp
+When you need to build a large `flat_set`, do not insert elements one by one. Fill a vector, sort it, deduplicate, and construct from the sorted range. This avoids the O(n) per-insert penalty entirely:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -241,7 +236,7 @@ Total: O(n) per insert (dominated by shift)
 int main() {
     constexpr int N = 1'000'000;
 
-    // === Bad: individual inserts → O(n²) total ===
+    // BAD: individual inserts -> O(n^2) total
     {
         std::vector<int> flat;
         auto start = std::chrono::steady_clock::now();
@@ -254,7 +249,7 @@ int main() {
         std::cout << "Individual inserts: " << ms << " ms\n";
     }
 
-    // === Good: bulk fill + sort → O(n log n) total ===
+    // GOOD: bulk fill + sort -> O(n log n) total
     {
         std::vector<int> flat(N);
         auto start = std::chrono::steady_clock::now();
@@ -272,15 +267,15 @@ int main() {
     return 0;
 }
 // Typical output:
-// Individual inserts: ~2000+ ms (O(n²))
+// Individual inserts: ~2000+ ms (O(n^2))
 // Bulk sort:          ~80 ms (O(n log n))
-
 ```
 
 ### Q3: Show that flat_set invalidates all iterators on any insert or erase (unlike std::set)
 
-```cpp
+This is the main gotcha with `flat_set`. The reason this trips people up is that `std::set` has stable iterators, so code that stores iterators across mutations "just works" with set - and then silently breaks when you swap in `flat_set`:
 
+```cpp
 #include <iostream>
 #include <set>
 #include <vector>
@@ -354,7 +349,7 @@ int main() {
         auto it30 = fs.find(30);
         std::cout << "\nflat_set: it30 points to " << *it30 << "\n";
 
-        fs.insert(25);  // May reallocate vector → ALL iterators INVALID!
+        fs.insert(25);  // May reallocate vector -> ALL iterators INVALID!
         // *it30 is now UNDEFINED BEHAVIOR!
 
         // Must re-find after any mutation:
@@ -387,36 +382,17 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `std::set` uses a tree where each node is independently allocated. Inserting or erasing a node doesn't move other nodes, so their iterators remain valid.
-- `flat_set` uses a contiguous vector. `insert` may trigger reallocation (invalidating ALL iterators) and always shifts elements (invalidating iterators at/after the insert point). `erase` shifts elements left, invalidating iterators at/after the erase point.
-- **Practical impact:** You cannot cache iterators across mutations in a `flat_set`. Always re-find after insert/erase. This is the main trade-off for the cache performance gains.
+`std::set` uses a tree where each node is independently allocated, so inserting or erasing a node does not move anything else. `flat_set` uses a contiguous vector, so insert may trigger reallocation (invalidating every iterator) and always shifts elements after the insertion point. The practical rule: never cache a `flat_set` iterator across a mutation. Always re-find.
 
 ---
 
 ## Notes
 
-- **C++23 header:** `#include <flat_set>`. Also `<flat_map>` for `std::flat_map`.
+- **C++23 header:** `#include <flat_set>`. Also `#include <flat_map>` for `std::flat_map`.
 - **Custom underlying container:** `std::flat_set<int, std::less<>, std::deque<int>>` uses a deque instead of vector.
-- **`sorted_unique_t` constructor:** `std::flat_set<int> fs(std::sorted_unique, already_sorted_vec)` skips sorting — O(1) if the data is already sorted and unique.
+- **`sorted_unique_t` constructor:** `std::flat_set<int> fs(std::sorted_unique, already_sorted_vec)` skips sorting - O(1) if the data is already sorted and unique.
 - **`std::flat_multiset`:** Allows duplicates, also in C++23.
 - **Crossover point:** For most workloads, `flat_set` beats `std::set` up to ~100K-500K elements. Above that, O(n) insert becomes too expensive unless the workload is lookup-dominated.
 - **Compiler support (2024):** MSVC 17.6+, libstdc++ (GCC 14+). Check your compiler's C++23 support status.
-
-- Flat_set invalidates all iterators on any insert or erase (unlike std::set).
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

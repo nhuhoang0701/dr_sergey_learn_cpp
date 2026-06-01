@@ -9,41 +9,46 @@
 
 ## Topic Overview
 
-C++17 added `try_emplace` and `insert_or_assign` to `std::map` and `std::unordered_map`. These address long-standing pitfalls with `operator[]`, `insert`, and `emplace`.
+C++17 added `try_emplace` and `insert_or_assign` to `std::map` and `std::unordered_map`. These two functions fill genuine gaps in the pre-C++17 API - gaps that caused subtle inefficiencies and real bugs with move-only types like `unique_ptr`. If you've ever done a map insertion and wondered whether it was safe, or whether you were wasting a constructor call, these are the tools that answer those questions cleanly.
 
 ### The Problem with Existing Functions
 
-```cpp
+The core issue is that the older functions (`operator[]`, `insert`, `emplace`) all construct the value object at the wrong time - before they know whether the key is already in the map. That leads to wasted work, or worse:
 
+```cpp
 std::map<std::string, std::unique_ptr<Widget>> m;
 
-// operator[]: default-constructs if key missing → can't work with move-only types easily
+// operator[]: default-constructs if key missing -> can't work with move-only types easily
 m["key"] = std::make_unique<Widget>();  // works but default-constructs first if key absent
 
-// emplace: ALWAYS constructs the value, even if key exists → wasteful
+// emplace: ALWAYS constructs the value, even if key exists -> wasteful
 m.emplace("key", std::make_unique<Widget>());
 // If "key" exists: the unique_ptr was constructed and immediately destroyed! Resource leak potential.
 
 // insert: same problem
 m.insert({"key", std::make_unique<Widget>()});
-// If "key" exists: the pair was constructed but not inserted → value destroyed
-
+// If "key" exists: the pair was constructed but not inserted -> value destroyed
 ```
 
+The `unique_ptr` case is the most visible, but the problem exists for any type that is expensive to construct or has side effects in its constructor.
+
 ### C++17 Solutions
+
+Here's the full comparison. The two highlighted rows are the C++17 additions and the point where the "value construction" column finally says something sensible:
 
 | Function | Key exists | Key absent | Value construction |
 | --- | --- | --- | --- |
 | `operator[]` | Returns reference | Default-constructs, returns reference | Always (if absent) |
 | `insert({k,v})` | No-op, returns {it, false} | Inserts | Always (pair is constructed before insert check) |
-| `emplace(k, v)` | No-op, returns {it, false} | Inserts | **May construct then destroy** |
-| **`try_emplace(k, args...)`** | **No-op, returns {it, false}** | **Constructs in-place** | **Only if key absent** ✅ |
+| `emplace(k, v)` | No-op, returns {it, false} | Inserts | May construct then destroy |
+| **`try_emplace(k, args...)`** | **No-op, returns {it, false}** | **Constructs in-place** | **Only if key absent** |
 | **`insert_or_assign(k, v)`** | **Assigns v to existing** | **Inserts** | **Always** |
 
 ### Core API
 
-```cpp
+Here's both functions in action together before we dig into the details:
 
+```cpp
 #include <map>
 #include <string>
 #include <iostream>
@@ -72,7 +77,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---
@@ -81,8 +85,9 @@ int main() {
 
 ### Q1: Show how try_emplace avoids constructing the value when the key already exists
 
-```cpp
+The instrumented `ExpensiveValue` type below lets you see exactly which constructors fire and when. Watch how `emplace` triggers a construction + destruction pair when the key is already present, while `try_emplace` fires nothing at all.
 
+```cpp
 #include <iostream>
 #include <map>
 #include <string>
@@ -113,7 +118,7 @@ int main() {
     cache.emplace("key", "first");
     // Output: [CONSTRUCTED] ExpensiveValue("first")
 
-    std::cout << "\n2) emplace(\"key\", \"second\") — key exists:\n";
+    std::cout << "\n2) emplace(\"key\", \"second\") - key exists:\n";
     cache.emplace("key", "second");
     // Output: [CONSTRUCTED] ExpensiveValue("second")
     //         [DESTROYED] ExpensiveValue("second")
@@ -129,7 +134,7 @@ int main() {
     // Output: [CONSTRUCTED] ExpensiveValue("first")
     //         inserted: 1
 
-    std::cout << "\n4) try_emplace(\"key\", \"second\") — key exists:\n";
+    std::cout << "\n4) try_emplace(\"key\", \"second\") - key exists:\n";
     auto [it2, ok2] = cache.try_emplace("key", "second");
     std::cout << "   inserted: " << ok2 << "\n";
     // Output: inserted: 0
@@ -147,21 +152,22 @@ int main() {
     ptrs.try_emplace(1, std::make_unique<int>(99));  // NOT constructed if key exists
     std::cout << "ptr[1] = " << *ptrs[1] << "\n";  // 42
 
-    // emplace with unique_ptr: if key exists, the unique_ptr is destroyed → resource leak pattern
+    // emplace with unique_ptr: if key exists, the unique_ptr is destroyed -> resource leak pattern
     // (not a real leak since unique_ptr cleans up, but the allocation was wasted)
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The `unique_ptr` case at the end drives home why this matters beyond just performance: with `emplace`, if the key exists, you've woken up a resource (allocated memory, opened a file, started a connection) only to immediately destroy it. `try_emplace` simply doesn't touch the arguments when it doesn't need to.
 
-- `emplace(key, args...)` constructs a `pair<const Key, Value>` first, then checks if the key exists. If it does, the pair is destroyed — the value was constructed for nothing.
-- `try_emplace(key, args...)` checks the key **first**. If the key exists, it returns `{iterator, false}` immediately — **no value construction occurs**. The constructor arguments are never touched.
-- This is crucial for expensive types (database connections, file handles) and move-only types (`unique_ptr`, `thread`).
+- `emplace(key, args...)` constructs a `pair<const Key, Value>` first, *then* checks if the key exists. If it does, the pair is destroyed - the value was constructed for nothing.
+- `try_emplace(key, args...)` checks the key **first**. If the key exists, it returns `{iterator, false}` immediately and never touches the constructor arguments.
+- This is especially important for expensive types (database connections, file handles) and move-only types (`unique_ptr`, `thread`).
 
 ### Q2: Compare operator[], insert, emplace, try_emplace, and insert_or_assign in terms of construction semantics
+
+It's useful to have a single experiment that shows all five operations side by side so you can build the mental model for when to reach for each one.
 
 | Operation | Key absent | Key present | Value construction | Return type |
 | --- | --- | --- | --- | --- |
@@ -169,11 +175,10 @@ int main() {
 | **`m[key] = val`** | Default-constructs + assigns | Assigns to existing | Default ctor + assign | `V&` |
 | **`insert({k,v})`** | Inserts pair | No-op | **Always** (pair constructed before check) | `pair<it, bool>` |
 | **`emplace(k,v)`** | Inserts | No-op | **May construct then destroy** | `pair<it, bool>` |
-| **`try_emplace(k, args)`** | Constructs in-place | **No-op, no construction** | **Only if absent** ✅ | `pair<it, bool>` |
+| **`try_emplace(k, args)`** | Constructs in-place | **No-op, no construction** | **Only if absent** | `pair<it, bool>` |
 | **`insert_or_assign(k,v)`** | Inserts | **Assigns** new value | Always | `pair<it, bool>` |
 
 ```cpp
-
 #include <iostream>
 #include <map>
 #include <string>
@@ -218,19 +223,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Key takeaways:**
+The `try_emplace (present)` case is the one to watch: the second call produces no output at all. The `20` argument never becomes a `Verbose` object. Compare that to `insert (present)`, which constructs and then throws away the value.
 
 - **`try_emplace`** is the most efficient for "insert if absent": zero wasted constructions.
-- **`insert_or_assign`** is the cleanest "upsert" (insert or update): replaces `m[key] = val` without the default-construction overhead.
-- **`operator[]`** default-constructs when the key is absent, making it inappropriate for types without default constructors or when default construction is expensive.
+- **`insert_or_assign`** is the cleanest "upsert" (insert or update): it replaces `m[key] = val` without the default-construction overhead when the key is absent.
+- **`operator[]`** default-constructs when the key is absent, making it inappropriate for types without a default constructor or when default construction is expensive.
 
 ### Q3: Write a cache-or-compute pattern using try_emplace to construct only on cache miss
 
-```cpp
+This is the pattern you'll reach for most often in production code. There's a subtlety though - `try_emplace(key, compute(key))` is *not* truly lazy, because C++ evaluates all function arguments before the call. The example shows both the naive version and the correct lazy fix.
 
+```cpp
 #include <iostream>
 #include <map>
 #include <string>
@@ -252,10 +257,10 @@ class ComputeCache {
 public:
     const std::string& get(int key) {
         // try_emplace: if key absent, constructs value from compute_result
-        // if key present, does NOTHING — no computation, no construction
+        // if key present, does NOTHING - no computation, no construction
         auto [it, inserted] = cache_.try_emplace(key, compute_result(key));
         // Note: compute_result is ALWAYS called because it's evaluated before try_emplace decides.
-        // This is actually NOT ideal — see the improved version below.
+        // This is actually NOT ideal - see the improved version below.
         return it->second;
     }
 
@@ -322,22 +327,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The `get_lazy` function shows the idiomatic pattern: `find` first, and only fall through to `try_emplace` when you know the key is absent. At that point there's no ambiguity - you're inserting, not checking - so `try_emplace` is the right call. The memoized Fibonacci at the end shows the same pattern applied recursively.
 
-- **`try_emplace` for caching:** If the key exists, `try_emplace` returns the existing iterator without constructing anything. If absent, it constructs the value in-place.
-- **Lazy computation caveat:** `try_emplace(key, compute(key))` still calls `compute()` because C++ evaluates all function arguments before the call. For truly lazy computation, use `find()` first, then `try_emplace` only on miss.
-- **Return value:** `try_emplace` returns `{iterator, bool}`. The iterator always points to the element (existing or newly inserted). The bool indicates whether insertion happened.
-- **Memoization:** `try_emplace` + `find` is a clean pattern for memoized recursive functions — avoid recomputation by caching results.
+- **`try_emplace` for caching:** When the key exists, `try_emplace` returns the existing iterator without constructing anything. When absent, it constructs in-place.
+- **Lazy computation caveat:** `try_emplace(key, compute(key))` still calls `compute()` because C++ evaluates all arguments before calling the function. For truly lazy behavior, do a `find()` first and only call `try_emplace` on miss.
+- **Return value:** `try_emplace` returns `{iterator, bool}`. The iterator always points to the element (existing or newly inserted). The bool tells you whether insertion happened.
+- **Memoization:** The `find` + `try_emplace` combination is a clean pattern for memoized recursive functions - it avoids recomputation and avoids constructing values you don't need.
 
 ---
 
 ## Notes
 
-- **`try_emplace` key forwarding:** The key is forwarded separately from the value args: `try_emplace(key, arg1, arg2, ...)` forwards args to the value constructor. This is different from `emplace(key, value)` which constructs a pair.
-- **`insert_or_assign` vs `operator[]`:** Both update existing values, but `insert_or_assign` tells you whether it inserted or assigned (via the bool), and doesn't require default-constructibility.
-- **Hint versions:** Both have hint overloads: `try_emplace(hint, key, args...)` and `insert_or_assign(hint, key, val)` for O(1) amortized insertion when the hint is correct.
+- **`try_emplace` key forwarding:** The key is forwarded separately from the value args: `try_emplace(key, arg1, arg2, ...)` forwards the args directly to the value's constructor. This is different from `emplace(key, value)` which constructs a pair first.
+- **`insert_or_assign` vs `operator[]`:** Both update existing values, but `insert_or_assign` tells you whether it inserted or assigned (via the bool), and doesn't require the value type to be default-constructible.
+- **Hint versions:** Both functions have hint overloads - `try_emplace(hint, key, args...)` and `insert_or_assign(hint, key, val)` - for O(1) amortized insertion when you know approximately where the element belongs.
 - **Works with `unordered_map` too:** Both functions are available on `std::unordered_map` with identical semantics.
-- **Thread safety:** Neither function is thread-safe. Use a mutex or `concurrent_hash_map` for concurrent access.
+- **Thread safety:** Neither function is thread-safe. Use a mutex or a concurrent container for shared-state caches.

@@ -1,6 +1,6 @@
 # Know std::bitset for fixed-size bit manipulation
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #68  
 **Reference:** <https://en.cppreference.com/w/cpp/utility/bitset>  
 
@@ -8,39 +8,42 @@
 
 ## Topic Overview
 
-`std::bitset<N>` is a fixed-size sequence of `N` bits with a rich API for bitwise operations. Unlike `std::vector<bool>`, the size is a compile-time constant and the interface provides named operations (`set`, `reset`, `test`, `flip`) alongside bitwise operators.
+`std::bitset<N>` is a fixed-size sequence of `N` bits with a rich API for bitwise operations. Unlike `std::vector<bool>`, the size is a compile-time constant and the interface provides named operations (`set`, `reset`, `test`, `flip`) alongside bitwise operators. If you've ever worked with raw integer bitmasks and thought "there has to be a safer way to do this," `std::bitset` is usually the answer when the number of flags is known at compile time.
 
 ### Key API
 
-| Operation                  | Description                           | Example                        |
+One thing to note before you dive in: bit indexing is **LSB = 0**, meaning the rightmost bit is index 0. So `bitset<8>("10000000")` has its set bit at index 7, not index 0. This trips people up constantly.
+
+| Operation | Description | Example |
 | --- | --- | --- |
-| `bitset<N>()`             | Default: all bits 0                   | `bitset<8> b;` → `00000000`   |
-| `bitset<N>(val)`          | From unsigned long long               | `bitset<8> b(0b1010);` → `00001010` |
-| `bitset<N>(str)`          | From string of '0'/'1'               | `bitset<8>("11001100")`        |
-| `b.set(pos)`              | Set bit at `pos` to 1                 | `b.set(3);`                    |
-| `b.set()`                 | Set all bits to 1                     | `b.set();`                     |
-| `b.reset(pos)`            | Clear bit at `pos`                    | `b.reset(3);`                  |
-| `b.reset()`               | Clear all bits                        | `b.reset();`                   |
-| `b.flip(pos)`             | Toggle bit at `pos`                   | `b.flip(3);`                   |
-| `b.flip()`                | Toggle all bits                       | `b.flip();`                    |
-| `b.test(pos)`             | Returns `true` if bit at `pos` is 1  | `if (b.test(3)) ...`          |
-| `b[pos]`                  | Access bit (no bounds check)          | `b[3] = 1;`                   |
-| `b.count()`               | Number of set bits (popcount)         | `b.count()` → `4`             |
-| `b.size()`                | Returns `N`                           | `b.size()` → `8`              |
-| `b.any()`                 | True if any bit is set                |                                |
-| `b.none()`                | True if no bits are set               |                                |
-| `b.all()`                 | True if all bits are set              |                                |
-| `b.to_ulong()`            | Convert to `unsigned long`            | `b.to_ulong()` → `204`        |
-| `b.to_ullong()`           | Convert to `unsigned long long`       |                                |
-| `b.to_string()`           | Convert to string of '0'/'1'         | `b.to_string()` → `"11001100"` |
-| `b & c`, `b | c`, `b ^ c`| Bitwise AND, OR, XOR                  | `auto r = a & b;`             |
-| `~b`                      | Bitwise NOT                           | `auto r = ~b;`                |
-| `b << n`, `b >> n`        | Shift left/right                      | `auto r = b << 2;`            |
+| `bitset<N>()` | Default: all bits 0 | `bitset<8> b;` -> `00000000` |
+| `bitset<N>(val)` | From unsigned long long | `bitset<8> b(0b1010);` -> `00001010` |
+| `bitset<N>(str)` | From string of '0'/'1' | `bitset<8>("11001100")` |
+| `b.set(pos)` | Set bit at `pos` to 1 | `b.set(3);` |
+| `b.set()` | Set all bits to 1 | `b.set();` |
+| `b.reset(pos)` | Clear bit at `pos` | `b.reset(3);` |
+| `b.reset()` | Clear all bits | `b.reset();` |
+| `b.flip(pos)` | Toggle bit at `pos` | `b.flip(3);` |
+| `b.flip()` | Toggle all bits | `b.flip();` |
+| `b.test(pos)` | Returns `true` if bit at `pos` is 1 | `if (b.test(3)) ...` |
+| `b[pos]` | Access bit (no bounds check) | `b[3] = 1;` |
+| `b.count()` | Number of set bits (popcount) | `b.count()` -> `4` |
+| `b.size()` | Returns `N` | `b.size()` -> `8` |
+| `b.any()` | True if any bit is set | |
+| `b.none()` | True if no bits are set | |
+| `b.all()` | True if all bits are set | |
+| `b.to_ulong()` | Convert to `unsigned long` | `b.to_ulong()` -> `204` |
+| `b.to_ullong()` | Convert to `unsigned long long` | |
+| `b.to_string()` | Convert to string of '0'/'1' | `b.to_string()` -> `"11001100"` |
+| `b & c`, `b \| c`, `b ^ c` | Bitwise AND, OR, XOR | `auto r = a & b;` |
+| `~b` | Bitwise NOT | `auto r = ~b;` |
+| `b << n`, `b >> n` | Shift left/right | `auto r = b << 2;` |
 
 ### Core Example
 
-```cpp
+Let's see the main operations together. Notice that `a` starts as `0b11001010`, which is decimal 202 - you can verify that with `to_ulong()` at the end.
 
+```cpp
 #include <iostream>
 #include <bitset>
 #include <string>
@@ -77,16 +80,17 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `operator<<` on a `bitset` prints bits from MSB (leftmost, highest index) to LSB (rightmost, index 0). This matches how you'd write a binary number on paper, which makes the output feel natural.
 
 ### Important Notes
 
-- `N` must be a **compile-time constant** — `std::bitset` cannot be resized at runtime.
+- `N` must be a **compile-time constant** - `std::bitset` cannot be resized at runtime.
 - Bit indexing is **LSB = 0** (rightmost bit). `bitset<8>("10000000").test(7)` is `true`.
 - `to_ulong()` throws `std::overflow_error` if the value doesn't fit in `unsigned long`.
 - `test(pos)` throws `std::out_of_range` if `pos >= N`. `operator[]` does **not** check bounds.
-- `std::bitset` is not a container — it has no iterators and cannot be used with `<algorithm>`.
+- `std::bitset` is not a container - it has no iterators and cannot be used with `<algorithm>`.
 
 ---
 
@@ -94,8 +98,9 @@ int main() {
 
 ### Q1: Use std::bitset to implement a simple permission flags system
 
-```cpp
+This is the classic motivating example for `std::bitset`. Each permission maps to a bit position, and the bitset gives you clean named operations instead of raw `|=`, `&=`, and shift arithmetic.
 
+```cpp
 #include <iostream>
 #include <bitset>
 #include <string>
@@ -162,7 +167,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -170,14 +174,15 @@ int main() {
 - Each permission is mapped to a bit position via an `enum`.
 - `std::bitset<5>` holds exactly 5 permission flags.
 - `set(pos)` and `reset(pos)` grant/revoke specific permissions.
-- `test(pos)` checks if a permission is active — with bounds checking.
+- `test(pos)` checks if a permission is active - with bounds checking.
 - Bitwise `&` computes intersection (both have the permission), `|` computes union.
 - This is type-safe and readable compared to raw integer bitmasks.
 
 ### Q2: Show bitwise operations on bitsets and how to convert to/from ulong and string
 
-```cpp
+Pay attention to the round-trip at the end: integer -> bitset -> string -> bitset -> integer. This pattern is useful for serialization and debugging. The `to_string` overload with custom characters is a fun touch for visual output.
 
+```cpp
 #include <iostream>
 #include <bitset>
 #include <string>
@@ -232,19 +237,18 @@ int main() {
     std::cout << "to_string('.','#'): " << b.to_string('.', '#') << "\n";
     // Output: to_string('.','#'): #.#.#.#.
 
-    // Round-trip: int → bitset → string → bitset → int
+    // Round-trip: int -> bitset -> string -> bitset -> int
     unsigned long original = 42;
     std::bitset<8> bs(original);
     std::string s = bs.to_string();
     std::bitset<8> bs2(s);
     unsigned long back = bs2.to_ulong();
-    std::cout << "\nRound-trip: " << original << " → \"" << s
-              << "\" → " << back << "\n";
-    // Output: Round-trip: 42 → "00101010" → 42
+    std::cout << "\nRound-trip: " << original << " -> \"" << s
+              << "\" -> " << back << "\n";
+    // Output: Round-trip: 42 -> "00101010" -> 42
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -256,8 +260,9 @@ int main() {
 
 ### Q3: Compare std::bitset with a hand-rolled bitmask approach for readability and safety
 
-```cpp
+The comparison table embedded in this code is worth reading carefully. The short version is: hand-rolled bitmasks are faster to write, `std::bitset` is safer to maintain. For flags whose count is known at compile time, `std::bitset` is almost always the better choice.
 
+```cpp
 #include <iostream>
 #include <bitset>
 #include <stdexcept>
@@ -291,8 +296,8 @@ int main() {
     // Output: Bitmask: test A=1, test B=0
 
     // BUG: Easy to make mistakes with raw integers
-    uint32_t wrong = 7;  // Accidentally use wrong value — compiles fine!
-    bitmask::set(flags, wrong);  // Sets bits 0, 1, 2 — unintended
+    uint32_t wrong = 7;  // Accidentally use wrong value - compiles fine!
+    bitmask::set(flags, wrong);  // Sets bits 0, 1, 2 - unintended
     // No bounds checking, no type safety
 
     // --- std::bitset approach ---
@@ -334,14 +339,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
 
 - **Hand-rolled bitmask:** Fast and simple, but error-prone. Any integer can be passed where flags are expected. No bounds checking. Debugging requires manual formatting.
 - **`std::bitset`:** Provides named operations (`set`, `reset`, `test`, `flip`), bounds checking, and built-in `operator<<` for printing. The distinct type prevents accidental misuse.
-- **Performance:** Both compile down to the same bitwise instructions. `std::bitset` has zero overhead for sizes ≤ 64 bits (stored in a single word). For larger sizes, it uses an array of words.
+- **Performance:** Both compile down to the same bitwise instructions. `std::bitset` has zero overhead for sizes <= 64 bits (stored in a single word). For larger sizes, it uses an array of words.
 - **Recommendation:** Use `std::bitset` when the number of flags is known at compile time and exceeds a few bits. Use raw bitmasks only for ultra-performance-critical hot paths or when interfacing with C APIs.
 
 ---
@@ -352,4 +356,4 @@ int main() {
 - **For dynamic sizes**, use `std::vector<bool>` (space-efficient but proxy-reference issues) or `boost::dynamic_bitset`.
 - **C++23 improvements:** `constexpr` support for more `std::bitset` operations.
 - **Popcount:** `b.count()` is often implemented using hardware popcount instructions (`POPCNT` on x86).
-- **Large bitsets:** `std::bitset<1'000'000>` is perfectly fine — stored on the stack if local (careful with stack overflow for very large N), or use `new` / static storage.
+- **Large bitsets:** `std::bitset<1'000'000>` is perfectly fine - stored on the stack if local (careful with stack overflow for very large N), or use `new` / static storage.

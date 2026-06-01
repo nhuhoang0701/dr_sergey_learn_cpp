@@ -1,6 +1,6 @@
 # Know how to implement a custom iterator satisfying std::random_access_iterator
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #465  
 **Standard:** C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/iterator/random_access_iterator>  
@@ -11,10 +11,13 @@
 
 C++20 introduced **iterator concepts** that replace the legacy iterator tag-based classification. `std::random_access_iterator` is the strongest iterator concept (before `std::contiguous_iterator`) and enables algorithms like `std::sort`, `std::binary_search`, and all `std::ranges` algorithms.
 
+Why does this matter? Because algorithms in `<algorithm>` and `<ranges>` check these concepts at compile time. If your iterator satisfies `std::random_access_iterator`, you get `std::sort` for free. If it only satisfies `std::forward_iterator`, `std::sort` won't compile against it - which is actually helpful, because `std::sort` genuinely needs the ability to jump to arbitrary positions in O(1).
+
 ### Iterator Concept Hierarchy (C++20)
 
-```cpp
+Each level in this hierarchy adds more capabilities. The indentation shows that each level includes everything above it.
 
+```cpp
 std::input_or_output_iterator
 ├── std::input_iterator
 │   └── std::forward_iterator
@@ -22,22 +25,21 @@ std::input_or_output_iterator
 │            └── std::random_access_iterator
 │                 └── std::contiguous_iterator
 └── std::output_iterator
-
 ```
 
 ### Requirements for std::random_access_iterator
 
-A type `I` satisfies `std::random_access_iterator` if it satisfies `std::bidirectional_iterator` AND:
+A type `I` satisfies `std::random_access_iterator` if it satisfies `std::bidirectional_iterator` AND provides all of these. The reason there are so many requirements is that random access means "I can jump anywhere in O(1)," and that needs arithmetic operators, distance computation, and ordering.
 
-| Requirement                     | Expression          | Return Type               |
+| Requirement | Expression | Return Type |
 | --- | --- | --- |
-| Advance by n                   | `i += n`            | `I&`                      |
-| Retreat by n                   | `i -= n`            | `I&`                      |
-| Offset from iterator           | `i + n`, `n + i`    | `I`                       |
-| Negative offset                | `i - n`             | `I`                       |
-| Distance between iterators     | `i - j`             | `std::iter_difference_t<I>` |
-| Subscript                      | `i[n]`              | `std::iter_reference_t<I>` |
-| Three-way or relational compare| `i <=> j` or `<,>,<=,>=` | `std::partial_ordering` or stronger |
+| Advance by n | `i += n` | `I&` |
+| Retreat by n | `i -= n` | `I&` |
+| Offset from iterator | `i + n`, `n + i` | `I` |
+| Negative offset | `i - n` | `I` |
+| Distance between iterators | `i - j` | `std::iter_difference_t<I>` |
+| Subscript | `i[n]` | `std::iter_reference_t<I>` |
+| Three-way or relational compare | `i <=> j` or `<,>,<=,>=` | `std::partial_ordering` or stronger |
 
 Additionally, the iterator must provide:
 
@@ -47,8 +49,9 @@ Additionally, the iterator must provide:
 
 ### Core Example: Stride Iterator
 
-```cpp
+Here's a real-world-useful iterator that walks over a range in steps. A stride-2 iterator over `{0,1,2,3,4,5,6,7,8,9}` visits `{0,2,4,6,8}`. The interesting design point is `operator-`: since the underlying pointer gap is `stride * logical_distance`, we divide by stride to recover the logical distance that algorithms need.
 
+```cpp
 #include <iostream>
 #include <iterator>
 #include <algorithm>
@@ -140,8 +143,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+`std::sort` needs to swap elements at arbitrary positions, so it calls `operator[]` and `operator-` heavily. Our stride iterator handles both correctly by accounting for the stride in all arithmetic.
 
 ### Important Notes
 
@@ -157,8 +161,9 @@ int main() {
 
 ### Q1: Write a RandomAccessIterator for a custom stride-based array view
 
-```cpp
+This takes the stride iterator idea one step further by wrapping it in a proper view class with `begin()` and `end()`. The key thing to notice is that the end iterator's pointer is computed as `data + count * stride` - it points just past the last strided element in the underlying array.
 
+```cpp
 #include <iostream>
 #include <iterator>
 #include <algorithm>
@@ -252,7 +257,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -260,12 +264,13 @@ int main() {
 - `StridedView` wraps a raw pointer with a stride, exposing begin/end iterators.
 - The nested `Iterator` class satisfies `std::random_access_iterator` by providing all required operations.
 - `operator-` between iterators divides the pointer difference by stride to get a logical distance.
-- `std::sort` works directly because the iterator satisfies the random access concept — it can jump to any position in O(1).
+- `std::sort` works directly because the iterator satisfies the random access concept - it can jump to any position in O(1).
 
 ### Q2: Verify compliance using static_asserts on iterator concept requirements
 
-```cpp
+The best workflow when writing an iterator is to put your `static_assert` checks right after the class definition. If your iterator is missing something, the compiler error message from a failed concept check is far more readable than whatever you'd get trying to use the iterator with `std::sort` and seeing a ten-line template substitution failure.
 
+```cpp
 #include <iostream>
 #include <iterator>
 #include <concepts>
@@ -337,20 +342,20 @@ int main() {
     std::cout << "All static_assert checks passed!\n";
     return 0;
 }
-
 ```
 
 **How it works:**
 
-- `static_assert` checks are evaluated at compile time — if any concept isn't satisfied, you get a clear error.
+- `static_assert` checks are evaluated at compile time - if any concept isn't satisfied, you get a clear error.
 - The hierarchy is checked incrementally: if `bidirectional_iterator` fails, you know you're missing `--` operators.
 - `std::iter_value_t`, `std::iter_difference_t`, etc. extract associated types through the iterator traits machinery.
 - Since `MyIterator` directly wraps a raw pointer and provides `operator->` returning `int*`, it also satisfies `std::contiguous_iterator`.
 
 ### Q3: Show that a correct random access iterator enables std::sort and ranges algorithms on your type
 
-```cpp
+Here's the payoff for all that boilerplate - once the concept is satisfied, the entire standard library opens up. Notice the variety of algorithms being used here, each of which has specific iterator requirements.
 
+```cpp
 #include <iostream>
 #include <iterator>
 #include <algorithm>
@@ -443,17 +448,16 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
 
-- `FixedArray` is a custom container with no standard library inheritance — it provides `begin()` and `end()` returning our `Iterator`.
+- `FixedArray` is a custom container with no standard library inheritance - it provides `begin()` and `end()` returning our `Iterator`.
 - Because `Iterator` satisfies `std::random_access_iterator`, **all** standard algorithms that require random access work:
-  - `std::sort` — O(n log n) with random swaps
-  - `std::nth_element` — O(n) average, needs random access partitioning
-  - `std::partial_sort` — O(n log k), needs heap + random access
-  - `std::binary_search` / `std::lower_bound` — O(log n), needs `it + n` jumps
+  - `std::sort` - O(n log n) with random swaps
+  - `std::nth_element` - O(n) average, needs random access partitioning
+  - `std::partial_sort` - O(n log k), needs heap + random access
+  - `std::binary_search` / `std::lower_bound` - O(log n), needs `it + n` jumps
 - Range-based for loops work because `begin()` and `end()` are provided.
 - `std::ranges::` algorithms verify concepts at call time, giving clear errors if the iterator is deficient.
 
@@ -464,5 +468,5 @@ int main() {
 - **Minimum viable random access iterator:** default constructible, copyable, `*`, `++`, `--`, `+=`, `-=`, `+`, `-` (both forms), `[]`, `==`, `<=>`, plus type aliases.
 - **Common pitfalls:** Forgetting default constructor, missing `n + iter` overload (only providing `iter + n`), incorrect `operator-` return type.
 - **`iterator_concept` vs `iterator_category`:** Use `iterator_concept` for C++20 concept-based dispatch. `iterator_category` is for legacy `<algorithm>` tag dispatch. Provide both for maximum compatibility.
-- **Testing tip:** Use `static_assert(std::random_access_iterator<YourIt>)` early — the compiler error messages when a concept fails are much clearer than runtime failures.
+- **Testing tip:** Use `static_assert(std::random_access_iterator<YourIt>)` early - the compiler error messages when a concept fails are much clearer than runtime failures.
 - **`std::contiguous_iterator`** adds one more requirement: `std::to_address(it)` must return the underlying pointer. If your iterator wraps a raw pointer, you likely satisfy this too.

@@ -1,6 +1,6 @@
 # Use std::mdspan layouts for stride-based memory access patterns
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #268  
 **Standard:** C++23 (mdspan), C++26 (mdarray)  
 **Reference:** <https://en.cppreference.com/w/cpp/container/mdspan>  
@@ -9,28 +9,28 @@
 
 ## Topic Overview
 
-`std::mdspan` (C++23) is a non-owning multidimensional view over contiguous memory. It generalizes `std::span` to multiple dimensions. **Layout policies** control how multi-dimensional indices map to linear memory offsets — enabling row-major, column-major, and custom stride-based access.
+`std::mdspan` (C++23) is a non-owning multidimensional view over contiguous memory. It generalizes `std::span` to multiple dimensions. **Layout policies** control how multi-dimensional indices map to linear memory offsets - enabling row-major, column-major, and custom stride-based access. Like `std::span`, it borrows memory from somewhere else; it never owns or allocates anything.
 
 ### What mdspan Does
 
-```cpp
+The same one-dimensional block of memory can be interpreted as a matrix in many different ways. mdspan makes this explicit through layout policies:
 
+```cpp
 1D memory:  [0][1][2][3][4][5][6][7][8][9][10][11]
 
 mdspan<int, extents<3,4>> with layout_right (row-major, C-style):
   [0][1][2][3]     Row 0
   [4][5][6][7]     Row 1
   [8][9][10][11]   Row 2
-  
-  m(i, j) → memory[i * 4 + j]
+
+  m(i, j) -> memory[i * 4 + j]
 
 mdspan<int, extents<3,4>> with layout_left (column-major, Fortran-style):
   [0][3][6][9]     (reading columns)
   [1][4][7][10]
   [2][5][8][11]
-  
-  m(i, j) → memory[j * 3 + i]
 
+  m(i, j) -> memory[j * 3 + i]
 ```
 
 ### Layout Policies
@@ -43,8 +43,9 @@ mdspan<int, extents<3,4>> with layout_left (column-major, Fortran-style):
 
 ### Core API
 
-```cpp
+Here is the minimal setup - wrap a flat buffer in an mdspan and access it with row/column indices:
 
+```cpp
 #include <mdspan>
 #include <vector>
 #include <iostream>
@@ -71,13 +72,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Assigning through `mat(1, 1)` directly modifies the underlying `data` vector - the mdspan is just a view, not a copy.
 
 ### Extents
 
 ```cpp
-
 // Fixed extents (compile-time dimensions):
 std::extents<size_t, 3, 4>
 
@@ -86,7 +87,6 @@ std::dextents<size_t, 2>  // 2D with runtime rows/cols
 
 // Mixed:
 std::extents<size_t, std::dynamic_extent, 4>  // dynamic rows, 4 cols
-
 ```
 
 ---
@@ -95,15 +95,16 @@ std::extents<size_t, std::dynamic_extent, 4>  // dynamic rows, 4 cols
 
 ### Q1: Create a column-major mdspan view over a row-major buffer and access elements correctly
 
-```cpp
+The important thing to understand here is that the same buffer produces completely different element access when you change the layout policy. Row-major and column-major are not different orderings of the data - they are different interpretations of the same linear memory:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
 #include <mdspan>
 
 int main() {
-    // === 12 elements: we'll view them as 3×4 matrix ===
+    // === 12 elements: we'll view them as 3x4 matrix ===
     std::vector<int> data(12);
     std::iota(data.begin(), data.end(), 1);  // 1, 2, 3, ..., 12
 
@@ -126,7 +127,7 @@ int main() {
     // === Column-major view (layout_left) over SAME buffer ===
     std::mdspan<int, std::extents<size_t, 3, 4>, std::layout_left> col_major(data.data());
 
-    std::cout << "\nColumn-major (layout_left) — same underlying data:\n";
+    std::cout << "\nColumn-major (layout_left) - same underlying data:\n";
     for (size_t i = 0; i < col_major.extent(0); ++i) {
         for (size_t j = 0; j < col_major.extent(1); ++j) {
             std::cout << col_major(i, j) << "\t";
@@ -154,30 +155,25 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `layout_right` (default) is row-major: the last index varies fastest in memory. `m(i,j)` maps to `data[i * cols + j]`.
-- `layout_left` is column-major: the first index varies fastest. `m(i,j)` maps to `data[j * rows + i]`.
-- Both views can reference the **same underlying buffer** — the layout policy only changes how multi-dimensional indices map to linear offsets.
-- This is critical for interop with Fortran/BLAS/LAPACK (column-major) or image libraries (often row-major).
+`layout_right` (default) is row-major: the last index varies fastest in memory. `m(i,j)` maps to `data[i * cols + j]`. `layout_left` is column-major: the first index varies fastest. `m(i,j)` maps to `data[j * rows + i]`. This is critical for interop with Fortran/BLAS/LAPACK (column-major) or image libraries (often row-major). Without mdspan you would need to manually compute the right offset every time - a common source of bugs.
 
 ### Q2: Implement a custom layout policy for tiled (blocked) matrix storage
 
-```cpp
+Standard row-major and column-major layouts are optimal for row-wise or column-wise traversal, but neither is ideal for algorithms that access small square blocks (like matrix multiplication). A tiled layout groups each block contiguously in memory so that working on a tile generates no cache misses within the block:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cassert>
 #include <cstddef>
 
 // === Tiled (blocked) layout ===
-// Divides a matrix into TILE×TILE blocks stored contiguously.
+// Divides a matrix into TILE x TILE blocks stored contiguously.
 // Better cache behavior for matrix operations that work on blocks.
 //
-// For a 4×4 matrix with TILE=2:
+// For a 4x4 matrix with TILE=2:
 //
 // Logical:        Memory layout (tiled):
 // [ 0  1  2  3]   Block(0,0): [0, 1, 4, 5]
@@ -260,32 +256,27 @@ int main() {
         std::cout << "\n";
     }
     // Output:
-    // Block 0: 0 1 4 5     (top-left 2×2 block)
-    // Block 1: 2 3 6 7     (top-right 2×2 block)
-    // Block 2: 8 9 12 13   (bottom-left 2×2 block)
-    // Block 3: 10 11 14 15 (bottom-right 2×2 block)
+    // Block 0: 0 1 4 5     (top-left 2x2 block)
+    // Block 1: 2 3 6 7     (top-right 2x2 block)
+    // Block 2: 8 9 12 13   (bottom-left 2x2 block)
+    // Block 3: 10 11 14 15 (bottom-right 2x2 block)
 
     // === Cache benefit ===
     // When processing block (0,0), elements [0,1,4,5] are contiguous in memory
-    // → fits in one cache line → no cache misses within a block.
+    // -> fits in one cache line -> no cache misses within a block.
     // Row-major would scatter block elements across different cache lines.
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- A tiled layout groups elements into TILE×TILE blocks and stores each block contiguously in memory. Within a tile, elements follow row-major order.
-- The mapping formula: `block_id * TILE² + local_row * TILE + local_col`
-- **Cache benefit:** Matrix algorithms that process blocks (matrix multiply, stencil operations) access contiguous memory for each block → fewer cache misses. Row-major layout would access elements with stride `cols` for vertical neighbors.
-- A real `std::mdspan` custom layout would implement the `layout_mapping` concept with `operator()`, `required_span_size()`, `is_unique()`, etc.
+The mapping formula for a tiled element is `block_id * TILE^2 + local_row * TILE + local_col`. A real `std::mdspan` custom layout would implement the `layout_mapping` concept with `operator()`, `required_span_size()`, `is_unique()`, and so on - this example shows the core idea without the boilerplate.
 
 ### Q3: Explain how strides work in mdspan and how they differ from padding
 
-```cpp
+Strides are the general mechanism behind all mdspan layouts. Once you understand strides, row-major and column-major are just special cases. The reason padding trips people up is that it looks like a stride choice but has a different semantic meaning:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -297,7 +288,7 @@ int main() {
     // A stride for dimension d is the number of elements to skip in memory
     // when incrementing index d by 1.
     //
-    // For a 3×4 row-major matrix (layout_right):
+    // For a 3x4 row-major matrix (layout_right):
     //   stride[0] = 4  (skip 4 elements to go to next row)
     //   stride[1] = 1  (skip 1 element to go to next column)
     //   m(i,j) = data[i*4 + j*1] = data[i*stride[0] + j*stride[1]]
@@ -306,7 +297,7 @@ int main() {
     std::iota(data.begin(), data.end(), 0);
 
     // === layout_stride: custom strides ===
-    // View as 3×4 with explicit strides
+    // View as 3x4 with explicit strides
     std::array<size_t, 2> strides = {4, 1};  // row-major strides
     std::mdspan<int, std::extents<size_t, 3, 4>, std::layout_stride>
         mat(data.data(), std::layout_stride::mapping(
@@ -321,11 +312,11 @@ int main() {
     // Same as layout_right
 
     // === Stride for submatrix view ===
-    // Take every other column from a 3×6 buffer:
+    // Take every other column from a 3x6 buffer:
     std::vector<int> big(18);
     std::iota(big.begin(), big.end(), 0);
 
-    // View 3×3 submatrix: columns 0, 2, 4 of a 3×6 matrix
+    // View 3x3 submatrix: columns 0, 2, 4 of a 3x6 matrix
     std::array<size_t, 2> sub_strides = {6, 2};  // row stride=6 (full row width), col stride=2 (skip every other)
     std::mdspan<int, std::extents<size_t, 3, 3>, std::layout_stride>
         sub(big.data(), std::layout_stride::mapping(
@@ -356,8 +347,8 @@ int main() {
     std::cout << "  Stride > logical_cols means there's padding.\n";
     std::cout << "  The 'padded' elements are not part of the logical matrix.\n\n";
 
-    // Example: 3×4 matrix with padding to 8-element rows (for alignment)
-    std::vector<int> padded_data(3 * 8, -1);  // 3 rows × 8 stride
+    // Example: 3x4 matrix with padding to 8-element rows (for alignment)
+    std::vector<int> padded_data(3 * 8, -1);  // 3 rows x 8 stride
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 4; ++j)
             padded_data[i * 8 + j] = i * 4 + j;
@@ -378,23 +369,15 @@ int main() {
     }
 
     // === summary ===
-    // stride > extent → padding (unused gap between rows)
-    // stride < extent → overlapping elements (unusual)
-    // stride = extent → standard dense layout
+    // stride > extent -> padding (unused gap between rows)
+    // stride < extent -> overlapping elements (unusual)
+    // stride = extent -> standard dense layout
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- **Strides** define the number of memory positions to skip when incrementing an index by 1. For a 2D matrix, `m(i,j) = data[i * stride[0] + j * stride[1]]`.
-- **Row-major** has strides `{cols, 1}` — incrementing the column by 1 moves 1 position in memory.
-- **Column-major** has strides `{1, rows}` — incrementing the row by 1 moves 1 position.
-- **Padding** is when the stride for a dimension is **larger** than the logical extent. For a 4-column matrix with stride 8, there are 4 unused elements between rows. This is common for GPU/SIMD alignment requirements.
-- **Strides enable views:** You can create a submatrix, transpose, or sparse view over existing data without copying — just change the strides.
-- `layout_stride` is the most general layout. `layout_right` and `layout_left` are special cases with strides computed from extents.
+Strides and padding are related but different concepts. A stride defines the step size when you increment an index. Padding is what you get when the stride for a row is larger than the number of logical columns - the extra elements exist in memory but are outside the logical view. This situation is common with GPU and SIMD code that requires rows to be aligned to power-of-two byte boundaries. The key insight is that `layout_stride` handles both cases with the same mechanism: you just set your strides to match your physical memory layout, and mdspan takes care of the index arithmetic.
 
 ---
 
@@ -402,7 +385,7 @@ int main() {
 
 - **`std::mdspan` is C++23**, not C++20 (despite early proposals). Check compiler support.
 - **Zero-overhead:** mdspan is designed to compile to the same code as manual pointer arithmetic. No runtime cost.
-- **`submdspan` (C++26):** Creates a subview of an mdspan — like array slicing in NumPy. Uses `std::submdspan(mat, pair{1,3}, pair{0,4})` for rows 1-2, all columns.
+- **`submdspan` (C++26):** Creates a subview of an mdspan - like array slicing in NumPy. Uses `std::submdspan(mat, pair{1,3}, pair{0,4})` for rows 1-2, all columns.
 - **Not owning:** Like `span`, `mdspan` doesn't own memory. Pair with `vector`, `array`, or custom allocators.
 - **GPU interop:** mdspan's layout policies match GPU memory layouts. NVIDIA's `std::experimental::mdspan` is widely used in CUDA code.
-- **`std::mdarray` (proposed):** An owning version of mdspan — like `vector` is to `span`.
+- **`std::mdarray` (proposed):** An owning version of mdspan - like `vector` is to `span`.

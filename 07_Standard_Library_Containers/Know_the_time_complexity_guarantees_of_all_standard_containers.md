@@ -1,6 +1,6 @@
 # Know the time complexity guarantees of all standard containers
 
-**Category:** Standard Library — Containers  
+**Category:** Standard Library - Containers  
 **Item:** #60  
 **Reference:** <https://en.cppreference.com/w/cpp/container>  
 
@@ -8,81 +8,83 @@
 
 ## Topic Overview
 
-The C++ standard mandates specific time complexity guarantees for all container operations. Choosing the right container depends on understanding these guarantees for your access patterns.
+The C++ standard mandates specific time complexity guarantees for all container operations. Choosing the right container depends on understanding these guarantees for your access patterns. If you remember one principle here: the standard guarantees complexity classes, not actual speed - a container with a "better" big-O can still be slower in practice for small sizes because of constant factors and cache behavior.
 
 ### Comprehensive Complexity Table
 
+If the table feels like a lot, it boils down to: `vector` is fastest for everything except front insertion; `list`/`forward_list` have O(1) insert/erase if you already have an iterator; `map`/`set` give you O(log n) for everything ordered; `unordered_*` gives you O(1) average for lookups.
+
 #### Sequence Containers
 
-| Operation        | `vector`        | `deque`         | `list`          | `forward_list`  | `array`  |
+| Operation | `vector` | `deque` | `list` | `forward_list` | `array` |
 | --- | --- | --- | --- | --- | --- |
-| `push_back`     | Amort. O(1)     | Amort. O(1)     | O(1)            | N/A             | N/A      |
-| `push_front`    | **O(n)**        | O(1)            | O(1)            | O(1)            | N/A      |
-| `pop_back`      | O(1)            | O(1)            | O(1)            | N/A             | N/A      |
-| `pop_front`     | **O(n)**        | O(1)            | O(1)            | O(1)            | N/A      |
-| Insert middle   | **O(n)**        | **O(n)**        | O(1)*           | O(1)*           | N/A      |
-| Erase middle    | **O(n)**        | **O(n)**        | O(1)*           | O(1)*           | N/A      |
-| Access `[i]`    | O(1)            | O(1)            | **O(n)**        | **O(n)**        | O(1)     |
-| `find` (unsorted)| O(n)           | O(n)            | O(n)            | O(n)            | O(n)     |
-| `sort`          | O(n log n)      | O(n log n)      | O(n log n)      | O(n log n)      | O(n log n)|
+| `push_back` | Amort. O(1) | Amort. O(1) | O(1) | N/A | N/A |
+| `push_front` | **O(n)** | O(1) | O(1) | O(1) | N/A |
+| `pop_back` | O(1) | O(1) | O(1) | N/A | N/A |
+| `pop_front` | **O(n)** | O(1) | O(1) | O(1) | N/A |
+| Insert middle | **O(n)** | **O(n)** | O(1)* | O(1)* | N/A |
+| Erase middle | **O(n)** | **O(n)** | O(1)* | O(1)* | N/A |
+| Access `[i]` | O(1) | O(1) | **O(n)** | **O(n)** | O(1) |
+| `find` (unsorted) | O(n) | O(n) | O(n) | O(n) | O(n) |
+| `sort` | O(n log n) | O(n log n) | O(n log n) | O(n log n) | O(n log n) |
 
 *\* O(1) if you already have an iterator to the position; finding the position is O(n).*
 
 #### Associative Containers (Tree-based, ordered)
 
-| Operation   | `map` / `set`   | `multimap` / `multiset` |
+| Operation | `map` / `set` | `multimap` / `multiset` |
 | --- | --- | --- |
-| `insert`   | O(log n)        | O(log n)               |
-| `erase`    | O(log n) + amort. O(1) | O(log n) + O(k)  |
-| `find`     | O(log n)        | O(log n)               |
-| `lower_bound` / `upper_bound` | O(log n) | O(log n)    |
-| Iteration  | O(n) total      | O(n) total             |
-| `merge`    | O(n log n)      | O(n log n)             |
+| `insert` | O(log n) | O(log n) |
+| `erase` | O(log n) + amort. O(1) | O(log n) + O(k) |
+| `find` | O(log n) | O(log n) |
+| `lower_bound` / `upper_bound` | O(log n) | O(log n) |
+| Iteration | O(n) total | O(n) total |
+| `merge` | O(n log n) | O(n log n) |
 
 #### Unordered Associative Containers (Hash-based)
 
-| Operation   | `unordered_map` / `unordered_set` | Worst case |
+| Operation | `unordered_map` / `unordered_set` | Worst case |
 | --- | --- | --- |
-| `insert`   | O(1) amortized                   | **O(n)**   |
-| `erase`    | O(1) amortized                   | **O(n)**   |
-| `find`     | O(1) average                     | **O(n)**   |
-| `count`    | O(1) average                     | O(n)       |
-| `rehash`   | O(n)                             | O(n)       |
-| Iteration  | O(n + bucket_count)              |            |
+| `insert` | O(1) amortized | **O(n)** |
+| `erase` | O(1) amortized | **O(n)** |
+| `find` | O(1) average | **O(n)** |
+| `count` | O(1) average | O(n) |
+| `rehash` | O(n) | O(n) |
+| Iteration | O(n + bucket_count) | |
 
 #### Container Adaptors
 
-| Operation   | `stack`   | `queue`   | `priority_queue`  |
+| Operation | `stack` | `queue` | `priority_queue` |
 | --- | --- | --- | --- |
-| Push       | O(1)*     | O(1)*     | O(log n)          |
-| Pop        | O(1)*     | O(1)*     | O(log n)          |
-| Top/Front  | O(1)      | O(1)      | O(1)              |
+| Push | O(1)* | O(1)* | O(log n) |
+| Pop | O(1)* | O(1)* | O(log n) |
+| Top/Front | O(1) | O(1) | O(1) |
 
 *\* Depends on underlying container (deque by default).*
 
 #### C++23 Flat Containers
 
-| Operation   | `flat_map` / `flat_set` |
+| Operation | `flat_map` / `flat_set` |
 | --- | --- |
-| `insert`   | O(n) (must maintain sorted order) |
-| `find`     | **O(log n)** (binary search on contiguous memory) |
-| `erase`    | O(n) (shift elements) |
-| Iteration  | O(n) (cache-friendly) |
+| `insert` | O(n) (must maintain sorted order) |
+| `find` | **O(log n)** (binary search on contiguous memory) |
+| `erase` | O(n) (shift elements) |
+| Iteration | O(n) (cache-friendly) |
 
 ### Key Rules of Thumb
 
-1. **Default to `std::vector`** — contiguous memory wins for most workloads.
-2. **Need O(log n) lookup?** → `std::map` / `std::set` (ordered) or `std::flat_map` (C++23, cache-friendly).
-3. **Need O(1) lookup?** → `std::unordered_map` / `std::unordered_set`.
-4. **Need O(1) front/back insert?** → `std::deque`.
-5. **Need O(1) splice?** → `std::list`.
+1. **Default to `std::vector`** - contiguous memory wins for most workloads.
+2. **Need O(log n) lookup?** -> `std::map` / `std::set` (ordered) or `std::flat_map` (C++23, cache-friendly).
+3. **Need O(1) lookup?** -> `std::unordered_map` / `std::unordered_set`.
+4. **Need O(1) front/back insert?** -> `std::deque`.
+5. **Need O(1) splice?** -> `std::list`.
 
 ### Important Notes
 
 - "Amortized O(1)" means occasional O(n) operations (reallocation) averaged over many operations.
 - Hash container worst case O(n) occurs when all keys hash to the same bucket.
 - `std::vector::insert` at the end is amortized O(1); at the beginning is always O(n).
-- Tree-based containers (`map`, `set`) guarantee O(log n) worst case — no pathological inputs.
+- Tree-based containers (`map`, `set`) guarantee O(log n) worst case - no pathological inputs.
 
 ---
 
@@ -90,8 +92,9 @@ The C++ standard mandates specific time complexity guarantees for all container 
 
 ### Q1: List the O() complexity for insert, find, and erase in vector, list, map, unordered_map, and deque
 
-```cpp
+Here's an empirical verification that makes the complexity differences visible in actual timing. Notice how the list middle-insert benchmark runs much faster per insert because we move the iterator to the middle once and then reuse it - that's the O(1) insert given an iterator that the table describes.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <list>
@@ -186,21 +189,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Explanation:**
 
 - **`vector`:** Insert/erase at middle is O(n) because all subsequent elements must be shifted. `find` is O(n) linear scan (or O(log n) if sorted, using `std::lower_bound`).
 - **`list`:** Insert/erase is O(1) *given an iterator*, but finding the position is O(n). No random access.
-- **`map`:** All operations are O(log n) guaranteed — backed by a balanced BST (usually red-black tree).
+- **`map`:** All operations are O(log n) guaranteed - backed by a balanced BST (usually red-black tree).
 - **`unordered_map`:** O(1) average, O(n) worst case. Worst case occurs with hash collisions.
 - **`deque`:** Same complexity as vector for middle operations, but O(1) push_front/pop_front.
 
 ### Q2: Explain why unordered_map has O(1) amortized lookup but O(n) worst case
 
-```cpp
+The worst case is not just a theoretical edge case - it's a real attack vector. This example shows both a contrived bad hash and what happens when `std::hash<int>` itself degrades on adversarial input.
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <chrono>
@@ -256,34 +259,34 @@ int main() {
         std::cout << "Terrible hash (all collisions):\n";
         std::cout << "  Find " << N << " keys: " << dur.count() << " us\n";
         std::cout << "  Max bucket size: " << m.bucket_size(0) << "\n";
-        // Expected: ~100,000+ us (O(n) per lookup → O(n²) total)
+        // Expected: ~100,000+ us (O(n) per lookup -> O(n^2) total)
         // Max bucket = N (all in one bucket)
     }
 
     std::cout << "\nWhy O(n) worst case:\n";
-    std::cout << "1. hash(key) → bucket index\n";
+    std::cout << "1. hash(key) -> bucket index\n";
     std::cout << "2. Each bucket is a linked list of colliding elements\n";
-    std::cout << "3. Good hash: ~1 element per bucket → O(1) lookup\n";
-    std::cout << "4. Bad hash: N elements in one bucket → O(n) linear scan\n";
+    std::cout << "3. Good hash: ~1 element per bucket -> O(1) lookup\n";
+    std::cout << "4. Bad hash: N elements in one bucket -> O(n) linear scan\n";
 
     return 0;
 }
-
 ```
 
 **Explanation:**
 
 - `std::unordered_map` works by hashing the key to determine a bucket index.
 - Each bucket is a linked list (separate chaining) of elements whose keys hash to that bucket.
-- **O(1) average:** With a good hash and `load_factor ≤ 1.0`, each bucket has ~1 element. Lookup = hash + one comparison.
+- **O(1) average:** With a good hash and `load_factor <= 1.0`, each bucket has ~1 element. Lookup = hash + one comparison.
 - **O(n) worst case:** If all keys hash to the same bucket (either by adversarial input or a poor hash function), lookup degrades to a linear scan through the entire linked list.
-- **Rehashing** doesn't help if the hash function itself is the problem — all elements will still end up in the same bucket after rehashing.
+- **Rehashing** doesn't help if the hash function itself is the problem - all elements will still end up in the same bucket after rehashing.
 - **Mitigation:** Use a high-quality hash function with good distribution. For string keys, consider `std::hash<std::string>` (usually good) or a randomized hash to defend against HashDoS.
 
 ### Q3: Show a pathological worst-case for unordered_map and how to mitigate it with a custom hash
 
-```cpp
+The reason this trips people up is that `std::hash<int>` is often the identity function. That sounds fine until you realize that keys which are multiples of the bucket count all land in the same bucket. The SplitMix64 hash function is a well-known fix that mixes the bits properly before indexing.
 
+```cpp
 #include <iostream>
 #include <unordered_map>
 #include <chrono>
@@ -300,7 +303,7 @@ void demonstrate_pathological() {
 
     std::cout << "Bucket count: " << m.bucket_count() << "\n";
 
-    // Insert multiples of bucket_count → all go to bucket 0
+    // Insert multiples of bucket_count -> all go to bucket 0
     size_t bc = m.bucket_count();
     for (int i = 0; i < 1000; ++i) {
         m[static_cast<int>(i * bc)] = i;  // All hash to bucket 0!
@@ -387,7 +390,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **How it works:**
@@ -402,7 +404,7 @@ int main() {
 ## Notes
 
 - **The standard guarantees complexities, not constants.** An O(log n) `std::map` lookup may be slower than an O(1) `std::unordered_map` lookup on paper, but for small n (< ~100), the constant factors and cache behavior may reverse this.
-- **`std::flat_map` (C++23)** provides O(log n) find with cache-friendly contiguous storage — excellent for read-heavy, write-infrequent workloads.
+- **`std::flat_map` (C++23)** provides O(log n) find with cache-friendly contiguous storage - excellent for read-heavy, write-infrequent workloads.
 - **Iterator performance:** `std::unordered_map` iteration is O(n + bucket_count), not O(n). Many empty buckets slow iteration.
-- **Amortized O(1)** for `vector::push_back` means occasional O(n) reallocations. The growth factor (usually 1.5× or 2×) ensures the total cost of n insertions is O(n).
+- **Amortized O(1)** for `vector::push_back` means occasional O(n) reallocations. The growth factor (usually 1.5x or 2x) ensures the total cost of n insertions is O(n).
 - **`std::list::sort`** is O(n log n) but with larger constant than `std::sort` on vectors (cache-unfriendly merge sort vs. introsort).

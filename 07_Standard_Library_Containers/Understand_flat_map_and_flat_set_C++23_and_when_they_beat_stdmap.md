@@ -11,23 +11,27 @@
 
 `std::flat_map` and `std::flat_set` (C++23) store their elements in **sorted contiguous containers** (by default, two `std::vector`s for keys and values in `flat_map`). This gives them **excellent cache locality** for lookups (binary search on a sorted array) while providing the same ordered-map API as `std::map`.
 
+The reason this matters is CPU cache behavior. `std::map` is a red-black tree: every lookup follows a chain of pointer dereferences to nodes scattered across the heap. Each pointer dereference is a potential cache miss. `flat_map` stores keys in a sorted vector and does a binary search on contiguous memory, so the CPU prefetcher can do its job. For read-heavy workloads that fit in cache, this difference is dramatic.
+
 ### Internal Structure Comparison
 
-```cpp
+Here is a side-by-side picture of how the two containers lay out their data:
 
+```cpp
 std::map (red-black tree):
   Each node is a separate heap allocation:
   [Node: key|val|left|right|parent|color]
-     ↗         ↘
+     /         \
   [Node]      [Node]
-  Pointer chasing → cache misses on every comparison
+  Pointer chasing -> cache misses on every comparison
 
 std::flat_map (sorted vectors):
-  Keys:   [alice, bob, carol, dave]   ← contiguous
-  Values: [95,    87,  92,    88]     ← contiguous
-  Binary search → sequential memory access → cache-friendly
-
+  Keys:   [alice, bob, carol, dave]   <- contiguous
+  Values: [95,    87,  92,    88]     <- contiguous
+  Binary search -> sequential memory access -> cache-friendly
 ```
+
+The key insight is that `flat_map` separates keys and values into two parallel vectors. That means during a binary search you only touch the keys vector - the values never enter the cache until you've found the entry you want.
 
 ### Performance Comparison
 
@@ -39,6 +43,8 @@ std::flat_map (sorted vectors):
 | Iteration          | O(n), pointer chasing | O(n), **contiguous** |
 | Memory overhead    | ~3-4 pointers/node | Near-zero overhead |
 | Memory locality    | Poor (scattered nodes) | **Excellent** |
+
+Notice that insert and erase are O(n) for `flat_map` - that's the cost of shifting elements in a vector to keep the sorted order. This is the trade-off: fast lookups and iteration, but expensive structural modifications.
 
 ### When to Use flat_map
 
@@ -55,8 +61,9 @@ std::flat_map (sorted vectors):
 
 ### Core API (C++23)
 
-```cpp
+The API is intentionally nearly identical to `std::map`, so switching is low-friction. Notice the extra `keys()` and `values()` accessors that give you direct access to the underlying vectors:
 
+```cpp
 #include <iostream>
 #include <flat_map>  // C++23
 #include <string>
@@ -91,8 +98,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `keys()` and `values()` accessors are unique to `flat_map` - they give you direct read access to the underlying vectors when you need to pass them to algorithms that expect contiguous ranges.
 
 ### Important Notes
 
@@ -107,8 +115,9 @@ int main() {
 
 ### Q1: Explain why flat_map has better cache locality than std::map for small-to-medium sizes
 
-```cpp
+This example simulates a `flat_map` with a sorted vector so you can benchmark the difference in pre-C++23 environments. The important thing to watch is the lookup time, not the build time:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <vector>
@@ -203,19 +212,21 @@ int main() {
 
     return 0;
 }
-
 ```
+
+At N=10,000, you should see `flat_map` win by a factor of 2-5x. The gap narrows as N grows and the dataset stops fitting in L1/L2 cache.
 
 **Explanation:**
 
-- **`std::map`:** Implemented as a red-black tree. Each node is a separate heap allocation at a random memory address. During `find()`, each comparison requires following a pointer to a child node → potential L1/L2 cache miss.
-- **`flat_map`:** Keys are stored in a sorted `std::vector`. Binary search accesses elements at `data[mid]`, `data[mid/2]`, etc. — all within the same contiguous array. The CPU prefetcher can predict and preload these locations.
-- For `N < 100K`, the cache advantage of contiguous storage typically outweighs the O(n) insertion cost, making flat_map 2-5× faster for lookups.
+- **`std::map`:** Implemented as a red-black tree. Each node is a separate heap allocation at a random memory address. During `find()`, each comparison requires following a pointer to a child node -> potential L1/L2 cache miss.
+- **`flat_map`:** Keys are stored in a sorted `std::vector`. Binary search accesses elements at `data[mid]`, `data[mid/2]`, etc. - all within the same contiguous array. The CPU prefetcher can predict and preload these locations.
+- For `N < 100K`, the cache advantage of contiguous storage typically outweighs the O(n) insertion cost, making flat_map 2-5x faster for lookups.
 
 ### Q2: Show the performance crossover point between flat_map and std::map for lookup-heavy workloads
 
-```cpp
+The crossover is the key design question: at what N does `std::map` catch up? The answer depends on key size, value size, and how often you insert vs. look up. This benchmark sweeps across multiple sizes to give you a feel for the curve:
 
+```cpp
 #include <iostream>
 #include <map>
 #include <vector>
@@ -311,8 +322,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+On modern desktop hardware you'll typically see the crossover for lookup-only workloads somewhere around N=500K. If you mix in frequent inserts, the crossover drops dramatically - sometimes as low as N=1K-10K.
 
 **How it works:**
 
@@ -324,8 +336,9 @@ int main() {
 
 ### Q3: Explain the invalidation rules for flat_map iterators after insertions
 
-```cpp
+This is one of the most important behavioral differences from `std::map`. Because `flat_map` is backed by vectors, any structural modification can reallocate or shift memory, invalidating every iterator you held. The example walks through the correct pattern for re-acquiring iterators:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -387,7 +400,7 @@ int main() {
     std::cout << "  erase(): ALL iterators invalidated\n";
     std::cout << "    - Elements shift left (changes positions)\n";
     std::cout << "  find()/lookups: No invalidation\n";
-    std::cout << "  operator[]: May insert → invalidates all if key is new\n";
+    std::cout << "  operator[]: May insert -> invalidates all if key is new\n";
 
     // === Comparison with std::map ===
     std::cout << "\nComparison:\n";
@@ -423,15 +436,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The collect-then-erase pattern at the end is the safe idiom: finish your read pass first, then apply all modifications once you no longer need the iterators.
 
 **Explanation:**
 
 - `std::flat_map` stores keys and values in `std::vector`s. Any structural modification (insert/erase) can:
-  1. **Reallocate** the vectors (when capacity is exceeded) → all iterators, pointers, references invalidated.
-  2. **Shift elements** within the vectors (to maintain sorted order) → iterators to shifted elements point to different elements.
-- This is fundamentally different from `std::map`, where tree nodes are independent allocations — inserting a new node doesn't affect existing node addresses.
+  1. **Reallocate** the vectors (when capacity is exceeded) -> all iterators, pointers, references invalidated.
+  2. **Shift elements** within the vectors (to maintain sorted order) -> iterators to shifted elements point to different elements.
+- This is fundamentally different from `std::map`, where tree nodes are independent allocations - inserting a new node doesn't affect existing node addresses.
 - **Safe pattern:** Never hold iterators across insert/erase calls. Re-acquire iterators after any modification. Or collect modifications and apply them batch-wise.
 
 ---
@@ -443,4 +457,4 @@ int main() {
 - **`sorted_unique_t` constructor:** `std::flat_map fm(std::sorted_unique, keys_vec, vals_vec)` constructs from pre-sorted data in O(1) (no re-sorting).
 - **`extract()` (C++23):** Returns the underlying containers for direct manipulation, then `replace()` puts them back.
 - **`std::flat_multimap` and `std::flat_multiset`:** Allow duplicate keys, also in C++23.
-- **Tip:** If you build a flat_map from unsorted data, use `flat_map(first, last)` which sorts once at construction — much faster than N individual `insert()` calls.
+- **Tip:** If you build a flat_map from unsorted data, use `flat_map(first, last)` which sorts once at construction - much faster than N individual `insert()` calls.
