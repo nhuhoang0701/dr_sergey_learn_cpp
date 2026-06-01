@@ -1,6 +1,6 @@
 # Use std::transform_reduce for parallel map-reduce operations
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #294  
 **Standard:** C++17 / C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/transform_reduce>  
@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`std::transform_reduce` fuses a **map** step (unary or binary transform) with a **reduce** step (associative+commutative fold) into a single algorithm that the implementation can parallelise and vectorise when given an execution policy.
+`std::transform_reduce` fuses a **map** step (unary or binary transform) with a **reduce** step (associative+commutative fold) into a single algorithm that the implementation can parallelise and vectorise when given an execution policy. The fusion matters because it means no intermediate container of transformed values needs to exist - everything is computed in a single pass.
 
 ### Overloads
 
@@ -23,7 +23,7 @@ All overloads accept an optional execution policy as the first argument.
 
 ### Key Rules
 
-1. **`reduce_op`** must be associative and commutative — the library may evaluate in any order or partition.
+1. **`reduce_op`** must be associative and commutative - the library may evaluate in any order or partition.
 2. Neither `reduce_op` nor `transform_op` may invalidate iterators or modify elements.
 3. The default reduce is `std::plus<>()` and default transform is `std::multiplies<>()` (inner product).
 
@@ -38,8 +38,9 @@ All overloads accept an optional execution policy as the first argument.
 
 ### Core Syntax
 
-```cpp
+Here's the essential pattern - a sum of squares and a dot product - before diving into the exercises:
 
+```cpp
 #include <numeric>
 #include <execution>
 #include <vector>
@@ -76,8 +77,9 @@ int main() {
     std::cout << "parallel dot = " << par_dot << "\n";
     // Output: parallel dot = 32
 }
-
 ```
+
+Notice that the binary overload with just four arguments (no explicit `reduce_op` or `transform_op`) defaults to inner product behavior - multiply elements pairwise, then sum. This is intentional: it makes `transform_reduce` a parallelisable drop-in for `std::inner_product`.
 
 ---
 
@@ -85,10 +87,9 @@ int main() {
 
 ### Q1: Compute the L2 norm of a vector using transform_reduce with a squared element transform
 
-**Answer:**
+The L2 norm requires squaring each element and summing the results before taking a square root. `transform_reduce` does the squaring and summing in a single pass without allocating a temporary vector of squares.
 
 ```cpp
-
 #include <numeric>
 #include <vector>
 #include <cmath>
@@ -112,25 +113,17 @@ int main() {
     // sum of squares = 55
     // L2 norm        = 7.41620
 }
-
 ```
 
-**Explanation:**
-
-- The **transform** lambda maps each element `x → x²`.
-- The **reduce** operation `std::plus<>()` sums those squares.
-- `init = 0.0` is the identity for addition.
-- Finally `std::sqrt` converts sum-of-squares to the Euclidean (L2) norm.
-- This is a single pass — no intermediate container of squared values is created.
+The argument order is worth memorizing: `(range, init, reduce_op, transform_op)`. Many people accidentally swap `reduce_op` and `transform_op`. A good mnemonic is to read it inside-out - the transform is the innermost operation (applied to each element first), and the reduce is the outer accumulation.
 
 ---
 
 ### Q2: Parallelize the operation with std::execution::par_unseq and verify correctness
 
-**Answer:**
+Adding `std::execution::par_unseq` as the first argument tells the implementation it may split the work across threads and apply SIMD vectorization within each chunk. The correctness question is subtle: floating-point addition is not mathematically associative, so different groupings can produce slightly different results.
 
 ```cpp
-
 #include <numeric>
 #include <execution>
 #include <vector>
@@ -172,30 +165,21 @@ int main() {
 
     std::cout << "L2 norm = " << std::sqrt(par) << "\n";
 }
-
 ```
 
-**Explanation:**
-
-- `std::execution::par_unseq` allows the implementation to split the range across threads **and** vectorise within each chunk.
-- Because `+` on doubles is associative+commutative (mathematically), the algorithm can partition work arbitrarily.
-- Floating-point addition is **not** strictly associative, so tiny rounding differences may appear — we verify with a relative error check.
-- On large data sets the parallel version can be significantly faster (2–8× depending on hardware).
+The reason this trips people up is that they expect exact equality but get a tiny rounding difference. This is not a bug - it's a consequence of the library being allowed to combine partial results in any order. The relative error shown here is typically on the order of 1e-13 or smaller: negligible for engineering use, but something to be aware of if you are comparing outputs bit-for-bit.
 
 ---
 
 ### Q3: Explain why transform_reduce requires associativity and commutativity for parallel safety
 
-**Answer:**
+**Associativity** means `(a op b) op c == a op (b op c)`. This is needed because the library splits the range into chunks and reduces each chunk independently, then combines chunk results. Different groupings must produce the same answer.
 
-**Associativity** means `(a ⊕ b) ⊕ c == a ⊕ (b ⊕ c)`. This is needed because the library splits the range into chunks and reduces each chunk independently, then combines chunk results. Different groupings must produce the same answer.
+**Commutativity** means `a op b == b op a`. This is needed because there is **no guarantee** on the order in which elements are fed to the reduction - chunks may finish in any order, and within a chunk SIMD lanes may be combined in any order.
 
-**Commutativity** means `a ⊕ b == b ⊕ a`. This is needed because there is **no guarantee** on the order in which elements are fed to the reduction — chunks may finish in any order, and within a chunk SIMD lanes may be combined in any order.
-
-**Counter-example — subtraction is NOT safe:**
+**Counter-example - subtraction is NOT safe:**
 
 ```cpp
-
 #include <numeric>
 #include <execution>
 #include <vector>
@@ -209,7 +193,7 @@ int main() {
     std::cout << "accumulate (left fold): " << acc << "\n";
     // Output: accumulate (left fold): -16
 
-    // transform_reduce with minus — UNDEFINED grouping!
+    // transform_reduce with minus - UNDEFINED grouping!
     // The library may compute (10-3) - (2-1) = 6, or (10-2) - (3-1) = 6,
     // or many other groupings. Result is unpredictable.
     int tr = std::transform_reduce(
@@ -220,15 +204,14 @@ int main() {
         [](int x){ return x; }
     );
     std::cout << "transform_reduce (parallel minus): " << tr << "\n";
-    // Output: UNSPECIFIED — could be anything
+    // Output: UNSPECIFIED - could be anything
 }
-
 ```
 
 **Safe operations for the reduce step:**
 
-- `std::plus<>()` — addition
-- `std::multiplies<>()` — multiplication
+- `std::plus<>()` - addition
+- `std::multiplies<>()` - multiplication
 - `std::bit_and<>()`, `std::bit_or<>()`, `std::bit_xor<>()`
 - `std::min`, `std::max` (via lambda wrappers)
 - Any user-defined associative+commutative binary op
@@ -242,8 +225,8 @@ int main() {
 ## Notes
 
 - `transform_reduce` lives in `<numeric>`, not `<algorithm>`.
-- The binary overload `(first1, last1, first2, init)` defaults to inner product — equivalent to `std::inner_product` but parallelisable.
-- For very small ranges the overhead of thread dispatch may make the parallel version slower — profile before switching.
+- The binary overload `(first1, last1, first2, init)` defaults to inner product - equivalent to `std::inner_product` but parallelisable.
+- For very small ranges the overhead of thread dispatch may make the parallel version slower - profile before switching.
 - `std::reduce` is the special case where the transform is the identity function.
-- Combine with `std::execution::par` (parallel but not vectorised) when the transform has side effects that must not be interleaved within a thread (rare — ideally transforms are pure).
+- Combine with `std::execution::par` (parallel but not vectorised) when the transform has side effects that must not be interleaved within a thread (rare - ideally transforms are pure).
 - On MSVC, link with `/openmp` or use the default thread pool. On GCC/libstdc++ link with `-ltbb`.

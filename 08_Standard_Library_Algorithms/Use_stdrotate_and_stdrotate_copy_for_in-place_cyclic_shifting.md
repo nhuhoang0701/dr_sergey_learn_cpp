@@ -1,6 +1,6 @@
 # Use std::rotate and std::rotate_copy for in-place cyclic shifting
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #355  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/rotate>  
 
@@ -8,34 +8,33 @@
 
 ## Topic Overview
 
-`std::rotate` performs an in-place cyclic permutation that moves a "middle" element to the front position. It's one of the most powerful and underappreciated standard algorithms.
+`std::rotate` performs an in-place cyclic permutation that moves a "middle" element to the front position. It's one of the most powerful and underappreciated standard algorithms - it looks like a small utility but turns up in a surprising number of real problems.
 
 ### How It Works
 
-```cpp
+The three-iterator interface is the key thing to internalize. You give it a range and say "I want this element to be at the front":
 
+```text
 rotate(first, middle, last)
 
 Before: [first ... middle-1 | middle ... last-1]
 After:  [middle ... last-1  | first ... middle-1]
         ^returned iterator points here
-
 ```
 
-```cpp
-
+```text
 Example: rotate by 2  (left-rotate)
 Before: [1, 2, 3, 4, 5]
          f     m        l
 After:  [3, 4, 5, 1, 2]
                   ^ returned iterator
-
 ```
+
+The returned iterator is easy to overlook but genuinely useful - it marks the "seam" in the result, pointing to where the original `first` element ended up.
 
 ### Signatures
 
 ```cpp
-
 #include <algorithm>
 
 // In-place rotation
@@ -43,7 +42,6 @@ auto new_middle = std::rotate(first, middle, last);
 
 // Non-modifying: writes to output
 auto out = std::rotate_copy(first, middle, last, dest);
-
 ```
 
 ### Complexity
@@ -51,7 +49,7 @@ auto out = std::rotate_copy(first, middle, last, dest);
 | Algorithm | Time | Space | Swaps |
 | --- | --- | --- | --- |
 | `std::rotate` | O(n) | O(1) | At most n |
-| Naive shift (K times) | O(n × K) | O(1) | n × K |
+| Naive shift (K times) | O(n x K) | O(1) | n x K |
 | Copy-based | O(n) | O(n) | 0 (copies) |
 
 ---
@@ -60,8 +58,9 @@ auto out = std::rotate_copy(first, middle, last, dest);
 
 ### Q1: Use std::rotate to left-rotate a vector by K positions efficiently
 
-```cpp
+The key idea is that left-rotating by K means you want the element currently at position K to move to position 0 - which is exactly what you express as `middle = begin + K`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -117,13 +116,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The modulo trick for K > n is worth remembering - rotating by 12 positions in a 5-element range is identical to rotating by 2 positions, so always reduce first.
 
 ### Q2: Implement a circular buffer drain using rotate to bring the oldest element to the front
 
-```cpp
+A ring buffer stores elements by wrapping around, so the physical layout in memory gets out of chronological order once the buffer fills. `std::rotate` is the standard way to fix that in a single O(n) pass.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -200,13 +201,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-### Q3: Show the O(n) complexity of std::rotate vs an O(n×K) naive shift
+The "insert at position" trick at the end is a handy idiom: `push_back` to grow the vector and ensure space, then rotate the new element from the tail to wherever it belongs. This avoids the cost of a mid-vector insert.
+
+### Q3: Show the O(n) complexity of std::rotate vs an O(n x K) naive shift
+
+The naive approach shifts elements one position at a time, K times - that's O(n*K) total moves. `std::rotate` uses the "three reverses" trick to get the same result in O(n) regardless of K.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -221,7 +224,7 @@ void left_shift_one(std::vector<int>& v) {
     v.back() = first;
 }
 
-// Naive left-rotate by K: call shift-one K times → O(n*K)
+// Naive left-rotate by K: call shift-one K times -> O(n*K)
 void naive_rotate(std::vector<int>& v, int k) {
     for (int i = 0; i < k; ++i)
         left_shift_one(v);
@@ -262,17 +265,18 @@ int main() {
     //   reverse(first, middle);
     //   reverse(middle, last);
     //   reverse(first, last);
-    // Each reverse is O(n), so total is O(n) — not O(n*K)!
+    // Each reverse is O(n), so total is O(n) - not O(n*K)!
     //
     // Example: [1,2,3|4,5]
     // reverse first: [3,2,1|4,5]
     // reverse second: [3,2,1|5,4]
-    // reverse all: [4,5,1,2,3] ✓
+    // reverse all: [4,5,1,2,3] -- correct
 
     return 0;
 }
-
 ```
+
+The three-reverses insight is genuinely elegant: each reverse is O(n), you do three of them, and the constant factor is small enough that the total beats 30,000 single-element shifts by a large margin.
 
 ---
 
@@ -281,17 +285,7 @@ int main() {
 - **The returned iterator** from `rotate(first, mid, last)` points to the new position of the element that was previously at `first`. This is useful for subsequent operations.
 - **Three common patterns with rotate:**
   1. **Left/right rotation** of arrays
-  2. **Move element to front/back** — `rotate(begin, target, target+1)` moves `*target` to front
-  3. **Insert at position** — `push_back()` then `rotate(pos, end-1, end)`
+  2. **Move element to front/back** - `rotate(begin, target, target+1)` moves `*target` to front
+  3. **Insert at position** - `push_back()` then `rotate(pos, end-1, end)`
 - `std::rotate` works with **forward iterators** (not just random access), thanks to different internal algorithms for different iterator categories.
 - **The "three reverses" trick** is the classic O(n) implementation for random-access iterators.
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

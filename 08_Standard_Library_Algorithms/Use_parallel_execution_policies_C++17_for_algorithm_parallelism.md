@@ -1,6 +1,6 @@
 # Use parallel execution policies (C++17) for algorithm parallelism
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #76  
 **Standard:** C++17  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/execution_policy_tag>  
@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-C++17 added execution policies that let you parallelize standard algorithms by adding a single argument. The compiler and runtime handle thread management.
+C++17 added execution policies that let you parallelize standard algorithms by adding a single argument. The compiler and runtime handle thread management - you do not need to write a single thread or mutex yourself for the common cases. The tradeoff is that you must be careful about what operations you pass to parallel algorithms.
 
 ### The Four Execution Policies
 
@@ -22,7 +22,7 @@ C++17 added execution policies that let you parallelize standard algorithms by a
 
 ### Key Rule
 
-With `par` or `par_unseq`, any operation you pass (predicates, comparators, projections) **must not cause data races**. The algorithm will invoke your callable from multiple threads simultaneously.
+With `par` or `par_unseq`, any operation you pass (predicates, comparators, projections) **must not cause data races**. The algorithm will invoke your callable from multiple threads simultaneously. This is the rule that trips people up most often, so the third question below shows exactly what a data race looks like and how to avoid it.
 
 ### Compiler Support
 
@@ -38,8 +38,9 @@ With `par` or `par_unseq`, any operation you pass (predicates, comparators, proj
 
 ### Q1: Add std::execution::par to std::sort and measure speedup on a large vector
 
-```cpp
+The change from sequential to parallel is literally one argument. The code below shows both versions side by side so you can measure the difference on your machine.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -94,37 +95,32 @@ int main() {
 }
 // Compile: g++ -std=c++17 -O2 -ltbb parallel_sort.cpp
 // MSVC:    cl /std:c++17 /O2 parallel_sort.cpp
-
 ```
 
-**How it works:**
-
-- Just add `std::execution::par` as the **first argument** to `std::sort`.
-- The runtime spawns threads internally (typically from a thread pool).
-- Speedup depends on data size, core count, and memory bandwidth. Typically 2-4x on 4 cores for sort.
-- For small datasets (< ~10K elements), parallel overhead exceeds benefit — use sequential.
+Just add `std::execution::par` as the **first argument** to `std::sort`. The runtime spawns threads internally, typically from a thread pool. Speedup depends on data size, core count, and memory bandwidth - typically 2-4x on a 4-core machine for sort. For small datasets (fewer than roughly 10K elements), parallel overhead exceeds the benefit, so stick to sequential for small inputs.
 
 ### Q2: Explain the difference between par, seq, par_unseq, and unseq policies
 
+The table below shows what each policy allows. The key restriction to understand is that `par_unseq` not only runs across threads but also allows SIMD interleaving within a single thread, which makes mutex locking impossible.
+
 | Policy | Threads | SIMD | Safe to use mutexes? | Safe to call virtual functions? |
 | --- | --- | --- | --- | --- |
-| `seq` | 1 | No | ✅ Yes | ✅ Yes |
-| `par` | Many | No | ✅ Yes (carefully) | ✅ Yes |
-| `par_unseq` | Many | Yes | ❌ No (deadlock!) | ❌ No |
-| `unseq` | 1 | Yes | ❌ No | ❌ No |
+| `seq` | 1 | No | Yes | Yes |
+| `par` | Many | No | Yes (carefully) | Yes |
+| `par_unseq` | Many | Yes | No (deadlock!) | No |
+| `unseq` | 1 | Yes | No | No |
 
 **Detailed explanation:**
 
-- **`seq`** — Guarantees sequential execution in the calling thread. Identical to not passing any policy. Useful as a "switch" variable.
+- **`seq`** - Guarantees sequential execution in the calling thread. Identical to not passing any policy. Useful as a "switch" variable when you want to parametrize the execution policy at runtime.
 
-- **`par`** — Operations may execute on multiple threads. Each individual element access is done from exactly one thread at a time (no interleaving within a single invocation of your callable). Mutexes are safe but can destroy performance.
+- **`par`** - Operations may execute on multiple threads. Each individual element access is done from exactly one thread at a time (no interleaving within a single invocation of your callable). Mutexes are technically safe but will destroy performance - use atomics instead.
 
-- **`par_unseq`** — Operations can execute across threads AND be interleaved (vectorized) within a thread. If your callable locks a mutex, a single thread might lock it, get preempted mid-callable to start another element, and try to lock the same mutex again → deadlock. Memory allocation also typically uses internal locks.
+- **`par_unseq`** - Operations can execute across threads AND be interleaved (vectorized) within a thread. The reason you cannot use a mutex here is subtle: a single thread might lock the mutex, then get preempted mid-callable to start processing another element, and try to lock the same mutex again. That is a deadlock. Memory allocation also typically uses internal locks, so do not allocate in your callable either.
 
-- **`unseq`** (C++20) — Single thread but allows SIMD vectorization. Same restrictions as `par_unseq` regarding mutexes and allocations.
+- **`unseq`** (C++20) - Single thread but allows SIMD vectorization. Same no-mutex, no-allocation restrictions as `par_unseq`.
 
 ```cpp
-
 #include <algorithm>
 #include <execution>
 #include <vector>
@@ -157,13 +153,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Show a data race when using par incorrectly with a shared accumulator
 
-```cpp
+This is the most common mistake with parallel algorithms: accumulating into a shared variable without synchronization. The result is always wrong, always different between runs, and the bug is invisible at compile time.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -189,7 +185,7 @@ int main() {
     // Thread A reads sum_buggy = 50
     // Thread B reads sum_buggy = 50  (before A writes back!)
     // Thread A writes 51
-    // Thread B writes 51  → lost update! Should be 52.
+    // Thread B writes 51  -> lost update! Should be 52.
 
     // === Fix 1: Use std::atomic (works with par) ===
     std::atomic<int> sum_atomic{0};
@@ -216,38 +212,17 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How the race manifests:**
-
-- `sum += x` is a read-modify-write operation that is **not atomic**.
-- Multiple threads execute this concurrently, causing lost updates.
-- The result is non-deterministic and always less than the correct answer.
-- This is **undefined behavior** per the C++ standard, not just a logic bug.
-- **Best fix:** Don't accumulate into shared state — use `std::reduce` or `std::transform_reduce`, which are specifically designed for parallel reduction.
+The race manifests because `sum += x` is a read-modify-write sequence, and it is not atomic. Multiple threads interleave their reads and writes, causing lost updates. The result is non-deterministic and always less than the correct answer. This is **undefined behavior** per the C++ standard, not just a logic bug. The best fix is not to accumulate into shared state at all - use `std::reduce` or `std::transform_reduce`, which are specifically designed for parallel reduction and handle the thread-safe accumulation internally.
 
 ---
 
 ## Notes
 
-- **When to use parallel policies:** Only for large data sets (≥ 10K–100K elements depending on the operation). Parallel overhead dominates for small inputs.
+- **When to use parallel policies:** Only for large data sets (roughly 10K-100K elements or more, depending on the operation). Parallel overhead dominates for small inputs.
 - **Exception handling:** Parallel algorithms call `std::terminate()` if any callable throws. They cannot propagate exceptions across threads.
 - **No guarantees on thread count:** The implementation may fall back to sequential execution for any policy.
-- **`std::sort` with `par`** — Typically uses parallel merge sort instead of introsort. May have different cache behavior.
+- **`std::sort` with `par`** - Typically uses parallel merge sort instead of introsort. May have different cache behavior.
 - **Algorithms that support policies:** `sort`, `for_each`, `transform`, `reduce`, `find`, `count`, `copy`, `fill`, and most others in `<algorithm>` and `<numeric>`.
 - **Compile flags:** GCC/Clang need `-ltbb` to link Intel TBB. MSVC uses PPL by default.
-
-- Data race when using par incorrectly with a shared accumulator.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

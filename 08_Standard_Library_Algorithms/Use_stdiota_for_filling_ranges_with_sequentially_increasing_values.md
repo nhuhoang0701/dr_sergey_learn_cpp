@@ -9,20 +9,18 @@
 
 ## Topic Overview
 
-`std::iota` fills a range with sequentially increasing values starting from a given value. Each element is assigned `value++`.
+`std::iota` fills a range with sequentially increasing values starting from a given value. Each element is assigned `value++`. It is the standard library way to say "fill this range with 0, 1, 2, 3, ..." without writing an explicit loop.
 
 ```cpp
-
 #include <numeric>
 std::iota(first, last, starting_value);
 // Equivalent to:
 // *first = starting_value;
 // *(first+1) = starting_value + 1;
 // ...
-
 ```
 
-C++23 adds `std::ranges::iota` and `std::views::iota` for lazy generation.
+C++23 adds `std::ranges::iota` and `std::views::iota` for lazy generation. The table below summarizes the three variants and when each one is appropriate:
 
 | Variant | Header | Eager/Lazy |
 | --- | --- | --- |
@@ -36,8 +34,9 @@ C++23 adds `std::ranges::iota` and `std::views::iota` for lazy generation.
 
 ### Q1: Use iota to initialize an index array [0, 1, 2, ..., n-1] for indirect sorting
 
-```cpp
+One of the most practical uses of `iota` is setting up an index array that you then sort indirectly. The idea is: instead of moving the actual data around, you sort an array of integers where each integer is an index into the original data. The original array stays untouched, and you get the sorted order "for free" through the index array.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -98,13 +97,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The pattern `iota` -> `sort-with-comparator` is used constantly in real code whenever you need a sorted view of data without copying or moving the underlying elements.
 
 ### Q2: Combine iota with shuffle to generate a random permutation
 
-```cpp
+`iota` followed by `std::shuffle` is the standard idiom for generating a random permutation. You fill the range with a known sequence, then scramble it uniformly. The card-shuffling example below shows a practical version of this.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -151,13 +152,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The random-sample trick at the end - fill with `iota`, shuffle, take the first k - is essentially a Fisher-Yates partial shuffle and gives you a uniform random sample without repetition.
 
 ### Q3: Show iota with a user-defined type that supports prefix operator++
 
-```cpp
+`std::iota` is not limited to integers. Any type that supports copy assignment and prefix `operator++` will work. The `Date` type below shows this cleanly - the only requirement is that `++` advances the value in whatever way makes sense for that type.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -234,14 +237,9 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `std::iota` calls `operator++` on the value after each assignment.
-- The type needs: copy/move assignable + prefix `operator++`.
-- This works with any type satisfying those requirements — dates, letters, custom counters.
+Notice that `std::iota` calls `operator++` on the value after each assignment - it does not compute `starting_value + n` for each slot. This is what makes custom types like `Date` and `Letter` work, and it is also what makes the type requirements so minimal.
 
 ---
 
@@ -251,6 +249,4 @@ int main() {
 - **Name origin:** From the APL programming language's iota (ι) function that generates integer sequences.
 - **C++20 `std::views::iota`:** Lazy version that generates values on-demand without allocating a container. Prefer this for pipelines: `for (int i : std::views::iota(0, n))`.
 - **C++23 `std::ranges::iota`:** Eager version like `std::iota` but with range interface.
-- **Common pattern:** `iota` → `shuffle` for random permutations. `iota` → `sort` with comparator for indirect sorting.
-
-```text
+- **Common pattern:** `iota` -> `shuffle` for random permutations. `iota` -> `sort` with comparator for indirect sorting.

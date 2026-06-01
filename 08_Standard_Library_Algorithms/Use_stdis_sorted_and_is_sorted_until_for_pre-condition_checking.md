@@ -10,8 +10,9 @@
 
 ### What They Do
 
-```cpp
+Here are the four signatures you will use most:
 
+```cpp
 #include <algorithm>
 
 bool std::is_sorted(first, last);             // true if sorted in ascending order
@@ -19,19 +20,18 @@ bool std::is_sorted(first, last, comp);       // true if sorted according to com
 
 auto it = std::is_sorted_until(first, last);       // iterator to first out-of-order element
 auto it = std::is_sorted_until(first, last, comp); // with custom comparator
-
 ```
 
 | Function | Returns | Useful for |
 | --- | --- | --- |
 | `is_sorted` | `bool` | Assertions, precondition checks |
-| `is_sorted_until` | Iterator | Diagnostics — shows WHERE sorting breaks |
+| `is_sorted_until` | Iterator | Diagnostics - shows WHERE sorting breaks |
 
-Both are O(n) — a single pass comparing adjacent elements.
+Both are O(n) - a single pass comparing adjacent elements.
 
 ### Why Use Them
 
-Binary search algorithms (`lower_bound`, `upper_bound`, `binary_search`, `equal_range`) require sorted input. Calling them on unsorted data is **undefined behavior**. Using `is_sorted` as a precondition check catches bugs early.
+Binary search algorithms (`lower_bound`, `upper_bound`, `binary_search`, `equal_range`) require sorted input. Calling them on unsorted data is **undefined behavior**. Using `is_sorted` as a precondition check catches bugs early - you get a clear assertion failure at the call site instead of mysterious wrong answers or crashes deep inside the algorithm.
 
 ---
 
@@ -39,8 +39,9 @@ Binary search algorithms (`lower_bound`, `upper_bound`, `binary_search`, `equal_
 
 ### Q1: Use is_sorted as an assertion before calling binary search algorithms
 
-```cpp
+The pattern here is straightforward: assert that the range is sorted before you call any algorithm that depends on it. In debug builds this fires immediately if the data is wrong; in release builds the assert compiles away.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -82,13 +83,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The key thing to remember is that whenever you pass a custom comparator to a binary search algorithm, you must use the same comparator in your `is_sorted` check - the sortedness criterion and the search criterion must match.
 
 ### Q2: Use is_sorted_until to find the first out-of-order element for diagnostic purposes
 
-```cpp
+`is_sorted_until` returns an iterator to the first element that is out of order. This is more useful than a plain `is_sorted` check when you want to understand *where* the problem is, not just *whether* there is a problem.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -97,7 +100,7 @@ int main() {
 void diagnose_sort_order(const std::vector<int>& v, const std::string& label) {
     auto it = std::is_sorted_until(v.begin(), v.end());
     if (it == v.end()) {
-        std::cout << label << ": fully sorted ✓\n";
+        std::cout << label << ": fully sorted\n";
     } else {
         auto idx = it - v.begin();
         std::cout << label << ": sort breaks at index " << idx
@@ -116,7 +119,7 @@ int main() {
     diagnose_sort_order(almost, "almost");
     diagnose_sort_order(end_break, "end_break");
     diagnose_sort_order(reversed, "reversed");
-    // sorted:    fully sorted ✓
+    // sorted:    fully sorted
     // almost:    sort breaks at index 3 (value 2 < previous 3)
     // end_break: sort breaks at index 4 (value 1 < previous 4)
     // reversed:  sort breaks at index 1 (value 4 < previous 5)
@@ -135,13 +138,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The "longest sorted prefix" trick at the end - computing `std::distance` from `begin` to the result of `is_sorted_until` - gives you a quick way to see how much of a partially sorted range is already in order.
 
 ### Q3: Write a debug-mode wrapper for binary_search that asserts the is_sorted precondition
 
-```cpp
+This is the production-ready version of the pattern: wrap the binary search functions in thin templates that assert sortedness in debug builds and vanish completely in release builds. The `#ifdef NDEBUG` split is the standard way to achieve zero-overhead checking that still catches bugs during development.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -209,14 +214,9 @@ int main() {
 }
 // Compile debug:   g++ -std=c++17 -g -O0 file.cpp
 // Compile release: g++ -std=c++17 -O2 -DNDEBUG file.cpp
-
 ```
 
-**How it works:**
-
-- In **debug mode** (default), `assert(is_sorted(...))` fires if the input is unsorted, catching the bug immediately with a clear message.
-- In **release mode** (`-DNDEBUG`), the assert is compiled away — zero overhead.
-- This pattern catches a very common class of bugs: calling binary search on data that accidentally became unsorted (e.g., after inserting without maintaining order).
+In **debug mode** (default), `assert(is_sorted(...))` fires if the input is unsorted, catching the bug immediately with a clear message. In **release mode** (`-DNDEBUG`), the assert is compiled away - zero overhead. This pattern catches a very common class of bugs: calling binary search on data that accidentally became unsorted (for example, after inserting without maintaining order).
 
 ---
 
@@ -225,20 +225,6 @@ int main() {
 - **Complexity:** `is_sorted` and `is_sorted_until` are both O(n), performing exactly `n-1` comparisons.
 - **Empty/single-element ranges:** Always considered sorted.
 - **`is_sorted`** is equivalent to `is_sorted_until(first, last) == last`.
-- **C++20 ranges:** `std::ranges::is_sorted(v)` — no begin/end needed. Supports projections.
+- **C++20 ranges:** `std::ranges::is_sorted(v)` - no begin/end needed. Supports projections.
 - **Performance tip:** In hot paths, the O(n) `is_sorted` check before an O(log n) binary search may be too expensive for production. Use it only in debug builds or tests.
-- **For containers with built-in ordering** (`std::set`, `std::map`): No need to check — they're always sorted by definition.
-
-- A debug-mode wrapper for binary_search that asserts the is_sorted precondition.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- **For containers with built-in ordering** (`std::set`, `std::map`): No need to check - they're always sorted by definition.

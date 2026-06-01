@@ -11,13 +11,12 @@
 
 `std::views::zip` and `std::views::enumerate` (C++23) solve two extremely common iteration patterns:
 
-- **`zip`** — iterate over multiple ranges in lockstep, producing tuples
-- **`enumerate`** — iterate with `(index, value)` pairs (replaces index-based for loops)
+- **`zip`** - iterate over multiple ranges in lockstep, producing tuples
+- **`enumerate`** - iterate with `(index, value)` pairs (replaces index-based for loops)
 
 ### Quick Reference
 
 ```cpp
-
 #include <ranges>
 
 // Zip: pair elements from multiple ranges
@@ -25,13 +24,13 @@ for (auto [a, b] : std::views::zip(vec1, vec2)) { ... }
 
 // Enumerate: get (index, value) pairs
 for (auto [i, val] : std::views::enumerate(vec)) { ... }
-
 ```
 
 ### Before vs After
 
-```cpp
+Here's what these views replace in practice:
 
+```cpp
 // Pre-C++23: index-based loop
 for (size_t i = 0; i < v.size(); ++i)
     std::cout << i << ": " << v[i] << "\n";
@@ -47,7 +46,6 @@ for (size_t i = 0; i < std::min(a.size(), b.size()); ++i)
 // C++23: zip
 for (auto [x, y] : std::views::zip(a, b))
     result.push_back(x + y);
-
 ```
 
 ---
@@ -56,8 +54,9 @@ for (auto [x, y] : std::views::zip(a, b))
 
 ### Q1: Use views::zip to iterate over two ranges simultaneously with structured bindings
 
-```cpp
+`zip` produces reference tuples, so you can modify elements in-place through them. Notice that three-way zip works just as naturally as two-way:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -101,13 +100,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The in-place modification through `zip` is genuinely useful. Since `x` in the loop body is a reference into `a`, writing `x += y` updates the original vector directly - no indexing required.
 
 ### Q2: Rewrite a classic index-based for loop using views::enumerate
 
-```cpp
+`enumerate` eliminates the common pattern where you maintain a separate counter variable just to track the position of the current element. The index and value arrive together as a pair:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -129,7 +130,7 @@ int main() {
     }
     // 0. apple, 1. banana, 2. cherry, 3. date
 
-    // === enumerate gives a reference — we can modify ===
+    // === enumerate gives a reference - we can modify ===
     for (auto [i, fruit] : fruits | std::views::enumerate) {
         fruit = "[" + std::to_string(i) + "] " + fruit;
     }
@@ -151,13 +152,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The modification example shows that `enumerate` produces real references to the original elements, not copies. Writing to `fruit` in the loop body updates `fruits[i]` directly.
 
 ### Q3: Show that zip with ranges of different sizes stops at the shortest range
 
-```cpp
+This is the safety guarantee that makes `zip` usable without worrying about bounds: it always stops at the end of whichever range runs out first. No undefined behavior, no out-of-bounds access:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -173,7 +176,7 @@ int main() {
     for (auto [a, b] : std::views::zip(short_range, long_range)) {
         std::cout << "  (" << a << ", " << b << ")\n";
     }
-    // (1, 10), (2, 20), (3, 30)  — only 3 pairs, not 6
+    // (1, 10), (2, 20), (3, 30)  - only 3 pairs, not 6
 
     // === This is intentional and safe ===
     // No out-of-bounds access
@@ -187,7 +190,7 @@ int main() {
     for (auto [label, val] : std::views::zip(labels, values)) {
         std::cout << label << " = " << val << "\n";
     }
-    // x = 3.14, y = 2.71  — stops at 2 (shortest)
+    // x = 3.14, y = 2.71  - stops at 2 (shortest)
 
     // === zip_view is sized if all inputs are sized ===
     // Size is min of all input sizes
@@ -200,8 +203,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The heterogeneous container example (`std::list` and `std::vector`) is a good reminder that `zip` works across different container types, not just matching pairs of vectors.
 
 ---
 
@@ -209,24 +213,6 @@ int main() {
 
 - **C++23 required.** Compiler support: GCC 13+, Clang 17+, MSVC 19.37+.
 - **`enumerate`** index type is `std::ranges::range_difference_t` (typically `ptrdiff_t`), not `size_t`.
-- Both `zip` and `enumerate` produce **reference tuples** — you can modify the original range through them.
-- `zip` with ranges of different sizes stops at the **shortest** range — no undefined behavior.
-- **`views::zip_transform(fn, r1, r2)`** is the combined zip+transform — use it when you want to apply a function to zipped elements without a separate transform step.
-
-```cpp
-
-**How this works:**
-
-- Zip with ranges of different sizes stops at the shortest range.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- Both `zip` and `enumerate` produce **reference tuples** - you can modify the original range through them.
+- `zip` with ranges of different sizes stops at the **shortest** range - no undefined behavior.
+- **`views::zip_transform(fn, r1, r2)`** is the combined zip+transform - use it when you want to apply a function to zipped elements without a separate transform step.

@@ -9,14 +9,12 @@
 
 ## Topic Overview
 
-`std::minmax_element` returns a pair of iterators to the smallest and largest elements in a single pass, using only ~3n/2 comparisons instead of the 2n required by separate `min_element` + `max_element` calls.
+`std::minmax_element` returns a pair of iterators to the smallest and largest elements in a single pass, using only ~3n/2 comparisons instead of the 2n required by separate `min_element` + `max_element` calls. When you need both extremes, this is always the right choice.
 
 ```cpp
-
 #include <algorithm>
 auto [min_it, max_it] = std::minmax_element(first, last);
 auto [min_it, max_it] = std::minmax_element(first, last, comp);
-
 ```
 
 ### Comparison Count
@@ -24,9 +22,9 @@ auto [min_it, max_it] = std::minmax_element(first, last, comp);
 | Approach | Comparisons | Passes |
 | --- | --- | --- |
 | `min_element` + `max_element` | 2(n-1) | 2 |
-| `minmax_element` | ≤ 3⌊n/2⌋ | 1 |
+| `minmax_element` | <=3⌊n/2⌋ | 1 |
 
-The algorithm works by comparing pairs of elements: first comparing the pair against each other, then comparing the smaller with the current min and the larger with the current max. This gives 3 comparisons per 2 elements.
+The algorithm works by comparing pairs of elements: first comparing the pair against each other, then comparing the smaller with the current min and the larger with the current max. This gives 3 comparisons per 2 elements, which is provably optimal for finding both extremes simultaneously.
 
 ---
 
@@ -34,8 +32,9 @@ The algorithm works by comparing pairs of elements: first comparing the pair aga
 
 ### Q1: Replace two separate min_element/max_element calls with one minmax_element call
 
-```cpp
+The old way - calling `min_element` and then `max_element` - scans the data twice and performs 2(n-1) comparisons. The single `minmax_element` call does the same job in one pass with fewer comparisons. The structured binding `auto [lo, hi] = ...` makes the result easy to unpack.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -73,13 +72,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `minmax_element` returns iterators, not values. You dereference them with `*lo` and `*hi` to get the actual values, and you can compute the index by subtracting `data.begin()` as shown above.
 
 ### Q2: Show the comparison count: minmax_element does 3n/2 comparisons vs 2n for separate calls
 
-```cpp
+This example uses a counting comparator to measure the actual number of comparisons both approaches make. The ratio converges toward 0.75 as n grows - exactly the 3/4 you would predict from the 3n/2 vs 2n formula.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -121,14 +122,13 @@ int main() {
     // n=100  separate=198 minmax=148 ratio=0.75  savings=25%
     // n=1000 separate=1998 minmax=1498 ratio=0.75  savings=25%
     //
-    // The ratio converges to 3/4 (= 3n/2 ÷ 2n) → 25% fewer comparisons
+    // The ratio converges to 3/4 (= 3n/2 / 2n) -> 25% fewer comparisons
 
     return 0;
 }
-
 ```
 
-**How the algorithm achieves 3n/2:**
+Here is how the algorithm achieves 3n/2 comparisons:
 
 1. Process elements in pairs.
 2. Compare the pair against each other (1 comparison).
@@ -136,10 +136,13 @@ int main() {
 4. Compare the larger of the pair with current maximum (1 comparison).
 5. Total: 3 comparisons per 2 elements = 3n/2.
 
+This is actually the theoretically optimal number of comparisons for this problem - you cannot find both min and max using fewer comparisons in the worst case.
+
 ### Q3: Use minmax_element to implement auto-scaling for a chart's y-axis
 
-```cpp
+A practical application: when rendering a chart, you need to know the data range to set appropriate axis bounds. `minmax_element` gives you both endpoints in one pass, which is then used to calculate nice round tick intervals.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -218,8 +221,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The ASCII bar chart at the end uses `minmax_element` a second time to normalize each bar length as a fraction of the full data range. Both `lo_val` and `hi_val` are needed to compute that normalization - exactly the use case this algorithm is designed for.
 
 ---
 
@@ -228,6 +232,6 @@ int main() {
 - **Empty ranges:** Undefined behavior if the range is empty. Check with `if (!v.empty())` first.
 - **Equal elements:** If multiple elements tie for min or max, `minmax_element` returns the first min and the **last** max. This differs from separate calls to `min_element` (first) and `max_element` (first).
 - **`std::minmax`** (without `_element`) works on values, not iterators: `auto [lo, hi] = std::minmax(a, b)`.
-- **C++20 ranges:** `std::ranges::minmax_element(v)` — no begin/end. Supports projections.
+- **C++20 ranges:** `std::ranges::minmax_element(v)` - no begin/end. Supports projections.
 - **`std::minmax({...})`** works with initializer lists: `auto [lo, hi] = std::minmax({3, 1, 4, 1, 5})`.
 - **Performance:** The 3n/2 algorithm matters for expensive comparisons (e.g., string comparison). For integers, the cache benefit of a single pass also helps.

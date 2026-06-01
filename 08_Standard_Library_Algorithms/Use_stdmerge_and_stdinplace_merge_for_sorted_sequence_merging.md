@@ -13,25 +13,21 @@
 Merges two **sorted** ranges into a single sorted output range. Requires a separate output buffer.
 
 ```cpp
-
 std::merge(first1, last1, first2, last2, dest);
 std::merge(first1, last1, first2, last2, dest, comp);
-
 ```
 
-- **Complexity:** O(n + m) — exactly `n + m - 1` comparisons at most.
+- **Complexity:** O(n + m) - exactly `n + m - 1` comparisons at most.
 - **Stability:** If equal elements exist in both ranges, elements from the first range come first.
 - **Output:** Must not overlap with either input range.
 
 ### std::inplace_merge
 
-Merges two consecutive **sorted** sub-ranges within a single container, in place.
+Merges two consecutive **sorted** sub-ranges within a single container, in place. The key thing to notice is the three-iterator signature: `[first, middle)` and `[middle, last)` are the two sorted halves that live back-to-back in the same container.
 
 ```cpp
-
 std::inplace_merge(first, middle, last);
 std::inplace_merge(first, middle, last, comp);
-
 ```
 
 - `[first, middle)` and `[middle, last)` must both be sorted.
@@ -52,8 +48,9 @@ std::inplace_merge(first, middle, last, comp);
 
 ### Q1: Use std::merge to combine two sorted vectors into a new sorted vector
 
-```cpp
+`std::merge` is the straightforward choice when your two sorted sequences are in separate containers and you want to produce a third. The stability guarantee means that if the same value appears in both input ranges, the one from the first range arrives first in the output - which matters for event logs, records, and any data where ties need a defined tie-breaking order.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -128,13 +125,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The merged-log example at the end is a typical real-world use: two sorted event streams (one from a server, one from a client) combined into a single timeline without copying either source unnecessarily.
 
 ### Q2: Use inplace_merge to merge two sorted halves of a single vector in place
 
-```cpp
+`inplace_merge` shines when you already have two sorted halves living in the same container and want to combine them without allocating a separate output buffer. The bottom-up merge sort implementation here is a classic application - it repeatedly doubles the "sorted window" size using `inplace_merge` until the entire array is sorted.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -199,13 +198,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The incremental batch-insert pattern at the end is useful when you receive data in chunks: sort each new chunk as it arrives, then merge it into the already-sorted prefix with a single `inplace_merge` call.
 
 ### Q3: Show that inplace_merge is O(n log n) with O(1) extra memory when no buffer is available
 
-```cpp
+The complexity of `inplace_merge` depends on whether the implementation can allocate a temporary buffer. This is one of the rare places in the standard library where the standard explicitly specifies two different complexity guarantees based on memory availability. Understanding the fallback helps you predict performance in constrained environments.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -243,7 +244,7 @@ int main() {
 
     for (size_t n : {10, 100, 1000, 10000, 100000}) {
         bool ok = test_inplace_merge(n);
-        std::cout << "n=" << n << ": " << (ok ? "correct ✓" : "FAILED ✗") << "\n";
+        std::cout << "n=" << n << ": " << (ok ? "correct" : "FAILED") << "\n";
     }
 
     // === Timing comparison: merge (with buffer) vs inplace_merge ===
@@ -273,21 +274,16 @@ int main() {
     t2 = std::chrono::high_resolution_clock::now();
     auto ms_inplace = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
 
-    std::cout << "\nmerge:          " << ms_merge << " μs\n";
-    std::cout << "inplace_merge:  " << ms_inplace << " μs\n";
+    std::cout << "\nmerge:          " << ms_merge << " us\n";
+    std::cout << "inplace_merge:  " << ms_inplace << " us\n";
     std::cout << "Both correct: "
               << std::boolalpha << (output == combined) << "\n";
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `inplace_merge` tries to allocate a temporary buffer. If it succeeds → O(n). If not → O(n log n) with O(1) extra memory.
-- The fallback algorithm uses a rotation-based approach: find the merge point, rotate, then recursively merge two smaller problems.
-- In practice, the O(n) path is almost always taken. The O(n log n) fallback exists as a guarantee.
+`inplace_merge` tries to allocate a temporary buffer. If it succeeds, you get O(n) performance. If not, it falls back to a rotation-based algorithm: find the merge point, rotate, then recursively merge two smaller subproblems. In practice the O(n) path is almost always taken on a typical desktop - the O(n log n) fallback is a safety net, not the common case.
 
 ---
 
@@ -296,24 +292,6 @@ int main() {
 - **Both require sorted inputs.** Merging unsorted ranges is undefined behavior.
 - **`std::merge` is stable:** Equal elements from the first range appear before those from the second.
 - **`std::inplace_merge` is also stable.**
-- **C++20 ranges:** `std::ranges::merge(a, b, out)` — cleaner syntax, supports projections.
+- **C++20 ranges:** `std::ranges::merge(a, b, out)` - cleaner syntax, supports projections.
 - **For k-way merge:** Use a priority queue (min-heap) that pulls from k sorted sources. No standard algorithm for this.
 - **`std::merge` with `std::istream_iterator`:** Can merge sorted files without loading them entirely into memory.
-
-```cpp
-
-**How this works:**
-
-- Inplace_merge is O(n log n) with O(1) extra memory when no buffer is available.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

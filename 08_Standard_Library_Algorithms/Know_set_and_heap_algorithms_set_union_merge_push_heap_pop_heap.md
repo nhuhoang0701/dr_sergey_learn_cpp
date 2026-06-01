@@ -1,6 +1,6 @@
 # Know set and heap algorithms: set_union, merge, push_heap, pop_heap
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #77  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm>  
 
@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-The standard library provides two families of algorithms that operate on sorted ranges or heap-structured data:
+The standard library gives you two distinct families of algorithms that go beyond basic sorting and searching. One family treats ranges as mathematical sets; the other lets you manage a heap structure directly. Both are O(n + m) or better - much faster than naive approaches - but they come with firm preconditions you need to respect.
 
 ### Set Algorithms (require sorted input)
 
@@ -22,7 +22,7 @@ The standard library provides two families of algorithms that operate on sorted 
 | `inplace_merge` | Merge two consecutive sorted subranges | O(n log n) worst, O(n) with extra memory |
 | `includes` | Check if one sorted range contains another | O(n + m) |
 
-All set algorithms require **sorted** inputs and produce **sorted** outputs.
+All set algorithms require **sorted** inputs and produce **sorted** outputs. If you hand them unsorted data, the results are wrong - not just undefined behavior, but silently wrong values.
 
 ### Heap Algorithms
 
@@ -35,12 +35,13 @@ All set algorithms require **sorted** inputs and produce **sorted** outputs.
 | `is_heap` | Check if range is a heap | O(n) |
 | `is_heap_until` | Find first element violating heap property | O(n) |
 
-A heap is a tree stored in a contiguous array where `parent >= children` (max-heap).
+A heap is a tree stored in a contiguous array where every parent is greater than or equal to its children (max-heap). The largest element always lives at index 0.
 
 ### Core Illustration
 
-```cpp
+Here is a quick visual showing the difference between set operations and merge, and what a max-heap looks like in an array:
 
+```cpp
 Set operations on sorted ranges:
   A = {1, 3, 5, 7}
   B = {2, 3, 5, 8}
@@ -58,8 +59,9 @@ Heap (max-heap in array):
      7   8
     / \ / \
    3  5 2  6
-
 ```
+
+Notice that `merge` keeps every element from both ranges, including duplicates, while `set_union` behaves like a mathematical union and deduplicates.
 
 ---
 
@@ -67,8 +69,9 @@ Heap (max-heap in array):
 
 ### Q1: Use std::set_intersection on two sorted vectors and explain the output requirements
 
-```cpp
+The key discipline here is paying attention to the output side of these algorithms. They don't allocate anything for you - you supply the destination, and you choose whether to use a `back_inserter` (grows automatically) or a pre-sized vector (which requires trimming afterward).
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -152,20 +155,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- All set algorithms use a **merge-like** linear scan on two sorted ranges — O(n+m).
-- The output iterator receives elements as they're produced. `back_inserter` handles growth automatically.
-- If using a pre-sized vector, the algorithm returns an iterator past the last written element — erase the rest.
-- Both inputs must be sorted with the **same comparator**. If using a custom comparator, pass it as the last argument.
+All set algorithms use a merge-like linear scan on two sorted ranges - O(n+m). The output iterator receives elements as they are produced; `back_inserter` handles growth automatically. If you use a pre-sized vector instead, the algorithm returns an iterator past the last written element, so you need to erase the remainder. One thing that trips people up: both inputs must be sorted with exactly the same comparator. If you sorted descending, pass `std::greater<>{}` as the last argument too.
 
 ### Q2: Build a heap with std::make_heap and simulate priority queue operations manually
 
-```cpp
+Think of this as a manual `std::priority_queue`. The heap algorithms give you direct access to the underlying array, which matters in cases like the "decrease-key" operation that `priority_queue` doesn't expose.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -228,21 +226,20 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The reason the pop step has two parts is subtle: `pop_heap` moves the maximum to the last position and re-heapifies the rest, but it intentionally leaves that element at the back rather than erasing it - that way the algorithm stays container-agnostic and you decide when to `pop_back`. For a min-heap, pass `std::greater<>{}` consistently to every heap function you call, not just `make_heap`.
 
 - **`make_heap`** rearranges the range into a max-heap in O(n). Element at index 0 is the maximum.
 - **`push_heap`** assumes the range `[first, last-1)` is a heap and the new element is at `last-1`. It sifts up in O(log n).
-- **`pop_heap`** swaps the root (max) with the last element, then sifts down to restore the heap on `[first, last-1)`. The max is now at `last-1` — call `pop_back` to actually remove it.
+- **`pop_heap`** swaps the root (max) with the last element, then sifts down to restore the heap on `[first, last-1)`. The max is now at `last-1` - call `pop_back` to actually remove it.
 - **`sort_heap`** repeatedly pops to produce a sorted range. This is essentially how heapsort works.
-- For a min-heap, pass `std::greater<>{}` to all heap functions consistently.
 
 ### Q3: Show a std::merge of two sorted files into a sorted output using istream_iterators
 
-```cpp
+Here is where `std::merge` really shines: you can pipe two sorted input streams directly into a sorted output stream without loading either file fully into memory.
 
+```cpp
 #include <iostream>
 #include <fstream>
 #include <algorithm>
@@ -284,7 +281,7 @@ int main() {
 
     // === inplace_merge: merge two sorted halves of a vector ===
     std::vector<int> v = {1, 3, 5, 7, 2, 4, 6, 8};
-    //                     ←sorted→  ←sorted→
+    //                     <-sorted->  <-sorted->
     auto mid = v.begin() + 4;
     std::inplace_merge(v.begin(), mid, v.end());
 
@@ -309,24 +306,18 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+The default-constructed `istream_iterator<int>()` acts as the end-of-stream sentinel - that is standard iterator idiom. This pattern processes files element by element, making it an excellent approach for merging large sorted files that do not fit in memory. `inplace_merge` merges two consecutive sorted subranges within a single container; it tries to allocate auxiliary memory for O(n) performance but falls back to O(n log n) if allocation fails.
 
-- `std::merge` merges two sorted ranges into a single sorted output in O(n+m). Unlike set algorithms, merge **keeps all duplicates**.
-- `istream_iterator<int>()` (default-constructed) acts as the "end" sentinel — it signals end of stream.
-- This pattern processes files element by element — excellent for merging large sorted files that don't fit in memory.
-- `inplace_merge` merges two consecutive sorted subranges within a single container. It tries to allocate auxiliary memory for O(n) performance but falls back to O(n log n) if allocation fails.
+`std::merge` keeps all duplicates from both inputs, which is the critical difference from `set_union`. If you have `{1,1,2}` and `{1,2,2}`, `merge` gives `{1,1,1,2,2,2}`, while `set_union` gives `{1,1,2,2}`.
 
 ---
 
 ## Notes
 
-- **Set operations vs merge:** Set operations treat ranges as **sets** (unique elements, mathematically). Merge treats them as **sequences** (keeps all duplicates). For `{1,1,2}` and `{1,2,2}`: `set_union` = `{1,1,2,2}`, `merge` = `{1,1,1,2,2,2}`.
+- **Set operations vs merge:** Set operations treat ranges as mathematical sets where duplicates have meaning. Merge treats them as sequences and keeps everything. For `{1,1,2}` and `{1,2,2}`: `set_union` = `{1,1,2,2}`, `merge` = `{1,1,1,2,2,2}`.
 - **`includes(a, b)`** checks if sorted range `a` is a superset of sorted range `b`. O(n+m).
-- **Heap vs `priority_queue`:** `priority_queue` is a wrapper around these heap algorithms. Use raw heap algorithms when you need access to all elements (e.g., decrease-key operation).
-- **`is_heap_until`** returns iterator to the first element that violates the heap property — useful for debugging.
+- **Heap vs `priority_queue`:** `priority_queue` is a wrapper around these heap algorithms. Use raw heap algorithms when you need access to all elements (for example, a decrease-key operation).
+- **`is_heap_until`** returns an iterator to the first element that violates the heap property - useful for debugging.
 - **C++20 ranges versions:** `std::ranges::merge`, `std::ranges::set_intersection`, etc., with projections support.
-
-```text

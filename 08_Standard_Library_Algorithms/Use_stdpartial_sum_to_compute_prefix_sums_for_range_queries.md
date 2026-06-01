@@ -8,30 +8,32 @@
 
 ## Topic Overview
 
-`std::partial_sum` (from `<numeric>`) computes running totals — each output element is the sum (or custom operation) of all preceding input elements including itself.
+`std::partial_sum` (from `<numeric>`) computes running totals - each output element is the sum (or custom operation) of all preceding input elements including itself. Think of it as asking "what is the cumulative total up to and including this position?"
+
+Here's the idea visualized:
 
 ```text
-
 Input:        [3,  1,  4,  1,  5]
 partial_sum:  [3,  4,  8,  9, 14]
               [a, a+b, a+b+c, ...]
-
 ```
 
 ### The O(1) Range Query Trick
 
-With a prefix sum array, you can answer "what is the sum of elements from index L to R?" in **O(1)**:
+Here's where `partial_sum` becomes genuinely powerful. Once you have a prefix sum array, you can answer "what is the sum of elements from index L to R?" in **O(1)** per query - no matter how large the array is:
 
 $$\text{sum}(L, R) = \text{prefix}[R+1] - \text{prefix}[L]$$
 
+The reason this works is simple: `prefix[R+1]` is the total from index 0 through R, and `prefix[L]` is the total from index 0 through L-1, so subtracting them leaves exactly the slice you want.
+
 ### Signatures
 
-```cpp
+The function lives in `<numeric>` and supports both a default addition operation and a custom binary operation:
 
+```cpp
 #include <numeric>
 partial_sum(first, last, dest);             // default: +
 partial_sum(first, last, dest, binary_op);  // custom operation
-
 ```
 
 ---
@@ -40,8 +42,9 @@ partial_sum(first, last, dest, binary_op);  // custom operation
 
 ### Q1: Compute prefix sums with std::partial_sum and use them for O(1) range-sum queries
 
-```cpp
+The trick here is allocating the prefix array with size `n+1` and starting the `partial_sum` output at `prefix.begin() + 1`. That way `prefix[0]` stays zero, and the range query formula `prefix[R+1] - prefix[L]` works cleanly for any L.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -100,13 +103,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the lambda `range_sum` is O(1) - it does exactly one subtraction regardless of how large L-to-R is. All the work happened once at setup time.
 
 ### Q2: Show the difference between partial_sum (inclusive) and exclusive_scan for the same data
 
-```cpp
+The distinction between inclusive and exclusive scans trips people up at first. Inclusive means the current element is included in the sum at that position. Exclusive means the sum at position `i` does not include `data[i]` - it only includes what came before. You can think of exclusive scan as "the total before I arrived."
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -122,7 +127,7 @@ int main() {
     std::vector<int> exclusive(data.size());
     std::exclusive_scan(data.begin(), data.end(), exclusive.begin(), 0);
 
-    // === inclusive_scan (C++17 — same result as partial_sum for +) ===
+    // === inclusive_scan (C++17 - same result as partial_sum for +) ===
     std::vector<int> inc_scan(data.size());
     std::inclusive_scan(data.begin(), data.end(), inc_scan.begin());
 
@@ -165,17 +170,19 @@ int main() {
     std::cout << "\nRecord offsets: ";
     for (int x : offsets) std::cout << x << " ";
     std::cout << "\n";
-    // 0 10 15 23 26  — offset[0] = 0, always
+    // 0 10 15 23 26  - offset[0] = 0, always
 
     return 0;
 }
-
 ```
+
+The byte-offset example at the end is a great real-world use case for exclusive scan: record 0 starts at offset 0, record 1 starts after record 0, and so on. With an inclusive scan the first record would incorrectly have an offset equal to its own size.
 
 ### Q3: Use parallel prefix sum via std::inclusive_scan with std::execution::par
 
-```cpp
+`std::partial_sum` cannot be parallelized because it enforces strict left-to-right execution - each result depends on the previous one. `std::inclusive_scan` with an execution policy breaks that constraint by allowing the implementation to use a parallel up-sweep/down-sweep algorithm.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -186,7 +193,7 @@ int main() {
     constexpr size_t N = 5'000'000;
     std::vector<double> data(N, 1.0);
 
-    // === partial_sum (NOT parallelizable — strict left-to-right) ===
+    // === partial_sum (NOT parallelizable - strict left-to-right) ===
     std::vector<double> ps_result(N);
     auto t1 = std::chrono::high_resolution_clock::now();
     std::partial_sum(data.begin(), data.end(), ps_result.begin());
@@ -221,8 +228,8 @@ int main() {
     // === Why partial_sum can't be parallelized ===
     // partial_sum guarantees left-to-right execution:
     //   result[0] = data[0]
-    //   result[1] = result[0] + data[1]  ← depends on result[0]
-    //   result[2] = result[1] + data[2]  ← depends on result[1]
+    //   result[1] = result[0] + data[1]  <- depends on result[0]
+    //   result[2] = result[1] + data[2]  <- depends on result[1]
     //
     // inclusive_scan allows arbitrary grouping (like reduce),
     // enabling a parallel up-sweep/down-sweep algorithm.
@@ -230,8 +237,9 @@ int main() {
     return 0;
 }
 // Compile: g++ -std=c++17 -O2 -ltbb prefix_sum.cpp
-
 ```
+
+The comments in the code spell out exactly why `partial_sum` is inherently sequential. If you need parallelism and are on C++17+, reach for `std::inclusive_scan` with `std::execution::par` instead.
 
 ---
 
@@ -240,22 +248,6 @@ int main() {
 - **`partial_sum` is in `<numeric>`**, not `<algorithm>`.
 - **In-place OK:** Source and destination can overlap: `partial_sum(v.begin(), v.end(), v.begin())`.
 - **Custom binary ops:** `partial_sum(first, last, dest, multiplies<>{})` gives running products.
-- **Prefer `inclusive_scan`** in new C++17+ code — it supports execution policies and is the modern replacement.
-- **Range query formula:** With prefix sum `P` where `P[0] = 0`: `sum(L..R) = P[R+1] - P[L]`. This is O(n) setup, O(1) per query — very useful in competitive programming and real-time systems.
+- **Prefer `inclusive_scan`** in new C++17+ code - it supports execution policies and is the modern replacement.
+- **Range query formula:** With prefix sum `P` where `P[0] = 0`: `sum(L..R) = P[R+1] - P[L]`. This is O(n) setup, O(1) per query - very useful in competitive programming and real-time systems.
 - **2D prefix sums:** Extend the technique to matrices for O(1) sub-rectangle sum queries.
-
-**How this works:**
-
-- Parallel prefix sum via std::inclusive_scan with std::execution::par.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

@@ -9,25 +9,26 @@
 
 ## Topic Overview
 
-`std::ranges::contains` (C++23) provides a direct, readable way to check if a range contains a specific value. Before C++23, you had to write the awkward `std::find(b, e, v) != e` idiom.
+`std::ranges::contains` (C++23) provides a direct, readable way to check if a range contains a specific value. Before C++23, you had to write the awkward `std::find(b, e, v) != e` idiom - which works, but forces the reader to decode "find-then-compare-to-end" just to understand "does it exist?"
 
 ### Before vs After
 
-```cpp
+The improvement is purely about readability. The underlying algorithm is the same O(n) linear scan:
 
-// Pre-C++23 — awkward
+```cpp
+// Pre-C++23 - awkward
 if (std::find(v.begin(), v.end(), 42) != v.end()) { ... }
 if (std::ranges::find(v, 42) != v.end()) { ... }
 
-// C++23 — clean and readable
+// C++23 - clean and readable
 if (std::ranges::contains(v, 42)) { ... }
-
 ```
 
 ### Overloads
 
-```cpp
+Both a value-search and a subrange-search variant are available:
 
+```cpp
 #include <algorithm>
 
 // Check if range contains a value
@@ -37,10 +38,11 @@ bool std::ranges::contains(range, value, proj);
 // Check if range contains a subrange
 bool std::ranges::contains_subrange(range, subrange);
 bool std::ranges::contains_subrange(range, subrange, pred, proj1, proj2);
-
 ```
 
 ### Complexity
+
+Use this table to pick the right tool based on what you know about the data:
 
 | Algorithm | Complexity | Returns |
 | --- | --- | --- |
@@ -55,8 +57,9 @@ bool std::ranges::contains_subrange(range, subrange, pred, proj1, proj2);
 
 ### Q1: Replace std::find(b,e,v) != e with std::ranges::contains(range, value)
 
-```cpp
+The main message here is expressiveness. `contains` reads like English and works on any range type - strings, sets, lists, whatever:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -93,7 +96,7 @@ int main() {
         std::cout << "Role '" << role << "' is allowed\n";
     }
 
-    // === contains_subrange — check if a sequence appears ===
+    // === contains_subrange - check if a sequence appears ===
     std::vector<int> haystack = {1, 2, 3, 4, 5, 6};
     std::vector<int> needle = {3, 4, 5};
 
@@ -103,13 +106,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+One thing to keep in mind: for `std::set` and `std::map`, prefer the member `.contains()` method (C++20) over the generic algorithm - it's O(log n) instead of O(n).
 
 ### Q2: Use contains with a projection to check if a range of structs contains a given field value
 
-```cpp
+Projections make `contains` genuinely powerful for struct searches. Instead of writing a custom lambda, you pass a pointer-to-member and let the algorithm project each element down to the field you care about:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -168,13 +173,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The projection syntax `&Product::id` is cleaner than a lambda like `[](const Product& p) { return p.id; }`. It's one of the nicest quality-of-life features of the ranges library.
 
 ### Q3: Show the difference between contains (existence) and count (frequency) for sorted/unsorted ranges
 
-```cpp
+This example makes a practical point: `contains` short-circuits on the first match, while `count` always scans the entire range. For sorted data you can do even better with `binary_search` and `equal_range`:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -184,17 +191,17 @@ int main() {
 
     int target = 5;
 
-    // === contains: just existence (bool) — short-circuits on first match ===
+    // === contains: just existence (bool) - short-circuits on first match ===
     bool exists = std::ranges::contains(data, target);
     std::cout << "contains(5): " << std::boolalpha << exists << "\n";  // true
 
-    // === count: frequency (size_t) — always scans entire range ===
+    // === count: frequency (size_t) - always scans entire range ===
     auto freq = std::ranges::count(data, target);
     std::cout << "count(5):    " << freq << "\n";  // 5
 
     // === Performance difference ===
-    // contains: stops at first match → O(1) best case, O(n) worst
-    // count:    always O(n) — must scan everything
+    // contains: stops at first match -> O(1) best case, O(n) worst
+    // count:    always O(n) - must scan everything
 
     // For sorted ranges, use binary_search (O(log n)) for existence:
     std::vector<int> sorted = {1, 2, 3, 4, 5, 5, 5, 6, 7};
@@ -219,8 +226,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The rule of thumb in the comments is worth memorizing: reach for `contains` when you only care about a yes/no answer, and `find` when you need to do something with the actual element once you've found it.
 
 ---
 
@@ -228,23 +236,6 @@ int main() {
 
 - **`std::ranges::contains` requires C++23.** Compiler support: GCC 13+, Clang 17+, MSVC 19.37+.
 - `contains` is essentially syntactic sugar for `find(range, val) != end(range)`, but significantly more readable.
-- **`contains_subrange`** checks if one range appears as a contiguous subsequence of another — equivalent to `search(haystack, needle) != end(haystack)`.
-- For **associative containers** (`set`, `map`), prefer the member `.contains()` method (C++20) — it's O(log n) vs the O(n) generic algorithm.
+- **`contains_subrange`** checks if one range appears as a contiguous subsequence of another - equivalent to `search(haystack, needle) != end(haystack)`.
+- For **associative containers** (`set`, `map`), prefer the member `.contains()` method (C++20) - it's O(log n) vs the O(n) generic algorithm.
 - Projections make `contains` extremely powerful for searching structs by field without writing custom predicates.
-
-**How this works:**
-
-- Show the difference between contains (existence).
-- Count (frequency) for sorted/unsorted ranges.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

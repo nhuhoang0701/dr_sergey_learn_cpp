@@ -8,36 +8,36 @@
 
 ## Topic Overview
 
-`std::partition` rearranges elements so that all elements satisfying a predicate come before those that don't. It returns an iterator to the **partition point** — the first element that does *not* satisfy the predicate.
+`std::partition` rearranges elements so that all elements satisfying a predicate come before those that don't. It returns an iterator to the **partition point** - the first element that does *not* satisfy the predicate. The key thing to understand is that `partition` makes no promises about the order of elements within each group - it only guarantees the two-group split.
 
 ```cpp
-
 Before partition (is_even):  [3, 8, 2, 5, 7, 4, 1, 6]
 After partition:             [6, 8, 2, 4 | 7, 5, 1, 3]
                                           ^ returned iterator (partition point)
-
 ```
 
 ### partition vs stable_partition
+
+If you need the order within each group preserved, you want `std::stable_partition`. The trade-off is extra memory and potentially more work:
 
 | Feature | `partition` | `stable_partition` |
 | --- | --- | --- |
 | Preserves relative order | No | Yes, within each group |
 | Time complexity | O(n) | O(n) with extra memory, O(n log n) without |
 | Space complexity | O(1) | O(n) or O(1) fallback |
-| Swap count | ≤ n/2 | More swaps (rotation-based) |
+| Swap count | <= n/2 | More swaps (rotation-based) |
 
 ### Related Functions
 
-```cpp
+The `<algorithm>` header gives you a whole family of partition-related tools:
 
+```cpp
 #include <algorithm>
 partition(first, last, pred);          // rearrange, return partition point
 stable_partition(first, last, pred);   // order-preserving
 partition_point(first, last, pred);    // find split on already-partitioned range
 is_partitioned(first, last, pred);     // check if already partitioned
 partition_copy(first, last, out_true, out_false, pred);  // copy to two outputs
-
 ```
 
 ---
@@ -46,8 +46,9 @@ partition_copy(first, last, out_true, out_false, pred);  // copy to two outputs
 
 ### Q1: Use std::partition to separate odd and even numbers and explain the iterator returned
 
-```cpp
+The returned iterator is the dividing line between the two groups - everything before it satisfies the predicate, everything from it to the end does not. Watch how we use it to address each group independently:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -70,7 +71,7 @@ int main() {
     // e.g. 6 8 2 4 7 5 1 3  (order within groups NOT preserved)
 
     // The returned iterator points to the first element that does NOT
-    // satisfy the predicate — the partition point
+    // satisfy the predicate - the partition point
     std::cout << "\nEven numbers: ";
     for (auto p = v.begin(); p != it; ++p) std::cout << *p << " ";
     std::cout << "\n";
@@ -89,13 +90,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `[v.begin(), it)` range holds all the evens and `[it, v.end())` holds all the odds - that split is exactly what `partition` guarantees, even though the elements within each group are in an unspecified order.
 
 ### Q2: Show that stable_partition preserves relative order within each partition
 
-```cpp
+If the order within each group matters - for example, seniority order within a team - `stable_partition` is what you want. The extra cost is worth it when correctness depends on relative ordering:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -133,8 +136,8 @@ int main() {
         return e.is_senior();
     });
     print(v2, "stable_partition");
-    // Senior:  Alice(8) Carol(6) Eve(10)  — original order preserved!
-    // Junior:  Bob(2) Dave(1) Frank(3)    — original order preserved!
+    // Senior:  Alice(8) Carol(6) Eve(10)  - original order preserved!
+    // Junior:  Bob(2) Dave(1) Frank(3)    - original order preserved!
 
     std::cout << "\nSenior team (" << std::distance(v2.begin(), mid) << "):\n";
     for (auto it = v2.begin(); it != mid; ++it)
@@ -147,13 +150,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `stable_partition` tries to allocate a temporary buffer. If it succeeds, you get O(n) time. If the allocation fails, it falls back to an O(n log n) rotation-based approach. Either way, relative order is preserved - you just pay more without the buffer.
 
 ### Q3: Apply partition as a building block for a quicksort implementation
 
-```cpp
+`std::partition` is the heart of quicksort - the core step of any quicksort is partitioning elements around a pivot. This example also shows a three-way partition for the Dutch National Flag problem:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -211,14 +216,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The Dutch National Flag trick is worth internalizing: you run `partition` twice on successively narrowing sub-ranges. The first call separates 0s from everything else; the second call separates 1s from 2s within the remainder. This pattern generalizes to any multi-way split.
 
 ---
 
 ## Notes
 
-- **`partition_copy`** is useful when you don't want to modify the original — it writes matching and non-matching elements to separate output iterators.
+- **`partition_copy`** is useful when you don't want to modify the original - it writes matching and non-matching elements to separate output iterators.
 - **`is_partitioned`** checks a precondition; **`partition_point`** performs binary search on a partitioned range (O(log n) if random-access).
 - `std::partition` requires only `ForwardIterator`, but bidirectional iterators enable the efficient swap-from-both-ends algorithm.
 - For `stable_partition`, if maintaining order matters (e.g., database-style filtering), always prefer it over `partition` + manual resorting.

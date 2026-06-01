@@ -9,27 +9,29 @@
 
 ## Topic Overview
 
-C++17 added `std::gcd` and `std::lcm` in `<numeric>`. Both are `constexpr` and work with any integer types.
+C++17 added `std::gcd` and `std::lcm` in `<numeric>`. Both are `constexpr` and work with any integer types, which makes them useful not just at runtime but as building blocks for compile-time math.
 
 ### Signatures
 
-```cpp
+Here are the function signatures you need:
 
+```cpp
 #include <numeric>
 
 constexpr auto std::gcd(M m, N n);  // greatest common divisor
 constexpr auto std::lcm(M m, N n);  // least common multiple
-
 ```
+
+If the table below feels like a lot, just remember: both functions always return a non-negative result, both handle zero gracefully, and both accept mixed integer types.
 
 | Property | `std::gcd(a, b)` | `std::lcm(a, b)` |
 | --- | --- | --- |
 | Result | Largest positive divisor of both a and b | Smallest positive multiple of both a and b |
-| `gcd(0, 0)` | 0 | — |
-| `lcm(0, n)` | — | 0 |
+| `gcd(0, 0)` | 0 | - |
+| `lcm(0, n)` | - | 0 |
 | Sign | Always non-negative | Always non-negative |
-| `constexpr` | ✅ | ✅ |
-| Mixed types | ✅ (`int` + `long` works) | ✅ |
+| `constexpr` | Yes | Yes |
+| Mixed types | Yes (`int` + `long` works) | Yes |
 
 ### Mathematical identity
 
@@ -41,8 +43,9 @@ $$\text{lcm}(a, b) = \frac{|a \times b|}{\gcd(a, b)}$$
 
 ### Q1: Use std::gcd to simplify a rational number type's numerator and denominator
 
-```cpp
+A rational number like `6/8` should automatically reduce to `3/4`. The trick is computing `gcd(numerator, denominator)` and dividing both by the result. The addition operator uses `std::lcm` to find a common denominator, and multiplication uses `gcd` a second time to cross-cancel before multiplying - that cross-cancellation is what prevents intermediate overflow on larger values.
 
+```cpp
 #include <iostream>
 #include <numeric>
 #include <cstdlib>
@@ -106,19 +109,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- The constructor computes `std::gcd(|num|, den)` and divides both by it.
-- Addition uses `std::lcm` to find the common denominator.
-- Multiplication cross-simplifies using `gcd` to avoid intermediate overflow.
+Notice how `100/250` comes out as `2/5` automatically - the constructor does the reduction before you ever see the value.
 
 ### Q2: Show that std::gcd works at compile time in a constexpr context
 
-```cpp
+Because `std::gcd` and `std::lcm` are `constexpr`, you can use them in `static_assert` and in compile-time computations. The code below puts that to work - all the `static_assert` lines are checked by the compiler at build time, so if any of them are wrong you get a compile error instead of a runtime surprise.
 
+```cpp
 #include <iostream>
 #include <numeric>
 #include <array>
@@ -144,7 +143,7 @@ static_assert(simplified_num(6, 8) == 3);
 static_assert(simplified_den(6, 8) == 4);
 
 // === constexpr with mixed types ===
-static_assert(std::gcd(12L, 8) == 4);  // long + int → common type
+static_assert(std::gcd(12L, 8) == 4);  // long + int -> common type
 
 // === Compile-time array of reduced fractions ===
 constexpr auto make_reduced_fractions() {
@@ -159,10 +158,10 @@ constexpr auto make_reduced_fractions() {
 }
 
 constexpr auto fracs = make_reduced_fractions();
-static_assert(fracs[0].n == 1 && fracs[0].d == 2);  // 2/4 → 1/2
-static_assert(fracs[1].n == 1 && fracs[1].d == 3);  // 3/9 → 1/3
-static_assert(fracs[2].n == 2 && fracs[2].d == 3);  // 10/15 → 2/3
-static_assert(fracs[3].n == 1 && fracs[3].d == 3);  // 7/21 → 1/3
+static_assert(fracs[0].n == 1 && fracs[0].d == 2);  // 2/4 -> 1/2
+static_assert(fracs[1].n == 1 && fracs[1].d == 3);  // 3/9 -> 1/3
+static_assert(fracs[2].n == 2 && fracs[2].d == 3);  // 10/15 -> 2/3
+static_assert(fracs[3].n == 1 && fracs[3].d == 3);  // 7/21 -> 1/3
 
 int main() {
     std::cout << "All static_asserts passed — gcd/lcm work at compile time!\n";
@@ -178,13 +177,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `make_reduced_fractions` function runs entirely at compile time because it is marked `constexpr` and used in a `constexpr` context. The resulting `fracs` array lives in read-only data with no runtime computation needed.
 
 ### Q3: Implement a template rational type using NTTP numerator/denominator with gcd reduction
 
-```cpp
+This is where things get interesting. Instead of a runtime class, you can encode rationals directly as template parameters - `Rational<3, 4>` is a different type from `Rational<1, 2>`. The `std::gcd` call inside the template immediately reduces those parameters at instantiation time, so `Rational<6, 8>` and `Rational<3, 4>` end up with identical `num` and `den` constants. The `Reduced` alias normalizes any fraction to its canonical form, which is how the type-level arithmetic stays manageable.
 
+```cpp
 #include <iostream>
 #include <numeric>
 #include <cstdlib>
@@ -253,15 +254,9 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `Rational<N, D>` computes the reduced form at compile time using `std::gcd` in template parameter expressions.
-- All arithmetic produces new types with reduced numerator/denominator.
-- `static_assert` verifies correctness with zero runtime cost.
-- This is similar to how `std::ratio` works in the standard library (used by `<chrono>`).
+This is similar in spirit to how `std::ratio` works inside `<chrono>` - the standard library's duration types like `std::chrono::seconds` and `std::chrono::milliseconds` are built on exactly this kind of compile-time fraction arithmetic.
 
 ---
 
@@ -272,17 +267,3 @@ int main() {
 - **Overflow risk with `lcm`:** `lcm(a, b) = |a| / gcd(a,b) * |b|` can overflow if a*b exceeds the integer range. The standard computes it as `(a/gcd) * b` to minimize overflow risk, but large values can still overflow.
 - **`std::ratio`** in `<ratio>` is the standard library's compile-time rational type (used by `<chrono>`). It uses similar GCD reduction but predates C++17's `std::gcd`.
 - **Before C++17:** You'd write your own `constexpr gcd` using Euclid's algorithm. Now just use `std::gcd`.
-
-- A template rational type using NTTP numerator/denominator with gcd reduction.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

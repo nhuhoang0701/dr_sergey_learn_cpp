@@ -1,6 +1,6 @@
 # Use std::transform, std::for_each, and std::generate correctly
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #72  
 **Standard:** C++98 / C++11 / C++17 / C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/transform>  
@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Three workhorse algorithms that apply callable objects to ranges, each with a distinct contract:
+These three algorithms are the workhorses for applying callables to ranges, but they have distinct contracts that are easy to confuse. The key is to match the right algorithm to what you actually need: produce output from input, apply side effects, or fill from scratch.
 
 | Algorithm | Purpose | Reads input? | Writes output? | Returns |
 | --- | --- | --- | --- | --- |
@@ -19,16 +19,14 @@ Three workhorse algorithms that apply callable objects to ranges, each with a di
 
 ### std::transform
 
-Two overloads:
+Two overloads - unary for one input, binary for two:
 
 ```cpp
-
 // Unary: out[i] = op(in[i])
 transform(first, last, d_first, unary_op);
 
 // Binary: out[i] = op(in1[i], in2[i])
 transform(first1, last1, first2, d_first, binary_op);
-
 ```
 
 - The output range **may** alias the input range (in-place transform) as long as `d_first == first`.
@@ -37,11 +35,9 @@ transform(first1, last1, first2, d_first, binary_op);
 ### std::for_each
 
 ```cpp
-
 auto f = std::for_each(first, last, func);
 // func is applied to *it for each it in [first, last)
-// f is the (possibly moved) functor — useful for stateful functors
-
+// f is the (possibly moved) functor - useful for stateful functors
 ```
 
 - Unlike range-for, `for_each` **returns the functor**, allowing you to extract accumulated state.
@@ -50,10 +46,8 @@ auto f = std::for_each(first, last, func);
 ### std::generate / std::generate_n
 
 ```cpp
-
 std::generate(first, last, generator);     // fill [first, last)
 std::generate_n(first, n, generator);      // fill first n elements
-
 ```
 
 - `generator()` is called with no arguments for each position.
@@ -61,8 +55,9 @@ std::generate_n(first, n, generator);      // fill first n elements
 
 ### Core Example
 
-```cpp
+Here's all three in a short program to see the pattern differences side by side:
 
+```cpp
 #include <algorithm>
 #include <numeric>
 #include <vector>
@@ -102,8 +97,9 @@ int main() {
     std::cout << "\n";
     // Output: (5 random numbers in [1,100])
 }
-
 ```
+
+The `for_each` example makes the functor-return trick visible right away: `Sum{}` is passed in, accumulates state, and the returned `result` holds the final total. That's something a plain range-for loop can't do without an external variable.
 
 ---
 
@@ -111,10 +107,9 @@ int main() {
 
 ### Q1: Use std::transform with two input ranges to compute a dot product
 
-**Answer:**
+The binary overload of `transform` takes elements from two ranges simultaneously and passes them to a binary operation. For a dot product you want element-wise multiplication, then a reduction - which is a two-step process with `transform` alone.
 
 ```cpp
-
 #include <algorithm>
 #include <numeric>
 #include <vector>
@@ -124,7 +119,7 @@ int main() {
     std::vector<double> a{1.0, 2.0, 3.0};
     std::vector<double> b{4.0, 5.0, 6.0};
 
-    // Step 1: transform (binary) — element-wise multiply into a temp
+    // Step 1: transform (binary) - element-wise multiply into a temp
     std::vector<double> products(a.size());
     std::transform(a.begin(), a.end(), b.begin(), products.begin(),
                    [](double x, double y) { return x * y; });
@@ -145,25 +140,17 @@ int main() {
     std::cout << "dot product (inner_product)     = " << dot3 << "\n";
     // Output: dot product (inner_product)     = 32
 }
-
 ```
 
-**Explanation:**
-
-- Binary `std::transform` takes two input ranges and applies a binary operation element-wise.
-- Combining transform + accumulate gives a dot product in two passes.
-- `std::transform_reduce` or `std::inner_product` achieve the same in a single pass.
+The two-step approach creates an unnecessary intermediate `products` vector. The `transform_reduce` version avoids that allocation entirely by fusing the map and reduce into a single pass - which is usually what you want in performance-sensitive code.
 
 ---
 
 ### Q2: Explain why std::for_each returns the functor (unlike range-for) and when this is useful
 
-**Answer:**
-
-`std::for_each` returns `std::move(f)` — the functor after it has been applied to every element. This matters when the functor is **stateful**:
+`std::for_each` returns `std::move(f)` - the functor after it has been applied to every element. This matters when the functor is **stateful**:
 
 ```cpp
-
 #include <algorithm>
 #include <vector>
 #include <iostream>
@@ -203,11 +190,10 @@ int main() {
     // min   = 1.4
     // max   = 9.2
 }
-
 ```
 
 **Why range-for can't do this:**
-A range-based for loop has no mechanism to return accumulated state. You'd need to capture variables externally. With `for_each`, the state is neatly encapsulated inside the functor object, and the returned copy carries the final state.
+A range-based for loop has no mechanism to return accumulated state. You would need to capture variables externally. With `for_each`, the state is neatly encapsulated inside the functor object, and the returned copy carries the final state - no external variables needed, and the functor is reusable.
 
 **When it is useful:**
 
@@ -219,10 +205,9 @@ A range-based for loop has no mechanism to return accumulated state. You'd need 
 
 ### Q3: Use std::generate to fill a container with increasing values and with random values
 
-**Answer:**
+`generate` is the right tool when you need to fill a range from a generator function rather than from an existing source range. The generator takes no arguments, so all state has to live inside it - either captured by a lambda or as functor members.
 
 ```cpp
-
 #include <algorithm>
 #include <vector>
 #include <iostream>
@@ -267,34 +252,21 @@ int main() {
     std::cout << "\n";
     // Output: 100 101 102 103 104 0 0 0 0 0
 }
-
 ```
 
 **Key points:**
 
-- `std::generate` calls the generator with **no arguments** — all state must be captured or stored in the functor.
+- `std::generate` calls the generator with **no arguments** - all state must be captured or stored in the functor.
 - Use a mutable lambda with an init-capture (`[i=0]() mutable`) to avoid external counter variables.
-- For simple incrementing sequences, prefer `std::iota` — it's clearer and more concise.
+- For simple incrementing sequences, prefer `std::iota` - it's clearer and more concise.
 - `std::generate_n` is convenient when you want to fill only the first N positions without computing the end iterator.
 
 ---
 
 ## Notes
 
-- `std::transform` must not have a `unary_op` that modifies elements through the **input** iterator — it reads inputs and writes through the **output** iterator. In-place is allowed only when output == input.
+- `std::transform` must not have a `unary_op` that modifies elements through the **input** iterator - it reads inputs and writes through the **output** iterator. In-place is allowed only when output == input.
 - `std::for_each` **guarantees** in-order application (left to right) in the non-parallel overload. The parallel overload (`std::for_each(policy, ...)`) does not guarantee order.
-- `std::generate` does not return anything, but `std::generate_n` returns the iterator past the last generated element — useful for chaining.
+- `std::generate` does not return anything, but `std::generate_n` returns the iterator past the last generated element - useful for chaining.
 - All three accept execution policies since C++17 for parallelism.
 - Ranges versions (`std::ranges::transform`, `std::ranges::for_each`, `std::ranges::generate`) are available since C++20 and return richer result types.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

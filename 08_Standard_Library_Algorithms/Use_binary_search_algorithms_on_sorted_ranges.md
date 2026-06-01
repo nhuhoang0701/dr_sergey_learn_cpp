@@ -1,6 +1,6 @@
 # Use binary search algorithms on sorted ranges
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #75  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/lower_bound>  
 
@@ -8,40 +8,42 @@
 
 ## Topic Overview
 
-The standard library provides four binary search algorithms that work on **sorted ranges**. All have O(log n) complexity for random-access iterators.
+The standard library provides four binary search algorithms that work on **sorted ranges**. All have O(log n) complexity for random-access iterators. The key thing to internalize is that three of the four tell you *where* an element is or where it would go - only `binary_search` gives you a bare yes/no, which is rarely what you actually need.
 
 ### The Four Functions
 
 | Function | Returns | What it finds |
 | --- | --- | --- |
-| `lower_bound(first, last, val)` | Iterator | First element **≥ val** |
+| `lower_bound(first, last, val)` | Iterator | First element **>= val** |
 | `upper_bound(first, last, val)` | Iterator | First element **> val** |
 | `equal_range(first, last, val)` | Pair of iterators | Range of elements **== val** (lower_bound, upper_bound) |
 | `binary_search(first, last, val)` | `bool` | Whether val exists (true/false only) |
 
 ### Visual
 
-```cpp
+A picture makes the difference between `lower_bound` and `upper_bound` immediately clear:
 
+```cpp
 Sorted: {1, 2, 4, 4, 4, 7, 9}
-         ↑              ↑     ↑
+         ^              ^     ^
          |              |     end()
          |              |
-  lower_bound(4) ──→ [2]    upper_bound(4) ──→ [5]
-  
-  equal_range(4) = {[2], [5]}  → elements at indices 2,3,4 are all 4
-  binary_search(4) = true
-  
-  lower_bound(5) ──→ [5]  (first element >= 5 is 7 at index 5)
-  upper_bound(5) ──→ [5]  (first element > 5 is 7 at index 5)
-  equal_range(5) = {[5], [5]}  → empty range (5 not in container)
-  binary_search(5) = false
+  lower_bound(4) -> [2]    upper_bound(4) -> [5]
 
+  equal_range(4) = {[2], [5]}  -> elements at indices 2,3,4 are all 4
+  binary_search(4) = true
+
+  lower_bound(5) -> [5]  (first element >= 5 is 7 at index 5)
+  upper_bound(5) -> [5]  (first element > 5 is 7 at index 5)
+  equal_range(5) = {[5], [5]}  -> empty range (5 not in container)
+  binary_search(5) = false
 ```
+
+Notice that when the value is absent, `lower_bound` and `upper_bound` both point to the same position - the insertion point. When the value is present, `lower_bound` points to the first copy and `upper_bound` points one past the last copy.
 
 ### Prerequisite
 
-All binary search algorithms require the range to be **partitioned** with respect to the value (which a sorted range always satisfies). Calling them on unsorted data is **undefined behavior**.
+All binary search algorithms require the range to be **partitioned** with respect to the value (which a sorted range always satisfies). Calling them on unsorted data is **undefined behavior** - not just wrong answers, but the algorithm may access memory out of bounds.
 
 ---
 
@@ -49,8 +51,9 @@ All binary search algorithms require the range to be **partitioned** with respec
 
 ### Q1: Explain the difference between lower_bound, upper_bound, equal_range, and binary_search
 
-```cpp
+Let's see all four in action on the same data, including what happens when the target is absent.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -90,8 +93,8 @@ int main() {
     ub = std::upper_bound(v.begin(), v.end(), target);
     auto [er_lb2, er_ub2] = std::equal_range(v.begin(), v.end(), target);
 
-    std::cout << "\nlower_bound(5): index " << (lb - v.begin()) << " → insert point\n";
-    std::cout << "upper_bound(5): index " << (ub - v.begin()) << " → same as lower_bound\n";
+    std::cout << "\nlower_bound(5): index " << (lb - v.begin()) << " -> insert point\n";
+    std::cout << "upper_bound(5): index " << (ub - v.begin()) << " -> same as lower_bound\n";
     std::cout << "equal_range(5): empty range [" << (er_lb2 - v.begin())
               << ", " << (er_ub2 - v.begin()) << ")\n";
     std::cout << "binary_search(5): " << std::binary_search(v.begin(), v.end(), target) << "\n";
@@ -107,20 +110,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- **`lower_bound`** returns the first position where `val` could be inserted without breaking sort order (before existing equal elements). Most versatile — use for "find or insert".
-- **`upper_bound`** returns the last such position (after existing equal elements).
-- **`equal_range`** combines both — the half-open range `[lb, ub)` contains all elements equal to `val`.
-- **`binary_search`** only returns bool. Rarely useful because you usually need the position too.
+The mental model for `lower_bound` is: "where would I insert `val` to maintain sorted order, placing it before any existing equal elements?" For `upper_bound` it is the same idea but placing after existing equal elements. `equal_range` is just both at once. `binary_search` only returns bool, which is almost never enough by itself - you usually need the position too.
 
 ### Q2: Use lower_bound to find the insertion point for a sorted insert
 
-```cpp
+`lower_bound` is the workhorse for any algorithm that needs to maintain a sorted container manually. The pattern is: find the insertion point in O(log n), then insert there.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -174,7 +172,7 @@ int main() {
         std::cout << "  " << e.timestamp << ": " << e.name << "\n";
     // 100: Start
     // 200: Login
-    // 300: Search  ← inserted here
+    // 300: Search  <- inserted here
     // 400: Purchase
     // 500: Logout
 
@@ -199,20 +197,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `lower_bound` returns the position where `val` should go to maintain sorted order.
-- `vector::insert(pos, val)` inserts at that position, shifting subsequent elements right.
-- For the "find or insert" pattern, check if `*it == val` after `lower_bound` to avoid duplicates.
-- Total complexity: O(log n) for the search + O(n) for the insert (due to shifting). For frequent sorted inserts, prefer `std::set` or `std::flat_set`.
+The "find or insert" pattern at the bottom of this example is very common: call `lower_bound`, check whether the returned iterator actually points to your value, and only insert if it does not. Total complexity is O(log n) for the search plus O(n) for the `vector::insert` (due to element shifting). If you need frequent sorted insertions, prefer `std::set` or `std::flat_set` (C++23).
 
 ### Q3: Show a bug where binary_search is called on an unsorted range
 
-```cpp
+The reason binary search fails silently on unsorted data is that it reasons about which half of the range to search based on the sorted-order assumption. If that assumption is wrong, it searches the wrong half and may completely skip over the element it is looking for.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -274,25 +267,19 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+Three bugs to avoid here. First, calling binary search on unsorted data is undefined behavior - the algorithm may access memory in an order that makes no sense without the sorted invariant. Second, a descending-sorted range is perfectly valid, but you must pass `std::greater<>{}` to match the sort order. Third, the classic false-positive bug with `lower_bound`: after getting the iterator back, you must check both that you did not reach `end()` AND that `*it == target`. `lower_bound` gives you the position where `target` would go, not necessarily where it is.
 
-- Binary search algorithms require their input range to be sorted with respect to the comparator. On unsorted data, the algorithm's decisions about which half to search are wrong — it may skip the element entirely.
-- **Common bugs:**
-  1. Calling `binary_search`/`lower_bound` on unsorted data → UB, wrong results
-  2. Using default comparator on descending-sorted data → UB
-  3. Assuming `*lower_bound(...) == target` without checking → false positives
-- **Defense:** Use `assert(std::is_sorted(first, last))` during development. Use `std::is_sorted_until` to find where sorting breaks.
+Use `assert(std::is_sorted(first, last))` in debug builds to catch the unsorted-range bug early.
 
 ---
 
 ## Notes
 
-- **`binary_search` is almost never the right choice.** It only returns bool. Use `lower_bound` and check the result — you get position information too.
+- **`binary_search` is almost never the right choice.** It only returns bool. Use `lower_bound` and check the result - you get position information too.
 - **Complexity:** O(log n) for random-access iterators. O(n) for forward iterators (can only advance one step at a time, but still uses O(log n) comparisons).
 - **Custom comparators:** All four functions accept a comparator as the last argument. It must match the ordering used to sort the range.
-- **C++20 ranges versions:** `std::ranges::lower_bound(v, val)` — no begin/end needed. Also supports projections.
-- **On `std::set`/`std::map`:** Use `.lower_bound()` member function instead of `std::lower_bound()` — the member function is O(log n) on the tree, while the free function would be O(n) on non-random-access iterators.
-- **`std::partition_point`:** A generalization — finds the partition point for any sorted predicate. `lower_bound` is a special case.
+- **C++20 ranges versions:** `std::ranges::lower_bound(v, val)` - no begin/end needed. Also supports projections.
+- **On `std::set`/`std::map`:** Use `.lower_bound()` member function instead of `std::lower_bound()` - the member function is O(log n) on the tree, while the free function would be O(n) on non-random-access iterators.
+- **`std::partition_point`:** A generalization - finds the partition point for any sorted predicate. `lower_bound` is a special case.

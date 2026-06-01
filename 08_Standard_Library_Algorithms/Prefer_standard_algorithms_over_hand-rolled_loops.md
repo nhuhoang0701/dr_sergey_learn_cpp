@@ -1,6 +1,6 @@
 # Prefer standard algorithms over hand-rolled loops
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #70  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm>  
 
@@ -8,9 +8,11 @@
 
 ## Topic Overview
 
-The C++ Standard Library provides ~100+ algorithms in `<algorithm>`, `<numeric>`, and `<ranges>`. Using them instead of writing manual loops gives you: correctness (tested implementations), clarity (names convey intent), and performance (optimized by library vendors).
+The C++ Standard Library provides ~100+ algorithms in `<algorithm>`, `<numeric>`, and `<ranges>`. Using them instead of writing manual loops gives you correctness (tested implementations), clarity (names convey intent), and performance (optimized by library vendors). Scott Meyers called this out explicitly in Effective STL Item 43, and the advice is even more relevant now that C++17 execution policies and C++20 ranges exist.
 
 ### Why Prefer Algorithms
+
+If the table below feels like a lot, the core message is simple: algorithm names document your intent, and a code reviewer who sees `std::sort` instantly knows what is happening, while a raw loop requires careful reading to figure out what invariant it maintains.
 
 | Benefit | Manual loop | Standard algorithm |
 | --- | --- | --- |
@@ -19,12 +21,13 @@ The C++ Standard Library provides ~100+ algorithms in `<algorithm>`, `<numeric>`
 | **Optimization** | Manual | Vendor-optimized (SIMD, branch prediction) |
 | **Parallelism** | Rewrite entirely | Add execution policy argument |
 | **Composition** | Nested loops | Pipe with ranges (C++20) |
-| **Code review** | "What does this loop do?" | "sort, find, transform" — self-documenting |
+| **Code review** | "What does this loop do?" | "sort, find, transform" - self-documenting |
 
 ### Common Replacements
 
-```cpp
+The side-by-side comparison below shows how familiar loop patterns map directly to named algorithms. Once you train your eye to see these patterns, you will naturally reach for the algorithm version first.
 
+```cpp
 // LOOP: find max element
 int max = v[0];
 for (int x : v) if (x > max) max = x;
@@ -54,7 +57,6 @@ std::vector<int> result;
 for (auto& x : v) if (x > 0) result.push_back(x);
 // ALGORITHM:
 std::copy_if(v.begin(), v.end(), std::back_inserter(result), [](int x) { return x > 0; });
-
 ```
 
 ---
@@ -63,8 +65,9 @@ std::copy_if(v.begin(), v.end(), std::back_inserter(result), [](int x) { return 
 
 ### Q1: Rewrite a manual max-finding loop using std::max_element and show the result is identical
 
-```cpp
+Let's prove the results match, then look at the C++20 projection syntax that makes the struct case even cleaner.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -100,7 +103,7 @@ int main() {
 
     assert(manual_max == algo_max);
     assert(manual_idx == algo_idx);
-    std::cout << "Results are identical ✓\n";
+    std::cout << "Results are identical\n";
 
     // === With custom comparator on structs ===
     std::vector<Student> students = {
@@ -130,22 +133,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
-
-- `std::max_element` returns an iterator to the greatest element. Same result as the manual loop.
-- The algorithm version is shorter, less error-prone (no off-by-one), and the intent is immediately clear.
-- C++20 `std::ranges::max_element` with projections eliminates the need for a custom comparator in most cases.
-- `minmax_element` finds both extremes in a single pass (~1.5n comparisons vs 2n for separate calls).
+`std::max_element` returns an iterator to the greatest element, which gives you both the value and the position. The algorithm version is shorter, has no off-by-one risk, and its intent is clear at a glance. The C++20 `std::ranges::max_element` with a projection eliminates the need for a custom comparator in most cases. `minmax_element` finds both extremes in a single pass - roughly 1.5n comparisons versus 2n for calling `min_element` and `max_element` separately.
 
 ### Q2: Explain how algorithms express intent better than raw loops for code reviewers
 
-**Algorithms communicate WHAT, not HOW.** A code reviewer seeing `std::sort(v.begin(), v.end())` immediately knows the vector is being sorted — no need to trace through loop logic. Compare:
+**Algorithms communicate WHAT, not HOW.** A code reviewer seeing `std::sort(v.begin(), v.end())` immediately knows the vector is being sorted - no need to trace through loop logic. Compare:
 
 ```cpp
-
 // What does this loop do? Reader must trace every line:
 for (size_t i = 0; i < v.size(); ) {
     if (v[i] % 2 == 0)
@@ -157,21 +153,23 @@ for (size_t i = 0; i < v.size(); ) {
 // vs. (C++20):
 std::erase_if(v, [](int x) { return x % 2 == 0; });
 // Intent is instantly clear: "remove even numbers"
-
 ```
+
+The loop version is also subtly dangerous: erasing from a vector while iterating it manually is a classic source of bugs (the index-management logic is easy to get wrong). The algorithm version is correct by construction.
 
 **Key advantages for code review:**
 
 1. **Named intent:** `find_if` = "find something matching a condition". `partition` = "divide into two groups". No interpretation needed.
-2. **Guaranteed correctness:** `stable_partition` preserves relative order — the algorithm guarantees it. A hand-rolled version might not.
+2. **Guaranteed correctness:** `stable_partition` preserves relative order - the algorithm guarantees it. A hand-rolled version might not, and you would not know until a tricky test case exposed it.
 3. **Known complexity:** Reviewers know `sort` is O(n log n) without checking the implementation. A loop could be anything.
 4. **Reduced surface area for bugs:** Algorithms don't have off-by-one errors, dangling iterator bugs, or early-termination mistakes.
-5. **Trivial parallelism:** Adding `std::execution::par` to an algorithm is one argument — no restructuring needed.
+5. **Trivial parallelism:** Adding `std::execution::par` to an algorithm is one extra argument - no restructuring needed.
 
 ### Q3: Show five algorithms that are non-trivial to implement correctly (e.g., stable_partition, inplace_merge)
 
-```cpp
+This example makes the strongest case for preferring algorithms: these five operations have subtle internal implementations that are genuinely hard to get right from scratch, yet each one is a single standard call.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -209,7 +207,7 @@ int main() {
 
     // === 3. std::nth_element ===
     // Places the nth element where it would be in sorted order.
-    // All elements before nth are ≤, all after are ≥. O(n) average.
+    // All elements before nth are <=, all after are >=. O(n) average.
     // Based on Introselect (quickselect + median-of-medians fallback).
     {
         std::vector<int> v = {7, 2, 8, 1, 5, 3, 9, 4, 6};
@@ -221,7 +219,7 @@ int main() {
         std::cout << "   Array: ";
         for (int x : v) std::cout << x << " ";
         std::cout << "\n";
-        // First 4 elements are ≤ 5, last 4 are ≥ 5 (not necessarily sorted)
+        // First 4 elements are <= 5, last 4 are >= 5 (not necessarily sorted)
     }
 
     // === 4. std::rotate ===
@@ -261,24 +259,22 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How it works:**
+These five algorithms have subtle implementations that are easy to get wrong when hand-coded:
 
-- These five algorithms have subtle implementations that are easy to get wrong when hand-coded:
-  1. **`stable_partition`** — Preserving relative order during in-place partitioning requires buffer management or O(n log n) rotation chains.
-  2. **`inplace_merge`** — Merging two sorted halves without extra space uses block rotation, which is tricky to implement correctly.
-  3. **`nth_element`** — Introselect algorithm with median-of-medians fallback guarantees O(n) but has complex pivot selection logic.
-  4. **`rotate`** — The three-reverse trick is elegant but boundary conditions are easy to mess up. Juggling algorithm is even more complex.
-  5. **`partial_sort`** — Uses a heap to efficiently find and sort the top-k elements without sorting the rest.
+1. **`stable_partition`** - Preserving relative order during in-place partitioning requires buffer management or O(n log n) rotation chains. A naive implementation loses the stability guarantee.
+2. **`inplace_merge`** - Merging two sorted halves without extra space uses block rotation, which is tricky to implement correctly and rarely appears in textbooks.
+3. **`nth_element`** - Introselect with a median-of-medians fallback guarantees O(n) but has complex pivot selection logic. Quickselect alone can degrade to O(n²) on adversarial input.
+4. **`rotate`** - The three-reverse trick is elegant but boundary conditions are easy to mess up. The juggling algorithm is even more complex.
+5. **`partial_sort`** - Uses a heap to efficiently find and sort the top-k elements without sorting the rest. Getting the heap invariant right at the boundaries is non-trivial.
 
 ---
 
 ## Notes
 
-- **Performance optimizations:** Library implementations use SIMD, branchless comparisons, and architecture-specific tricks that hand-rolled loops can't match without significant effort.
+- **Performance optimizations:** Library implementations use SIMD, branchless comparisons, and architecture-specific tricks that hand-rolled loops cannot match without significant effort.
 - **Execution policies (C++17):** `std::sort(std::execution::par, v.begin(), v.end())` parallelizes with one argument change. Hand-rolled loops require complete restructuring.
 - **C++20 ranges:** `std::ranges::sort(v)` eliminates begin/end boilerplate. `v | views::filter(pred) | views::transform(fn)` replaces nested loops with composable pipelines.
-- **When loops ARE better:** When the algorithm doesn't exist (e.g., complex state machine), when early exit with multiple conditions is needed, or when readability suffers from overly-lambda-heavy algorithm usage.
+- **When loops ARE better:** When the algorithm doesn't exist (for example, a complex state machine), when early exit with multiple conditions is needed, or when readability suffers from overly lambda-heavy algorithm usage.
 - **Scott Meyers' rule (Effective STL #43):** "Prefer algorithm calls to hand-written loops."

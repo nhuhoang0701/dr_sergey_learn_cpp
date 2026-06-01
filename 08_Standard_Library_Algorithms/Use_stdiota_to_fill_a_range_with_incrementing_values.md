@@ -8,20 +8,19 @@
 
 ## Topic Overview
 
-`std::iota` (from `<numeric>`) assigns sequentially increasing values to a range, starting from a given value and applying `operator++` for each subsequent element.
+`std::iota` (from `<numeric>`) assigns sequentially increasing values to a range, starting from a given value and applying `operator++` for each subsequent element. It is the idiomatic replacement for a manual fill loop whenever you want a sequence like `0, 1, 2, 3, ...`.
 
 ```cpp
-
 #include <numeric>
 std::vector<int> v(5);
 std::iota(v.begin(), v.end(), 0);  // v = {0, 1, 2, 3, 4}
-
 ```
 
 ### iota vs Manual Loop
 
-```cpp
+All three approaches below produce the same sequence. `std::iota` is preferred for clarity, and `std::views::iota` is preferred in C++20 range pipelines where you do not want to allocate a container at all:
 
+```cpp
 // Manual loop:
 for (int i = 0; i < n; ++i) v[i] = i;
 
@@ -30,17 +29,17 @@ std::iota(v.begin(), v.end(), 0);
 
 // C++20 views::iota (lazy, no allocation):
 for (int i : std::views::iota(0, n)) { ... }
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Fill a vector<int> with 0..N-1 using std::iota as an alternative to a manual loop
+### Q1: Fill a `vector<int>` with 0..N-1 using std::iota as an alternative to a manual loop
+
+This example shows the basic usage side by side with the manual loop to make the equivalence concrete. Notice that you can start from any value - `iota` just increments from wherever you tell it to start.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -92,13 +91,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The floating-point case is a little surprising at first - it works because `operator++` on a `double` simply adds 1.0.
 
 ### Q2: Use std::iota with a custom iterator to generate a range of enum values
 
-```cpp
+`std::iota` calls `operator++` on the value type, so any type with a prefix increment operator works - including enums, as long as you define `operator++` for them. This is a clean way to initialize a container with every value in an enum without writing a loop.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -153,13 +154,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The key thing to define is prefix `operator++` that casts through `int`. Without that, the compiler will reject the `iota` call because the built-in `++` on a scoped enum is not defined.
 
 ### Q3: Combine iota and shuffle to generate a random permutation of indices
 
-```cpp
+The `iota` + `shuffle` combination is the standard C++ idiom for generating a random permutation. Fill the range with known values first, then scramble it with a proper random number generator. The quiz-ordering example below is typical of how this shows up in real applications.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -204,8 +207,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the original `questions` vector is never touched. The `order` array holds the permuted indices, and you just use them to index into `questions`. This separation of "what order" from "the data itself" is exactly the indirect-sort pattern from Q1 applied to randomization.
 
 ---
 

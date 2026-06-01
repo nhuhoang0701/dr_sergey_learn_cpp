@@ -1,6 +1,6 @@
 # Use std::rotate to implement circular buffer semantics
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #468  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/rotate>  
 
@@ -8,31 +8,29 @@
 
 ## Topic Overview
 
-This file focuses on **using `std::rotate` as a building block for circular buffer patterns** — linearizing ring buffers, understanding the returned iterator, and implementing sliding windows.
+This file focuses on **using `std::rotate` as a building block for circular buffer patterns** - linearizing ring buffers, understanding the returned iterator, and implementing sliding windows.
 
 ### The Circular Buffer Problem
 
-A circular (ring) buffer writes to positions `head % capacity`. When you need to read elements in chronological order, the physical layout doesn't match the logical order. `std::rotate` fixes this in O(n).
+A circular (ring) buffer writes to positions `head % capacity`. When you need to read elements in chronological order, the physical layout doesn't match the logical order. `std::rotate` fixes this in O(n), turning the wrapped-around mess into a clean contiguous sequence.
 
-```cpp
-
+```text
 Physical: [new_3, new_4 | old_1, old_2]
                    ^head
 After rotate:
-Logical:  [old_1, old_2, new_3, new_4]  ← chronological order
-
+Logical:  [old_1, old_2, new_3, new_4]  <- chronological order
 ```
 
 ### The Return Value
 
-```cpp
+The return value of `std::rotate` is easy to overlook, but it carries real information:
 
+```cpp
 auto new_pos = std::rotate(first, middle, last);
 // new_pos points to where *first ended up (i.e., first + (last - middle))
-
 ```
 
-This returned iterator is essential for chaining operations — it tells you where the "seam" between the two halves is.
+This returned iterator is the "seam" between the two halves after rotation. It tells you exactly where the original left part begins in the new layout - which is useful for chaining additional operations on just one half.
 
 ---
 
@@ -40,8 +38,9 @@ This returned iterator is essential for chaining operations — it tells you whe
 
 ### Q1: Use std::rotate to bring the logical beginning of a circular buffer to physical position 0
 
-```cpp
+When a ring buffer wraps around, `head` points to the oldest element - making it the natural `middle` argument for `std::rotate`. After rotation, position 0 holds the oldest entry and the buffer is ready to read sequentially.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -108,13 +107,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+After `linearize()` the logical view and the physical layout agree: both start at the oldest element. This makes the buffer safe to pass to any algorithm that expects a plain contiguous range.
 
 ### Q2: Show that rotate returns an iterator to the new position of the element that was at begin()
 
-```cpp
+The formula is always `new_pos = first + (last - middle)`. Knowing this lets you chain operations on the two resulting halves without any searching.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -155,13 +156,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The chaining example makes the seam iterator concrete: after rotating `{5,3,1,4,2}` so that `1` moves to the front, the returned iterator points exactly at the start of the old prefix `{5,3}` - now sitting at the tail. You can then sort just that part without scanning the whole vector.
 
 ### Q3: Implement a sliding window by combining rotate with erase and push_back
 
-```cpp
+When a new value arrives and the window is full, the oldest value needs to leave. `std::rotate` left by 1 moves the oldest element to the back, and then you simply overwrite it - all in O(n) with no extra allocation.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -216,7 +219,7 @@ int main() {
     // Added 20: [10, 20] avg=15
     // Added 30: [10, 20, 30] avg=20
     // Added 40: [10, 20, 30, 40] avg=25
-    // Added 50: [20, 30, 40, 50] avg=35  ← 10 dropped
+    // Added 50: [20, 30, 40, 50] avg=35  <- 10 dropped
     // Added 60: [30, 40, 50, 60] avg=45
     // Added 70: [40, 50, 60, 70] avg=55
 
@@ -225,29 +228,20 @@ int main() {
     // but rotate avoids the overhead of moving elements down
     // and then growing from push_back.
 
-    // For a deque, pop_front()/push_back() is O(1) — often better
+    // For a deque, pop_front()/push_back() is O(1) - often better
     // For a vector, rotate is elegant and allocates nothing extra
 
     return 0;
 }
-
 ```
+
+The comparison note is worth emphasizing: `erase` at the front also costs O(n) because it shifts every remaining element, so `rotate` is not worse - and it avoids any size change on the vector. If you need true O(1) window updates, `std::deque` with `pop_front`/`push_back` is the right tool instead.
 
 ---
 
 ## Notes
 
-- **Return value of `rotate`:** Always `first + (last - middle)` — the position where the original first element ends up. This is the "seam" dividing the two rotated halves.
-- **Linearizing a ring buffer** is `rotate`'s most practical application — it converts a wrapped circular layout into a contiguous chronological sequence.
+- **Return value of `rotate`:** Always `first + (last - middle)` - the position where the original first element ends up. This is the "seam" dividing the two rotated halves.
+- **Linearizing a ring buffer** is `rotate`'s most practical application - it converts a wrapped circular layout into a contiguous chronological sequence.
 - For **sliding windows** on vectors, `rotate` left by 1 + overwrite back is O(n). For O(1) sliding windows, prefer `std::deque` with `pop_front`/`push_back`.
-- `rotate` is stable within each half — the relative order of elements in each partition is preserved.
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- `rotate` is stable within each half - the relative order of elements in each partition is preserved.

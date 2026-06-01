@@ -1,6 +1,6 @@
 # Use std::sample (C++17) for random reservoir sampling
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #212  
 **Standard:** C++17  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/sample>  
@@ -9,19 +9,17 @@
 
 ## Topic Overview
 
-`std::sample` (C++17) selects `n` elements uniformly at random from a range, writing them to an output iterator. It implements **reservoir sampling**, meaning it requires only a single pass through the input range — perfect for streams or forward-only ranges.
+`std::sample` (C++17) selects `n` elements uniformly at random from a range, writing them to an output iterator. It implements **reservoir sampling**, meaning it requires only a single pass through the input range - perfect for streams or forward-only ranges where you cannot rewind.
 
 ### Signature
 
 ```cpp
-
 #include <algorithm>
 #include <random>
 
 template<class PopIter, class SampleIter, class Distance, class URBG>
 SampleIter sample(PopIter first, PopIter last,
                   SampleIter out, Distance n, URBG&& g);
-
 ```
 
 ### Key Properties
@@ -32,7 +30,7 @@ SampleIter sample(PopIter first, PopIter last,
 | Stability | Preserves relative order (for forward iterators) |
 | Uniformity | Each element has equal probability n/N of being selected |
 | Input requirement | Input: at least InputIterator; Output: at least OutputIterator |
-| If n ≥ N | Returns all elements |
+| If n >= N | Returns all elements |
 
 ---
 
@@ -40,8 +38,9 @@ SampleIter sample(PopIter first, PopIter last,
 
 ### Q1: Sample 10 elements uniformly at random from a 1000-element range using std::sample
 
-```cpp
+The call is straightforward: you provide the population range, a back inserter for the results, how many elements you want, and a random engine. The selected elements arrive in their original relative order.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -96,17 +95,19 @@ int main() {
     std::cout << "\nOver-sample (n=100, size=3): ";
     for (int x : over_sample) std::cout << x << " ";
     std::cout << "\n";
-    // 10 20 30 — returns all
+    // 10 20 30 - returns all
 
     return 0;
 }
-
 ```
+
+The output order being preserved is an often-missed detail: if you sample from a sorted vector, the result is also sorted. This is because the reservoir algorithm works by deciding whether each element "makes the cut" as it is seen, not by shuffling afterward.
 
 ### Q2: Explain why std::sample only requires a single pass through the input range
 
-```cpp
+This is the clever part. The reason you don't need to know the total size upfront - or rewind the range - comes down to a mathematical invariant that Vitter's Algorithm R maintains at every step.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -157,7 +158,7 @@ int main() {
     // knowing the size to pick random positions)
 
     // === std::sample with forward-only range ===
-    // Works just fine — single pass is all it needs
+    // Works just fine - single pass is all it needs
     std::vector<int> result;
     std::mt19937 rng(42);
     std::sample(data.begin(), data.end(), std::back_inserter(result), 5, rng);
@@ -168,13 +169,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The invariant is: after processing element `i`, every element seen so far has exactly `k/i` probability of being in the reservoir. When element `i+1` arrives, it gets a `k/(i+1)` chance by being placed with probability `k/(i+1)` and displacing a random existing reservoir entry. The math works out so the invariant holds at every step - which is why you never need a second pass.
 
 ### Q3: Compare std::sample with a Fisher-Yates shuffle for selecting a random subset
 
-```cpp
+Both approaches produce a uniform random subset, but they have different tradeoffs. The right choice depends on whether your data is mutable, whether K is much smaller than N, and whether you need order preserved in the output.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -190,14 +193,14 @@ int main() {
     std::vector<int> data(N);
     std::iota(data.begin(), data.end(), 0);
 
-    // === Method 1: std::sample — O(N) single pass, O(K) output space ===
+    // === Method 1: std::sample - O(N) single pass, O(K) output space ===
     auto t1 = std::chrono::high_resolution_clock::now();
     std::vector<int> sampled;
     std::sample(data.begin(), data.end(), std::back_inserter(sampled), K, rng);
     auto t2 = std::chrono::high_resolution_clock::now();
     auto ms_sample = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
 
-    // === Method 2: Partial Fisher-Yates shuffle — O(K) swaps ===
+    // === Method 2: Partial Fisher-Yates shuffle - O(K) swaps ===
     // shuffle first K elements, then take them
     auto data_copy = data;
     t1 = std::chrono::high_resolution_clock::now();
@@ -233,8 +236,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that partial Fisher-Yates is faster when K is tiny relative to N (only K swaps needed), but it requires a mutable copy of the entire N-element input. `std::sample` scans the whole range but needs no extra memory beyond the K-element output and never touches the source. When the input is a stream or a read-only range, `std::sample` is the only option.
 
 ---
 
@@ -242,6 +246,6 @@ int main() {
 
 - `std::sample` preserves **relative order** of selected elements when using forward+ iterators. For input iterators, order may not be preserved.
 - Always use a proper random engine (`std::mt19937`), not `rand()`.
-- `std::sample` does NOT modify the input range — it's a non-mutating algorithm.
+- `std::sample` does NOT modify the input range - it's a non-mutating algorithm.
 - For **K << N** with random-access ranges, a partial Fisher-Yates shuffle is often faster (O(K) vs O(N)), but it requires a mutable copy of the data.
 - If you need **random order** in the output, call `std::shuffle` on the sample result.

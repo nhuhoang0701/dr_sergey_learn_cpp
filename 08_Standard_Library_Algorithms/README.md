@@ -1,4 +1,4 @@
-# Standard Library — Algorithms
+# Standard Library - Algorithms
 
 STL algorithms, parallel algorithms, ranges algorithms, and their correct application.
 
@@ -48,13 +48,13 @@ STL algorithms, parallel algorithms, ranges algorithms, and their correct applic
 
 ## Notes
 
-- Prefer standard algorithms over raw loops — they express intent and are easier to parallelize
-- std::ranges (C++20) algorithms accept containers directly and support projections
-- Parallel execution policies (std::execution::par) can parallelize algorithms with one argument change
-- std::sort is not stable — use std::stable_sort if equal elements must maintain relative order
-- std::transform is the functional map — combine with output iterators for flexibility
-- std::accumulate uses left fold; std::reduce allows parallel execution but requires associativity
-- std::ranges::views are lazy — they compose without allocating intermediate containers
-- Always check iterator validity — algorithms that remove elements (std::remove) need the erase-remove idiom
-- std::find_if with a lambda is the modern replacement for hand-written search loops
-- std::nth_element is O(n) for partial sorting — faster than full sort when you only need the kth element
+- Prefer standard algorithms over raw loops - they express intent and are easier to parallelize.
+- `std::ranges` (C++20) algorithms accept containers directly and support projections for cleaner comparators.
+- Parallel execution policies (`std::execution::par`) can parallelize algorithms with one argument change.
+- `std::sort` is not stable - use `std::stable_sort` if equal elements must maintain relative order.
+- `std::transform` is the functional map - combine with output iterators for flexibility.
+- `std::accumulate` uses a strict left fold; `std::reduce` allows parallel execution but requires an associative and commutative operation.
+- `std::ranges::views` are lazy - they compose without allocating intermediate containers.
+- Always check iterator validity - algorithms that logically remove elements (`std::remove`) need the erase-remove idiom to actually shrink the container.
+- `std::find_if` with a lambda is the modern replacement for hand-written search loops.
+- `std::nth_element` is O(n) average for partial ordering - much faster than a full sort when you only need the kth element.

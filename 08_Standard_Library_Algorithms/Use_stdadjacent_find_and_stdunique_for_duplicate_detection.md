@@ -1,6 +1,6 @@
 # Use std::adjacent_find and std::unique for duplicate detection
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #246  
 **Reference:** <https://en.cppreference.com/w/cpp/algorithm/unique>  
 
@@ -10,33 +10,29 @@
 
 ### std::adjacent_find
 
-Finds the **first pair of adjacent equal elements** (or elements satisfying a predicate). Returns an iterator to the first element of the pair, or `end()` if no pair is found.
+`std::adjacent_find` finds the **first pair of adjacent equal elements** (or elements satisfying a predicate). It returns an iterator to the first element of the pair, or `end()` if no pair is found.
 
 ```cpp
-
 auto it = std::adjacent_find(first, last);         // equality
 auto it = std::adjacent_find(first, last, pred);   // custom predicate
-
 ```
 
-Use cases: detect consecutive duplicates, find first adjacent pair with a relationship (e.g., out of order, difference > threshold).
+Use cases: detecting consecutive duplicates, finding the first adjacent pair with a specific relationship (out of order, difference above a threshold, etc.).
 
 ### std::unique
 
-Removes **consecutive duplicate** elements by moving unique elements to the front. Returns an iterator to the new logical end. Like `remove`, it does **not** actually erase elements.
+`std::unique` removes **consecutive duplicate** elements by moving unique elements to the front. It returns an iterator to the new logical end. Like `std::remove`, it does **not** actually erase elements from the container.
 
 ```cpp
-
 auto new_end = std::unique(first, last);         // equality
 auto new_end = std::unique(first, last, pred);   // custom predicate
-
 ```
 
-The elements after `new_end` are in an unspecified state (moved-from).
+The elements after `new_end` are in an unspecified (moved-from) state.
 
 ### Key Insight
 
-Both `adjacent_find` and `unique` only detect/remove **consecutive** duplicates. To handle **all** duplicates, sort first.
+The most important thing to understand about both of these algorithms is that they only operate on **consecutive** duplicates. To catch non-adjacent duplicates scattered throughout the range, you must sort first. The reason this trips people up is that the function is named `unique` but it does not produce a globally unique range unless the data is already sorted.
 
 | Need | Algorithm | Prerequisite |
 | --- | --- | --- |
@@ -51,8 +47,9 @@ Both `adjacent_find` and `unique` only detect/remove **consecutive** duplicates.
 
 ### Q1: Use adjacent_find to detect the first pair of consecutive equal elements
 
-```cpp
+`adjacent_find` is useful any time you want to know whether two neighboring elements have a particular relationship - not just equality but any predicate.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -95,9 +92,9 @@ int main() {
     auto jump = std::adjacent_find(temps.begin(), temps.end(),
         [](double a, double b) { return std::abs(a - b) > 3.0; });
     if (jump != temps.end()) {
-        std::cout << "Temperature jump: " << *jump << " → " << *(jump + 1) << "\n";
+        std::cout << "Temperature jump: " << *jump << " -> " << *(jump + 1) << "\n";
     }
-    // Output: Temperature jump: 20.2 → 25.8
+    // Output: Temperature jump: 20.2 -> 25.8
 
     // === Check if sorted (adjacent_find with greater) ===
     std::vector<int> sorted = {1, 2, 3, 4, 5};
@@ -107,13 +104,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `is_sorted` check at the end using `adjacent_find` is actually equivalent to `std::is_sorted` - both check whether any adjacent pair violates the ordering. It is a handy idiom to recognize.
 
 ### Q2: Apply unique + erase to remove consecutive duplicates from a sorted vector
 
-```cpp
+The erase step after `std::unique` is mandatory, just as it is with `std::remove_if`. Without it, the vector still has its original size with garbage in the tail.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -136,7 +135,7 @@ int main() {
     std::cout << "  Full vector (size " << v.size() << "): ";
     for (int x : v) std::cout << x << " ";
     std::cout << "\n";
-    // 1 2 3 4 5 3 4 4 5  ← tail is garbage (moved-from)
+    // 1 2 3 4 5 3 4 4 5  <- tail is garbage (moved-from)
 
     // Erase the tail
     v.erase(new_end, v.end());
@@ -177,13 +176,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `sort + unique + erase` triple is the canonical pattern for deduplicating a vector. You will see this combination so often that it is worth memorizing as a unit. The custom predicate variant is handy for floating-point data where you want to treat nearly-equal values as the same.
 
 ### Q3: Show a bug where unique is applied to an unsorted range and not all duplicates are removed
 
-```cpp
+This is the most common mistake with `std::unique` and it is easy to miss because the code compiles and runs without errors - it just silently produces wrong output.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -226,7 +227,7 @@ int main() {
     std::cout << "Fixed (sorted first): ";
     for (int x : v3) std::cout << x << " ";
     std::cout << "\n";
-    // Fixed (sorted first): 1 2 3  ← all duplicates removed
+    // Fixed (sorted first): 1 2 3  <- all duplicates removed
 
     // === Alternative: use std::set for O(n log n) dedup without modifying order ===
     std::vector<int> v4 = {3, 1, 3, 2, 1, 3};
@@ -244,23 +245,17 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How the bug manifests:**
-
-- `std::unique` only compares **adjacent** elements. Non-adjacent duplicates are invisible to it.
-- On unsorted data, duplicates may be scattered, so `unique` misses them entirely.
-- The fix is always: **sort first, then apply unique + erase**.
-- If you need to preserve original order, use a `std::set`/`std::unordered_set` as a seen-tracker.
+`std::unique` only compares adjacent elements. Non-adjacent duplicates are completely invisible to it. On unsorted data, duplicates may be scattered throughout the range, so `unique` may miss them entirely - as the first example shows, nothing at all was removed even though the value 3 appears three times. The fix is always: **sort first, then apply unique + erase**. If you need to preserve the original order while deduplicating, use a `std::set` or `std::unordered_set` as a seen-tracker instead.
 
 ---
 
 ## Notes
 
-- **`adjacent_find` complexity:** O(n), exactly `n-1` comparisons.
-- **`unique` complexity:** O(n), exactly `n-1` comparisons/moves.
-- **`unique` does NOT erase** — like `remove`, it returns the new logical end. Always call `.erase()`.
+- **`adjacent_find` complexity:** O(n), exactly n-1 comparisons.
+- **`unique` complexity:** O(n), exactly n-1 comparisons/moves.
+- **`unique` does NOT erase** - like `remove`, it returns the new logical end. Always call `.erase()`.
 - **C++20:** `std::ranges::unique` returns a subrange of the "garbage" tail, making the erase step cleaner.
-- **For `std::list`:** Use the member function `lst.unique()` instead — it actually erases in O(1) per removal.
+- **For `std::list`:** Use the member function `lst.unique()` instead - it actually erases in O(1) per removal.
 - **`adjacent_find` as `is_sorted` check:** `adjacent_find(first, last, greater<>{}) == last` is equivalent to `is_sorted(first, last)`.

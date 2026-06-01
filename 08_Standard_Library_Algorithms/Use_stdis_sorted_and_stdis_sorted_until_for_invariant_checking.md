@@ -9,21 +9,19 @@
 
 ## Topic Overview
 
-`std::is_sorted` and `std::is_sorted_until` are essential tools for **invariant checking** — verifying that data structures maintain their sorted property after mutations.
+`std::is_sorted` and `std::is_sorted_until` are essential tools for **invariant checking** - verifying that data structures maintain their sorted property after mutations.
 
 ### When Invariant Checking Matters
 
-```cpp
+The distinction between precondition checking and invariant checking is worth pausing on. Precondition checking asks "is this data in the right state *before* I use it?" Invariant checking asks "did *my own code* leave the data in the right state *after* I modified it?" Both use the same functions, but the intent is different.
 
+```cpp
 Scenario: You maintain a sorted container and perform operations on it.
 After each operation, the sorted invariant must hold.
 
-insert(v, 5) → assert(is_sorted(v))  ✓
-update(v[3]) → assert(is_sorted(v))  ✗ — caught!
-
+insert(v, 5) -> assert(is_sorted(v))  // OK
+update(v[3]) -> assert(is_sorted(v))  // violation caught here!
 ```
-
-Unlike precondition checking (checking before binary search), invariant checking validates that YOUR CODE maintains sorted order after mutations.
 
 ---
 
@@ -31,8 +29,9 @@ Unlike precondition checking (checking before binary search), invariant checking
 
 ### Q1: Use is_sorted as a debug precondition check before calling binary_search
 
-```cpp
+The `SortedBuffer` class below wraps a `std::vector<int>` and asserts the sorted invariant after every mutation and before every query. In debug builds, any operation that accidentally breaks the order is caught at the exact operation that caused it - not somewhere downstream where the symptoms show up.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -100,13 +99,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The reason to check both before queries and after mutations is that these catch different bugs: a pre-query check catches cases where external code smuggled unsorted data in, while a post-mutation check catches bugs in the mutation logic itself.
 
 ### Q2: Use is_sorted_until to find the first out-of-order element and diagnose a sorting bug
 
-```cpp
+When an invariant violation occurs, knowing *that* the container is unsorted is less useful than knowing *where* it broke. `is_sorted_until` gives you that information by returning an iterator to the first out-of-order element, along with enough context to identify the problematic value.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -117,7 +118,7 @@ template <typename Container>
 void verify_sorted_invariant(const Container& c, const std::string& context) {
     auto it = std::is_sorted_until(c.begin(), c.end());
     if (it == c.end()) {
-        std::cout << "[" << context << "] Invariant OK: sorted ✓\n";
+        std::cout << "[" << context << "] Invariant OK: sorted\n";
     } else {
         auto idx = std::distance(c.begin(), it);
         std::cout << "[" << context << "] INVARIANT VIOLATED at index " << idx
@@ -143,7 +144,7 @@ int main() {
     std::vector<int> v = {1, 3, 5, 7, 9, 11, 13, 15};
 
     verify_sorted_invariant(v, "initial");
-    // [initial] Invariant OK: sorted ✓
+    // [initial] Invariant OK: sorted
 
     // Simulate a bug: direct mutation that breaks sorting
     v[4] = 2;  // Oops! Changed 9 to 2
@@ -156,19 +157,21 @@ int main() {
     std::vector<int> desc = {10, 8, 6, 4, 2};
     auto it = std::is_sorted_until(desc.begin(), desc.end(), std::greater<>{});
     if (it == desc.end()) {
-        std::cout << "Descending invariant: OK ✓\n";
+        std::cout << "Descending invariant: OK\n";
     }
-    // Descending invariant: OK ✓
+    // Descending invariant: OK
 
     return 0;
 }
-
 ```
+
+The surrounding-context printout in `verify_sorted_invariant` is what makes this useful during debugging - you see the values on either side of the bad element, not just the index number.
 
 ### Q3: Show is_sorted with a custom comparator for reverse-sorted ranges
 
-```cpp
+The default comparator for `is_sorted` is `<`, which checks ascending order. If your container is sorted in some other order - descending, by absolute value, by string length - you have to pass the matching comparator or `is_sorted` will return `false` even for a correctly ordered container.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -216,8 +219,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The reason `{9, 7, 5, 3, 1}` returns `false` with the default comparator is that `is_sorted` checks whether `!(v[i+1] < v[i])` for all adjacent pairs - and for a descending sequence that check fails at the very first pair. Passing `std::greater<>{}` flips the comparison so it checks descending order instead.
 
 ---
 
@@ -228,26 +232,3 @@ int main() {
 - **`is_sorted` with equal elements:** Returns true. Equal adjacent elements are considered sorted (uses `<`, not `<=`).
 - **C++20 ranges:** `std::ranges::is_sorted(v)` with projection support: `std::ranges::is_sorted(people, {}, &Person::age)`.
 - **Relation to `adjacent_find`:** `is_sorted(first, last)` is equivalent to `adjacent_find(first, last, greater<>{}) == last`.
-
-    // Demonstrate: Show is_sorted with a custom comparator for reverse-sorted ranges.
-    // Write your code here
-    return 0;
-}
-
-```cpp
-
-**How this works:**
-
-- Show is_sorted with a custom comparator for reverse-sorted ranges.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

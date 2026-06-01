@@ -1,6 +1,6 @@
 # Use erase-remove idiom and the erase_if free functions (C++20)
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #74  
 **Standard:** C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/container/vector/erase2>  
@@ -13,37 +13,37 @@
 
 `std::remove` / `std::remove_if` do **not** actually remove elements from a container. They move unwanted elements to the end and return an iterator to the new logical end. The container's size remains unchanged. You must call `.erase()` to actually shrink the container.
 
+This is a frequent source of confusion because the function is named `remove`, yet nothing is removed from the container - it is purely an algorithm operating on iterators that knows nothing about the container itself.
+
 ### Classic Erase-Remove Idiom (pre-C++20)
 
-```cpp
+The diagram below shows what each step does to the internal state of the vector:
 
+```cpp
 Before remove_if (remove odds):  [1, 2, 3, 4, 5, 6]
-After  remove_if:                [2, 4, 6, ?, ?, ?]  ← "?" = unspecified values
+After  remove_if:                [2, 4, 6, ?, ?, ?]  <- "?" = unspecified values
                                           ^
                                      returned iterator (new logical end)
-After .erase(new_end, old_end):  [2, 4, 6]  ← container actually shrunk
-
+After .erase(new_end, old_end):  [2, 4, 6]  <- container actually shrunk
 ```
 
 ```cpp
-
 // The classic two-step idiom:
 v.erase(std::remove_if(v.begin(), v.end(), pred), v.end());
-
 ```
 
 ### C++20 Free Functions: `std::erase` and `std::erase_if`
 
-C++20 introduces free-standing `std::erase` and `std::erase_if` for all standard containers:
+C++20 adds free-standing `std::erase` and `std::erase_if` for all standard containers, which collapse the two-step idiom into a single call:
 
 | Container | `std::erase(container, value)` | `std::erase_if(container, pred)` |
 | --- | --- | --- |
-| `vector` | ✅ | ✅ |
-| `deque` | ✅ | ✅ |
-| `list` | ✅ | ✅ |
-| `string` | ✅ | ✅ |
-| `set/map` | — | ✅ |
-| `unordered_set/map` | — | ✅ |
+| `vector` | Yes | Yes |
+| `deque` | Yes | Yes |
+| `list` | Yes | Yes |
+| `string` | Yes | Yes |
+| `set/map` | - | Yes |
+| `unordered_set/map` | - | Yes |
 
 Both return the number of elements erased (`size_t`).
 
@@ -53,8 +53,9 @@ Both return the number of elements erased (`size_t`).
 
 ### Q1: Write the classic erase(remove_if(...), end()) pattern and explain why both calls are needed
 
-```cpp
+The reason two separate calls are needed comes down to a fundamental design principle: algorithms operate on iterator ranges and know nothing about the container, while containers know nothing about algorithms. Each does only its half of the job.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -78,7 +79,7 @@ int main() {
     std::cout << "\n";
     // Output: 2 4 6 8 10
 
-    // Step 2: erase from new_end to actual end → shrinks the vector
+    // Step 2: erase from new_end to actual end -> shrinks the vector
     v.erase(new_end, v.end());
 
     std::cout << "After erase (size shrunk): " << v.size() << "\n";
@@ -101,19 +102,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Why both calls are needed:**
-
-- **`std::remove_if`** is an *algorithm* — it operates on iterator ranges and knows nothing about the container. It can only overwrite elements by moving the "kept" ones forward. It cannot resize the container.
-- **`container.erase()`** is a *container member function* — only the container itself can deallocate storage and update its size.
-- If you skip the `erase()` call, the vector still has its original size with garbage values at the tail.
+Why both calls are needed: **`std::remove_if`** is an algorithm - it operates on iterator ranges and knows nothing about the container. It can only overwrite elements by moving the "kept" ones forward. It cannot resize the container. **`container.erase()`** is a container member function - only the container itself can deallocate storage and update its size. If you skip the `erase()` call, the vector still has its original size with moved-from values sitting in the tail positions.
 
 ### Q2: Replace the erase-remove idiom with std::erase_if (C++20) and compare readability
 
-```cpp
+The C++20 versions remove an entire category of bugs - you cannot forget the second step because there is only one step.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -177,13 +174,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `std::erase_if` works uniformly on vectors, maps, sets, lists, and strings - the same call regardless of container type. The old idiom required knowing which variant to use for each container (and lists had a separate `remove_if` member). The returned count of removed elements is also a bonus you did not get from the old idiom.
 
 ### Q3: Show a bug where only remove_if is called without the erase step
 
-```cpp
+This is one of the most common bugs when people first encounter these algorithms. The vector looks wrong but does not crash - which makes it harder to debug.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -217,7 +216,7 @@ int main() {
     std::cout << "v2 after remove without erase: ";
     for (int x : v2) std::cout << x << " ";
     std::cout << "\n";
-    // Output: 10 20 40 50 50  ← still size 5, last element duplicated
+    // Output: 10 20 40 50 50  <- still size 5, last element duplicated
 
     // === Fix: always use the two-step idiom or C++20 std::erase ===
     std::vector<int> v3 = {10, 20, 30, 40, 50};
@@ -233,39 +232,17 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**How the bug manifests:**
-
-- `std::remove_if` shuffles wanted elements to the front but doesn't change container size.
-- The "tail" contains moved-from objects with unspecified values.
-- Iterating the full container processes these garbage values.
-- In C++20, `std::remove` and `std::remove_if` are marked `[[nodiscard]]`, so compilers warn if you discard the return value.
+Here is how the bug manifests: `std::remove_if` shuffles wanted elements to the front but does not change the container's size. The "tail" contains moved-from objects with unspecified values. If you iterate the full container afterward, you process those garbage values as if they were real data. In C++20, `std::remove` and `std::remove_if` are marked `[[nodiscard]]`, so modern compilers will warn if you discard the return value - that warning is a lifesaver.
 
 ---
 
 ## Notes
 
-- **Always prefer `std::erase` / `std::erase_if` (C++20)** — they're correct by construction and work with all standard containers.
+- **Always prefer `std::erase` / `std::erase_if` (C++20)** - they are correct by construction and work with all standard containers.
 - **Return value:** `std::erase_if` returns `size_t` (the count of erased elements), unlike the classic idiom.
 - **For `std::list` and `std::forward_list`:** The member functions `remove()` / `remove_if()` already erase in one step (O(n), no shifting). `std::erase_if` calls them internally.
-- **Performance:** `std::erase_if` on vector is O(n) — same as the erase-remove idiom. No magic.
-- **For associative containers:** `std::erase_if` is the only convenient way to conditionally erase — the old approach required a manual loop with careful iterator advancement.
+- **Performance:** `std::erase_if` on vector is O(n) - same as the erase-remove idiom. No magic.
+- **For associative containers:** `std::erase_if` is the only convenient way to conditionally erase - the old approach required a manual loop with careful iterator advancement.
 - **`std::erase` (by value)** is available for sequence containers and strings, but NOT for associative containers (use `container.erase(key)` instead).
-
-**How this works:**
-
-- Bug where only remove_if is called without the erase step.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

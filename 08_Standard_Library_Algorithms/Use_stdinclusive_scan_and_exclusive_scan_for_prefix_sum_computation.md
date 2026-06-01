@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-C++17 added `std::inclusive_scan` and `std::exclusive_scan` as parallelizable alternatives to `std::partial_sum`.
+C++17 added `std::inclusive_scan` and `std::exclusive_scan` as parallelizable alternatives to `std::partial_sum`. The core difference between the two is easy to remember: "inclusive" means each output element includes the input element at the same position; "exclusive" means it does not - the input element at that position is shifted one slot to the right in the output.
 
 ### Comparison
 
@@ -19,18 +19,19 @@ Given input `{a, b, c, d}` and op `+`, init `0`:
 | `inclusive_scan` | `{a, a+b, a+b+c, a+b+c+d}` | First element | Like `partial_sum` |
 | `exclusive_scan` | `{0, a, a+b, a+b+c}` | Init value | Shifted right by 1 |
 
+A concrete picture often helps more than the table:
+
 ```cpp
-
 Input:           [3,  1,  4,  1,  5]
-inclusive_scan:  [3,  4,  8,  9, 14]  ← each element includes itself
-exclusive_scan:  [0,  3,  4,  8,  9]  ← each element excludes itself
-
+inclusive_scan:  [3,  4,  8,  9, 14]  // each element includes itself
+exclusive_scan:  [0,  3,  4,  8,  9]  // each element excludes itself
 ```
 
 ### Signatures
 
-```cpp
+Here are the overloads you will reach for most often:
 
+```cpp
 #include <numeric>
 
 // inclusive_scan
@@ -43,7 +44,6 @@ inclusive_scan(policy, first, last, dest, ...);          // parallel
 exclusive_scan(first, last, dest, init);                 // default: +
 exclusive_scan(first, last, dest, init, binary_op);      // custom op
 exclusive_scan(policy, first, last, dest, init, ...);    // parallel
-
 ```
 
 Both require the binary operation to be **associative** for parallel execution to be correct.
@@ -54,8 +54,9 @@ Both require the binary operation to be **associative** for parallel execution t
 
 ### Q1: Compute a prefix sum using std::inclusive_scan and verify against manual accumulation
 
-```cpp
+This example first computes a prefix sum with `inclusive_scan`, then builds the same thing by hand to confirm the results match. It also shows two other useful variations: running maximum and running product, both of which fall out naturally by just swapping the operation.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -113,13 +114,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The running-max scan is a nice example because it shows that `inclusive_scan` is not limited to addition. Any associative operation works - and `std::max` is associative.
 
 ### Q2: Use exclusive_scan for an offsets array where index 0 is always 0
 
-```cpp
+The classic use case for `exclusive_scan` is computing offsets from sizes. If you have chunks of data with known sizes, the exclusive scan of those sizes gives you the start position of each chunk - and index 0 is always the `init` value (usually 0), which is exactly what you want for "where does the first chunk start?".
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -191,13 +194,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The range-query trick at the end - `ps[r+1] - ps[l]` - is worth remembering. With an exclusive prefix sum (or an inclusive one shifted by one slot), any subrange sum becomes a single subtraction, which is O(1) after O(n) preprocessing.
 
 ### Q3: Parallelise a prefix scan using the par execution policy and explain the correctness requirements
 
-```cpp
+To use a parallel execution policy, just pass `std::execution::par` as the first argument. The algorithm does the rest. The code below times sequential vs. parallel on 10 million doubles so you can see the speedup.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -235,10 +240,9 @@ int main() {
     return 0;
 }
 // Compile: g++ -std=c++17 -O2 -ltbb scan_parallel.cpp
-
 ```
 
-**Correctness requirements for parallel scans:**
+Parallel scans come with rules you must follow or the results will be wrong:
 
 1. **Associativity:** The binary operation must be associative: `op(op(a,b), c) == op(a, op(b,c))`. The parallel algorithm splits the range into chunks, scans each independently, then merges. Non-associative ops (like subtraction) give wrong results.
 
@@ -252,12 +256,8 @@ int main() {
 
 ## Notes
 
-- **`partial_sum` vs scans:** `std::partial_sum` (C++03) is the non-parallelizable predecessor. Use `inclusive_scan` in new code — it supports execution policies and has clearer semantics.
+- **`partial_sum` vs scans:** `std::partial_sum` (C++03) is the non-parallelizable predecessor. Use `inclusive_scan` in new code - it supports execution policies and has clearer semantics.
 - **In-place scan:** Source and destination can be the same range: `inclusive_scan(v.begin(), v.end(), v.begin())`.
-- **`transform_inclusive_scan` / `transform_exclusive_scan`:** Apply a unary transform before scanning. Equivalent to `transform` → `scan` but in a single pass.
+- **`transform_inclusive_scan` / `transform_exclusive_scan`:** Apply a unary transform before scanning. Equivalent to `transform` -> `scan` but in a single pass.
 - **Common use cases:** Range sum queries (games, competitive programming), histograms, load balancing offsets, parallel prefix operations.
-- **Parallel scan algorithm:** Internally uses a two-pass approach — first a local scan per chunk, then an adjustment pass. Total work is O(n), span is O(log n).
-
-// Your practice code
-
-```text
+- **Parallel scan algorithm:** Internally uses a two-pass approach - first a local scan per chunk, then an adjustment pass. Total work is O(n), span is O(log n).

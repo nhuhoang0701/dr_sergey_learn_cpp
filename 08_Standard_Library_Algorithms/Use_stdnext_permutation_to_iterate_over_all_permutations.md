@@ -13,15 +13,13 @@ This file focuses on the practical patterns of iterating over permutations, incl
 ### The do-while Pattern
 
 ```cpp
-
 std::sort(v.begin(), v.end());  // MUST start sorted
 do {
     // process current permutation
 } while (std::next_permutation(v.begin(), v.end()));
-
 ```
 
-Why `do-while`? Because the first permutation (sorted ascending) should also be processed. A regular `while` loop would skip it since `next_permutation` transforms the range *then* returns.
+Why `do-while`? Because the first permutation (sorted ascending) should also be processed. A regular `while` loop would skip it since `next_permutation` transforms the range *then* returns. The reason this trips people up is that the return value signals "there is a next permutation after this one" - so by the time it returns `false`, it has already wrapped the sequence back to sorted and you must have processed the last permutation in the `do` body before that final call.
 
 ---
 
@@ -29,8 +27,9 @@ Why `do-while`? Because the first permutation (sorted ascending) should also be 
 
 ### Q1: Iterate all permutations of a 4-element vector using next_permutation in a do-while loop
 
-```cpp
+With 4 elements there are 4! = 24 permutations. This example prints the first five and the last five so you can see both ends of the lexicographic ordering, then confirms the total count. Notice also how `next_permutation` handles duplicate elements: `{1, 1, 2, 2}` produces 6 distinct permutations (4! / (2! * 2!)) rather than 24.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -78,13 +77,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The duplicate-handling behavior is built into the algorithm. You do not need to deduplicate the output yourself - `next_permutation` automatically skips arrangements that would be identical due to repeated elements.
 
 ### Q2: Explain that next_permutation modifies in place and returns false when the sequence wraps
 
-```cpp
+This example steps through a 3-element vector seven times to make the in-place modification and wrap-around behavior visible. Watch how the sequence evolves on each call, and notice that the seventh iteration is identical to the first - the cycle has completed.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -102,16 +103,16 @@ int main() {
         std::cout << "}";
 
         bool result = std::next_permutation(v.begin(), v.end());
-        std::cout << "  → next_permutation returns " << std::boolalpha << result << "\n";
+        std::cout << "  -> next_permutation returns " << std::boolalpha << result << "\n";
     }
     // Step-by-step:
-    //   v = {1,2,3}  → returns true  (now {1,3,2})
-    //   v = {1,3,2}  → returns true  (now {2,1,3})
-    //   v = {2,1,3}  → returns true  (now {2,3,1})
-    //   v = {2,3,1}  → returns true  (now {3,1,2})
-    //   v = {3,1,2}  → returns true  (now {3,2,1})
-    //   v = {3,2,1}  → returns FALSE (now {1,2,3} — wrapped!)
-    //   v = {1,2,3}  → returns true  (cycle repeats)
+    //   v = {1,2,3}  -> returns true  (now {1,3,2})
+    //   v = {1,3,2}  -> returns true  (now {2,1,3})
+    //   v = {2,1,3}  -> returns true  (now {2,3,1})
+    //   v = {2,3,1}  -> returns true  (now {3,1,2})
+    //   v = {3,1,2}  -> returns true  (now {3,2,1})
+    //   v = {3,2,1}  -> returns FALSE (now {1,2,3} — wrapped!)
+    //   v = {1,2,3}  -> returns true  (cycle repeats)
 
     // === Key implication for the do-while pattern ===
     // The do-while loop works because:
@@ -130,13 +131,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The warning at the end is important: if you start from a mid-sequence arrangement, the `do-while` loop will only see the permutations from that point to the lexicographic end. It will not wrap around to cover the ones before your starting point. This is why you always `std::sort` before starting the loop.
 
 ### Q3: Use permutation iteration to solve a small combinatorial optimization problem
 
-```cpp
+Brute-forcing all permutations with `next_permutation` is the simplest possible approach to assignment problems. For 5 workers and 5 jobs there are only 5! = 120 assignments to check, so this is perfectly fast. The second example shows maximizing a diagonal sum after row reordering, another classic application of the same pattern.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -184,7 +187,7 @@ int main() {
     std::cout << "Workers: " << N << ", Permutations checked: " << total_perms << "\n";
     std::cout << "Optimal assignment:\n";
     for (int i = 0; i < N; ++i) {
-        std::cout << "  Worker " << i << " → Job " << best_assignment[i]
+        std::cout << "  Worker " << i << " -> Job " << best_assignment[i]
                   << " (cost " << cost[i][best_assignment[i]] << ")\n";
     }
     std::cout << "Total cost: " << best_cost << "\n";
@@ -219,15 +222,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+For the job assignment problem, `perm[i]` encodes which job is assigned to worker `i`. Each permutation of `{0, 1, 2, 3, 4}` represents a unique one-to-one assignment where every worker gets exactly one job and every job is covered.
 
 ---
 
 ## Notes
 
 - **Start sorted** for complete enumeration. Starting mid-sequence only iterates from that point to the end.
-- **Factorial growth:** Only feasible for n ≤ ~12 in practice. For larger n, use dynamic programming or heuristics.
+- **Factorial growth:** Only feasible for n <=~12 in practice. For larger n, use dynamic programming or heuristics.
 - **Partial permutations:** To permute only k elements of n, separate the problem into choosing k elements (combinations) and permuting them.
-- **`std::is_permutation`:** Checks if one range is a permutation of another in O(n²) or O(n) with hashing.
+- **`std::is_permutation`:** Checks if one range is a permutation of another in O(n^2) or O(n) with hashing.
 - **Custom comparator:** `next_permutation(first, last, comp)` generates permutations according to the ordering defined by `comp`.

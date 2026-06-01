@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-`std::ranges::starts_with` and `std::ranges::ends_with` (C++23) check whether a range begins or ends with a given subsequence. They work on **any forward range**, not just strings.
+`std::ranges::starts_with` and `std::ranges::ends_with` (C++23) check whether a range begins or ends with a given subsequence. They work on **any forward range**, not just strings - which is the main thing that sets them apart from the string member functions you might already know from C++20.
 
 ### Signatures
 
-```cpp
+Both functions support optional predicates and projections in addition to the basic equality check:
 
+```cpp
 #include <algorithm>
 
 bool std::ranges::starts_with(range, prefix);
@@ -22,7 +23,6 @@ bool std::ranges::starts_with(range, prefix, pred, proj1, proj2);
 
 bool std::ranges::ends_with(range, suffix);
 bool std::ranges::ends_with(range, suffix, pred, proj1, proj2);
-
 ```
 
 ### Comparison with String Methods
@@ -38,10 +38,11 @@ bool std::ranges::ends_with(range, suffix, pred, proj1, proj2);
 
 ## Self-Assessment
 
-### Q1: Check if a std::vector<int> starts with a given subsequence using ranges::starts_with
+### Q1: Check if a std::vector of int starts with a given subsequence using ranges::starts_with
+
+This works on vectors, arrays, strings - any forward range. The empty-prefix and empty-suffix cases always return `true`, which matches the standard mathematical convention:
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -79,13 +80,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that the prefix and suffix don't have to be the same container type as the range - a `std::array` suffix works fine against a `std::vector` range.
 
 ### Q2: Implement a simple tokenizer that strips known prefixes using starts_with
 
-```cpp
+`starts_with` is particularly clean in classifier or tokenizer code, where you're testing a string against a list of known prefixes. Each rule check reads exactly like its intent:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -166,13 +169,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `is_cpp_source` lambda at the end shows a clean real-world use of `ends_with` for file type detection - much more readable than a manual suffix comparison using `rfind` and `substr`.
 
 ### Q3: Show that starts_with and ends_with work on any forward range, not just strings
 
-```cpp
+This is the real headline feature compared to the string member functions. Any forward range works - lists, deques, mixed container types:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <list>
@@ -222,33 +227,16 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The case-insensitive example and the projection example are where these range algorithms really shine compared to the string member functions. You can customize both the comparison and the projection of each element, which opens up a lot of expressive possibilities.
 
 ---
 
 ## Notes
 
 - **C++23 required.** Compiler support: GCC 13+, Clang 17+, MSVC 19.37+.
-- For **strings specifically**, prefer the C++20 member functions `str.starts_with()` and `str.ends_with()` — they are simpler and available earlier.
+- For **strings specifically**, prefer the C++20 member functions `str.starts_with()` and `str.ends_with()` - they are simpler and available earlier.
 - `ends_with` requires the range to be at least a **forward range** (bidirectional for efficiency). For forward-only ranges, it computes sizes first.
 - Both algorithms accept **custom predicates** and **projections**, making them powerful for case-insensitive comparisons or comparing struct fields.
 - An empty prefix/suffix always matches any range.
-
-```cpp
-
-**How this works:**
-
-- These work on any forward range, not just strings.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

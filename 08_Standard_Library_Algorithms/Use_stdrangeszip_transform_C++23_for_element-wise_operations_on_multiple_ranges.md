@@ -1,6 +1,6 @@
 # Use std::ranges::zip_transform (C++23) for element-wise operations on multiple ranges
 
-**Category:** Standard Library — Algorithms  
+**Category:** Standard Library - Algorithms  
 **Item:** #361  
 **Standard:** C++23  
 **Reference:** <https://en.cppreference.com/w/cpp/ranges/zip_transform_view>  
@@ -9,31 +9,32 @@
 
 ## Topic Overview
 
-`std::views::zip_transform` (C++23) combines `zip` and `transform` into a single operation — it applies a function element-wise across multiple ranges simultaneously. Think of it as a generalized "map" over multiple input sequences.
+`std::views::zip_transform` (C++23) is the clean way to apply a function element-wise across multiple ranges at once. Think of it as a generalized "map" over several input sequences combined into one step - it zips the ranges together and applies your transform in a single, lazy operation.
 
-```cpp
+If you have ever written `a[i] + b[i]` in a loop, this is that pattern, but composable and bounds-safe:
 
+```text
 a:               [1,    2,    3   ]
 b:               [10,   20,   30  ]
 zip_transform(+): [11,   22,   33  ]
-
 ```
 
 ### Syntax
 
-```cpp
+The call puts the function first, followed by as many input ranges as you need:
 
+```cpp
 #include <ranges>
 
 // Apply fn to elements from r1, r2, ... in parallel
 auto view = std::views::zip_transform(fn, r1, r2, ...);
-
 ```
 
 ### zip + transform vs zip_transform
 
-```cpp
+Before C++23 you had to zip first and then manually unpack the tuple inside a transform. With `zip_transform` that ceremony disappears:
 
+```cpp
 // Two steps: zip then transform
 auto v1 = std::views::zip(a, b) | std::views::transform([](auto pair) {
     auto [x, y] = pair;
@@ -42,8 +43,9 @@ auto v1 = std::views::zip(a, b) | std::views::transform([](auto pair) {
 
 // Single step: zip_transform (cleaner)
 auto v2 = std::views::zip_transform(std::plus{}, a, b);
-
 ```
+
+The second version is shorter, easier to read, and passes the elements directly as separate function arguments instead of bundling them into a tuple.
 
 ---
 
@@ -51,8 +53,9 @@ auto v2 = std::views::zip_transform(std::plus{}, a, b);
 
 ### Q1: Add two vectors element-wise using zip_transform and a plus functor
 
-```cpp
+Here we try `zip_transform` with the standard `std::plus` functor, then with `std::multiplies`, then with a custom lambda - and finally materialize the result and compute a dot product on top of it.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -98,13 +101,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The view is lazy - nothing is computed until you iterate. Piping into `ranges::to` forces evaluation and stores the results in a `vector`. The dot product example shows how neatly `zip_transform` composes with `fold_left` for a one-expression map-reduce.
 
 ### Q2: Show that zip_transform stops at the shortest input range
 
-```cpp
+One of the nicest safety properties of `zip_transform` is that it never reads past the end of any input. It automatically limits itself to the shortest range, so mismatched sizes are handled gracefully instead of causing undefined behavior.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -121,7 +126,7 @@ int main() {
     std::cout << "Mismatched sizes: ";
     for (int x : result) std::cout << x << " ";
     std::cout << "\n";
-    // 11 22  — only 2 elements (min of 2, 5)
+    // 11 22  - only 2 elements (min of 2, 5)
 
     std::cout << "Result size: " << std::ranges::distance(result) << "\n";  // 2
 
@@ -137,7 +142,7 @@ int main() {
     std::cout << "Three ranges: ";
     for (int x : three_sum) std::cout << x << " ";
     std::cout << "\n";
-    // 111 222  — stops at r2 (size 2, the shortest)
+    // 111 222  - stops at r2 (size 2, the shortest)
 
     // === Practical: safe column-wise operations ===
     std::vector<std::string> headers = {"Name", "Age", "City"};
@@ -150,17 +155,19 @@ int main() {
 
     for (auto& s : pairs) std::cout << s << " ";
     std::cout << "\n";
-    // Name=Alice Age=30  — safely stops, no crash on missing City
+    // Name=Alice Age=30  - safely stops, no crash on missing City
 
     return 0;
 }
-
 ```
+
+The "missing City" example makes this practical: if your data has ragged rows you get partial results instead of a crash, with no special-case code on your part.
 
 ### Q3: Use zip_transform with three ranges to compute a linear combination: a*x + b*y + c
 
-```cpp
+Three-range `zip_transform` is where the advantage over manual indexing really shows. A loop over three indices gives you no safety and no composability; this gives you both.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -226,8 +233,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice how the Euclidean distance example reduces to a single readable expression: `zip_transform` the squared differences, then `fold_left` to sum them, then `sqrt`. That chain is far more self-documenting than the equivalent index loop.
 
 ---
 
@@ -236,26 +244,6 @@ int main() {
 - **C++23 required.** Compiler support: GCC 13+, Clang 17+, MSVC 19.37+.
 - `zip_transform` is equivalent to `zip(...) | transform(apply(fn))` but more concise and potentially more efficient.
 - **Lazy:** No computation happens until the view is iterated.
-- Always stops at the **shortest** input range — safe by design.
+- Always stops at the **shortest** input range - safe by design.
 - The function receives one element from each range as separate arguments (not as a tuple).
 - Combines well with `ranges::to` and `fold_left` for materializing or reducing results.
-
-}
-
-```cpp
-
-**How this works:**
-
-- Zip_transform with three ranges to compute a linear combination: a*x + b*y + c.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
