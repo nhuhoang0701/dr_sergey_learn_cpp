@@ -11,7 +11,7 @@
 
 ### What Are Feature Test Macros
 
-Feature test macros are predefined preprocessor macros that let you detect at compile time whether a specific language or library feature is available. They follow naming conventions:
+Feature test macros are predefined preprocessor macros that let you detect at compile time whether a specific language or library feature is actually available on the current compiler and standard library combination. They follow naming conventions:
 
 | Pattern | Scope | Example |
 | --- | --- | --- |
@@ -19,7 +19,11 @@ Feature test macros are predefined preprocessor macros that let you detect at co
 | `__cpp_lib_*` | Library features | `__cpp_lib_ranges`, `__cpp_lib_format` |
 | `__has_include(<header>)` | Header availability | `__has_include(<format>)` |
 
+Think of them as a formal handshake between your code and the toolchain: instead of guessing based on version numbers, you ask the compiler directly whether it supports the exact thing you need.
+
 ### Why Use Them
+
+The core problem is that checking the language standard version alone is not reliable enough. Here's why:
 
 | Approach | Problem |
 | --- | --- |
@@ -27,21 +31,27 @@ Feature test macros are predefined preprocessor macros that let you detect at co
 | Check compiler version | Different compilers implement features at different versions |
 | Feature test macros | Directly tests if the specific feature is available |
 
+The reason this trips people up is that "compiling in C++20 mode" and "having a full C++20 standard library" are two separate things. A compiler's frontend and its bundled standard library ship on different schedules. Feature test macros let you check each piece independently.
+
 ### Key Macros
+
+Here's a reference for the most commonly guarded features:
 
 | Macro | Feature | Value |
 | --- | --- | --- |
-| `__cpp_lib_ranges` | `<ranges>` | `≥ 201911L` |
-| `__cpp_lib_format` | `<format>` | `≥ 202110L` |
-| `__cpp_lib_expected` | `<expected>` | `≥ 202202L` |
-| `__cpp_concepts` | `concept` keyword | `≥ 202002L` |
+| `__cpp_lib_ranges` | `<ranges>` | `>= 201911L` |
+| `__cpp_lib_format` | `<format>` | `>= 202110L` |
+| `__cpp_lib_expected` | `<expected>` | `>= 202202L` |
+| `__cpp_concepts` | `concept` keyword | `>= 202002L` |
 | `__cpp_constexpr` | Expanded constexpr | Value increases per standard |
-| `__cpp_lib_coroutine` | `<coroutine>` | `≥ 201902L` |
-| `__cpp_lib_jthread` | `std::jthread` | `≥ 201911L` |
+| `__cpp_lib_coroutine` | `<coroutine>` | `>= 201902L` |
+| `__cpp_lib_jthread` | `std::jthread` | `>= 201911L` |
+
+Notice that the macro values are dates in the form `YYYYMML`. They increase whenever defect reports are applied to the feature, which is why you should always check `>= VALUE` rather than `== VALUE`.
 
 ### The `<version>` Header (C++20)
 
-Include `<version>` to get all `__cpp_lib_*` macros without including the actual feature headers.
+C++20 introduced the `<version>` header specifically for this purpose. Including it gives you all `__cpp_lib_*` macros without pulling in any of the actual feature headers. It's the lightest-weight way to do a capability check up front.
 
 ---
 
@@ -49,8 +59,9 @@ Include `<version>` to get all `__cpp_lib_*` macros without including the actual
 
 ### Q1: Use `#if __cpp_lib_ranges` to conditionally enable range-based code
 
-```cpp
+Here's a complete example that checks for ranges and format support, then takes a different code path depending on what's available. Notice how the feature report at the top tells you exactly what the compiler has enabled.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -132,13 +143,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output (C++20 compiler with ranges support):**
 
 ```text
-
 === Feature Detection Report ===
 __cpp_lib_ranges = 201911
 __cpp_lib_format = 202110
@@ -148,21 +157,23 @@ __cpp_constexpr = 202207
 === Conditional Code Path ===
 Using std::ranges (available):
   2 4 6 8
-
 ```
 
 ### Q2: Explain why feature test macros are more reliable than checking `__cplusplus` versions
+
+The key insight is that `__cplusplus` tells you what language standard mode the compiler is running in, not which library features are actually implemented. Those are separate things.
 
 Feature test macros directly test the specific feature you need, not the overall standard version:
 
 | Scenario | `__cplusplus` | Feature test macro |
 | --- | --- | --- |
-| GCC 10 with `-std=c++20` but no `<format>` | `__cplusplus == 202002L` ✓ | `__cpp_lib_format` undefined ✗ |
-| MSVC with partial C++23 | `__cplusplus == 202302L` ✓ | Each feature checked individually |
+| GCC 10 with `-std=c++20` but no `<format>` | `__cplusplus == 202002L` Yes | `__cpp_lib_format` undefined No |
+| MSVC with partial C++23 | `__cplusplus == 202302L` Yes | Each feature checked individually |
 | Clang with libc++ vs libstdc++ | Same `__cplusplus` | Different `__cpp_lib_*` values |
 
-```cpp
+Here's a demonstration that makes the contrast concrete:
 
+```cpp
 #include <iostream>
 
 #if __has_include(<version>)
@@ -222,14 +233,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q3: Write a header that provides a polyfill when a C++23 feature is absent
 
-```cpp
+This is the practical payoff: you can write a header that checks for `std::expected`, uses the real thing if it's there, and falls back to a hand-rolled implementation otherwise. Client code sees only `my::expected` and never needs to care which path was taken.
 
-// === my_expected.h — polyfill header for std::expected ===
+```cpp
+// === my_expected.h - polyfill header for std::expected ===
 #ifndef MY_EXPECTED_H
 #define MY_EXPECTED_H
 
@@ -292,12 +303,12 @@ int main() {
 
 #endif
 #endif // MY_EXPECTED_H
-
 ```
 
-```cpp
+And here's what usage looks like - identical regardless of which path the header took:
 
-// === main.cpp — uses the polyfill header ===
+```cpp
+// === main.cpp - uses the polyfill header ===
 #include <iostream>
 #include <string>
 
@@ -350,13 +361,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Polyfill: my::expected ===
 Using std::expected (C++23 native)
 parse_int("42") = 42
@@ -370,7 +379,6 @@ parse_int("123xyz") error: trailing characters
 3. If absent: provide a minimal compatible implementation
 4. User code uses your namespace (my::expected)
 5. When all compilers catch up, remove the polyfill
-
 ```
 
 ---
@@ -379,7 +387,7 @@ parse_int("123xyz") error: trailing characters
 
 - Include `<version>` (C++20) to get all `__cpp_lib_*` macros without pulling in feature headers.
 - Use `__has_include(<header>)` to check header existence before `#include`.
-- Feature test macro values are dates (e.g., `201911L`) — they increase when defect reports are applied.
-- Always use `#if defined(MACRO) && MACRO >= VALUE` — not just `#ifdef` — to check minimum version.
+- Feature test macro values are dates (e.g., `201911L`) - they increase when defect reports are applied.
+- Always use `#if defined(MACRO) && MACRO >= VALUE` - not just `#ifdef` - to check minimum version.
 - Language features use `__cpp_*`; library features use `__cpp_lib_*`.
-- The polyfill pattern: check macro → if available use standard → else provide fallback.
+- The polyfill pattern: check macro -> if available use standard -> else provide fallback.

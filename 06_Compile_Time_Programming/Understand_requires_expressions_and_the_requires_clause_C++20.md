@@ -11,31 +11,31 @@
 
 ### What Is a `requires` Expression
 
-A `requires` expression is a compile-time predicate that checks whether a set of **syntactic and semantic requirements** are satisfied. It evaluates to `true` or `false` at compile time.
+A `requires` expression is a compile-time predicate that checks whether a set of **syntactic and semantic requirements** are satisfied. It evaluates to `true` or `false` at compile time. You'll see it most often inside a concept definition, but it can appear anywhere a compile-time boolean is needed.
 
 ```cpp
-
 template <typename T>
 concept Serializable = requires(T t) {
     { t.serialize() } -> std::convertible_to<std::string>;
 };
-
 ```
+
+Reading this out loud: "T is Serializable if, given a value `t` of type T, the expression `t.serialize()` is valid and its return type is convertible to `std::string`."
 
 ### The Two `requires` Keywords
 
-C++20 uses `requires` in two distinct contexts:
+This is where people get confused - C++20 uses the word `requires` in two completely different roles:
 
 | Context | Purpose | Example |
 | --- | --- | --- |
 | **`requires` expression** | A compile-time boolean expression that tests constraints | `requires(T t) { t.size(); }` |
 | **`requires` clause** | A constraint applied to a template/function | `template <typename T> requires Integral<T>` |
 
-They can even appear together: `requires requires(T t) { t.foo(); }` (a requires clause containing a requires expression).
+They can even appear together: `requires requires(T t) { t.foo(); }` (a requires clause containing a requires expression). Yes, it looks odd, but each `requires` is doing a different job.
 
 ### Four Kinds of Requirements
 
-Inside a `requires` expression, there are four requirement types:
+Inside a `requires` expression, there are four requirement types. Each tests something different about the type:
 
 | Kind | Syntax | Checks |
 | --- | --- | --- |
@@ -44,8 +44,9 @@ Inside a `requires` expression, there are four requirement types:
 | **Compound** | `{ expr } -> concept;` | Expression is valid AND its return type satisfies a concept |
 | **Nested** | `requires predicate;` | An additional boolean constraint must hold |
 
-```cpp
+Here's all four in one concept:
 
+```cpp
 template <typename T>
 concept FullyConstrained = requires(T a, T b) {
     a + b;                                       // Simple: a+b compiles
@@ -53,7 +54,6 @@ concept FullyConstrained = requires(T a, T b) {
     { a.size() } -> std::convertible_to<size_t>; // Compound: size() returns something convertible to size_t
     requires std::copyable<T>;                   // Nested: T must be copyable
 };
-
 ```
 
 ---
@@ -62,8 +62,9 @@ concept FullyConstrained = requires(T a, T b) {
 
 ### Q1: Write a `requires` expression that checks for a `.serialize()` member that returns `std::string`
 
-```cpp
+The code below builds two concepts: `Serializable` (just needs `serialize()`) and `FullySerializable` (needs both `serialize()` and a static `deserialize()`). Then it shows three types that do/don't satisfy them, and uses `static_assert` to confirm the checks happen at compile time.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <concepts>
@@ -142,24 +143,22 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Saved: timeout=30
 Serialized: timeout=30
 Deserialized successfully
 Restored: timeout=30
-
 ```
 
 ### Q2: Explain the four kinds of requirements: simple, type, compound, and nested
 
-```cpp
+This example defines a separate concept for each requirement kind, then combines all four into a single `WellBehavedContainer` concept. Reading through it is a good way to internalize when each form is appropriate.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <concepts>
@@ -245,36 +244,34 @@ int main() {
     process(v);
 
     std::cout << "\n=== Four Requirement Types ===\n";
-    std::cout << "1. Simple:   expr;                       — just checks compilability\n";
-    std::cout << "2. Type:     typename T::type;           — checks type exists\n";
-    std::cout << "3. Compound: { expr } -> concept;        — checks expr + return type\n";
-    std::cout << "4. Nested:   requires bool_expression;   — checks predicate is true\n";
+    std::cout << "1. Simple:   expr;                       - just checks compilability\n";
+    std::cout << "2. Type:     typename T::type;           - checks type exists\n";
+    std::cout << "3. Compound: { expr } -> concept;        - checks expr + return type\n";
+    std::cout << "4. Nested:   requires bool_expression;   - checks predicate is true\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Container size: 3
 Front: 1
 
 === Four Requirement Types ===
 
-1. Simple:   expr;                       — just checks compilability
-2. Type:     typename T::type;           — checks type exists
-3. Compound: { expr } -> concept;        — checks expr + return type
-4. Nested:   requires bool_expression;   — checks predicate is true
-
+1. Simple:   expr;                       - just checks compilability
+2. Type:     typename T::type;           - checks type exists
+3. Compound: { expr } -> concept;        - checks expr + return type
+4. Nested:   requires bool_expression;   - checks predicate is true
 ```
 
 ### Q3: Show how a `requires` clause on a function differs from a concept definition
 
-```cpp
+The most important practical difference is **subsumption**: when you have two overloads and one's constraints are a strict superset of the other's, the more-constrained overload wins. This only works with named concepts. Ad-hoc inline `requires` expressions do NOT participate in subsumption - the compiler treats them as opaque, so you'd get an ambiguity error.
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <type_traits>
@@ -365,8 +362,8 @@ int main() {
     print_v4(MyType{});    std::cout << "\n";
 
     // Subsumption: numeric overload is selected for int
-    display(42);           // [numeric] 42 — more constrained wins
-    display("hello");      // [generic] hello — only one matches
+    display(42);           // [numeric] 42 - more constrained wins
+    display("hello");      // [generic] hello - only one matches
 
     std::cout << "\n=== Concept vs Requires Clause ===\n";
     std::cout << "Concept:        Named, reusable, supports subsumption\n";
@@ -378,13 +375,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 42
 3.14
 hello
@@ -401,16 +396,15 @@ Rule of thumb:
   - Use named concepts for constraints you use more than once
   - Use requires clause for one-off constraints
   - Prefer concepts for overload sets (subsumption)
-
 ```
 
 ---
 
 ## Notes
 
-- `requires` expressions are compile-time predicates — they never generate runtime code.
+- `requires` expressions are compile-time predicates - they never generate runtime code.
 - The `requires requires` pattern (clause + expression) is valid but prefer naming the concept.
 - Compound requirements can include `noexcept`: `{ expr } noexcept -> concept;`.
-- Named concepts enable **subsumption** — the compiler prefers more constrained overloads.
-- Ad-hoc `requires` expressions do NOT participate in subsumption — use named concepts for overload sets.
+- Named concepts enable **subsumption** - the compiler prefers more constrained overloads.
+- Ad-hoc `requires` expressions do NOT participate in subsumption - use named concepts for overload sets.
 - Always prefer concepts over `enable_if` in new C++20 code.

@@ -14,7 +14,6 @@
 `if consteval` (C++23) is a compile-time branching construct that checks whether code is being evaluated **during constant evaluation** (compile time) or at **runtime**. It replaces the awkward `if (std::is_constant_evaluated())` pattern from C++20.
 
 ```cpp
-
 constexpr int compute(int x) {
     if consteval {
         // This branch runs ONLY during constant evaluation
@@ -24,33 +23,38 @@ constexpr int compute(int x) {
         return fast_intrinsic(x);  // can use non-constexpr functions
     }
 }
-
 ```
 
+The key thing `if consteval` unlocks that `std::is_constant_evaluated()` could not is the ability to call non-`constexpr` functions in the `else` branch. At runtime, you're free to use hardware intrinsics, `memcpy`, platform-specific APIs - anything. The compile-time branch gets a strict `constexpr`-safe path. The two branches are truly independent.
+
 ### `if consteval` vs `std::is_constant_evaluated()`
+
+The reason `if consteval` was added even though `std::is_constant_evaluated()` already existed comes down to two concrete problems with the older approach. The table captures both:
 
 | Feature | `if consteval` (C++23) | `std::is_constant_evaluated()` (C++20) |
 | --- | --- | --- |
 | Syntax | `if consteval { ... } else { ... }` | `if (std::is_constant_evaluated()) { ... }` |
-| Type | Language keyword — special statement | Library function returning `bool` |
+| Type | Language keyword - special statement | Library function returning `bool` |
 | Compile-time branch | `if consteval` block is `consteval` context | Still `constexpr`, not `consteval` |
-| Call non-constexpr in else | **Yes** — the else branch is explicitly runtime | **No** — the whole function is still constexpr; calling non-constexpr functions is ill-formed |
-| False positive risk | None | `if constexpr (std::is_constant_evaluated())` is **always true** — a common bug |
+| Call non-constexpr in else | Yes - the else branch is explicitly runtime | No - the whole function is still constexpr; calling non-constexpr functions is ill-formed |
+| False positive risk | None | `if constexpr (std::is_constant_evaluated())` is **always true** - a common bug |
 | Negation | `if !consteval { ... }` | `if (!std::is_constant_evaluated()) { ... }` |
 
 ### The Critical Difference: `consteval` Context
 
+This is the part that trips people up, so let's be explicit about it.
+
 Inside `if consteval { ... }`, you are in a **manifestly constant-evaluated** context. This means:
 
-- You can call `consteval` functions
-- The compiler **guarantees** this code only runs at compile time
+- You can call `consteval` functions.
+- The compiler **guarantees** this code only runs at compile time.
 
 Inside the `else` branch:
 
-- You can call **non-constexpr** functions (intrinsics, syscalls, etc.)
-- The compiler **guarantees** this code only runs at runtime
+- You can call **non-constexpr** functions (intrinsics, syscalls, etc.).
+- The compiler **guarantees** this code only runs at runtime.
 
-With `std::is_constant_evaluated()`, neither guarantee holds — the function body must remain valid `constexpr` code in both branches.
+With `std::is_constant_evaluated()`, neither guarantee holds - the function body must remain valid `constexpr` code in *both* branches, because the compiler doesn't treat each branch differently for the purposes of what's allowed inside it.
 
 ---
 
@@ -58,8 +62,9 @@ With `std::is_constant_evaluated()`, neither guarantee holds — the function bo
 
 ### Q1: Write `if consteval { /* compile-time path */ } else { /* runtime path */ }` in a constexpr function
 
-```cpp
+This example shows two real use cases: picking between a constexpr-safe Newton's-method sqrt and the hardware-accelerated `std::sqrt`, and adding debug logging only on the runtime path where `std::cout` is available.
 
+```cpp
 #include <iostream>
 #include <cmath>  // std::sqrt (not constexpr in most implementations)
 
@@ -87,7 +92,7 @@ constexpr double smart_sqrt(double x) {
 // === Another example: debug logging only at runtime ===
 constexpr int factorial(int n) {
     if consteval {
-        // Pure calculation at compile time — no side effects
+        // Pure calculation at compile time - no side effects
         int result = 1;
         for (int i = 2; i <= n; ++i) result *= i;
         return result;
@@ -106,7 +111,7 @@ int main() {
     static_assert(compile_time_result > 11.99 && compile_time_result < 12.01);
     std::cout << "Compile-time sqrt(144) = " << compile_time_result << "\n";
 
-    // Runtime usage — will call std::sqrt
+    // Runtime usage - will call std::sqrt
     double runtime_val = 144.0;
     double runtime_result = smart_sqrt(runtime_val);
     std::cout << "Runtime sqrt(144) = " << runtime_result << "\n";
@@ -116,32 +121,30 @@ int main() {
     static_assert(ct_fact == 120);
     std::cout << "Compile-time factorial(5) = " << ct_fact << "\n";
 
-    // Runtime factorial — will print log message
+    // Runtime factorial - will print log message
     int n = 5;
     int rt_fact = factorial(n);
     std::cout << "Runtime factorial(5) = " << rt_fact << "\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Compile-time sqrt(144) = 12
 Runtime sqrt(144) = 12
 Compile-time factorial(5) = 120
   Computing factorial(5) at runtime
 Runtime factorial(5) = 120
-
 ```
 
 ### Q2: Explain the difference between `if consteval` and `if (std::is_constant_evaluated())`
 
-```cpp
+This example demonstrates the classic `if constexpr (std::is_constant_evaluated())` bug where the condition is always evaluated as `true`, making the else branch dead code. Watch the `buggy` function - both the compile-time and runtime calls return `20` (x*2), even though the intent was for runtime to return `30` (x*3).
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -166,7 +169,7 @@ constexpr int buggy2(int x) {
         return x;
     } else {
         // ERROR: printf is not constexpr, and the whole function
-        // must be valid constexpr — both branches are checked
+        // must be valid constexpr - both branches are checked
         printf("runtime path\n");  // ill-formed
         return x;
     }
@@ -236,13 +239,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 buggy(10) compile-time: 20
 buggy(10) runtime:      20
 correct(10) compile-time: 20
@@ -264,13 +265,13 @@ if consteval:
   - No false-positive risk
   - else branch allows non-constexpr code
   - Supports negation: if !consteval
-
 ```
 
 ### Q3: Use `if consteval` to call a non-constexpr intrinsic only at runtime
 
-```cpp
+This is the pattern you'll reach for most often in performance-sensitive code: a constexpr-safe fallback for the compile-time path, and a hardware-accelerated implementation at runtime. The `smart_copy` function shows this for buffer copies; `smart_popcount` shows it for bit manipulation.
 
+```cpp
 #include <iostream>
 #include <cstring>   // std::memcpy (not constexpr)
 #include <algorithm>  // std::copy
@@ -376,13 +377,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Compile-time copy: 10 20 30 40
 Runtime copy: 1 2 3 4
 Compile-time popcount(0b10110011) = 5
@@ -390,15 +389,14 @@ Runtime popcount(0b10110011) = 5
 Compile-time hash("hello") = 11831194018420276491
   [runtime hash for "hello"]
 Runtime hash("hello") = 11831194018420276491
-
 ```
 
 ---
 
 ## Notes
 
-- `if consteval` requires C++23. Use `std::is_constant_evaluated()` for C++20 code — but avoid `if constexpr (std::is_constant_evaluated())`.
-- The `else` branch of `if consteval` can contain non-constexpr code — this is the primary advantage over `std::is_constant_evaluated()`.
+- `if consteval` requires C++23. Use `std::is_constant_evaluated()` for C++20 code - but avoid `if constexpr (std::is_constant_evaluated())`.
+- The `else` branch of `if consteval` can contain non-constexpr code - this is the primary advantage over `std::is_constant_evaluated()`.
 - Use `if !consteval { ... }` as a shorthand for "runtime-only" logic.
 - Common use cases: hardware intrinsics (popcount, CRC, SIMD), syscalls, `memcpy`, logging, platform-specific optimizations.
-- `if consteval` cannot appear outside a `constexpr` or `consteval` function — it only makes sense in contexts where constant evaluation is possible.
+- `if consteval` cannot appear outside a `constexpr` or `consteval` function - it only makes sense in contexts where constant evaluation is possible.

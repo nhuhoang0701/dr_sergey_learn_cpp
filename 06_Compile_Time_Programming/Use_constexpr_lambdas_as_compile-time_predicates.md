@@ -11,29 +11,29 @@
 
 ### `constexpr` Lambdas
 
-Since C++17, lambdas are **implicitly `constexpr`** if they satisfy the requirements for a `constexpr` function. Since C++20, lambdas can be explicitly marked `consteval`.
+Since C++17, lambdas are **implicitly `constexpr`** if they satisfy the requirements for a `constexpr` function - no annotation needed. Since C++20, you can also explicitly mark a lambda `consteval` to guarantee it only ever runs at compile time.
 
 ```cpp
-
 // C++17: implicitly constexpr
 auto square = [](int n) { return n * n; };
 static_assert(square(5) == 25);  // Works: lambda is constexpr
 
 // C++20: explicitly consteval
 auto must_ct = [](int n) consteval { return n * n; };
-
 ```
+
+The implicit `constexpr` behavior means that in practice, most simple lambdas you write will just work in compile-time contexts without any changes.
 
 ### Lambda as Compile-Time Predicate
 
-A **predicate** is a function that returns `bool`. A **compile-time predicate** is a `constexpr` lambda used in `static_assert`, `if constexpr`, or as a template argument:
+A **predicate** is a function that returns `bool`. A **compile-time predicate** is a `constexpr` lambda that you use in `static_assert`, `if constexpr`, or as a template argument to test conditions during compilation rather than at runtime.
+
+This lets you move invariant checks out of runtime assertions and into the build step, where they have zero cost if they pass and catch bugs immediately if they fail:
 
 ```cpp
-
 constexpr auto is_even = [](int n) { return n % 2 == 0; };
 static_assert(is_even(4));       // Compile-time predicate check
 static_assert(!is_even(7));
-
 ```
 
 ### Key Points
@@ -42,9 +42,11 @@ static_assert(!is_even(7));
 | --- | --- | --- |
 | Implicit `constexpr` lambda | Yes | Yes |
 | Lambda in `static_assert` | Yes | Yes |
-| Lambda as NTTP (template argument) | No | **Yes** |
-| `consteval` lambda | No | **Yes** |
+| Lambda as NTTP (template argument) | No | Yes |
+| `consteval` lambda | No | Yes |
 | Lambda with captures in `constexpr` | Value only | Value only |
+
+The NTTP column is the big C++20 addition. Before C++20, you couldn't pass a lambda as a non-type template parameter. C++20 makes stateless (capture-free) lambdas usable as template arguments, which opens up a powerful policy pattern.
 
 ---
 
@@ -52,8 +54,9 @@ static_assert(!is_even(7));
 
 ### Q1: Write a `constexpr` lambda used inside a `static_assert` to validate a compile-time condition
 
-```cpp
+Here's a set of predicates that check properties you'd typically want to verify at compile time for configuration data - primality, power-of-two checks, sortedness, and port validity. All of the `static_assert`s below run during compilation:
 
+```cpp
 #include <iostream>
 #include <array>
 #include <type_traits>
@@ -120,13 +123,11 @@ int main() {
     std::cout << "\nAll static_asserts passed at compile time!\n";
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Predicate Checks ===
 is_prime(17): 1
 is_prime(15): 0
@@ -136,13 +137,15 @@ is_sorted(config): 1
 is_valid_config(8080, 5000): 1
 
 All static_asserts passed at compile time!
-
 ```
 
 ### Q2: Show that `constexpr` lambdas can be used in template arguments via NTTP
 
-```cpp
+C++20 allows stateless lambdas (no captures) to be used as non-type template parameters. This enables a clean policy pattern where you parameterize a function or class by behavior - comparator, predicate, transform - all at compile time.
 
+The key point is that the lambda becomes part of the type: `Processor<[](int n) { return n * 2; }>` and `Processor<[](int n) { return n * n; }>` are two distinct types, each optimized for their specific operation.
+
+```cpp
 #include <iostream>
 #include <array>
 #include <algorithm>
@@ -209,26 +212,26 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Ascending:  1 2 3 4 5
 Descending: 5 4 3 2 1
 Even count: 2
 Odd count:  3
 Doubler(5): 10
 Squarer(5): 25
-
 ```
 
 ### Q3: Demonstrate a `constexpr` lambda that captures a `constexpr` variable
 
-```cpp
+Value captures embed the captured value directly into the closure type. Since the value is known at compile time and no address is involved, it's a valid constant expression. Init captures let you go further and compute a derived value at capture time, as long as the initializer is itself a constant expression.
 
+The comment in the example explains why reference captures don't work - it's the address problem again, same as in the previous topic.
+
+```cpp
 #include <iostream>
 #include <array>
 
@@ -239,7 +242,7 @@ Squarer(5): 25
 constexpr int SCALE_FACTOR = 10;
 constexpr int OFFSET = 5;
 
-// Capture by value — works in constexpr context
+// Capture by value - works in constexpr context
 constexpr auto scaled = [factor = SCALE_FACTOR](int x) {
     return x * factor;
 };
@@ -289,19 +292,17 @@ int main() {
     std::cout << "dot_with_coefficients = " << dot_with_coefficients(values) << "\n";  // 300
 
     std::cout << "\n=== Rules ===\n";
-    std::cout << "By value [x = expr]:  OK in constexpr — value is embedded\n";
-    std::cout << "By reference [&x]:    ERROR — address is runtime, not constant\n";
+    std::cout << "By value [x = expr]:  OK in constexpr - value is embedded\n";
+    std::cout << "By reference [&x]:    ERROR - address is runtime, not constant\n";
     std::cout << "Init capture [y=f()]: OK if f() is constexpr\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === constexpr Lambda with Captures ===
 scaled(3) = 30
 transformed(3) = 35
@@ -311,10 +312,9 @@ half_scale(4) = 20
 dot_with_coefficients = 300
 
 === Rules ===
-By value [x = expr]:  OK in constexpr — value is embedded
-By reference [&x]:    ERROR — address is runtime, not constant
+By value [x = expr]:  OK in constexpr - value is embedded
+By reference [&x]:    ERROR - address is runtime, not constant
 Init capture [y=f()]: OK if f() is constexpr
-
 ```
 
 ---

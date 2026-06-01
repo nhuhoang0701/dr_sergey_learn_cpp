@@ -11,10 +11,11 @@
 
 ### What Changed in C++20
 
-C++20 made `std::vector` and `std::string` usable in `constexpr` contexts, and marked most `<algorithm>` functions as `constexpr`. This enables sophisticated compile-time computation with familiar standard library tools.
+C++20 made `std::vector` and `std::string` usable in `constexpr` contexts, and marked most `<algorithm>` functions as `constexpr`. This enables sophisticated compile-time computation with familiar standard library tools - the same code you'd write for runtime just works at compile time.
+
+Here's a taste of what that looks like:
 
 ```cpp
-
 consteval auto compute() {
     std::vector<int> v = {5, 3, 1, 4, 2};
     std::sort(v.begin(), v.end());       // constexpr sort!
@@ -22,37 +23,38 @@ consteval auto compute() {
 }
 
 static_assert(compute() == 1);
-
 ```
+
+That's a runtime sort being called at compile time. No special machinery needed.
 
 ### Constexpr Allocation Rule (Transient Allocation)
 
-**Key constraint:** Memory allocated during constant evaluation must be **deallocated before the evaluation completes**. This is called a **transient allocation**.
+There is one important constraint: memory allocated during constant evaluation must be **deallocated before the evaluation completes**. This is called a **transient allocation**, and it's the rule that makes `constexpr std::vector` possible without the binary containing heap pointers.
 
 ```cpp
-
 constexpr int ok() {
     std::vector<int> v = {1, 2, 3};  // allocates
     int sum = v[0] + v[1] + v[2];
-    return sum;                       // v is destroyed → memory freed → OK
+    return sum;                       // v is destroyed -> memory freed -> OK
 }
 
 // This would FAIL:
 // constexpr std::vector<int> bad = {1, 2, 3};  // ERROR: allocation would persist!
-
 ```
+
+The reason the second form fails is that a `constexpr` global variable needs to exist in the binary's read-only data segment. A `std::vector` contains a pointer to heap memory. There is no heap at compile time - the "allocator" during constant evaluation is a bookkeeping mechanism inside the compiler, not a real allocator. So the vector's internal buffer has nowhere to live once compilation finishes. The transient rule captures this: use the vector for its convenience during the computation, but don't try to carry it across the evaluation boundary.
 
 ### What's `constexpr` in C++20
 
 | Component | `constexpr` in C++20? |
 | --- | --- |
 | `std::array` | Yes (since C++11/14) |
-| `std::vector` | **Yes** (new in C++20) |
-| `std::string` | **Yes** (new in C++20) |
-| `std::sort`, `std::find`, `std::copy` | **Yes** |
-| `std::lower_bound`, `std::upper_bound` | **Yes** |
-| `std::accumulate`, `std::transform` | **Yes** |
-| `new`/`delete` | **Yes** (transient only) |
+| `std::vector` | Yes (new in C++20) |
+| `std::string` | Yes (new in C++20) |
+| `std::sort`, `std::find`, `std::copy` | Yes |
+| `std::lower_bound`, `std::upper_bound` | Yes |
+| `std::accumulate`, `std::transform` | Yes |
+| `new`/`delete` | Yes (transient only) |
 
 ---
 
@@ -60,8 +62,9 @@ constexpr int ok() {
 
 ### Q1: Create a `constexpr std::vector` inside a `consteval` function and verify the result at compile time
 
-```cpp
+The key pattern here is: do the complex, flexible work inside the `consteval` function using `std::vector`, then return a simple scalar or `std::array` as the result. The vector lives only during the evaluation and gets freed when the function returns.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -80,7 +83,7 @@ consteval int sum_of_sorted_top3() {
         sum += v[i];
     }
     return sum;
-    // v's memory is freed here — transient allocation satisfied
+    // v's memory is freed here - transient allocation satisfied
 }
 
 // === consteval: find median of a collection ===
@@ -122,23 +125,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Sum of top 3: 168
 Median: 30
 Unique count: 3
-
 ```
 
 ### Q2: Explain why `constexpr` allocation requires that memory is deallocated before constant evaluation ends
 
-```cpp
+This example explores the transient allocation rule in depth and shows the workaround pattern - sort using a `std::vector` internally, then copy the result into a `std::array` before returning:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -150,7 +151,7 @@ Unique count: 3
 
 // Reason 1: No runtime allocator at compile time
 // The "allocator" during constant evaluation is a compile-time bookkeeping
-// system. It cannot persist allocations into the final binary — there's no
+// system. It cannot persist allocations into the final binary - there's no
 // runtime heap address to embed in the executable.
 
 // === VALID: transient allocation (freed before eval ends) ===
@@ -158,7 +159,7 @@ consteval int valid_vector_use() {
     std::vector<int> v = {10, 20, 30};  // allocates
     int total = 0;
     for (int x : v) total += x;
-    return total;                        // v destroyed → memory freed ✓
+    return total;                        // v destroyed -> memory freed
 }
 
 static_assert(valid_vector_use() == 60);
@@ -166,14 +167,14 @@ static_assert(valid_vector_use() == 60);
 // === VALID: string used transiently ===
 consteval int valid_string_use() {
     std::string s = "hello world";       // allocates if > SSO
-    return static_cast<int>(s.size());   // s destroyed → freed ✓
+    return static_cast<int>(s.size());   // s destroyed -> freed
 }
 
 static_assert(valid_string_use() == 11);
 
 // === INVALID: non-transient allocation ===
 // constexpr std::vector<int> bad_global = {1, 2, 3};
-// ERROR: allocation is not transient — vector's heap memory would
+// ERROR: allocation is not transient - vector's heap memory would
 //        need to persist into the binary, which is impossible
 
 // === VALID workaround: produce a fixed-size result ===
@@ -187,7 +188,7 @@ consteval auto vector_to_array() {
         result[i] = v[i];
     }
     return result;
-    // v freed here → transient ✓, result is std::array → no allocation
+    // v freed here -> transient, result is std::array -> no allocation
 }
 
 constexpr auto sorted = vector_to_array();
@@ -205,8 +206,8 @@ int main() {
     std::cout << "\n";
 
     std::cout << "\n=== Why This Rule Exists ===\n";
-    std::cout << "1. Compile-time 'heap' is bookkeeping — no real allocator\n";
-    std::cout << "2. The binary has .data/.rodata/.bss — no heap section\n";
+    std::cout << "1. Compile-time 'heap' is bookkeeping - no real allocator\n";
+    std::cout << "2. The binary has .data/.rodata/.bss - no heap section\n";
     std::cout << "3. A constexpr vector would need a pointer to heap memory\n";
     std::cout << "   that doesn't exist at build time\n";
     std::cout << "4. Solution: use vector/string transiently, output to\n";
@@ -214,13 +215,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Transient Allocation Rule ===
 
 valid_vector_use() = 60
@@ -230,22 +229,19 @@ Sorted array: 1 2 3 4 5
 
 === Why This Rule Exists ===
 
-1. Compile-time 'heap' is bookkeeping — no real allocator
-2. The binary has .data/.rodata/.bss — no heap section
+1. Compile-time 'heap' is bookkeeping - no real allocator
+2. The binary has .data/.rodata/.bss - no heap section
 3. A constexpr vector would need a pointer to heap memory
-
    that doesn't exist at build time
-
 4. Solution: use vector/string transiently, output to
-
    std::array or scalar for the final constexpr result
-
 ```
 
 ### Q3: Write a `constexpr` binary search over a sorted `std::array` using `std::lower_bound`
 
-```cpp
+`std::lower_bound` is `constexpr` in C++20, which means you can write a compile-time binary search over a sorted `constexpr std::array`. The `static_assert` checks at the bottom prove these run at compile time:
 
+```cpp
 #include <iostream>
 #include <array>
 #include <algorithm>
@@ -296,7 +292,7 @@ consteval auto make_sorted_squares() {
     for (std::size_t i = 0; i < N; ++i) {
         arr[i] = static_cast<int>(i * i);
     }
-    // Already sorted since i² is monotonic for i >= 0
+    // Already sorted since i^2 is monotonic for i >= 0
     return arr;
 }
 
@@ -311,7 +307,7 @@ static_assert(is_perfect_square(0));
 static_assert(is_perfect_square(1));
 static_assert(is_perfect_square(4));
 static_assert(is_perfect_square(16));
-static_assert(is_perfect_square(361));  // 19²
+static_assert(is_perfect_square(361));  // 19^2
 static_assert(!is_perfect_square(2));
 static_assert(!is_perfect_square(15));
 
@@ -332,13 +328,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Binary Search at Compile Time ===
 contains(5):  1
 contains(10): 0
@@ -353,7 +347,6 @@ count_in_range(10,50): 3
 9 is a perfect square
 16 is a perfect square
 25 is a perfect square
-
 ```
 
 ---
@@ -364,5 +357,5 @@ count_in_range(10,50): 3
 - **Transient allocation rule:** All heap allocations during constant evaluation must be freed before the evaluation ends.
 - Pattern: use `std::vector`/`std::string` internally in `consteval` functions, return `std::array` or scalar as the persistent result.
 - `std::sort`, `std::lower_bound`, `std::accumulate`, `std::transform`, `std::unique`, etc. all work at compile time.
-- `std::array` has been `constexpr`-friendly since C++14 — it's the preferred container for compile-time results.
+- `std::array` has been `constexpr`-friendly since C++14 - it's the preferred container for compile-time results.
 - In C++23, even more containers and algorithms become `constexpr`.

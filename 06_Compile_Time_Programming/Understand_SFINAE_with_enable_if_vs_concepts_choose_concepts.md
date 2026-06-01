@@ -1,4 +1,4 @@
-# Understand SFINAE with `enable_if` vs Concepts — Choose Concepts
+# Understand SFINAE with `enable_if` vs Concepts - Choose Concepts
 
 **Category:** Compile-Time Programming  
 **Item:** #282  
@@ -11,36 +11,38 @@
 
 ### SFINAE: The Legacy Approach
 
-**SFINAE** (Substitution Failure Is Not An Error) is a C++98 mechanism where template argument substitution silently removes overloads from the candidate set instead of causing a hard error. `std::enable_if` (C++11) leverages this:
+**SFINAE** (Substitution Failure Is Not An Error) is a C++98 mechanism where template argument substitution silently removes overloads from the candidate set instead of causing a hard error. The name captures the idea: when the compiler tries to substitute a type into a template and something goes wrong - a missing member, an invalid expression - that substitution *failure* is not treated as an error; the overload is just dropped and the compiler keeps looking. `std::enable_if` (C++11) exploits this deliberately:
 
 ```cpp
-
 // C++11 SFINAE: enable only for integral types
 template <typename T, typename = std::enable_if_t<std::is_integral_v<T>>>
 T add(T a, T b) { return a + b; }
-
 ```
+
+This works, but the syntax is telling the compiler "I want this overload to disappear when `T` is not integral" in a very roundabout way. The reason this trips people up is that the mechanism is implicit - the `enable_if_t` trick only works because a failed substitution quietly removes the overload rather than failing loudly.
 
 ### Concepts: The Modern Replacement
 
 C++20 **concepts** provide the same functionality with drastically cleaner syntax and better error messages:
 
 ```cpp
-
 // C++20 concepts: clean and readable
 template <std::integral T>
 T add(T a, T b) { return a + b; }
-
 ```
+
+Same behavior - `add` is only available for integral types - but now the intent is visible in the code.
 
 ### Comparison
 
+The table below shows where SFINAE causes real pain in practice. The "error messages" and "composability" rows are the ones that will affect you day-to-day.
+
 | Aspect | `enable_if` / SFINAE | Concepts (C++20) |
 | --- | --- | --- |
-| Readability | Poor — embedded in template params or return types | Clear — constraint is a named predicate |
+| Readability | Poor - embedded in template params or return types | Clear - constraint is a named predicate |
 | Error messages | Cryptic (long substitution failure chains) | Direct ("constraint not satisfied: ...") |
-| Composability | Nested `enable_if` is unreadable | `&&`, `||` work naturally |
-| Overload resolution | No subsumption — can be ambiguous | Subsumption — more constrained wins |
+| Composability | Nested `enable_if` is unreadable | `&&`, `\|\|` work naturally |
+| Overload resolution | No subsumption - can be ambiguous | Subsumption - more constrained wins |
 | Code location | Template params, return type, or dummy params | Before function, after function, or in abbreviated syntax |
 
 **Rule:** In new C++20 code, always prefer concepts over `enable_if` / SFINAE.
@@ -51,15 +53,16 @@ T add(T a, T b) { return a + b; }
 
 ### Q1: Convert a three-overload `enable_if` SFINAE set to a `requires`-clause equivalent
 
-```cpp
+This example shows the same `to_string` overload set written three ways: the old SFINAE approach, the `requires`-clause approach, and the abbreviated template syntax. Read all three and notice how the constraint location and readability change.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
 #include <concepts>
 
 // ============================================================
-// BEFORE (C++11 SFINAE with enable_if) — hard to read
+// BEFORE (C++11 SFINAE with enable_if) - hard to read
 // ============================================================
 
 // Overload 1: integral types
@@ -84,7 +87,7 @@ to_string_sfinae(T value) {
 }
 
 // ============================================================
-// AFTER (C++20 Concepts) — clean and readable
+// AFTER (C++20 Concepts) - clean and readable
 // ============================================================
 
 // Overload 1: integral types
@@ -140,13 +143,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === SFINAE (enable_if) ===
 int:42
 float:3.140000
@@ -161,13 +162,13 @@ str:hello
 int:42
 float:3.140000
 str:hello
-
 ```
 
 ### Q2: Show how concept error messages are cleaner than SFINAE substitution failure messages
 
-```cpp
+The code comments in this example are deliberately written to show the actual GCC error output you'd see from each approach. Pay attention to the difference - the SFINAE message makes you decode a substitution failure chain, while the concept message tells you the exact unsatisfied constraint and the type that failed it.
 
+```cpp
 #include <iostream>
 #include <concepts>
 #include <type_traits>
@@ -225,21 +226,19 @@ int main() {
     std::cout << "SFINAE error:\n";
     std::cout << "  'enable_if_t<is_integral_v<T> && is_signed_v<T>, T>'\n";
     std::cout << "  'substitution failed: enable_if_t<false> has no type'\n";
-    std::cout << "  → WHY did it fail? Which condition? Unclear!\n";
+    std::cout << "  -> WHY did it fail? Which condition? Unclear!\n";
     std::cout << "\nConcept error:\n";
     std::cout << "  'constraint not satisfied: SignedInteger<std::string>'\n";
     std::cout << "  'integral<std::string> is not satisfied'\n";
-    std::cout << "  → Exact reason shown: string is not integral\n";
+    std::cout << "  -> Exact reason shown: string is not integral\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 42
 42
 
@@ -247,19 +246,19 @@ int main() {
 SFINAE error:
   'enable_if_t<is_integral_v<T> && is_signed_v<T>, T>'
   'substitution failed: enable_if_t<false> has no type'
-  → WHY did it fail? Which condition? Unclear!
+  -> WHY did it fail? Which condition? Unclear!
 
 Concept error:
   'constraint not satisfied: SignedInteger<std::string>'
   'integral<std::string> is not satisfied'
-  → Exact reason shown: string is not integral
-
+  -> Exact reason shown: string is not integral
 ```
 
 ### Q3: Benchmark compile time: SFINAE-heavy header vs concepts-based equivalent
 
-```cpp
+Beyond readability and error messages, concepts can also improve compile times. The reason is that SFINAE forces the compiler to attempt substitution for every overload candidate on every call, whereas named concepts are evaluated as atomic constraints and can be cached. The code below shows both approaches producing identical output, followed by an explanation of the compile-time impact.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <concepts>
@@ -322,7 +321,7 @@ int main() {
     std::cout << "  - Each call: compiler tries ALL overloads\n";
     std::cout << "  - enable_if: instantiates is_integral, is_floating_point, etc.\n";
     std::cout << "  - Substitution failure generates candidate, then discards\n";
-    std::cout << "  - N overloads × M traits = O(N×M) template instantiations\n";
+    std::cout << "  - N overloads x M traits = O(N x M) template instantiations\n";
     std::cout << "\nConcepts:\n";
     std::cout << "  - Concepts are evaluated as atomic constraints\n";
     std::cout << "  - Subsumption prunes non-matching candidates early\n";
@@ -335,13 +334,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === SFINAE ===
 int:    42
 double: 3
@@ -360,7 +357,7 @@ SFINAE:
   - Each call: compiler tries ALL overloads
   - enable_if: instantiates is_integral, is_floating_point, etc.
   - Substitution failure generates candidate, then discards
-  - N overloads × M traits = O(N×M) template instantiations
+  - N overloads x M traits = O(N x M) template instantiations
 
 Concepts:
 
@@ -373,7 +370,6 @@ Benchmark method:
   time g++ -std=c++20 -c sfinae_heavy.cpp
   time g++ -std=c++20 -c concepts_equiv.cpp
   Or use -ftime-report for detailed breakdown
-
 ```
 
 ---
@@ -383,6 +379,6 @@ Benchmark method:
 - In C++20 and later, **always prefer concepts** over `enable_if` / SFINAE.
 - Concepts provide **subsumption**: the compiler automatically selects the most constrained overload.
 - SFINAE is still needed for pre-C++20 code and edge cases (e.g., expression SFINAE in specific contexts).
-- Concept error messages directly name the unsatisfied constraint — no more deciphering substitution failures.
-- Named concepts are compiled once and cached — `enable_if` re-evaluates traits each time.
+- Concept error messages directly name the unsatisfied constraint - no more deciphering substitution failures.
+- Named concepts are compiled once and cached - `enable_if` re-evaluates traits each time.
 - Combining concepts: `Integral<T> && Signed<T>` is clean; compare to nested `enable_if_t<conjunction_v<...>>`.

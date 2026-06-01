@@ -11,10 +11,11 @@
 
 ### Why `std::array` for Lookup Tables
 
-A `constexpr std::array` is placed in the read-only data segment (`.rodata`) at compile time. Lookups are simple O(1) array indexing with **zero runtime initialization cost**.
+A `constexpr std::array` is placed in the read-only data segment (`.rodata`) at compile time. Lookups are simple O(1) array indexing with **zero runtime initialization cost**. The table is computed once during compilation and baked directly into the binary.
+
+Here's the canonical pattern - an immediately-invoked lambda builds the table, and the compiler evaluates the whole thing at build time:
 
 ```cpp
-
 constexpr std::array<int, 256> hex_table = [] {
     std::array<int, 256> t{};
     // Fill with -1 for invalid
@@ -24,17 +25,20 @@ constexpr std::array<int, 256> hex_table = [] {
     for (int i = 0; i < 6; ++i) { t['a' + i] = 10 + i; t['A' + i] = 10 + i; }
     return t;
 }();
-
 ```
 
 ### Benefits
 
+It's worth comparing `constexpr std::array` against the alternatives so you know when to reach for it:
+
 | Feature | `constexpr std::array` | `switch` statement | `std::unordered_map` |
 | --- | --- | --- | --- |
 | Initialization | Compile time | N/A | Runtime |
-| Lookup speed | O(1) — array index | O(1) if jump table | O(1) amortized hash |
+| Lookup speed | O(1) - array index | O(1) if jump table | O(1) amortized hash |
 | Memory | Stack/rodata | Code section | Heap |
-| Cache-friendly | Yes — contiguous | Depends | No — heap-allocated |
+| Cache-friendly | Yes - contiguous | Depends | No - heap-allocated |
+
+The `std::unordered_map` comparison is the most practical one: it initializes at runtime, allocates on the heap, and involves hashing overhead. A `constexpr std::array` avoids all three of those costs when the key is a dense integer (like an ASCII character value).
 
 ---
 
@@ -42,8 +46,9 @@ constexpr std::array<int, 256> hex_table = [] {
 
 ### Q1: Create a `constexpr std::array<int,256>` mapping ASCII characters to their hex digit values
 
-```cpp
+This is a classic use case for character-keyed lookup tables: given a character, return its hex digit value (0-15), or -1 if the character isn't a valid hex digit. The table is built as a named function for clarity, then the `static_assert`s confirm it's correct before any runtime code runs.
 
+```cpp
 #include <iostream>
 #include <array>
 
@@ -110,13 +115,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Hex Lookup Table ===
 hex('0') = 0
 hex('9') = 9
@@ -130,13 +133,13 @@ parse_hex_byte('0','A') = 10
 parse_hex_byte('1','0') = 16
 
 Decoding "48656C6C6F": Hello
-
 ```
 
 ### Q2: Use the lookup table at both compile time (`static_assert`) and runtime
 
-```cpp
+One of the nice properties of `constexpr` tables is that the same table and the same lookup functions work in both contexts. You write the code once, and it's usable in `static_assert`, `if constexpr`, template arguments, and also in ordinary runtime loops.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cstddef>
@@ -223,13 +226,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Classifying: "Hello, World! 123"
   'H' -> upper
   'e' -> lower
@@ -250,13 +251,13 @@ Classifying: "Hello, World! 123"
   '3' -> digit
 
 Counts: digits=3 upper=2 lower=7 space=2 punct=2 other=0
-
 ```
 
 ### Q3: Compare the binary output of a `constexpr` table vs a `switch` statement for the same lookup
 
-```cpp
+This is a question about what the compiler actually generates. Both approaches can produce similar machine code in some cases, but the `constexpr` table approach is more predictable: it always compiles to a bounds check plus an indexed load, regardless of the number of cases.
 
+```cpp
 #include <iostream>
 #include <array>
 
@@ -304,7 +305,7 @@ int main() {
     std::cout << "  Total: ~4 instructions\n\n";
 
     std::cout << "switch statement:\n";
-    std::cout << "  Option A (compiler generates jump table — same as above):\n";
+    std::cout << "  Option A (compiler generates jump table - same as above):\n";
     std::cout << "    cmp edi, 6\n";
     std::cout << "    ja .Ldefault\n";
     std::cout << "    jmp [.Ljumptable + rdi*8]   ; jump table\n";
@@ -316,23 +317,24 @@ int main() {
     std::cout << "  Total: varies (4-14 instructions)\n\n";
 
     std::cout << "=== Key Differences ===\n";
-    std::cout << "1. constexpr table: ALWAYS one indexed load — predictable\n";
-    std::cout << "2. switch: compiler DECIDES — may be jump table or if-else chain\n";
+    std::cout << "1. constexpr table: ALWAYS one indexed load - predictable\n";
+    std::cout << "2. switch: compiler DECIDES - may be jump table or if-else chain\n";
     std::cout << "3. Table code size is constant; switch code size grows with cases\n";
-    std::cout << "4. Table is cache-friendly — contiguous memory\n";
+    std::cout << "4. Table is cache-friendly - contiguous memory\n";
     std::cout << "5. For <4 cases, switch may be faster (branch prediction)\n";
     std::cout << "6. For >8 cases, table is consistently faster and smaller\n";
 
     return 0;
 }
-
 ```
+
+The important takeaway from the assembly comparison: a `switch` statement may or may not generate a jump table depending on how dense the cases are and what the optimizer decides. A `constexpr std::array` always generates a single indexed load. You get consistent, predictable performance, and the behavior doesn't change as you add more cases.
 
 ---
 
 ## Notes
 
-- `constexpr std::array` tables are placed in `.rodata` — zero runtime init cost.
+- `constexpr std::array` tables are placed in `.rodata` - zero runtime init cost.
 - O(1) indexed lookup: `table[key]` compiles to a single memory load.
 - For dense integer keys (0..N-1), `std::array` is the optimal lookup structure.
 - For sparse keys, consider compile-time hash maps or sorted + binary search.

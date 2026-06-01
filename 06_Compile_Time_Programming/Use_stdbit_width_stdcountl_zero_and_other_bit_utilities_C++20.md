@@ -11,27 +11,31 @@
 
 ### C++20 `<bit>` Header
 
-C++20 introduced a comprehensive set of `constexpr` bit manipulation functions in `<bit>`. These replace platform-specific intrinsics like `__builtin_clz` with portable, standard alternatives.
+Before C++20, if you needed low-level bit operations you had two options: write your own loop-based implementations, or reach for compiler-specific intrinsics like `__builtin_clz` or `_BitScanReverse`. Both approaches have real downsides - the first is slow, the second is not portable.
+
+C++20 fixed this by introducing a comprehensive set of `constexpr` bit manipulation functions in the `<bit>` header. These functions map directly to hardware instructions on every major platform, so you get portability and performance at the same time. They also work at compile time, which means you can use them in `static_assert` checks and `constexpr` computations. That is a genuinely big deal - before this, any compile-time bit logic had to be expressed with awkward template metaprogramming tricks.
 
 ### Function Summary
 
+Here is a quick reference for all the functions the header provides. Each one operates on an unsigned integer of any width. The examples column uses the `->` notation to mean "returns".
+
 | Function | Description | Example |
 | --- | --- | --- |
-| `std::bit_width(x)` | Min bits to represent `x` (⌈log₂(x)⌉+1) | `bit_width(8u)` → 4 |
-| `std::countl_zero(x)` | Count leading zeros | `countl_zero(uint8_t(1))` → 7 |
-| `std::countl_one(x)` | Count leading ones | `countl_one(uint8_t(0xF0))` → 4 |
-| `std::countr_zero(x)` | Count trailing zeros | `countr_zero(8u)` → 3 |
-| `std::countr_one(x)` | Count trailing ones | `countr_one(7u)` → 3 |
-| `std::popcount(x)` | Count set bits | `popcount(0b1011u)` → 3 |
-| `std::has_single_bit(x)` | Is power of 2? | `has_single_bit(8u)` → true |
-| `std::bit_ceil(x)` | Round up to next power of 2 | `bit_ceil(5u)` → 8 |
-| `std::bit_floor(x)` | Round down to power of 2 | `bit_floor(5u)` → 4 |
-| `std::rotl(x, n)` | Rotate bits left | `rotl(1u, 3)` → 8 |
-| `std::rotr(x, n)` | Rotate bits right | `rotr(8u, 3)` → 1 |
+| `std::bit_width(x)` | Min bits to represent `x` (ceil(log2(x))+1) | `bit_width(8u)` -> 4 |
+| `std::countl_zero(x)` | Count leading zeros | `countl_zero(uint8_t(1))` -> 7 |
+| `std::countl_one(x)` | Count leading ones | `countl_one(uint8_t(0xF0))` -> 4 |
+| `std::countr_zero(x)` | Count trailing zeros | `countr_zero(8u)` -> 3 |
+| `std::countr_one(x)` | Count trailing ones | `countr_one(7u)` -> 3 |
+| `std::popcount(x)` | Count set bits | `popcount(0b1011u)` -> 3 |
+| `std::has_single_bit(x)` | Is power of 2? | `has_single_bit(8u)` -> true |
+| `std::bit_ceil(x)` | Round up to next power of 2 | `bit_ceil(5u)` -> 8 |
+| `std::bit_floor(x)` | Round down to power of 2 | `bit_floor(5u)` -> 4 |
+| `std::rotl(x, n)` | Rotate bits left | `rotl(1u, 3)` -> 8 |
+| `std::rotr(x, n)` | Rotate bits right | `rotr(8u, 3)` -> 1 |
 
-**All functions are `constexpr`** — they work at compile time and runtime.
+**All functions are `constexpr`** - they work at compile time and runtime.
 
-**Important:** All functions require **unsigned integer types**.
+**Important:** All functions require **unsigned integer types**. If you have a signed value, cast it to unsigned first. Passing a signed type is undefined behavior (or a compilation error, depending on the implementation).
 
 ---
 
@@ -39,8 +43,11 @@ C++20 introduced a comprehensive set of `constexpr` bit manipulation functions i
 
 ### Q1: Use `std::bit_width(n)` to find the number of bits needed to represent `n`
 
-```cpp
+`std::bit_width(x)` answers the question "how many bits do I need to store the value `x`?" That is exactly log2(x) rounded up, plus one to account for the highest set bit. You will often use this when sizing bit fields, allocating compact storage, or building compression schemes.
 
+Take a look at the range of values and what `bit_width` returns for each of them - the pattern becomes obvious pretty quickly:
+
+```cpp
 #include <iostream>
 #include <bit>
 #include <cstdint>
@@ -82,13 +89,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice how the `static_assert` lines prove the function is truly `constexpr` - the compiler evaluates those checks at compile time and the program would not compile if any of them were wrong. The `bits_needed` constant is also `constexpr`, which means you can use it as a template argument or in another `static_assert` downstream.
 
 **Expected output:**
 
 ```text
-
 === std::bit_width ===
 bit_width(0)   = 0
 bit_width(1)   = 1
@@ -108,13 +115,15 @@ countl_zero:  2
 countr_zero:  2
 popcount:     3
 has_single_bit: 0
-
 ```
 
 ### Q2: Implement power-of-two rounding up using `std::bit_ceil`
 
-```cpp
+Rounding up to the next power of two is a surprisingly common operation. Allocators often need alignment boundaries that are powers of two, and hash tables almost always size their bucket arrays at powers of two so that a bitmask can replace a modulo operation. `std::bit_ceil` gives you this rounding in a single call, and because it is `constexpr`, you can do it at compile time for fixed sizes.
 
+The example also shows `std::bit_floor`, which rounds down instead of up - useful when you need the largest power of two that fits within a given value.
+
+```cpp
 #include <iostream>
 #include <bit>
 #include <cstdint>
@@ -165,24 +174,24 @@ int main() {
 
     std::cout << "\n=== Practical: Allocator Alignment ===\n";
     for (std::size_t req : {50, 100, 200, 500, 1000, 4096}) {
-        std::cout << "Requested " << req << " bytes → aligned to "
+        std::cout << "Requested " << req << " bytes -> aligned to "
                   << aligned_size(req) << " bytes\n";
     }
 
     std::cout << "\n=== Practical: Hash Table Capacity ===\n";
     for (std::size_t n : {10, 50, 100, 1000}) {
-        std::cout << "Min " << n << " buckets → capacity " << next_capacity(n) << "\n";
+        std::cout << "Min " << n << " buckets -> capacity " << next_capacity(n) << "\n";
     }
 
     return 0;
 }
-
 ```
+
+The `aligned_size` and `next_capacity` helpers are both `constexpr`, so you can use them in template arguments or `static_assert` checks to verify sizing decisions at compile time. That is exactly the kind of thing that used to require platform-specific macros or manual counting.
 
 **Expected output:**
 
 ```text
-
 === std::bit_ceil (round up to power of 2) ===
 bit_ceil(1) = 1
 bit_ceil(2) = 2
@@ -209,25 +218,27 @@ bit_floor(255) = 128
 bit_floor(256) = 256
 
 === Practical: Allocator Alignment ===
-Requested 50 bytes → aligned to 64 bytes
-Requested 100 bytes → aligned to 128 bytes
-Requested 200 bytes → aligned to 256 bytes
-Requested 500 bytes → aligned to 512 bytes
-Requested 1000 bytes → aligned to 1024 bytes
-Requested 4096 bytes → aligned to 4096 bytes
+Requested 50 bytes -> aligned to 64 bytes
+Requested 100 bytes -> aligned to 128 bytes
+Requested 200 bytes -> aligned to 256 bytes
+Requested 500 bytes -> aligned to 512 bytes
+Requested 1000 bytes -> aligned to 1024 bytes
+Requested 4096 bytes -> aligned to 4096 bytes
 
 === Practical: Hash Table Capacity ===
-Min 10 buckets → capacity 16
-Min 50 buckets → capacity 64
-Min 100 buckets → capacity 128
-Min 1000 buckets → capacity 1024
-
+Min 10 buckets -> capacity 16
+Min 50 buckets -> capacity 64
+Min 100 buckets -> capacity 128
+Min 1000 buckets -> capacity 1024
 ```
 
 ### Q3: Use `countl_zero` to implement a fast `log2` floor for positive integers
 
-```cpp
+The relationship between `countl_zero` and `log2` is one of those elegant bit-twiddling observations worth knowing. For a 32-bit value, the number of leading zeros tells you exactly where the highest set bit lives, which is the same as the floor of log2. What makes this especially useful is that the compiler maps `countl_zero` directly to a single hardware instruction - `BSR` or `LZCNT` on x86, `CLZ` on ARM - so the whole `log2_floor` call compiles down to one instruction.
 
+Here is the implementation with both a clean version and a version that shows the `countl_zero` relationship explicitly:
+
+```cpp
 #include <iostream>
 #include <bit>
 #include <cstdint>
@@ -292,7 +303,7 @@ int main() {
     std::cout << "For 32-bit unsigned:\n";
     for (unsigned n : {1u, 2u, 128u, 255u, 256u}) {
         std::cout << "  " << n << " (0x" << std::hex << n << std::dec << "): "
-                  << std::countl_zero(n) << " leading zeros → log2 = "
+                  << std::countl_zero(n) << " leading zeros -> log2 = "
                   << log2_floor(n) << "\n";
     }
 
@@ -303,13 +314,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The key insight here is in the `log2_floor_v2` implementation: `bits - 1 - countl_zero(x)` gives you the position of the highest set bit, counting from zero. The two implementations give identical results; `log2_floor` just expresses it more readably via `bit_width`. Both compile to the same single hardware instruction.
 
 **Expected output:**
 
 ```text
-
 === log2_floor using countl_zero ===
 log2_floor(1) = 0  (countl_zero = 31)
 log2_floor(2) = 1  (countl_zero = 30)
@@ -338,17 +349,16 @@ log2_ceil(17) = 5
 === How countl_zero Works ===
 countl_zero counts leading 0s in the binary representation.
 For 32-bit unsigned:
-  1 (0x1): 31 leading zeros → log2 = 0
-  2 (0x2): 30 leading zeros → log2 = 1
-  128 (0x80): 24 leading zeros → log2 = 7
-  255 (0xff): 24 leading zeros → log2 = 7
-  256 (0x100): 23 leading zeros → log2 = 8
+  1 (0x1): 31 leading zeros -> log2 = 0
+  2 (0x2): 30 leading zeros -> log2 = 1
+  128 (0x80): 24 leading zeros -> log2 = 7
+  255 (0xff): 24 leading zeros -> log2 = 7
+  256 (0x100): 23 leading zeros -> log2 = 8
 
 === Assembly (x86-64 with -O2) ===
 log2_floor(x):         bsr eax, edi   (1 instruction!)
 Manual loop counting:  10+ instructions
 The compiler maps countl_zero to BSR/LZCNT hardware instruction.
-
 ```
 
 ---
@@ -356,9 +366,9 @@ The compiler maps countl_zero to BSR/LZCNT hardware instruction.
 ## Notes
 
 - All `<bit>` functions are `constexpr` and work on **unsigned integer types** only.
-- `std::bit_width(x)` = ⌈log₂(x+1)⌉ = number of bits needed to represent `x`.
-- `std::bit_ceil(x)` rounds up to the nearest power of 2 — essential for allocators and hash tables.
+- `std::bit_width(x)` = ceil(log2(x+1)) = number of bits needed to represent `x`.
+- `std::bit_ceil(x)` rounds up to the nearest power of 2 - essential for allocators and hash tables.
 - `std::countl_zero` maps to hardware instructions (`BSR`/`LZCNT` on x86, `CLZ` on ARM).
-- `std::popcount` maps to `POPCNT` instruction — one cycle on modern CPUs.
+- `std::popcount` maps to `POPCNT` instruction - one cycle on modern CPUs.
 - `std::has_single_bit(x)` is the standard way to check if `x` is a power of 2.
 - For signed integers, cast to unsigned first: `std::bit_width(static_cast<unsigned>(x))`.

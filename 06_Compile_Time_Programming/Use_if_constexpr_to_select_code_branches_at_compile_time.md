@@ -11,10 +11,11 @@
 
 ### What Is `if constexpr`
 
-`if constexpr` evaluates a compile-time boolean condition and **discards the non-taken branch entirely**. The discarded branch is not instantiated, not type-checked for template-dependent expressions, and generates no code.
+`if constexpr` evaluates a compile-time boolean condition and **discards the non-taken branch entirely**. The discarded branch is not instantiated, not type-checked for template-dependent expressions, and generates no code. It's as if that branch were erased by a preprocessor - except it's properly scoped and syntactically structured.
+
+Here's a quick example to make it concrete:
 
 ```cpp
-
 template <typename T>
 auto process(T value) {
     if constexpr (std::is_integral_v<T>) {
@@ -25,15 +26,15 @@ auto process(T value) {
         return std::string(value); // Only compiled for other T
     }
 }
-
 ```
+
+Each branch is only compiled when it's actually selected. The compiler doesn't even try to parse `std::string(value)` when `T` is `int`.
 
 ### Key Property: Branch Discarding
 
-The discarded branch can contain code that **would not compile** for the given `T`:
+The discarded branch can contain code that **would not compile** for the given `T`. This is the main thing that makes `if constexpr` different from a regular `if` - with a regular `if`, both branches must compile for every instantiation of the template, even if the condition makes one of them unreachable:
 
 ```cpp
-
 template <typename T>
 void print_size(const T& v) {
     if constexpr (requires { v.size(); }) {
@@ -42,17 +43,16 @@ void print_size(const T& v) {
         std::cout << "no size";              // Only compiled otherwise
     }
 }
-
 ```
 
-Without `if constexpr`, this would be a hard error — `v.size()` doesn't exist for `int`.
+Without `if constexpr`, this would be a hard error - `v.size()` doesn't exist for `int`. With `if constexpr`, the compiler discards whichever branch doesn't apply and never tries to compile it.
 
 ### `if constexpr` vs Regular `if`
 
 | Feature | `if constexpr` | `if` |
 | --- | --- | --- |
 | Condition | Must be constexpr | Any expression |
-| Non-taken branch | **Discarded** — not compiled | **Compiled** — must be valid |
+| Non-taken branch | Discarded - not compiled | Compiled - must be valid |
 | Use in templates | Enables branch-specific invalid code | Both branches must compile |
 | Code generation | Zero-cost: only taken branch exists | Both branches in binary (optimizer may remove) |
 
@@ -62,8 +62,9 @@ Without `if constexpr`, this would be a hard error — `v.size()` doesn't exist 
 
 ### Q1: Write a `to_string` function that uses `if constexpr` to handle `int` vs `float` vs `std::string` differently
 
-```cpp
+This function handles several types, including the special case of `bool`. Notice how nesting `if constexpr` inside another `if constexpr` is perfectly legal - the inner check is only reached when the outer condition is true.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -124,26 +125,26 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 int:42
 float:3.140000
 true
 hi
 [1, 2, 3]
 ["a", "b"]
-
 ```
 
 ### Q2: Explain why `if constexpr` discards the non-taken branch even if it would fail to compile
 
-```cpp
+This is the concept that's hardest to internalize coming from regular C++. With a regular `if` in a template, the condition is evaluated at runtime, but the template code is compiled for all `T` at instantiation time - so both branches have to be valid code for every `T`. With `if constexpr`, the condition is evaluated at compile time and the losing branch is genuinely never compiled.
 
+The comment in the example explains the subtlety: non-dependent names (things that don't involve `T`) are still syntax-checked even in discarded branches. This is why `static_assert(false)` always fires even inside a discarded branch - `false` doesn't depend on `T`. The "dependent false" idiom (`!std::is_same_v<T, T>`) works around this by making the condition formally dependent on the template parameter.
+
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -162,7 +163,7 @@ void print_info(const T& v) {
 */
 // WHY: Regular 'if' requires BOTH branches to be valid for all T.
 // The condition is a runtime check, but template instantiation
-// happens at compile time — both branches are compiled.
+// happens at compile time - both branches are compiled.
 
 // === The solution WITH if constexpr ===
 template <typename T>
@@ -178,12 +179,12 @@ void print_info(const T& v) {
 
 // === How it works internally ===
 // When the compiler instantiates print_info<int>:
-//   1. Evaluates: requires { v.size(); } → false (int has no .size())
+//   1. Evaluates: requires { v.size(); } -> false (int has no .size())
 //   2. DISCARDS the if-branch entirely
 //   3. Only compiles the else-branch: std::cout << v;
 //
 // When the compiler instantiates print_info<std::string>:
-//   1. Evaluates: requires { v.size(); } → true
+//   1. Evaluates: requires { v.size(); } -> true
 //   2. DISCARDS the else-branch
 //   3. Only compiles the if-branch: std::cout << v.size();
 
@@ -196,7 +197,7 @@ void must_handle(T) {
         // handle floating
     } else {
         // This static_assert is only triggered if this branch is taken
-        // If we wrote: static_assert(false, "...") — it would ALWAYS fire
+        // If we wrote: static_assert(false, "...") - it would ALWAYS fire
         // because false is not dependent on T
         static_assert(!std::is_same_v<T, T>, "Unhandled type");
     }
@@ -209,37 +210,37 @@ int main() {
 
     std::cout << "\n=== Why Discarding Works ===\n";
     std::cout << "Template instantiation compiles ALL code in the template body.\n";
-    std::cout << "Regular 'if': both branches compiled → v.size() fails for int.\n";
+    std::cout << "Regular 'if': both branches compiled -> v.size() fails for int.\n";
     std::cout << "'if constexpr': only the matching branch is compiled.\n";
     std::cout << "The discarded branch is syntax-checked but NOT instantiated.\n";
     std::cout << "Non-dependent names are still checked even in discarded branches.\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Scalar value: 42
 Has .size(): 5
 Scalar value: 3.14
 
 === Why Discarding Works ===
 Template instantiation compiles ALL code in the template body.
-Regular 'if': both branches compiled → v.size() fails for int.
+Regular 'if': both branches compiled -> v.size() fails for int.
 'if constexpr': only the matching branch is compiled.
 The discarded branch is syntax-checked but NOT instantiated.
 Non-dependent names are still checked even in discarded branches.
-
 ```
 
 ### Q3: Show a recursive template function rewritten as a non-recursive function using `if constexpr`
 
-```cpp
+One of the biggest practical uses of `if constexpr` is replacing the classic "recursive template + base-case overload" pattern. The old pattern requires two separate function templates with `enable_if` conditions to dispatch between them. The `if constexpr` version puts everything in a single function and controls recursion with a compile-time check on `sizeof...(Rest)` or the current index.
 
+The comparison here is instructive: the "before" version uses `enable_if` return types which are notoriously hard to read. The "after" version reads like normal code.
+
+```cpp
 #include <iostream>
 #include <tuple>
 #include <string>
@@ -273,7 +274,7 @@ void print_tuple_constexpr(const std::tuple<Ts...>& t) {
     if constexpr (I < sizeof...(Ts)) {
         if constexpr (I > 0) std::cout << ", ";
         std::cout << std::get<I>(t);
-        print_tuple_constexpr<I + 1>(t);  // Not truly recursive — terminates via if constexpr
+        print_tuple_constexpr<I + 1>(t);  // Not truly recursive - terminates via if constexpr
     } else {
         std::cout << "\n";
     }
@@ -292,7 +293,7 @@ constexpr T sum_recursive(T first, Rest... rest) {
     return first + sum_recursive(rest...);
 }
 
-// AFTER: fold expression (C++17) — even simpler
+// AFTER: fold expression (C++17) - even simpler
 template <typename... Args>
 constexpr auto sum_fold(Args... args) {
     return (args + ...);
@@ -309,7 +310,7 @@ constexpr auto sum_if_constexpr(T first, Rest... rest) {
 }
 
 // ============================================================
-// Type name printer: recursive → if constexpr
+// Type name printer: recursive -> if constexpr
 // ============================================================
 template <typename T, typename... Rest>
 void print_types() {
@@ -354,18 +355,15 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Recursive:     (1, 3.14, hello, X
 if constexpr:  (1, 3.14, hello, X
 Sum: 15 15 15
 Types: integral, floating, other, integral
-
 ```
 
 ---

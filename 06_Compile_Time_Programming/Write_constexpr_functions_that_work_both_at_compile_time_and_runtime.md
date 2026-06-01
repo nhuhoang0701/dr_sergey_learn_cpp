@@ -11,19 +11,21 @@
 
 ### What Is `constexpr`
 
-`constexpr` marks a function as **potentially evaluable at compile time**. If all arguments are constant expressions, the compiler computes the result at compile time. Otherwise, the function runs normally at runtime.
+`constexpr` marks a function as **potentially evaluable at compile time**. If all arguments are constant expressions, the compiler is allowed (and in some contexts required) to compute the result at compile time. If the arguments are not constant expressions, the function runs normally at runtime. You write the function once and get both behaviors.
 
 ```cpp
-
 constexpr int square(int x) { return x * x; }
 
 constexpr int ct = square(5);    // Compile-time: ct = 25
 int n = get_input();
 int rt = square(n);              // Runtime: computed at execution
-
 ```
 
+This dual behavior is the whole point of `constexpr`. You do not need two separate implementations, and callers do not need to know or care which one runs - the compiler figures it out based on what is known at compile time.
+
 ### Evolution of `constexpr` Across Standards
+
+`constexpr` has grown significantly since C++11. The original version was very restrictive - essentially a single-return-statement rule - and required awkward recursive code for anything complex. Each standard relaxed the restrictions further. If you have ever seen C++11 `constexpr` code full of ternary operators and recursion where loops would be natural, this evolution is why.
 
 | Standard | What's Allowed in `constexpr` |
 | --- | --- |
@@ -35,11 +37,15 @@ int rt = square(n);              // Runtime: computed at execution
 
 ### `constexpr` vs `consteval` vs `const`
 
+These three keywords are frequently confused. The distinction matters:
+
 | Keyword | Meaning |
 | --- | --- |
 | `constexpr` | **May** run at compile time or runtime |
 | `consteval` | **Must** run at compile time only (C++20) |
 | `const` | Value cannot change after initialization (not necessarily compile-time) |
+
+Use `constexpr` when you want flexibility - the same function is useful both for compile-time precomputation and for ordinary runtime use. Use `consteval` when you want to guarantee compile-time evaluation and make it an error to call the function at runtime.
 
 ---
 
@@ -47,8 +53,9 @@ int rt = square(n);              // Runtime: computed at execution
 
 ### Q1: Write a `constexpr` function and verify it runs at compile time using `static_assert` and at runtime for non-const inputs
 
-```cpp
+The cleanest proof that a function runs at compile time is a `static_assert` - the compiler would refuse to compile the file if the assertion were false, and it can only evaluate it if the function ran at compile time. The same functions then work with runtime inputs too, without any changes to the function body.
 
+```cpp
 #include <iostream>
 #include <cstdint>
 
@@ -104,7 +111,7 @@ int main() {
     constexpr auto fib20 = fibonacci(20);
     std::cout << "Compile-time: fibonacci(20) = " << fib20 << "\n";
 
-    // === Runtime usage — same function ===
+    // === Runtime usage - same function ===
     int n;
     std::cout << "Enter n for fibonacci: ";
     std::cin >> n;
@@ -117,19 +124,19 @@ int main() {
     std::cout << "Runtime: power(" << base << ", " << exp << ") = "
               << power(base, exp) << "\n";
 
-    // The same function works in both contexts — that's the point of constexpr
+    // The same function works in both contexts - that's the point of constexpr
     std::cout << "\nCompile-time: power(2, 10) = " << power(2, 10) << "\n";
     std::cout << "Compile-time: gcd(12, 8) = " << gcd(12, 8) << "\n";
 
     return 0;
 }
-
 ```
+
+Notice that `fibonacci(50)` at compile time has no stack overflow risk - the compiler evaluates it as a pure computation without a call stack. The same iterative function works for arbitrarily large `n` at runtime too (subject to overflow for very large values of `n`).
 
 **Expected output (with input `10`, then `2 8`):**
 
 ```text
-
 Compile-time: fibonacci(20) = 6765
 Enter n for fibonacci: 10
 Runtime: fibonacci(10) = 55
@@ -138,13 +145,13 @@ Runtime: power(2, 8) = 256
 
 Compile-time: power(2, 10) = 1024
 Compile-time: gcd(12, 8) = 4
-
 ```
 
 ### Q2: Show the limitations of `constexpr` in C++11 vs what became possible in C++14 and C++17
 
-```cpp
+The reason C++11 constexpr was so restricted is that the language designers wanted to be conservative: they required that `constexpr` functions be expressible as pure mathematical functions in the lambda calculus sense, which meant no side effects, no mutation, no statements other than return. This forced every non-trivial computation into a recursion, which made even moderately complex things look dramatically overcomplicated. C++14 lifted those restrictions dramatically, making `constexpr` usable for real algorithms written in normal imperative style.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -152,12 +159,12 @@ Compile-time: gcd(12, 8) = 4
 // Only ONE return statement, no loops, no local variables
 // Must use recursion for anything complex
 
-// C++11 factorial — recursive, single return
+// C++11 factorial - recursive, single return
 constexpr int factorial_cpp11(int n) {
     return n <= 1 ? 1 : n * factorial_cpp11(n - 1);
 }
 
-// C++11 abs — single expression
+// C++11 abs - single expression
 constexpr int abs_cpp11(int x) {
     return x < 0 ? -x : x;
 }
@@ -166,7 +173,7 @@ static_assert(factorial_cpp11(5) == 120);
 static_assert(abs_cpp11(-42) == 42);
 
 // === C++14 constexpr: loops + local variables ===
-// Much more natural — write normal code
+// Much more natural - write normal code
 
 constexpr int factorial_cpp14(int n) {
     int result = 1;
@@ -241,37 +248,33 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The "transient allocation" note for C++20 `std::vector` is worth explaining: you can use `std::vector` inside a `constexpr` function, but the memory must be fully deallocated before the function returns - it cannot persist into the resulting constant. The compiler tracks the allocation internally. This is enough for algorithms that build intermediate results using a vector and then copy into a fixed-size array to return.
 
 **Expected output:**
 
 ```text
-
 === constexpr Evolution ===
 
 C++11:
-
   - Single return statement only
   - No loops, no local variables
   - Must use ternary and recursion
   - factorial_cpp11(5) = 120
 
 C++14:
-
   - Loops, local variables, and multiple statements
   - Much more natural code
   - factorial_cpp14(5) = 120
   - count_digits(12345) = 5
 
 C++17:
-
   - if constexpr (branch at compile time)
   - constexpr lambdas
   - square(7) = 49
 
 C++20:
-
   - constexpr std::vector (transient allocation)
   - constexpr std::string (transient)
   - constexpr <algorithm> (sort, find, etc.)
@@ -279,13 +282,13 @@ C++20:
   - constexpr try/catch (limited)
   - consteval (must be compile-time)
   - constinit (must be constant-initialized)
-
 ```
 
 ### Q3: Write a `constexpr` sort of a `std::array` using `constexpr` algorithms (C++20)
 
-```cpp
+C++20 made the entire `<algorithm>` header `constexpr`. This means you can call `std::sort`, `std::binary_search`, `std::partition`, `std::unique`, and others from inside a `constexpr` function. The result: sorting a lookup table at compile time, verifying sorted order with `static_assert`, and using `std::binary_search` at compile time - none of which required any runtime code at all.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <algorithm>
@@ -381,13 +384,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The structured binding `constexpr auto [unique_arr, unique_count] = unique_sorted()` is a nice use of C++17 structured bindings together with C++20 constexpr: you get two named compile-time constants out of a single `constexpr` function that returns a `std::pair`. The compiler unpacks it and treats each member as a separate `constexpr` constant.
 
 **Expected output:**
 
 ```text
-
 === Constexpr Sort (C++20) ===
 Ascending:  1 2 3 4 5 6 7 8 9 10
 Descending: 10 9 8 7 6 5 4 3 2 1
@@ -407,7 +410,6 @@ Even count: 5
 Array: 10 2 8 4 6 5 7 3 9 1
 
 All operations computed at compile time (zero runtime cost).
-
 ```
 
 ---
@@ -417,6 +419,6 @@ All operations computed at compile time (zero runtime cost).
 - `constexpr` = CAN run at compile time; `consteval` = MUST run at compile time; `constinit` = must be constant-initialized.
 - C++14 removed most C++11 restrictions: loops, local variables, and multiple statements are allowed.
 - C++20 made `<algorithm>` constexpr: `sort`, `find`, `binary_search`, `partition`, `unique`, etc.
-- `std::vector` and `std::string` can be used inside constexpr functions (transient allocation — must not leak out).
+- `std::vector` and `std::string` can be used inside constexpr functions (transient allocation - must not leak out).
 - Use `static_assert(expr)` to prove compile-time evaluation.
-- A `constexpr` function called with non-constant arguments runs at runtime — same code, dual behavior.
+- A `constexpr` function called with non-constant arguments runs at runtime - same code, dual behavior.

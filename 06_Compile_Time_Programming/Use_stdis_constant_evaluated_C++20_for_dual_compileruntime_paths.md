@@ -11,10 +11,11 @@
 
 ### What Is `std::is_constant_evaluated()`
 
-A `constexpr` function that returns `true` when called during constant evaluation and `false` at runtime. This lets a single `constexpr` function use different algorithms for compile-time and runtime execution.
+`std::is_constant_evaluated()` is a `constexpr` function that returns `true` when the compiler is evaluating the call as part of a constant expression, and `false` when the function is running normally at runtime. This lets you write a single `constexpr` function that uses one algorithm during compile-time evaluation and a different algorithm when called at runtime.
+
+The motivating use case is mathematical functions. At compile time you often have to use a portable algorithm (like Newton's method for square roots), because hardware intrinsics and `<cmath>` functions may not be available in a constant-evaluation context. At runtime you want to call the optimized, hardware-backed version instead. Without `is_constant_evaluated()` you would need two separate functions and manual selection, which is fragile. With it, the selection is automatic:
 
 ```cpp
-
 #include <type_traits>
 
 constexpr double my_sqrt(double x) {
@@ -29,10 +30,11 @@ constexpr double my_sqrt(double x) {
         return std::sqrt(x);
     }
 }
-
 ```
 
 ### When Does It Return `true`
+
+The function returns `true` in any context that the standard calls "manifestly constant-evaluated." If you are not sure whether a given context qualifies, the table below covers the common cases.
 
 | Context | Returns |
 | --- | --- |
@@ -46,34 +48,35 @@ constexpr double my_sqrt(double x) {
 
 ### Common Pitfall: `if constexpr` vs `if`
 
-```cpp
+This is the mistake that trips almost everyone up the first time they use `std::is_constant_evaluated()`. If you write `if constexpr` instead of plain `if`, the condition itself is evaluated at compile time - and since you are asking a compile-time function whether you are in a compile-time context, the answer is always `true`. The `else` branch becomes dead code forever.
 
+The reason this is so easy to get wrong is that `if constexpr` looks like the "more compile-time-aware" version, so reaching for it feels natural. But that is exactly the wrong instinct here. The whole point of `is_constant_evaluated()` is that its answer changes depending on context - and `if constexpr` collapses that context to "always compile-time."
+
+```cpp
 constexpr int f() {
     if constexpr (std::is_constant_evaluated()) {
         return 1; // BUG: ALWAYS taken (condition itself is constant-evaluated)
     } else {
-        return 2; // Dead code — never reached
+        return 2; // Dead code - never reached
     }
 }
 
 constexpr int g() {
     if (std::is_constant_evaluated()) {
-        return 1; // Correct: plain if — taken only during constant evaluation
+        return 1; // Correct: plain if - taken only during constant evaluation
     } else {
         return 2; // Taken at runtime
     }
 }
-
 ```
 
 **Rule:** Always use plain `if`, never `if constexpr`, with `is_constant_evaluated()`.
 
 ### C++23: `if consteval` (Preferred)
 
-C++23 introduced `if consteval` which avoids the pitfall:
+C++23 introduced `if consteval` as the safe, explicit replacement for this pattern. It avoids the pitfall entirely because the syntax itself distinguishes the two paths, and you cannot accidentally mix them up:
 
 ```cpp
-
 constexpr int h() {
     if consteval {
         return 1; // Compile-time path
@@ -81,8 +84,9 @@ constexpr int h() {
         return 2; // Runtime path
     }
 }
-
 ```
+
+If you are targeting C++23 or later, prefer `if consteval`. It is clearer and impossible to misuse in the `if constexpr` way.
 
 ---
 
@@ -90,8 +94,9 @@ constexpr int h() {
 
 ### Q1: Write a square root function that uses a lookup table at compile time and `std::sqrt` at runtime
 
-```cpp
+This example shows the full pattern in action. At compile time, we build a lookup table using Newton's method (pure constexpr math). For runtime calls, we hand off to `std::sqrt` so the hardware FPU instruction is used instead of the slower iterative method. Notice that the compile-time and runtime paths can use completely different strategies - the caller does not need to care which one runs.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <cmath>
@@ -163,13 +168,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `constexpr double ct_result = my_sqrt(144.0)` forces compile-time evaluation, while `double rt_result = my_sqrt(rt_input)` cannot be constant-evaluated because `rt_input` is a non-`constexpr` variable - so the runtime path runs for that call. Same function name, same argument value, different paths - that is exactly what this feature is for.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Lookup Table ===
 sqrt_table[0] = 0
 sqrt_table[1] = 1
@@ -189,12 +194,11 @@ my_sqrt(12345.7) = 111.111
 
 constexpr my_sqrt(144.0) = 12
 runtime  my_sqrt(144.0) = 12
-
 ```
 
 ### Q2: Explain when `std::is_constant_evaluated()` returns `true` vs `false`
 
-`std::is_constant_evaluated()` returns `true` during **manifestly constant-evaluated** expressions:
+`std::is_constant_evaluated()` returns `true` during **manifestly constant-evaluated** expressions. Here is a concrete demonstration with every important context shown side by side. The `const int b` case is the most surprising one - read the note below the code.
 
 | Context | Result | Example |
 | --- | --- | --- |
@@ -203,12 +207,11 @@ runtime  my_sqrt(144.0) = 12
 | `static_assert` argument | `true` | `static_assert(f() == 42);` |
 | Template argument | `true` | `std::array<int, f()>` |
 | `if constexpr` condition | `true` | `if constexpr (f()) ...` |
-| `const` variable init (integral) | Maybe `true` | `const int x = f();` — compiler may try |
+| `const` variable init (integral) | Maybe `true` | `const int x = f();` - compiler may try |
 | Regular function call | `false` | `int x = f();` |
 | Inside a loop at runtime | `false` | `for(...) f();` |
 
 ```cpp
-
 #include <iostream>
 #include <type_traits>
 
@@ -220,15 +223,15 @@ constexpr int detect() {
 }
 
 // === Demonstration ===
-constexpr int a = detect();          // 1 — constexpr init, constant evaluation
-const     int b = detect();          // 1 — const int init, compiler tries constant eval
-int           c = detect();          // 2 — no constexpr/const, runtime
-static    int d = detect();          // 2 — static with no const, runtime
+constexpr int a = detect();          // 1 - constexpr init, constant evaluation
+const     int b = detect();          // 1 - const int init, compiler tries constant eval
+int           c = detect();          // 2 - no constexpr/const, runtime
+static    int d = detect();          // 2 - static with no const, runtime
 
-static_assert(detect() == 1);        // 1 — static_assert is constant context
+static_assert(detect() == 1);        // 1 - static_assert is constant context
 
 template<int N> struct S {};
-using T = S<detect()>;               // 1 — template argument is constant context
+using T = S<detect()>;               // 1 - template argument is constant context
 
 int main() {
     std::cout << "constexpr int a = detect(): " << a << "\n";  // 1
@@ -236,7 +239,7 @@ int main() {
     std::cout << "int           c = detect(): " << c << "\n";  // 2
     std::cout << "static    int d = detect(): " << d << "\n";  // 2
 
-    // Direct call — runtime context
+    // Direct call - runtime context
     std::cout << "detect() in runtime: " << detect() << "\n";  // 2
 
     // Forced compile-time via constexpr
@@ -245,29 +248,29 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `const int b = detect()` case is implementation-defined - the standard permits but does not require the compiler to evaluate it at compile time. In practice, most compilers will do so for integral types, but you cannot rely on it. If you need a guarantee, use `constexpr`.
 
 **Expected output:**
 
 ```text
-
 constexpr int a = detect(): 1
 const     int b = detect(): 1
 int           c = detect(): 2
 static    int d = detect(): 2
 detect() in runtime: 2
 constexpr int e = detect(): 1
-
 ```
 
 ### Q3: Show `constexpr if` used with `is_constant_evaluated()` to call non-constexpr code at runtime
 
-```cpp
+The runtime branch of a dual-path function is allowed to call non-`constexpr` functions, use pointer arithmetic, and generally do things that are not permitted at compile time. The `is_constant_evaluated()` check is the gate: the compile-time path must be fully constexpr-legal, but the runtime path has no such restriction. In a real codebase, the runtime branch might use SIMD intrinsics, hardware CRC instructions, or platform-specific fast paths that you cannot express in portable `constexpr` code.
 
+```cpp
 #include <iostream>
 #include <type_traits>
-#include <cstring>  // std::memcpy — not constexpr
+#include <cstring>  // std::memcpy - not constexpr
 
 // === Constexpr function that uses non-constexpr code at runtime ===
 constexpr int fast_hash(const char* str, int len) {
@@ -318,7 +321,7 @@ int main() {
     // Compile-time result
     std::cout << "Compile-time hash(\"hello\") = " << ct_hash << "\n";
 
-    // Runtime result — same algorithm, could use intrinsics
+    // Runtime result - same algorithm, could use intrinsics
     const char* s = "hello";
     int rt_hash = fast_hash(s, 5);
     std::cout << "Runtime     hash(\"hello\") = " << rt_hash << "\n";
@@ -336,19 +339,19 @@ int main() {
     std::cout << "Runtime: \"test\" == \"test\": " << str_equal(a, b, 4) << "\n";
 
     std::cout << "\n=== Common Pitfall ===\n";
-    std::cout << "WRONG: if constexpr (is_constant_evaluated()) — always true!\n";
-    std::cout << "RIGHT: if (is_constant_evaluated()) — plain if\n";
+    std::cout << "WRONG: if constexpr (is_constant_evaluated()) - always true!\n";
+    std::cout << "RIGHT: if (is_constant_evaluated()) - plain if\n";
     std::cout << "BEST:  if consteval { } else { }  (C++23)\n";
 
     return 0;
 }
-
 ```
+
+The dual-path pattern gives you the best of both worlds: a `constexpr`-legal portable algorithm for compile-time use, and a fast platform-specific implementation for runtime use - all in one function, with zero friction for the caller.
 
 **Expected output:**
 
 ```text
-
 === Dual compile/runtime paths ===
 Compile-time hash("hello") = 261238937
 Runtime     hash("hello") = 261238937
@@ -360,10 +363,9 @@ Compile-time: "abc" == "abd": 0
 Runtime: "test" == "test": 1
 
 === Common Pitfall ===
-WRONG: if constexpr (is_constant_evaluated()) — always true!
-RIGHT: if (is_constant_evaluated()) — plain if
+WRONG: if constexpr (is_constant_evaluated()) - always true!
+RIGHT: if (is_constant_evaluated()) - plain if
 BEST:  if consteval { } else { }  (C++23)
-
 ```
 
 ---
@@ -371,7 +373,7 @@ BEST:  if consteval { } else { }  (C++23)
 ## Notes
 
 - Use plain `if`, **never** `if constexpr`, with `std::is_constant_evaluated()`.
-- In C++23, prefer `if consteval` — it's safer and clearer.
+- In C++23, prefer `if consteval` - it's safer and clearer.
 - The compile-time path cannot call non-`constexpr` functions, but the runtime path can.
 - Typical use: constexpr-friendly algorithm at compile time, optimized intrinsic at runtime.
 - `std::is_constant_evaluated()` is itself `constexpr` and `noexcept`.

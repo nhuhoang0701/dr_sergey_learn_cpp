@@ -11,7 +11,9 @@
 
 ### Compile-Time Hash Maps
 
-A compile-time hash map uses a `constexpr` array with a hash function that maps keys to indices with no collisions (perfect hashing). The entire lookup table is computed at compile time and stored in `.rodata`.
+A compile-time hash map stores its data in a `constexpr` array that is computed entirely during compilation. The table lives in `.rodata` alongside other constants, so there is no heap allocation, no startup initialization, and no synchronization overhead. Lookups hit a cache-friendly contiguous array rather than the pointer-chasing structure of `std::unordered_map`.
+
+The catch is that `std::unordered_map` cannot be `constexpr` - it uses heap allocation. So if you want a hash map for a fixed set of keys known at compile time, you have to build the table yourself. That sounds intimidating, but the code is actually quite short once you understand the pattern.
 
 ### Approaches
 
@@ -24,15 +26,13 @@ A compile-time hash map uses a `constexpr` array with a hash function that maps 
 
 ### Perfect Hashing
 
-A **perfect hash function** maps each key to a unique index with no collisions. For a small, known set of keys, you can find such a function at compile time:
+A **perfect hash function** maps each key to a unique index with no collisions. For a small, known set of keys, you can find such a function at compile time. In practice, rather than hunting for a true perfect hash, the simplest approach is to use a good hash function and resolve the rare collisions with linear probing - that is what the examples below do. The idea is simple: if the slot you hash into is already occupied, just try the next slot, and keep going until you find an empty one. Use the same probing sequence during lookup.
 
 ```cpp
-
 consteval size_t perfect_hash(std::string_view key) {
     // Custom function designed for the specific key set
     return (key[0] * 31 + key.size()) % TABLE_SIZE;
 }
-
 ```
 
 ---
@@ -41,8 +41,9 @@ consteval size_t perfect_hash(std::string_view key) {
 
 ### Q1: Implement a `consteval` perfect hash table that maps string literals to enum values
 
-```cpp
+The build function iterates over all known keys, hashes each one, and places it in the array. If a slot is already occupied (a collision), it probes forward using linear probing until it finds an empty slot. The same probing sequence is then used during lookup. If the table size is too small to hold all keys without infinite looping, the `consteval` function throws - which becomes a compile error.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <array>
@@ -88,7 +89,7 @@ consteval auto build_color_table() {
         while (table[idx].occupied) {
             idx = (idx + 1) % TABLE_SIZE;
             if (++attempts >= TABLE_SIZE)
-                throw "Table too small — increase TABLE_SIZE";
+                throw "Table too small - increase TABLE_SIZE";
         }
 
         table[idx] = {name, static_cast<Color>(i), true};
@@ -126,9 +127,9 @@ int main() {
                               "black", "cyan", "magenta", "orange", "purple"}) {
         auto result = lookup_color(name);
         if (result) {
-            std::cout << name << " → Color::" << static_cast<int>(*result) << "\n";
+            std::cout << name << " -> Color::" << static_cast<int>(*result) << "\n";
         } else {
-            std::cout << name << " → NOT FOUND\n";
+            std::cout << name << " -> NOT FOUND\n";
         }
     }
 
@@ -138,33 +139,33 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `static_assert` lines prove that `lookup_color` is genuinely `constexpr` - the compiler can resolve these lookups at compile time. At runtime you are just reading from a pre-built table in read-only memory.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Hash Map: Color Lookup ===
-red → Color::0
-green → Color::1
-blue → Color::2
-yellow → Color::3
-white → Color::4
-black → Color::5
-cyan → Color::6
-magenta → Color::7
-orange → NOT FOUND
-purple → NOT FOUND
+red -> Color::0
+green -> Color::1
+blue -> Color::2
+yellow -> Color::3
+white -> Color::4
+black -> Color::5
+cyan -> Color::6
+magenta -> Color::7
+orange -> NOT FOUND
+purple -> NOT FOUND
 
 Table occupancy: 8/16 (50%)
-
 ```
 
 ### Q2: Show that runtime dispatch via a compile-time hash table is faster than `std::unordered_map`
 
-```cpp
+The performance advantage of the compile-time table comes from several sources at once: no heap allocation, no `std::string` construction during lookup (we compare against `std::string_view` directly), and a contiguous array that is small enough to stay in L1 cache. The `std::string(q)` construction inside the `unordered_map` benchmark is not a cheat - that is the real cost you pay every time you look up a string in an `unordered_map<std::string, ...>`.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <array>
@@ -247,43 +248,45 @@ int main() {
     auto end2 = std::chrono::high_resolution_clock::now();
     auto us2 = std::chrono::duration_cast<std::chrono::microseconds>(end2 - start2).count();
 
-    std::cout << "=== Benchmark: 8 queries × " << ITERATIONS << " iterations ===\n";
+    std::cout << "=== Benchmark: 8 queries x " << ITERATIONS << " iterations ===\n";
     std::cout << "Compile-time hash table: " << us1 << " us\n";
     std::cout << "std::unordered_map:      " << us2 << " us\n";
     std::cout << "Speedup: " << static_cast<double>(us2) / us1 << "x\n";
 
     std::cout << "\n=== Why compile-time table is faster ===\n";
-    std::cout << "• No heap allocation (data in .rodata)\n";
-    std::cout << "• Cache-friendly contiguous array\n";
-    std::cout << "• No std::string construction for lookup\n";
-    std::cout << "• Constexpr hash function may be inlined\n";
+    std::cout << "- No heap allocation (data in .rodata)\n";
+    std::cout << "- Cache-friendly contiguous array\n";
+    std::cout << "- No std::string construction for lookup\n";
+    std::cout << "- Constexpr hash function may be inlined\n";
 
     return 0;
 }
-
 ```
+
+The compile-time table avoids `std::string` construction because its keys are `std::string_view` and the comparison is a simple memory compare. The `unordered_map` has to hash, allocate, and compare a full `std::string` on every lookup - you can see the cost in the timing.
 
 **Expected output (timing varies):**
 
 ```text
-
-=== Benchmark: 8 queries × 1000000 iterations ===
+=== Benchmark: 8 queries x 1000000 iterations ===
 Compile-time hash table: 42000 us
 std::unordered_map:      185000 us
 Speedup: 4.4x
 
 === Why compile-time table is faster ===
-• No heap allocation (data in .rodata)
-• Cache-friendly contiguous array
-• No std::string construction for lookup
-• Constexpr hash function may be inlined
-
+- No heap allocation (data in .rodata)
+- Cache-friendly contiguous array
+- No std::string construction for lookup
+- Constexpr hash function may be inlined
 ```
 
 ### Q3: Compare with sorted `constexpr` array + `std::lower_bound`
 
-```cpp
+For small key sets (fewer than about 20 keys), a sorted array with `std::lower_bound` is often the simplest approach. It requires no hash function design, the binary is slightly smaller because there are no empty slots, and `std::lower_bound` on a 7-element sorted array is extremely fast. For larger key sets the asymptotic advantage of the hash table matters more.
 
+Notice that `build_sorted_methods` uses `std::sort` inside a `consteval` function. This is valid in C++20 because `std::sort` is now `constexpr`. The compiler sorts your HTTP method table at compile time so that runtime lookups can use binary search.
+
+```cpp
 #include <iostream>
 #include <array>
 #include <algorithm>
@@ -379,24 +382,24 @@ int main() {
     std::cout << "\n=== Binary Search Lookups ===\n";
     for (auto q : {"GET", "POST", "DELETE", "HEAD", "CONNECT", "TRACE"}) {
         auto r = find_method(q);
-        std::cout << q << " → "
+        std::cout << q << " -> "
                   << (r ? std::to_string(static_cast<int>(*r)) : "NOT FOUND") << "\n";
     }
 
     std::cout << "\n=== Recommendation ===\n";
     std::cout << "Small key sets (< 20): sorted array + lower_bound is simplest.\n";
     std::cout << "Large key sets (100+): compute a perfect hash at compile time.\n";
-    std::cout << "Both are constexpr — zero runtime initialization cost.\n";
+    std::cout << "Both are constexpr - zero runtime initialization cost.\n";
 
     return 0;
 }
-
 ```
+
+Both approaches are `constexpr` and carry zero runtime initialization cost. The choice between them comes down to the size of your key set and how much you care about worst-case lookup time.
 
 **Expected output:**
 
 ```text
-
 === Approach Comparison ===
 
 +---------------------+-----------------+-------------------+
@@ -411,27 +414,26 @@ int main() {
 +---------------------+-----------------+-------------------+
 
 === Binary Search Lookups ===
-GET → 1
-POST → 5
-DELETE → 0
-HEAD → 2
-CONNECT → NOT FOUND
-TRACE → NOT FOUND
+GET -> 1
+POST -> 5
+DELETE -> 0
+HEAD -> 2
+CONNECT -> NOT FOUND
+TRACE -> NOT FOUND
 
 === Recommendation ===
 Small key sets (< 20): sorted array + lower_bound is simplest.
 Large key sets (100+): compute a perfect hash at compile time.
-Both are constexpr — zero runtime initialization cost.
-
+Both are constexpr - zero runtime initialization cost.
 ```
 
 ---
 
 ## Notes
 
-- **Perfect hashing** means no collisions for the known key set — O(1) guaranteed lookup.
+- **Perfect hashing** means no collisions for the known key set - O(1) guaranteed lookup.
 - For small key sets (< 20), a sorted array with `std::lower_bound` is simpler and equally fast.
-- `consteval` ensures the table is built at compile time — any error is a compile error.
+- `consteval` ensures the table is built at compile time - any error is a compile error.
 - Linear probing is simplest for compile-time hash tables; FNV-1a and DJB2 are good hash functions.
-- `std::unordered_map` cannot be `constexpr` — compile-time hash tables are the standard alternative.
-- The hash table lives in `.rodata` — no heap allocation, no startup cost, cache-friendly.
+- `std::unordered_map` cannot be `constexpr` - compile-time hash tables are the standard alternative.
+- The hash table lives in `.rodata` - no heap allocation, no startup cost, cache-friendly.

@@ -11,16 +11,15 @@
 
 ### What Is a Compile-Time FSM
 
-A **finite state machine** (FSM) modeled at compile time encodes:
+A **finite state machine** (FSM) modeled at compile time encodes everything the runtime version normally would - states, events, and transitions - but entirely in the type system. Concretely:
 
 - **States** as types (empty structs)
 - **Events** as types (empty structs)
-- **Transitions** as template specializations mapping `(State, Event) → NextState`
+- **Transitions** as template specializations mapping `(State, Event) -> NextState`
 
-The compiler verifies all transitions exist at compile time — invalid transitions produce compile errors.
+The payoff is that the compiler verifies all transitions exist at compile time. If you try to take a transition that was never defined, you get a compile error rather than a runtime bug. This is the "make illegal states unrepresentable" idea taken to its logical extreme.
 
 ```cpp
-
          ┌─────────┐   CoinInserted   ┌──────────┐
          │  Locked  │ ───────────────► │ Unlocked │
          │  (state) │                  │  (state) │
@@ -31,13 +30,13 @@ The compiler verifies all transitions exist at compile time — invalid transiti
               └──────────────┐
                              ▼
                          (self-loop)
-
 ```
 
 ### Pattern
 
-```cpp
+The key insight is leaving the primary template undefined. An undefined primary template means "no specialization exists for this combination" - and trying to use it becomes a hard compile error. You then explicitly define only the transitions you actually want.
 
+```cpp
 // States as types
 struct Locked {};
 struct Unlocked {};
@@ -54,8 +53,9 @@ struct Transition;  // no definition!
 template <> struct Transition<Locked, CoinInserted>    { using next = Unlocked; };
 template <> struct Transition<Unlocked, PersonPassed>  { using next = Locked; };
 template <> struct Transition<Locked, PersonPassed>    { using next = Locked; };
-
 ```
+
+Notice that `Transition<Locked, PersonPassed>` maps back to `Locked`. That's how you encode a self-loop: you simply make the `next` type the same as the current state.
 
 ---
 
@@ -63,8 +63,9 @@ template <> struct Transition<Locked, PersonPassed>    { using next = Locked; };
 
 ### Q1: Encode states as types and transitions as template specializations: `Transition<State, Event>::next`
 
-```cpp
+Here's a more complete FSM for a media player (Idle/Running/Paused/Stopped). The interesting part to study is how `FSM<State>::step<Event>` chains transitions - each call just resolves `NextState<State, Event>` at compile time, so the entire sequence of states is computed by the compiler before any code runs.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -133,17 +134,15 @@ int main() {
     static_assert(std::is_same_v<NextState<Running, Pause>, Paused>);
     static_assert(std::is_same_v<NextState<Paused, Stop>, Stopped>);
     static_assert(std::is_same_v<NextState<Stopped, Reset>, Idle>);
-    std::cout << "\nAll transitions verified at compile time ✓\n";
+    std::cout << "\nAll transitions verified at compile time\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Compile-Time FSM ===
 
 State: Idle
@@ -153,14 +152,14 @@ State: Running
 State: Stopped
 State: Idle
 
-All transitions verified at compile time ✓
-
+All transitions verified at compile time
 ```
 
 ### Q2: Implement a `static_assert` that fires if an undefined transition is taken
 
-```cpp
+The undefined-primary-template approach gives you a compile error, but the message can be cryptic. A cleaner alternative is to give the primary template a definition that returns a sentinel `InvalidTransition` type, then use `static_assert` to emit a human-readable message whenever that sentinel shows up.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -208,12 +207,12 @@ constexpr void validate_transition() {
 }
 
 int main() {
-    // Valid transitions — static_assert passes
-    validate_transition<Off, Toggle>();    // Off + Toggle → On ✓
-    validate_transition<On, Toggle>();     // On + Toggle → Off ✓
-    validate_transition<On, Shutdown>();   // On + Shutdown → Off ✓
+    // Valid transitions - static_assert passes
+    validate_transition<Off, Toggle>();    // Off + Toggle -> On
+    validate_transition<On, Toggle>();     // On + Toggle -> Off
+    validate_transition<On, Shutdown>();   // On + Shutdown -> Off
 
-    // Invalid transition — uncomment to see static_assert fire:
+    // Invalid transition - uncomment to see static_assert fire:
     // validate_transition<Off, Shutdown>();
     // ERROR: "Undefined FSM transition! Check your State + Event combination."
 
@@ -221,29 +220,31 @@ int main() {
     static_assert(std::is_same_v<SafeNext<On, Toggle>, Off>);
     static_assert(std::is_same_v<SafeNext<Off, Shutdown>, InvalidTransition>);
 
-    std::cout << "All valid transitions pass static_assert ✓\n";
-    std::cout << "Invalid transitions would cause compile error ✓\n";
+    std::cout << "All valid transitions pass static_assert\n";
+    std::cout << "Invalid transitions would cause compile error\n";
 
     return 0;
 }
-
 ```
 
 ### Q3: Compare this TMP approach with a `constexpr` switch-based FSM
+
+Both approaches get you zero runtime overhead and compile-time validation - they just get there differently. The table below captures the trade-offs. The short version: TMP is richer and more type-level, `constexpr` switch is far easier to read and debug.
 
 | Aspect | TMP (Template Specialization) | `constexpr` switch-based |
 | --- | --- | --- |
 | **State representation** | Types (`struct Idle {}`) | Enum values (`enum State { Idle, Running }`) |
 | **Transitions** | Template specializations | `constexpr` function with `switch` |
 | **Invalid transition** | Compile error (missing specialization) | Needs explicit handling (return error) |
-| **Readability** | Complex — many specializations | Simple — familiar switch syntax |
+| **Readability** | Complex - many specializations | Simple - familiar switch syntax |
 | **Adding states** | Add structs + specializations | Add enum value + switch case |
 | **Runtime overhead** | Zero (all resolved at compile time) | Zero (constexpr / optimized away) |
 | **Error messages** | Cryptic template errors | Clear "missing case" warnings |
 | **Best for** | Pure compile-time FSMs, type-level protocols | Runtime FSMs with compile-time validation |
 
-```cpp
+Here's the `constexpr` switch version for comparison. Notice how much flatter and more readable the transition logic looks:
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 
@@ -313,7 +314,6 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ---

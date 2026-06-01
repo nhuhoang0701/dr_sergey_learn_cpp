@@ -11,10 +11,9 @@
 
 ### What Is Pack Indexing
 
-Pack indexing (C++26) introduces **direct subscript syntax** for accessing elements of a parameter pack by index, both for **types** and **values**:
+Pack indexing (C++26) introduces **direct subscript syntax** for accessing elements of a parameter pack by index, both for **types** and **values**. It's about as simple as it sounds - you just write `Args...[I]` and you get the I-th element:
 
 ```cpp
-
 // Type pack indexing: Args...[I] gives the I-th type
 template <typename... Args>
 using First = Args...[0];       // First type in pack
@@ -22,12 +21,13 @@ using First = Args...[0];       // First type in pack
 // Value pack indexing: args...[I] gives the I-th value
 template <auto... vals>
 constexpr auto second = vals...[1];  // Second value in pack
-
 ```
+
+The index must be a **constant expression** - this is resolved entirely at compile time.
 
 ### Before C++26: The Workaround Problem
 
-Accessing a specific pack element before C++26 required verbose tricks:
+Accessing a specific pack element before C++26 required verbose tricks, and every approach had a cost. The reason this was so painful is that a parameter pack is not a type you can index - it's a language construct that can only be "unpacked" all at once, not picked apart element by element, unless you use one of these workarounds:
 
 | Approach | Code | Drawback |
 | --- | --- | --- |
@@ -36,10 +36,11 @@ Accessing a specific pack element before C++26 required verbose tricks:
 | `std::get<I>(std::make_tuple(args...))` | Creates runtime tuple | Not zero-cost at compile time |
 | Fold + index counter | Complex fold expression | Hard to read |
 
-### C++26 Pack Indexing — Clean and Direct
+### C++26 Pack Indexing - Clean and Direct
+
+The C++26 syntax eliminates all of those workarounds. Notice how the return type annotation `-> Args...[0]&&` also works - you can use pack indexing wherever a type is expected:
 
 ```cpp
-
 // Type indexing
 template <typename... Ts>
 struct FirstType {
@@ -57,10 +58,9 @@ template <typename... Args>
 auto first_arg(Args&&... args) -> Args...[0]&& {
     return std::forward<Args...[0]>(args...[0]);
 }
-
 ```
 
-**Important:** The index must be a **constant expression** — it's resolved at compile time.
+**Important:** The index must be a **constant expression** - it's resolved at compile time.
 
 ---
 
@@ -68,8 +68,9 @@ auto first_arg(Args&&... args) -> Args...[0]&& {
 
 ### Q1: Use `Args...[0]` to extract the first type of a parameter pack in C++26
 
-```cpp
+Here's a full demonstration of type and value pack indexing, including aliases for "first", "last", and "Nth", plus a `PackInfo` struct that bundles all of them together.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -130,23 +131,21 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 First: 42
 Last: hello
 Pack size: 3
-
 ```
 
 ### Q2: Show the C++20 workaround using `std::tuple_element` for the same operation
 
-```cpp
+Seeing the old way right next to the new way makes the improvement concrete. The `NthType_recursive` version is especially instructive - it shows the O(N) recursive instantiation chain that pack indexing replaces with a single lookup.
 
+```cpp
 #include <iostream>
 #include <tuple>
 #include <type_traits>
@@ -186,9 +185,9 @@ template <std::size_t N, typename... Args>
 using NthType_recursive = typename NthTypeImpl<N, Args...>::type;
 
 // === Comparison table ===
-// C++26:  Args...[N]                         — direct, zero overhead
-// C++20:  tuple_element_t<N, tuple<Args...>> — creates tuple type
-// C++11:  NthTypeImpl<N, Args...>::type      — recursive instantiation
+// C++26:  Args...[N]                         - direct, zero overhead
+// C++20:  tuple_element_t<N, tuple<Args...>> - creates tuple type
+// C++11:  NthTypeImpl<N, Args...>::type      - recursive instantiation
 
 int main() {
     // Type checks
@@ -214,13 +213,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 get_nth<1>(42, 3.14, "hello") = 3.14
 get_nth<0>(...) = 42
 get_nth<2>(...) = hello
@@ -229,13 +226,13 @@ get_nth<2>(...) = hello
 C++26: Args...[N]                          (direct syntax)
 C++20: tuple_element_t<N, tuple<Args...>>  (creates tuple type)
 C++11: recursive template NthTypeImpl       (O(N) instantiations)
-
 ```
 
 ### Q3: Apply pack indexing to implement a compile-time index-based tuple accessor
 
-```cpp
+This builds a `SimpleTuple` from scratch and uses pack indexing for both the `get<N>` function return type and the `TupleElement` type alias. It's a good exercise to trace through how the recursive `get` implementation eventually bottoms out at `N == 0`.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -340,20 +337,18 @@ int main() {
     std::cout << "\n";
 
     std::cout << "\n=== Pack Indexing Summary ===\n";
-    std::cout << "Type:  Ts...[N]  — direct type access in pack\n";
-    std::cout << "Value: ts...[N]  — direct value access in pack\n";
+    std::cout << "Type:  Ts...[N]  - direct type access in pack\n";
+    std::cout << "Value: ts...[N]  - direct value access in pack\n";
     std::cout << "Index must be a constant expression\n";
     std::cout << "Replaces tuple_element_t<N, tuple<Ts...>> pattern\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 Element 0: 42
 Element 1: 3.14
 Element 2: X
@@ -361,18 +356,17 @@ Tuple: (42, 3.14, X)
 Modified: (99, 20, Z)
 
 === Pack Indexing Summary ===
-Type:  Ts...[N]  — direct type access in pack
-Value: ts...[N]  — direct value access in pack
+Type:  Ts...[N]  - direct type access in pack
+Value: ts...[N]  - direct value access in pack
 Index must be a constant expression
 Replaces tuple_element_t<N, tuple<Ts...>> pattern
-
 ```
 
 ---
 
 ## Notes
 
-- Pack indexing (`Args...[N]`) is a C++26 feature — check compiler support before using.
+- Pack indexing (`Args...[N]`) is a C++26 feature - check compiler support before using.
 - The index must be a constant expression (known at compile time).
 - Works for both **type packs** (`typename... Ts`) and **value packs** (`auto... vals`).
 - Eliminates the need for `std::tuple_element_t<N, std::tuple<Args...>>` workaround.

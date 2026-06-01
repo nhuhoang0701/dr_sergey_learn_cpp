@@ -11,7 +11,9 @@
 
 ### Compile-Time Date Parsing
 
-`consteval` + `std::string_view` enables parsing and validating structured strings at compile time. Invalid formats cause compile errors — no runtime validation needed for constants.
+`consteval` + `std::string_view` enables parsing and validating structured strings at compile time. Invalid formats cause compile errors instead of runtime failures - you get a compiler diagnostic pointing at the bad literal in your source code, not a crash or bad-data bug at runtime.
+
+The date string `"YYYY-MM-DD"` is a good example to learn from because it is short, has a well-known format, and the validation logic is non-trivial (leap years, month lengths). If you can write this parser, you can write parsers for any fixed-format string your project needs.
 
 ### Key Techniques
 
@@ -24,18 +26,18 @@
 
 ### Pattern
 
-```cpp
+The general structure is always the same. Write a `consteval` function that takes a `std::string_view`, validates it character by character, and throws a string literal on any error. Callers store the result in `constexpr` variables and the compiler does the work.
 
+```cpp
 struct Date { int year, month, day; };
 
 consteval Date parse_date(std::string_view sv) {
-    // Parse "YYYY-MM-DD" — throw on invalid format
+    // Parse "YYYY-MM-DD" - throw on invalid format
     // ...
 }
 
 constexpr auto xmas = parse_date("2024-12-25");  // OK
 // constexpr auto bad = parse_date("2024-13-01"); // Compile error: month > 12
-
 ```
 
 ---
@@ -44,8 +46,9 @@ constexpr auto xmas = parse_date("2024-12-25");  // OK
 
 ### Q1: Write a `consteval` parser that validates a date string `"YYYY-MM-DD"` format at compile time
 
-```cpp
+The parser below breaks down into a few helper functions: one to read a fixed-width digit sequence, one to check leap years, and one to compute the number of days in a given month. Splitting it up this way keeps each piece testable on its own and makes the main `parse_date` function readable - which is especially valuable when a future developer needs to understand the format rules.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <cstdint>
@@ -128,13 +131,13 @@ int main() {
     std::cout << "\nAll dates validated at compile time.\n";
     return 0;
 }
-
 ```
+
+Notice that `parse_date("2024-02-29")` succeeds because 2024 is a leap year. If you changed it to `"2023-02-29"`, the code would not compile - the leap year check inside `days_in_month` would cause the parser to throw "Day is out of range for the given month/year". The compiler catches the bug before the program ever exists.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Date Parser ===
 New Year   : 2024-01-01
 Leap Day   : 2024-02-29
@@ -142,13 +145,15 @@ Christmas  : 2024-12-25
 End of Year: 2024-12-31
 
 All dates validated at compile time.
-
 ```
 
 ### Q2: Use `static_assert` with the parser to reject invalid date literals in source code
 
-```cpp
+You can write a thin `is_valid_date` wrapper that calls `parse_date` and returns `true`. When you combine this with `static_assert`, you get a self-documenting way to express "this date string must be valid" as a compile-time requirement. Anyone reading the code can see the assertion and understand the intent immediately.
 
+The year 1900 case below is a classic gotcha worth knowing about: 1900 is divisible by 4 but also by 100, and it is not divisible by 400, so it is not a leap year. The parser correctly rejects February 29, 1900. This is exactly the kind of subtle rule that is easy to get wrong in a runtime validator - but the `static_assert` makes the correct behavior part of the compilation contract.
+
+```cpp
 #include <iostream>
 #include <string_view>
 
@@ -188,71 +193,69 @@ consteval bool is_valid_date(std::string_view sv) {
     return true;
 }
 
-// === VALID dates — these all compile ===
+// === VALID dates - these all compile ===
 static_assert(is_valid_date("2024-01-01"));
 static_assert(is_valid_date("2024-02-29"));  // 2024 is a leap year
 static_assert(is_valid_date("2000-02-29"));  // 2000 is a leap year (divisible by 400)
 static_assert(is_valid_date("2024-12-31"));
 
-// === INVALID dates — UNCOMMENT to see compile errors ===
-// static_assert(is_valid_date("2024-13-01"));  // Month 13 → "Month out of range"
-// static_assert(is_valid_date("2024-02-30"));  // Feb 30 → "Day out of range"
-// static_assert(is_valid_date("2023-02-29"));  // 2023 not leap → "Day out of range"
-// static_assert(is_valid_date("2024/01/01"));  // Wrong separator → "Must use '-'"
-// static_assert(is_valid_date("24-01-01"));    // Too short → "Must be YYYY-MM-DD"
-// static_assert(is_valid_date("abcd-ef-gh"));  // Non-digit → "Non-digit character"
-// static_assert(is_valid_date("1900-02-29"));  // 1900 not leap → "Day out of range"
+// === INVALID dates - UNCOMMENT to see compile errors ===
+// static_assert(is_valid_date("2024-13-01"));  // Month 13 -> "Month out of range"
+// static_assert(is_valid_date("2024-02-30"));  // Feb 30 -> "Day out of range"
+// static_assert(is_valid_date("2023-02-29"));  // 2023 not leap -> "Day out of range"
+// static_assert(is_valid_date("2024/01/01"));  // Wrong separator -> "Must use '-'"
+// static_assert(is_valid_date("24-01-01"));    // Too short -> "Must be YYYY-MM-DD"
+// static_assert(is_valid_date("abcd-ef-gh"));  // Non-digit -> "Non-digit character"
+// static_assert(is_valid_date("1900-02-29"));  // 1900 not leap -> "Day out of range"
 
 int main() {
     std::cout << "=== static_assert Date Validation ===\n\n";
 
     std::cout << "Valid dates (compiled successfully):\n";
-    std::cout << "  2024-01-01 ✓\n";
-    std::cout << "  2024-02-29 ✓ (leap year)\n";
-    std::cout << "  2000-02-29 ✓ (leap year, divisible by 400)\n";
-    std::cout << "  2024-12-31 ✓\n";
+    std::cout << "  2024-01-01\n";
+    std::cout << "  2024-02-29 (leap year)\n";
+    std::cout << "  2000-02-29 (leap year, divisible by 400)\n";
+    std::cout << "  2024-12-31\n";
 
     std::cout << "\nInvalid dates (would cause compile errors):\n";
-    std::cout << "  2024-13-01 → \"Month out of range (1-12)\"\n";
-    std::cout << "  2024-02-30 → \"Day out of range for month\"\n";
-    std::cout << "  2023-02-29 → \"Day out of range for month\" (not a leap year)\n";
-    std::cout << "  2024/01/01 → \"Must use '-' separators\"\n";
-    std::cout << "  1900-02-29 → \"Day out of range for month\" (not a leap year)\n";
+    std::cout << "  2024-13-01 -> \"Month out of range (1-12)\"\n";
+    std::cout << "  2024-02-30 -> \"Day out of range for month\"\n";
+    std::cout << "  2023-02-29 -> \"Day out of range for month\" (not a leap year)\n";
+    std::cout << "  2024/01/01 -> \"Must use '-' separators\"\n";
+    std::cout << "  1900-02-29 -> \"Day out of range for month\" (not a leap year)\n";
 
     std::cout << "\nThe throw message appears in the compiler error output.\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === static_assert Date Validation ===
 
 Valid dates (compiled successfully):
-  2024-01-01 ✓
-  2024-02-29 ✓ (leap year)
-  2000-02-29 ✓ (leap year, divisible by 400)
-  2024-12-31 ✓
+  2024-01-01
+  2024-02-29 (leap year)
+  2000-02-29 (leap year, divisible by 400)
+  2024-12-31
 
 Invalid dates (would cause compile errors):
-  2024-13-01 → "Month out of range (1-12)"
-  2024-02-30 → "Day out of range for month"
-  2023-02-29 → "Day out of range for month" (not a leap year)
-  2024/01/01 → "Must use '-' separators"
-  1900-02-29 → "Day out of range for month" (not a leap year)
+  2024-13-01 -> "Month out of range (1-12)"
+  2024-02-30 -> "Day out of range for month"
+  2023-02-29 -> "Day out of range for month" (not a leap year)
+  2024/01/01 -> "Must use '-' separators"
+  1900-02-29 -> "Day out of range for month" (not a leap year)
 
 The throw message appears in the compiler error output.
-
 ```
 
 ### Q3: Show how compile-time parsing avoids runtime validation overhead for fixed-format constants
 
-```cpp
+When you have a set of date constants that are part of your program's configuration - release schedules, deadline dates, calendar epochs - compile-time parsing eliminates both the validation cost and the parsing cost at startup. The "What Happens in the Binary" section is worth understanding: the `config_dates` array is stored as 5 plain `Date` structs (12 bytes each) in the read-only data segment. The string literals do not need to appear in the binary at all. The parser code is never emitted.
 
+```cpp
 #include <iostream>
 #include <string_view>
 #include <chrono>
@@ -326,7 +329,7 @@ int main() {
     auto us2 = std::chrono::duration_cast<std::chrono::microseconds>(end2 - start2).count();
 
     std::cout << "=== Compile-Time vs Runtime Parsing ===\n";
-    std::cout << "5 dates × " << ITERATIONS << " iterations\n\n";
+    std::cout << "5 dates x " << ITERATIONS << " iterations\n\n";
     std::cout << "Runtime parsing:      " << us << " us\n";
     std::cout << "Compile-time (lookup): " << us2 << " us\n";
     std::cout << "Speedup: " << static_cast<double>(us) / (us2 > 0 ? us2 : 1) << "x\n";
@@ -348,15 +351,13 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output (timing varies):**
 
 ```text
-
 === Compile-Time vs Runtime Parsing ===
-5 dates × 1000000 iterations
+5 dates x 1000000 iterations
 
 Runtime parsing:      28000 us
 Compile-time (lookup): 8000 us
@@ -377,16 +378,15 @@ Runtime: date_strings[] + parsing function in .text
   2024-06-21
   2024-09-22
   2024-12-25
-
 ```
 
 ---
 
 ## Notes
 
-- `consteval` + `throw` gives compile-time error messages — the throw string appears in compiler output.
+- `consteval` + `throw` gives compile-time error messages - the throw string appears in compiler output.
 - `std::string_view` is the ideal parameter type: `constexpr`, non-owning, full string API.
-- Parsed results in `constexpr` arrays go to `.rodata` — zero startup cost, zero runtime validation.
+- Parsed results in `constexpr` arrays go to `.rodata` - zero startup cost, zero runtime validation.
 - This pattern works for: dates, IP addresses, URLs, color codes, regex patterns, version strings.
-- Leap year check: divisible by 4, not by 100, unless by 400 — the parser can enforce this at compile time.
-- For runtime user input, you still need a runtime parser — `consteval` is for source-code literals only.
+- Leap year check: divisible by 4, not by 100, unless by 400 - the parser can enforce this at compile time.
+- For runtime user input, you still need a runtime parser - `consteval` is for source-code literals only.

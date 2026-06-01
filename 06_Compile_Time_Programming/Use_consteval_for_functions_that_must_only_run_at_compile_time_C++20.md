@@ -11,30 +11,35 @@
 
 ### What Is `consteval`
 
-`consteval` declares an **immediate function** — a function that **must** produce a compile-time constant. If the function is called with a non-constant argument, the compiler emits a **hard error**.
+`consteval` declares an **immediate function** - a function that **must** produce a compile-time constant. If the function is called with a non-constant argument, the compiler emits a **hard error**. There is no silent fallback to runtime evaluation.
+
+Here's the simplest possible example:
 
 ```cpp
-
 consteval int square(int n) { return n * n; }
 
-constexpr int a = square(5);   // OK: compile-time — result is 25
+constexpr int a = square(5);   // OK: compile-time - result is 25
 // int x = 5;
 // int b = square(x);          // ERROR: x is not a constant expression
-
 ```
+
+That second call is not a warning or a degraded mode - it's a straight compile failure. That's the whole point: `consteval` is a guarantee, not a hint.
 
 ### `consteval` vs `constexpr`
 
+The distinction between `consteval` and `constexpr` is important enough to be worth spelling out clearly. `constexpr` functions are *allowed* to run at compile time, but they can also silently fall back to runtime if the arguments aren't constant. `consteval` functions are *required* to run at compile time - no fallback, no exceptions.
+
 | Feature | `consteval` | `constexpr` |
 | --- | --- | --- |
-| Compile-time evaluation | **Guaranteed** — always | **Possible** — only when required |
-| Runtime evaluation | **Forbidden** — hard error | Allowed — falls back to runtime |
+| Compile-time evaluation | Guaranteed - always | Possible - only when required |
+| Runtime evaluation | Forbidden - hard error | Allowed - falls back to runtime |
 | Use case | Lookup tables, compile-time-only computation | Dual-use (compile-time or runtime) |
 | Function pointers | Cannot take address at runtime | Can take address |
 | Calling non-constexpr | Forbidden | Forbidden in constant context, allowed at runtime |
 
-```cpp
+Here's a direct comparison so you can see the behavioral difference side by side:
 
+```cpp
 constexpr int f(int n) { return n * 2; }
 consteval int g(int n) { return n * 2; }
 
@@ -43,8 +48,9 @@ int a = f(x);   // OK: evaluated at runtime
 // int b = g(x);   // ERROR: x is not a constant expression
 constexpr int c = f(5);  // OK: evaluated at compile-time
 constexpr int d = g(5);  // OK: always evaluated at compile-time
-
 ```
+
+The takeaway: use `constexpr` when you want a function that's useful both ways; use `consteval` when runtime evaluation would be a bug.
 
 ---
 
@@ -52,8 +58,9 @@ constexpr int d = g(5);  // OK: always evaluated at compile-time
 
 ### Q1: Write a `consteval` function that generates a lookup table as a `std::array` at compile time
 
-```cpp
+Because `consteval` forces evaluation at compile time, it's a natural fit for generating lookup tables that you want baked directly into the binary. Here's a set of three table generators, all verified with `static_assert` before `main` even runs:
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cstddef>
@@ -90,7 +97,7 @@ consteval auto make_char_class_table() {
     return table;
 }
 
-// All tables are computed at compile time — zero runtime cost
+// All tables are computed at compile time - zero runtime cost
 constexpr auto squares   = make_squares_table<16>();
 constexpr auto fibonacci = make_fibonacci_table<20>();
 constexpr auto char_class = make_char_class_table();
@@ -131,13 +138,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Squares Table ===
 0^2 = 0
 1^2 = 1
@@ -184,13 +189,13 @@ fib(19) = 4181
 '5' -> digit
 ' ' -> other
 '!' -> other
-
 ```
 
 ### Q2: Show the compile error that occurs when a `consteval` function is called with a runtime argument
 
-```cpp
+There are three distinct ways to misuse a `consteval` function, each with its own error message. The example below shows all three in commented-out form, along with the valid uses for contrast:
 
+```cpp
 #include <iostream>
 
 // === consteval function ===
@@ -240,23 +245,21 @@ int main() {
     consteval auto doubled_square = [](int n) {
         return compile_time_only(n) * 2;
     };
-    constexpr int e = doubled_square(3);  // OK: 3 → 10 → 20
+    constexpr int e = doubled_square(3);  // OK: 3 -> 10 -> 20
     std::cout << "doubled_square(3) = " << e << "\n";
 
     std::cout << "\n=== Summary of Errors ===\n";
-    std::cout << "1. Runtime variable as arg  → 'not usable in constant expression'\n";
-    std::cout << "2. Taking address           → 'taking address of immediate function'\n";
-    std::cout << "3. Non-constexpr variable   → 'read of non-const variable not allowed'\n";
+    std::cout << "1. Runtime variable as arg  -> 'not usable in constant expression'\n";
+    std::cout << "2. Taking address           -> 'taking address of immediate function'\n";
+    std::cout << "3. Non-constexpr variable   -> 'read of non-const variable not allowed'\n";
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 compile_time_only(10) = 101
 compile_time_only(5) = 26
 compile_time_only(7) = 50
@@ -264,16 +267,16 @@ doubled_square(3) = 20
 
 === Summary of Errors ===
 
-1. Runtime variable as arg  → 'not usable in constant expression'
-2. Taking address           → 'taking address of immediate function'
-3. Non-constexpr variable   → 'read of non-const variable not allowed'
-
+1. Runtime variable as arg  -> 'not usable in constant expression'
+2. Taking address           -> 'taking address of immediate function'
+3. Non-constexpr variable   -> 'read of non-const variable not allowed'
 ```
 
 ### Q3: Explain the difference between `consteval` and `constexpr` in terms of guaranteed evaluation
 
-```cpp
+This example puts both specifiers through the same set of scenarios so you can see exactly where their behavior diverges. Pay attention to Case 2 - that's where `consteval` refuses to compile while `constexpr` quietly does runtime work instead:
 
+```cpp
 #include <iostream>
 #include <array>
 
@@ -338,13 +341,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 constexpr result: 55
 consteval result: 55
 runtime constexpr: 55
@@ -363,7 +364,6 @@ array<int, f(5)> arr;     Compile     Compile
 auto p = &f;              OK          ERROR!
 
 * May be compile-time (as-if rule) but not guaranteed
-
 ```
 
 ---
@@ -371,7 +371,7 @@ auto p = &f;              OK          ERROR!
 ## Notes
 
 - `consteval` is C++20. Use `constexpr` for functions that should also work at runtime.
-- `consteval` functions cannot have their address taken — they exist only during compilation.
+- `consteval` functions cannot have their address taken - they exist only during compilation.
 - Use `consteval` for: lookup table generators, compile-time validators, DSL parsers, hash generation.
 - Use `constexpr` when: the function is useful both at compile time and runtime.
 - `consteval` can call `constexpr` functions, but not vice versa (unless in `if consteval` context).

@@ -38,13 +38,13 @@ constexpr, consteval, static_assert, template metaprogramming, and compile-time 
 
 ## Notes
 
-- constexpr functions can run at both compile time and runtime — the compiler decides based on context
-- consteval (C++20) forces compile-time evaluation — use for immediate functions
-- constexpr containers (std::vector, std::string) arrived in C++20 for transient allocations
-- Template metaprogramming is being replaced by constexpr and consteval for most use cases
-- static_assert validates compile-time conditions with clear error messages
-- std::is_constant_evaluated() lets a function detect whether it's running at compile time
-- Compile-time string processing is possible with constexpr std::string in C++20
-- constexpr virtual functions work since C++20 for compile-time polymorphism
-- Fold expressions (C++17) replace recursive template patterns for variadic operations
-- Source location (std::source_location) provides compile-time file/line info without macros
+- `constexpr` functions can run at both compile time and runtime - the compiler decides based on context.
+- `consteval` (C++20) forces compile-time evaluation - use it for immediate functions that must never run at runtime.
+- `constexpr` containers (`std::vector`, `std::string`) arrived in C++20 for transient allocations.
+- Template metaprogramming is being replaced by `constexpr` and `consteval` for most use cases.
+- `static_assert` validates compile-time conditions with clear error messages.
+- `std::is_constant_evaluated()` lets a function detect whether it's running at compile time.
+- Compile-time string processing is possible with `constexpr std::string` in C++20.
+- `constexpr` virtual functions work since C++20 for compile-time polymorphism.
+- Fold expressions (C++17) replace recursive template patterns for variadic operations.
+- `std::source_location` provides compile-time file/line info without macros.

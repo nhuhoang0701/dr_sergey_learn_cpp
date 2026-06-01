@@ -11,10 +11,11 @@
 
 ### Generating Lookup Tables at Compile Time
 
-Instead of computing lookup tables at program startup, we can generate them entirely at compile time using `constexpr` functions that populate a `std::array`. The result is embedded directly in the binary's read-only data segment.
+Instead of computing lookup tables at program startup, you can generate them entirely at compile time using `constexpr` functions that populate a `std::array`. The result is embedded directly in the binary's read-only data segment - the table exists before your program even starts.
+
+The IIFE (immediately-invoked function expression) pattern using a lambda is the cleanest way to do this:
 
 ```cpp
-
 constexpr auto table = [] {
     std::array<double, 360> t{};
     for (int i = 0; i < 360; ++i) {
@@ -22,18 +23,23 @@ constexpr auto table = [] {
     }
     return t;
 }();
-
 ```
+
+The lambda is called once at compile time, fills the array, and the result is stored in `.rodata`. At runtime, accessing `table[i]` is just a memory load - no initialization, no computation.
 
 ### Why Generate at Compile Time
 
+The trade-off is between binary size and startup time. Here's how the two approaches compare:
+
 | Aspect | Runtime table | Compile-time table |
 | --- | :---: | :---: |
-| Startup cost | Computation runs at startup | Zero — already in binary |
+| Startup cost | Computation runs at startup | Zero - already in binary |
 | Memory location | `.data` or heap | `.rodata` (read-only) |
 | Thread safety | Needs synchronization (or `call_once`) | Inherently safe |
 | Binary size | Smaller (code generates data) | Larger (data in binary) |
 | Access speed | Same O(1) | Same O(1) |
+
+The thread safety row is often overlooked: a `constexpr` table requires no locking or `std::call_once` because it's initialized before any code runs. That's a genuine architectural simplification for tables shared across threads.
 
 ---
 
@@ -41,8 +47,9 @@ constexpr auto table = [] {
 
 ### Q1: Generate a compile-time sine table as `constexpr std::array<double, 360>`
 
-```cpp
+`std::sin` is not `constexpr`, so you can't call it during constant evaluation. The workaround is to implement a compile-time approximation using Taylor series. This is a good exercise in `constexpr` math - the Taylor series converges quickly enough for 15 terms to give floating-point accuracy across the full range.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cmath>
@@ -62,7 +69,7 @@ constexpr double constexpr_sin(double x) {
     if (x > PI) x -= 2.0 * PI;
     if (x < -PI) x += 2.0 * PI;
 
-    // Taylor series: sin(x) = x - x³/3! + x⁵/5! - x⁷/7! + ...
+    // Taylor series: sin(x) = x - x^3/3! + x^5/5! - x^7/7! + ...
     double result = 0.0;
     double term = x;
     for (int n = 1; n <= 15; ++n) {
@@ -86,10 +93,10 @@ constexpr auto make_sine_table() {
 constexpr auto sine_table = make_sine_table();
 
 // === Verify at compile time ===
-static_assert(sine_table[0] < 0.001 && sine_table[0] > -0.001);     // sin(0°) ≈ 0
-static_assert(sine_table[90] > 0.999 && sine_table[90] < 1.001);    // sin(90°) ≈ 1
-static_assert(sine_table[180] < 0.001 && sine_table[180] > -0.001); // sin(180°) ≈ 0
-static_assert(sine_table[270] < -0.999 && sine_table[270] > -1.001);// sin(270°) ≈ -1
+static_assert(sine_table[0] < 0.001 && sine_table[0] > -0.001);     // sin(0 deg) ≈ 0
+static_assert(sine_table[90] > 0.999 && sine_table[90] < 1.001);    // sin(90 deg) ≈ 1
+static_assert(sine_table[180] < 0.001 && sine_table[180] > -0.001); // sin(180 deg) ≈ 0
+static_assert(sine_table[270] < -0.999 && sine_table[270] > -1.001);// sin(270 deg) ≈ -1
 
 int main() {
     std::cout << std::fixed << std::setprecision(6);
@@ -114,13 +121,11 @@ int main() {
 
     return 0;
 }
-
 ```
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Sine Table ===
 sin(  0°) =   0.000000
 sin( 30°) =   0.500000
@@ -137,13 +142,15 @@ sin(330°) =  -0.500000
 
 === Accuracy vs std::sin ===
 Max error: 1.110223e-016
-
 ```
+
+That max error is essentially machine epsilon, so the Taylor series approximation is indistinguishable from the runtime `std::sin`.
 
 ### Q2: Verify entries with `static_assert` at compile time
 
-```cpp
+The `static_assert` pattern is the most direct way to confirm that your table generator produces correct values. If these assertions pass at compile time, you have a proof embedded in the build that the table is correct - no runtime test needed for the table itself.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cstddef>
@@ -155,7 +162,7 @@ constexpr auto make_crc8_table() {
         unsigned char crc = static_cast<unsigned char>(i);
         for (int bit = 0; bit < 8; ++bit) {
             if (crc & 0x80) {
-                crc = (crc << 1) ^ 0x07;  // polynomial: x⁸ + x² + x + 1
+                crc = (crc << 1) ^ 0x07;  // polynomial: x^8 + x^2 + x + 1
             } else {
                 crc <<= 1;
             }
@@ -222,13 +229,13 @@ int main() {
     std::cout << "\nAll static_asserts passed at compile time!\n";
     return 0;
 }
-
 ```
 
 ### Q3: Compare startup time and code size between runtime-computed and compile-time tables
 
-```cpp
+The key question when choosing between compile-time and runtime table generation is the trade-off between startup time and binary size. This benchmark makes it concrete:
 
+```cpp
 #include <iostream>
 #include <array>
 #include <chrono>
@@ -281,8 +288,8 @@ int main() {
 
     std::cout << "\n=== Binary Size Impact ===\n";
     std::cout << "Compile-time table:\n";
-    std::cout << "  - 10000 ints × 4 bytes = 40,000 bytes in .rodata\n";
-    std::cout << "  - Code: just 'load from address' — tiny\n";
+    std::cout << "  - 10000 ints x 4 bytes = 40,000 bytes in .rodata\n";
+    std::cout << "  - Code: just 'load from address' - tiny\n";
     std::cout << "  - Total: ~40 KB extra in binary\n";
 
     std::cout << "\nRuntime table:\n";
@@ -300,14 +307,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The key guideline at the bottom: for small tables (under 10 KB), the zero startup cost almost always wins. For very large tables (megabytes), the binary size impact is significant and runtime generation makes more sense. Performance-critical code - hot paths in parsers, protocol decoders, character classifiers - should always use compile-time tables.
 
 ---
 
 ## Notes
 
-- `constexpr` lookup tables live in `.rodata` — zero startup cost, inherently thread-safe.
+- `constexpr` lookup tables live in `.rodata` - zero startup cost, inherently thread-safe.
 - For `constexpr` sine/cosine, implement Taylor series since `std::sin` is not `constexpr`.
 - Use `static_assert` to verify critical table entries at compile time.
 - Trade-off: compile-time tables increase binary size but eliminate startup computation.

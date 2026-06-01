@@ -11,12 +11,15 @@
 
 ### Compile-Time Sieve of Eratosthenes
 
-The Sieve of Eratosthenes can be implemented as a `consteval` or `constexpr` function returning a `std::array<bool, N>`. The compiler computes all primes at compile time — the resulting binary contains a pre-computed lookup table with zero startup cost.
+The Sieve of Eratosthenes is a classic algorithm that marks off multiples to find all primes up to some limit N. Normally you would run it at startup and store the result in a runtime array. But since it is just a fixed computation on compile-time constants, you can also express it as a `consteval` or `constexpr` function that returns a `std::array<bool, N>`. When you do that, the compiler runs the entire sieve during compilation. Your binary ends up with a pre-computed lookup table in `.rodata` and absolutely zero work happens at startup.
+
+The beauty of this approach is that primality testing becomes an O(1) array index at runtime - just `sieve[n]`. No math, no trial division, nothing. The compiler already did all the work.
 
 ### Key Idea
 
-```cpp
+The structure is simple: write a function that fills a `std::array<bool, N>` using the standard sieve algorithm, return it, and store the result in a `constexpr` variable. The compiler does the rest.
 
+```cpp
 consteval auto sieve() {
     std::array<bool, 1000> is_prime{};
     // ... fill using Sieve of Eratosthenes ...
@@ -25,10 +28,11 @@ consteval auto sieve() {
 constexpr auto primes = sieve(); // computed at compile time
 static_assert(primes[2]);        // 2 is prime
 static_assert(!primes[4]);       // 4 is not prime
-
 ```
 
 ### Why Compile-Time
+
+The trade-offs depend on your use case. For embedded work the benefits of the compile-time version are especially significant.
 
 | Aspect | Runtime Sieve | Compile-Time Sieve |
 | --- | --- | --- |
@@ -43,8 +47,9 @@ static_assert(!primes[4]);       // 4 is not prime
 
 ### Q1: Implement the Sieve of Eratosthenes as a `consteval` function returning `std::array<bool, N>`
 
-```cpp
+The `consteval` keyword guarantees that the function is called only during compilation. If you accidentally call it from a runtime context, the compiler will reject the code. For a precomputed table like this that is exactly the safety guarantee you want - if someone refactors the code and the table suddenly becomes runtime-computed, you get a compile error immediately rather than a silent performance regression.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cstddef>
@@ -70,7 +75,7 @@ consteval auto make_prime_sieve() {
     return is_prime;
 }
 
-// Compile-time computation — this table lives in .rodata
+// Compile-time computation - this table lives in .rodata
 constexpr auto sieve = make_prime_sieve<1000>();
 
 // Compile-time verification
@@ -96,7 +101,7 @@ consteval std::size_t count_primes(const std::array<bool, N>& s) {
 }
 
 constexpr auto num_primes = count_primes(sieve);
-static_assert(num_primes == 168);  // π(1000) = 168
+static_assert(num_primes == 168);  // pi(1000) = 168
 
 int main() {
     std::cout << "=== Compile-Time Prime Sieve ===\n";
@@ -120,13 +125,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice that `count_primes` is also `consteval`, and `num_primes` is verified with `static_assert(num_primes == 168)`. The prime-counting function pi(1000) = 168 is a known mathematical fact, so this assertion is both a correctness test and a demonstration that the entire sieve result is available as a compile-time constant. If you have a bug in the sieve, this `static_assert` catches it before your program ever runs.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Prime Sieve ===
 Number of primes below 1000: 168
 
@@ -135,13 +140,13 @@ Primes below 100:
 
 Largest primes below 1000:
 997 991 983 977 971 967 953 947 941 937
-
 ```
 
 ### Q2: Use the sieve in a `constexpr` context to check primality without runtime cost
 
-```cpp
+Once you have a compile-time sieve, you can build more compile-time computations on top of it. Here we add a `consteval` Goldbach checker and an nth-prime finder, both of which are fully verified at compile time. The Goldbach verification is particularly striking - the compiler literally proves a number theory statement during compilation.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <cstddef>
@@ -160,7 +165,7 @@ consteval auto make_prime_sieve() {
 
 constexpr auto sieve = make_prime_sieve<10000>();
 
-// === constexpr primality check — O(1) lookup ===
+// === constexpr primality check - O(1) lookup ===
 constexpr bool is_prime(std::size_t n) {
     return n < sieve.size() && sieve[n];
 }
@@ -181,7 +186,7 @@ consteval bool verify_goldbach(std::size_t limit) {
     return true;
 }
 
-// Verified at compile time — Goldbach holds up to 1000
+// Verified at compile time - Goldbach holds up to 1000
 static_assert(verify_goldbach(1000));
 
 // === Compile-time nth prime ===
@@ -218,13 +223,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `static_assert(verify_goldbach(1000))` line is particularly interesting - it means the compiler itself verified a number theory statement for all even numbers up to 1000. If the sieve or the checker had a bug, the code would not compile. You get mathematical correctness as a compile-time guarantee.
 
 **Expected output:**
 
 ```text
-
 === Compile-Time Primality Check ===
 1 is not prime
 2 is prime
@@ -245,13 +250,13 @@ int main() {
 1000th prime: 7919
 
 Goldbach conjecture verified up to 1000 at compile time!
-
 ```
 
 ### Q3: Compare compile-time vs runtime sieve for initialization cost in embedded systems
 
-```cpp
+To make the performance benefit concrete, this example builds the same sieve both ways and measures the runtime cost. On embedded platforms the difference matters even more because boot time directly affects product responsiveness, and a CPU that is busy running a sieve at boot time is not doing anything useful for the user.
 
+```cpp
 #include <iostream>
 #include <array>
 #include <chrono>
@@ -321,13 +326,13 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The key trade-off is flash space versus boot time. The compile-time sieve burns `N` bytes in your read-only binary image, but costs zero CPU cycles at startup. Whether that is the right trade depends on your constraints - for safety-critical systems where deterministic boot time matters, compile-time tables are often the better choice.
 
 **Expected output (timing varies):**
 
 ```text
-
 === Compile-Time vs Runtime Sieve Comparison ===
 
 Sieve size: 100,000 entries
@@ -350,16 +355,15 @@ Results match: yes
 === When to choose which ===
 Compile-time: Known N, deterministic boot, embedded, safety-critical
 Runtime: N determined at runtime, very large N, memory-constrained flash
-
 ```
 
 ---
 
 ## Notes
 
-- `consteval` functions **must** be evaluated at compile time — use for guaranteed compile-time sieves.
-- `constexpr` functions **can** run at either compile or runtime — use when dual behavior is desired.
-- The sieve table ends up in `.rodata` (read-only data segment) — no startup initialization.
+- `consteval` functions **must** be evaluated at compile time - use for guaranteed compile-time sieves.
+- `constexpr` functions **can** run at either compile or runtime - use when dual behavior is desired.
+- The sieve table ends up in `.rodata` (read-only data segment) - no startup initialization.
 - For embedded: compile-time tables trade flash space for zero boot time and deterministic startup.
 - `static_assert` lets you verify properties (prime count, specific values) at compile time.
-- The sieve in Q1 uses `j % i == 0` for clarity; Q2/Q3 use `j += i` for efficiency — both work at compile time.
+- The sieve in Q1 uses `j % i == 0` for clarity; Q2/Q3 use `j += i` for efficiency - both work at compile time.
