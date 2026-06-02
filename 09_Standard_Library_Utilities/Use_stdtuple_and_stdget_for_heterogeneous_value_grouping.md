@@ -1,6 +1,6 @@
 # Use std::tuple and std::get for heterogeneous value grouping
 
-**Category:** Standard Library — Utilities  
+**Category:** Standard Library - Utilities  
 **Item:** #79  
 **Standard:** C++11  
 **Reference:** <https://en.cppreference.com/w/cpp/utility/tuple>  
@@ -10,6 +10,8 @@
 ## Topic Overview
 
 `std::tuple` (header `<tuple>`, C++11) is a fixed-size, heterogeneous container that groups values of different types. It generalizes `std::pair` to any number of elements. Combined with `std::get`, `std::apply`, structured bindings (C++17), and `std::make_from_tuple` (C++17), it forms a powerful toolkit for multi-value returns, generic programming, and heterogeneous data passing.
+
+You'll reach for `tuple` most often when you want to return multiple values from a function without creating a dedicated struct. For quick one-off groupings - especially in generic code - it's often exactly the right tool.
 
 ### Key Operations
 
@@ -23,13 +25,14 @@
 | `auto [a,b,c] = t` | C++17 | Structured binding |
 | `std::tuple_size_v<T>` | C++11 | Number of elements |
 | `std::tuple_element_t<N,T>` | C++11 | Type of Nth element |
-| `std::apply(f, t)` | C++17 | Call f(t₀, t₁, ..., tₙ) |
+| `std::apply(f, t)` | C++17 | Call f(t0, t1, ..., tn) |
 | `std::make_from_tuple<T>(t)` | C++17 | Construct T from tuple args |
 
 ### Core Example
 
-```cpp
+Here is the basic vocabulary: creating a tuple, accessing by index and by type, and using structured bindings to name the elements.
 
+```cpp
 #include <tuple>
 #include <string>
 #include <iostream>
@@ -57,7 +60,6 @@ int main() {
     auto t2 = std::make_tuple(1, 2, 4);
     std::cout << std::boolalpha << (t1 < t2) << "\n"; // true
 }
-
 ```
 
 ---
@@ -68,8 +70,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+This is probably the most common use of `tuple` in modern C++. The trick is that C++17 structured bindings make the unpacking side look just as clean as the return side.
 
+```cpp
 #include <tuple>
 #include <string>
 #include <iostream>
@@ -90,9 +93,7 @@ std::tuple<bool, double, std::string> solve_quadratic(double a, double b, double
         return {true, root1, "one root (repeated)"};
     }
     return {true, root1, "two roots: x1=" + std::to_string(root1)
-
                           + " x2=" + std::to_string(root2)};
-
 }
 
 // Multiple return values for database lookups
@@ -104,14 +105,14 @@ std::tuple<int, std::string, bool> find_user(int id) {
 }
 
 int main() {
-    // === Structured bindings (C++17) — cleanest syntax ===
+    // === Structured bindings (C++17) - cleanest syntax ===
     auto [found, root, message] = solve_quadratic(1.0, -5.0, 6.0);
     std::cout << std::boolalpha;
     std::cout << "Found: " << found << ", root: " << root
               << ", msg: " << message << "\n";
     // Output: Found: true, root: 3, msg: two roots: x1=3.000000 x2=2.000000
 
-    // === std::tie — unpack into existing variables ===
+    // === std::tie - unpack into existing variables ===
     int id;
     std::string name;
     bool active;
@@ -119,28 +120,28 @@ int main() {
     std::cout << "User: " << id << ", " << name << ", active=" << active << "\n";
     // Output: User: 1, Alice, active=true
 
-    // === std::ignore — skip unwanted fields ===
+    // === std::ignore - skip unwanted fields ===
     std::tie(std::ignore, name, std::ignore) = find_user(2);
     std::cout << "Name only: " << name << "\n";
     // Output: Name only: Bob
 
     // === Direct std::get access ===
-    auto result = solve_quadratic(1.0, 0.0, 1.0); // x²+1=0, no real roots
+    auto result = solve_quadratic(1.0, 0.0, 1.0); // x^2+1=0, no real roots
     if (!std::get<0>(result)) {
         std::cout << std::get<2>(result) << "\n"; // "no real roots"
     }
 }
-
 ```
 
-**Explanation:** `std::tuple` is ideal for returning multiple values when creating a dedicated struct would be overkill. C++17 structured bindings (`auto [a, b, c] = func()`) make the syntax clean. For pre-C++17 code, `std::tie` unpacks into existing variables. `std::get<N>` provides index-based access.
+`std::tuple` is ideal for returning multiple values when creating a dedicated struct would be overkill. C++17 structured bindings (`auto [a, b, c] = func()`) make the syntax clean. For pre-C++17 code, `std::tie` unpacks into existing variables. `std::get<N>` provides index-based access.
 
 ### Q2: Use std::apply to call a function with a tuple's elements as arguments
 
 **Answer:**
 
-```cpp
+`std::apply` is the key to making tuples useful for deferred calls and generic dispatch. It unpacks the tuple and passes each element as a separate argument to the callable.
 
+```cpp
 #include <tuple>
 #include <iostream>
 #include <string>
@@ -199,17 +200,17 @@ int main() {
     // }
     // It uses index_sequence to expand get<0>(t), get<1>(t), ... as arguments.
 }
-
 ```
 
-**Explanation:** `std::apply` (C++17) takes a callable and a tuple, then calls the function with the tuple elements unpacked as individual arguments. This is essential for generic programming where you have arguments stored in a tuple (e.g., deferred calls, serialized function parameters, variadic forwarding).
+`std::apply` (C++17) takes a callable and a tuple, then calls the function with the tuple elements unpacked as individual arguments. This is essential for generic programming where you have arguments stored in a tuple (e.g., deferred calls, serialized function parameters, variadic forwarding).
 
 ### Q3: Show how std::make_from_tuple constructs an object from a tuple of constructor arguments
 
 **Answer:**
 
-```cpp
+`std::make_from_tuple` is the construction counterpart to `std::apply`. Where `apply` calls a function, `make_from_tuple` constructs an object - both by unpacking the tuple into the call.
 
+```cpp
 #include <tuple>
 #include <string>
 #include <iostream>
@@ -279,10 +280,9 @@ int main() {
     //     }, std::forward<Tuple>(t));
     // }
 }
-
 ```
 
-**Explanation:** `std::make_from_tuple<T>(tuple)` (C++17) constructs a `T` by unpacking the tuple as constructor arguments. It's the construction counterpart to `std::apply` (which calls functions). This enables generic factories, deserialization frameworks, and any pattern where constructor arguments are stored as data.
+`std::make_from_tuple<T>(tuple)` (C++17) constructs a `T` by unpacking the tuple as constructor arguments. It's the construction counterpart to `std::apply` (which calls functions). This enables generic factories, deserialization frameworks, and any pattern where constructor arguments are stored as data.
 
 ---
 

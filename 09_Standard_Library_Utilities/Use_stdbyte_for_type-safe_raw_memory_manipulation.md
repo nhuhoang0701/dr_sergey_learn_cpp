@@ -11,12 +11,12 @@
 
 `std::byte` (defined in `<cstddef>`) is an enumeration type that represents raw memory bytes without the implicit conversions and arithmetic operations that `unsigned char` and `char` allow. It forces deliberate conversion, making raw memory code safer.
 
+The design philosophy is worth understanding. When you manipulate raw memory, you are working with *bit patterns*, not numbers. `unsigned char` blurs that line: it behaves as both a byte type and an arithmetic type, letting you accidentally do things like add two raw bytes together. `std::byte` draws a hard boundary - it is a byte, not a number, and the compiler will tell you if you confuse the two.
+
 ### Definition
 
 ```cpp
-
 enum class byte : unsigned char {};
-
 ```
 
 Because it's a scoped enum, you **cannot** accidentally use it in arithmetic or comparisons with integers.
@@ -39,8 +39,9 @@ Because it's a scoped enum, you **cannot** accidentally use it in arithmetic or 
 
 ### Core Syntax
 
-```cpp
+The compilation failure for `b + std::byte{1}` is the whole point. With `unsigned char`, that compiles silently. With `std::byte`, the compiler catches it.
 
+```cpp
 #include <cstddef>
 #include <iostream>
 
@@ -59,25 +60,25 @@ int main() {
     // std::byte x = b + std::byte{1};  // Error: no operator+ for std::byte
     // int y = b;                        // Error: no implicit conversion
 }
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Rewrite a function using unsigned char* to use std::byte* and show the semantic improvement
+### Q1: Rewrite a function using `unsigned char*` to use `std::byte*` and show the semantic improvement
 
 **Answer:**
 
-```cpp
+The `hexdump_new` version is functionally identical to `hexdump_old`, but the compiler now prevents accidental arithmetic on the bytes. Any time you need the numeric value, you have to say so explicitly with `std::to_integer`.
 
+```cpp
 #include <cstddef>
 #include <cstring>
 #include <iostream>
 #include <vector>
 
-// OLD: using unsigned char — prone to accidental arithmetic
+// OLD: using unsigned char - prone to accidental arithmetic
 void hexdump_old(const unsigned char* data, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         // Bug risk: nothing prevents data[i] + 1 or data[i] * 2
@@ -87,13 +88,13 @@ void hexdump_old(const unsigned char* data, size_t len) {
     printf("\n");
 }
 
-// NEW: using std::byte — type-safe
+// NEW: using std::byte - type-safe
 void hexdump_new(const std::byte* data, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         // Must explicitly convert to integer to print
         int val = std::to_integer<int>(data[i]);
         printf("%02X ", val);
-        
+
         // These would NOT compile, catching bugs at compile time:
         // data[i] + std::byte{1};   // No arithmetic on std::byte
         // int x = data[i];          // No implicit conversion
@@ -115,7 +116,7 @@ int main() {
     hexdump_old(reinterpret_cast<const unsigned char*>(&value), sizeof(value));
     // Output (little-endian): 78 56 34 12
 
-    // New way — same output, but type-safe
+    // New way - same output, but type-safe
     hexdump_new(reinterpret_cast<const std::byte*>(&value), sizeof(value));
     // Output (little-endian): 78 56 34 12
 
@@ -127,10 +128,9 @@ int main() {
     hexdump_new(buffer.data(), buffer.size());
     // Output: DE AD BE EF
 }
-
 ```
 
-**Semantic improvement:** With `unsigned char*`, the compiler allows arithmetic on bytes — addition, multiplication, comparisons with integers are all silently permitted. With `std::byte*`, accidental arithmetic is a compile error. You must explicitly use `std::to_integer` when you actually need the numeric value.
+**Semantic improvement:** With `unsigned char*`, the compiler allows arithmetic on bytes - addition, multiplication, comparisons with integers are all silently permitted. With `std::byte*`, accidental arithmetic is a compile error. You must explicitly use `std::to_integer` when you actually need the numeric value.
 
 ---
 
@@ -138,7 +138,7 @@ int main() {
 
 **Answer:**
 
-`std::byte` is designed to represent **raw memory** — individual bytes of storage with no numeric meaning. The design principle is:
+`std::byte` is designed to represent **raw memory** - individual bytes of storage with no numeric meaning. The design principle is:
 
 **Bitwise operations make sense for raw memory:**
 
@@ -155,21 +155,22 @@ These are all meaningful operations on bit patterns.
 - "Multiply two memory bytes" is semantically meaningless
 - These would indicate you're treating the byte as a number, which is what `uint8_t` is for
 
-```cpp
+Notice in the code below that when you genuinely need the numeric value, you convert explicitly. The cast makes the intent visible.
 
+```cpp
 #include <cstddef>
 #include <iostream>
 
 int main() {
     std::byte flags{0b1010'0101};
 
-    // Bitwise: meaningful — extract bit 3
+    // Bitwise: meaningful - extract bit 3
     std::byte bit3 = flags & std::byte{0b0000'1000};
     bool is_set = std::to_integer<int>(bit3) != 0;
     std::cout << "bit 3 set: " << std::boolalpha << is_set << "\n";
     // Output: bit 3 set: false
 
-    // Bitwise: meaningful — set bit 3
+    // Bitwise: meaningful - set bit 3
     flags = flags | std::byte{0b0000'1000};
     std::cout << "after set: " << std::to_integer<int>(flags) << "\n";
     // Output: after set: 173  (0b1010'1101)
@@ -178,7 +179,7 @@ int main() {
     // flags + std::byte{1};       // Error
     // flags * std::byte{2};       // Error
     // flags - std::byte{1};       // Error
-    // if (flags > std::byte{0})   // Error (no ordering — use to_integer first)
+    // if (flags > std::byte{0})   // Error (no ordering - use to_integer first)
 
     // When you need arithmetic, be explicit:
     int numeric = std::to_integer<int>(flags);
@@ -186,7 +187,6 @@ int main() {
     std::cout << "numeric + 1 = " << numeric << "\n";
     // Output: numeric + 1 = 174
 }
-
 ```
 
 ---
@@ -195,8 +195,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+`std::span<std::byte>` is the modern way to pass a view of raw binary data. It replaces the old `void* data, size_t len` pattern with something typed, bounds-aware, and composable.
 
+```cpp
 #include <cstddef>
 #include <span>
 #include <vector>
@@ -262,7 +263,6 @@ int main() {
     std::cout << "data[0] after byte edit: " << data[0] << "\n";
     // Output: data[0] after byte edit: 255 (on little-endian)
 }
-
 ```
 
 **Why `std::span<std::byte>` is ideal for serialization:**
@@ -279,21 +279,5 @@ int main() {
 - `std::byte` is in `<cstddef>`, **not** `<cstdint>`.
 - `std::byte` has the same size and alignment as `unsigned char` (1 byte).
 - Like `unsigned char` and `char`, `std::byte` is allowed to alias any object's memory (no strict aliasing violation).
-- `std::to_integer<T>(b)` is the only way to get the numeric value — there is no implicit conversion.
+- `std::to_integer<T>(b)` is the only way to get the numeric value - there is no implicit conversion.
 - `std::as_bytes(span)` and `std::as_writable_bytes(span)` (C++20, in `<span>`) provide the cleanest way to get byte views.
-
-**How this works:**
-
-- Std::byte interacts with std::span<std::byte> for binary serialization.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

@@ -11,12 +11,14 @@
 
 C++20 provides a family of bit-manipulation utilities in `<bit>` that replace common manual bit tricks with clear, portable, `constexpr` functions.
 
+If you have worked with hash tables, ring buffers, GPU textures, or memory allocators, you have almost certainly written or encountered hand-rolled power-of-two arithmetic. The old bit-twiddling versions work but are cryptic, easy to get wrong at edge cases, and not self-documenting. These C++20 functions do the same thing clearly and correctly.
+
 ### The Power-of-Two Functions
 
 | Function | Returns | Undefined if |
 | --- | --- | --- |
-| `std::bit_ceil(x)` | Smallest power of 2 ≥ x | Result overflows the type |
-| `std::bit_floor(x)` | Largest power of 2 ≤ x | Never (returns 0 if x==0) |
+| `std::bit_ceil(x)` | Smallest power of 2 >= x | Result overflows the type |
+| `std::bit_floor(x)` | Largest power of 2 <= x | Never (returns 0 if x==0) |
 | `std::has_single_bit(x)` | `true` if x is a power of 2 | Never |
 | `std::bit_width(x)` | Number of bits needed to represent x | Never |
 | `std::countl_zero(x)` | Leading zeros | Never |
@@ -27,8 +29,9 @@ All operate on **unsigned integer types** only.
 
 ### Old vs New
 
-```cpp
+The old version rounds up to the next power of two by filling in all the lower bits, then adding one. It works, but good luck reading it at a glance.
 
+```cpp
 // Old: round up to next power of 2
 unsigned next_pow2_old(unsigned n) {
     if (n == 0) return 1;
@@ -46,13 +49,13 @@ unsigned next_pow2_old(unsigned n) {
 constexpr unsigned next_pow2_new(unsigned n) {
     return std::bit_ceil(n);
 }
-
 ```
 
 ### Core Syntax
 
-```cpp
+Here is a quick tour of all four main functions together, so you can see what they each produce.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -80,7 +83,6 @@ int main() {
     std::cout << std::bit_width(7u)  << "\n";  // 3
     std::cout << std::bit_width(8u)  << "\n";  // 4
 }
-
 ```
 
 ---
@@ -91,8 +93,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Power-of-two buffer sizes come up constantly because they enable fast modulo via a bitmask. Notice how the allocator below makes that optimization explicit.
 
+```cpp
 #include <bit>
 #include <cstddef>
 #include <iostream>
@@ -132,12 +135,11 @@ int main() {
     std::cout << "5000 & 1023 = " << wrapped << "\n";
     // Output: 5000 & 1023 = 904
 }
-
 ```
 
 **Why power-of-2 buffer sizes:**
 
-- Modulo becomes a bitmask: `index % size` → `index & (size - 1)` — single AND instruction.
+- Modulo becomes a bitmask: `index % size` -> `index & (size - 1)` - single AND instruction.
 - Memory allocators often work in power-of-2 blocks anyway.
 - Hash table probing, ring buffers, and texture dimensions all benefit.
 
@@ -147,8 +149,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+`bit_floor` is useful when you want to process data in the largest natural chunk that fits the remaining size - for example, to align SIMD processing or divide-and-conquer recursion.
 
+```cpp
 #include <bit>
 #include <cstddef>
 #include <iostream>
@@ -190,7 +193,6 @@ int main() {
     std::cout << "bit_floor(10) = " << std::bit_floor(10u) << "\n";  // 8
     std::cout << "bit_floor(16) = " << std::bit_floor(16u) << "\n";  // 16
 }
-
 ```
 
 ---
@@ -199,8 +201,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Because all `<bit>` functions are `constexpr`, you can use them in `static_assert`, `requires` clauses, template non-type parameters, and anywhere else the compiler needs to evaluate something at compile time. The old bit-twiddling tricks were also `constexpr`-able, but the new versions are far more readable and less error-prone.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -267,7 +270,6 @@ int main() {
     std::cout << "bit_floor(100) = " << std::bit_floor(100u) << "\n"; // 64
     std::cout << "popcount(0xFF) = " << std::popcount(0xFFu) << "\n"; // 8
 }
-
 ```
 
 **Advantages of the standard functions:**
@@ -281,16 +283,8 @@ int main() {
 
 ## Notes
 
-- All `<bit>` functions work only with **unsigned** integer types — passing a signed type is a compile error.
+- All `<bit>` functions work only with **unsigned** integer types - passing a signed type is a compile error.
 - `std::bit_ceil` has undefined behavior if the result would overflow the type. For `uint32_t`, `bit_ceil(x)` is UB if `x > 2^31`.
 - `std::bit_floor(0)` returns 0 (not 1).
 - On x86, `std::popcount` compiles to the `POPCNT` instruction, `countl_zero` to `LZCNT`/`BSR`, etc.
 - These functions are in `<bit>`, not `<cmath>` or `<numeric>`.
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

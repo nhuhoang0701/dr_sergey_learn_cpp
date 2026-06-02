@@ -1,6 +1,6 @@
 # Use std::views::keys and views::values to iterate map keys or values
 
-**Category:** Standard Library — Utilities  
+**Category:** Standard Library - Utilities  
 **Item:** #367  
 **Standard:** C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/ranges/keys_view>  
@@ -11,21 +11,22 @@
 
 `std::views::keys` and `std::views::values` (C++20) are range adaptors that project only the first or second element of a range of pair-like elements. When applied to a `std::map`, they let you iterate over keys or values without writing explicit lambda transforms.
 
+Before these adaptors existed, iterating just the keys of a map meant writing `for (const auto& [k, v] : m)` and ignoring `v`, or writing a `views::transform` lambda. Both work, but `views::keys` is shorter, self-documenting, and requires no lambda at all.
+
 ### What They Do
 
 ```cpp
-
 std::map<string, int>:  {"alice": 95, "bob": 87, "charlie": 42}
-                            │                              │
-  views::keys ─────────→   "alice", "bob", "charlie"      │
-  views::values ───────────────────────────────────────→  95, 87, 42
-
+                            |                              |
+  views::keys --------->   "alice", "bob", "charlie"      |
+  views::values ------------------------------------------> 95, 87, 42
 ```
 
 ### Under the Hood
 
-```cpp
+It's worth understanding what these adaptors actually are, because it makes their behavior predictable.
 
+```cpp
 // views::keys is equivalent to:
 views::elements<0>
 
@@ -34,13 +35,13 @@ views::elements<1>
 
 // Both are syntactic sugar for:
 views::transform([](auto& pair) -> auto& { return std::get<N>(pair); })
-
 ```
 
 ### Core Example
 
-```cpp
+Here are keys, values, and a composed pipeline that filters before projecting.
 
+```cpp
 #include <map>
 #include <ranges>
 #include <iostream>
@@ -76,8 +77,9 @@ int main() {
     std::cout << "\n";
     // Output: High scorers: Alice Bob
 }
-
 ```
+
+Notice that `views::filter` still receives the full pair (you filter on `p.second`), and only after filtering do you project to just the keys. The ordering in the pipeline matters.
 
 ---
 
@@ -87,8 +89,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+`views::keys` gives you references to the map's actual key objects - no copies - and since map keys are inherently `const`, they come back as `const std::string&`.
 
+```cpp
 #include <map>
 #include <string>
 #include <ranges>
@@ -128,21 +131,21 @@ int main() {
     // === views::keys gives REFERENCES to the actual keys ===
     // (const references, since map keys are const)
     for (const auto& key : inventory | std::views::keys) {
-        // key is "const std::string&" — no copy made
+        // key is "const std::string&" - no copy made
         static_assert(std::is_same_v<decltype(key), const std::string&>);
     }
 }
-
 ```
 
-**Explanation:** `views::keys` extracts the `.first` member of each pair in the map, producing a range of key references. No copies are made — the view operates lazily. Since map keys are inherently `const`, the references are `const std::string&`.
+`views::keys` extracts the `.first` member of each pair in the map, producing a range of key references. No copies are made - the view operates lazily. Since map keys are inherently `const`, the references are `const std::string&`.
 
-### Q2: Collect all values from an unordered_map using views::values | ranges::to<vector>
+### Q2: Collect all values from an unordered_map using views::values | ranges::to\<vector\>
 
 **Answer:**
 
-```cpp
+Lazy views are great for iteration, but sometimes you need a concrete container. `ranges::to<std::vector>()` (C++23) materializes the lazy view in one step.
 
+```cpp
 #include <unordered_map>
 #include <string>
 #include <ranges>
@@ -207,17 +210,17 @@ int main() {
     std::cout << "\n";
     // Output: cherry: 6 banana: 10 apple: 20  (order varies)
 }
-
 ```
 
-**Explanation:** `views::values` produces references to the `.second` member of each pair. With `ranges::to<std::vector>()` (C++23), you can materialize the lazy view into a concrete container in one expression. For mutable maps, `views::values` gives mutable references, allowing in-place modification.
+`views::values` produces references to the `.second` member of each pair. With `ranges::to<std::vector>()` (C++23), you can materialize the lazy view into a concrete container in one expression. For mutable maps, `views::values` gives mutable references, allowing in-place modification.
 
 ### Q3: Explain that views::keys is equivalent to views::transform([](auto& p){ return p.first; })
 
 **Answer:**
 
-```cpp
+Understanding the equivalence helps you predict how `views::keys` behaves in edge cases, and it reveals why `views::elements<N>` generalizes the idea to any tuple index.
 
+```cpp
 #include <map>
 #include <ranges>
 #include <iostream>
@@ -250,7 +253,7 @@ int main() {
     // === Why views::keys is better ===
     // 1. Shorter, more readable
     // 2. Returns REFERENCES (not copies) by default
-    // 3. Standard name — everyone knows what it means
+    // 3. Standard name - everyone knows what it means
     // 4. Works with any tuple-like type (not just std::pair)
 
     // === Under the hood ===
@@ -263,14 +266,14 @@ int main() {
         {1, 3.14, "a"}, {2, 2.72, "b"}, {3, 1.41, "c"}
     };
 
-    // views::keys = views::elements<0> → gets the ints
+    // views::keys = views::elements<0> -> gets the ints
     std::cout << "tuple firsts: ";
     for (int i : data | std::views::keys) // or std::views::elements<0>
         std::cout << i << " ";
     std::cout << "\n";
     // Output: tuple firsts: 1 2 3
 
-    // views::elements<2> → gets the strings (no shorthand name)
+    // views::elements<2> -> gets the strings (no shorthand name)
     std::cout << "tuple thirds: ";
     for (const auto& s : data | std::views::elements<2>)
         std::cout << s << " ";
@@ -279,18 +282,17 @@ int main() {
 
     // So views::keys/values are convenient aliases for the most common cases.
 }
-
 ```
 
-**Explanation:** `views::keys` is defined as `views::elements<0>`, which in turn uses `std::get<0>()` on each element. This is semantically equivalent to a `views::transform` that extracts `.first`, but `views::keys` is more concise, returns references by default, and works with any tuple-like element (not just `std::pair`). `views::elements<N>` generalizes this to any tuple index.
+`views::keys` is defined as `views::elements<0>`, which in turn uses `std::get<0>()` on each element. This is semantically equivalent to a `views::transform` that extracts `.first`, but `views::keys` is more concise, returns references by default, and works with any tuple-like element (not just `std::pair`). `views::elements<N>` generalizes this to any tuple index.
 
 ---
 
 ## Notes
 
-- **Reference semantics:** `views::keys` and `views::values` produce references to the original elements — no copies. For `const` maps, these are `const` references.
+- **Reference semantics:** `views::keys` and `views::values` produce references to the original elements - no copies. For `const` maps, these are `const` references.
 - **Mutable values:** For non-const maps, `views::values` gives mutable references, enabling `for (auto& v : m | views::values) v = 0;`.
 - **Keys are always const** in `std::map` and `std::unordered_map` because modifying keys would corrupt the data structure.
 - **`views::elements<N>`** is the general form: `views::keys` = `elements<0>`, `views::values` = `elements<1>`. Use `elements<2>`, `elements<3>`, etc. for tuples with more than 2 elements.
-- **Works with any pair/tuple range:** Not limited to maps — works with `vector<pair>`, `vector<tuple>`, etc.
+- **Works with any pair/tuple range:** Not limited to maps - works with `vector<pair>`, `vector<tuple>`, etc.
 - Compile with `-std=c++20 -Wall -Wextra` (or `-std=c++23` for `ranges::to`).

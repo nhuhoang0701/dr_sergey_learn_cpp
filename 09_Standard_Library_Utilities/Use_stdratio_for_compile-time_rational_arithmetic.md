@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-`std::ratio` (header `<ratio>`) represents a compile-time fraction as a ratio of two `std::intmax_t` values. It's the backbone of `std::chrono`'s type-safe duration system and can be used anywhere you need exact rational arithmetic at compile time without floating-point imprecision.
+`std::ratio` (header `<ratio>`) represents a compile-time fraction as a ratio of two `std::intmax_t` values. It's the backbone of `std::chrono`'s type-safe duration system and can be used anywhere you need exact rational arithmetic at compile time without floating-point imprecision. The key insight is that these are purely type-level values - there are no runtime instances, only types with `::num` and `::den` members you read at compile time.
 
 ### Core Type
 
-```cpp
+The template stores a fraction in its simplest reduced form. You put in any numerator and denominator, and the type gives back the reduced version:
 
+```cpp
 template <std::intmax_t Num, std::intmax_t Den = 1>
 class ratio {
 public:
@@ -21,12 +22,13 @@ public:
     static constexpr std::intmax_t den = /* reduced Den */;
     using type = ratio<num, den>;  // reduced form
 };
-
 ```
 
-The ratio is always stored in **reduced form**: `std::ratio<6, 4>::num == 3`, `std::ratio<6, 4>::den == 2`.
+The ratio is always stored in **reduced form**: `std::ratio<6, 4>::num == 3`, `std::ratio<6, 4>::den == 2`. This automatic reduction means you never have to manually simplify - the type system does it for you.
 
 ### Predefined Ratios (SI Prefixes)
+
+The standard library ships with all the SI prefixes pre-defined. You'll encounter these most often when working with `std::chrono` durations.
 
 | Name | Ratio | Decimal |
 | --- | --- | --- |
@@ -43,6 +45,8 @@ The ratio is always stored in **reduced form**: `std::ratio<6, 4>::num == 3`, `s
 
 ### Compile-Time Arithmetic Operations
 
+All arithmetic happens through type aliases - you get a new type back, not a runtime value. The result is always in reduced form.
+
 | Operation | Type alias | Result |
 | --- | --- | --- |
 | `ratio_add<R1, R2>` | Addition | `R1 + R2` as reduced ratio |
@@ -54,8 +58,9 @@ The ratio is always stored in **reduced form**: `std::ratio<6, 4>::num == 3`, `s
 
 ### Core Examples
 
-```cpp
+Here's `std::ratio` in action. Notice that `static_assert` is used to verify results at compile time - this is typical; you're working with types, not runtime values.
 
+```cpp
 #include <ratio>
 #include <iostream>
 
@@ -72,7 +77,7 @@ int main() {
     using product = std::ratio_multiply<one_third, two_thirds>;
     std::cout << product::num << "/" << product::den << "\n"; // 2/9
 
-    // Automatic reduction: 6/4 → 3/2
+    // Automatic reduction: 6/4 -> 3/2
     using reduced = std::ratio<6, 4>;
     std::cout << reduced::num << "/" << reduced::den << "\n"; // 3/2
 
@@ -84,8 +89,9 @@ int main() {
     std::cout << "nano: " << std::nano::num << "/" << std::nano::den << "\n";
     // nano: 1/1000000000
 }
-
 ```
+
+The entire computation - addition, reduction, comparison - happens at compile time. By the time your program runs, these are just constants.
 
 ---
 
@@ -96,7 +102,6 @@ int main() {
 **Answer:**
 
 ```cpp
-
 #include <ratio>
 #include <iostream>
 #include <cstdint>
@@ -138,17 +143,17 @@ int main() {
     std::cout << "Half a byte = " << half_byte::num << " bits (nibble)\n";
     // Half a byte = 4 bits (nibble)
 }
-
 ```
 
-**Explanation:** `std::ratio<8, 1>` represents the compile-time constant 8/1 (8 bits per byte). This can be used in template computations, `static_assert`s, and type-level arithmetic. The `convert` template divides the source ratio by the target ratio to get a conversion factor, all computed at compile time.
+`std::ratio<8, 1>` represents the compile-time constant 8/1 (8 bits per byte). This can be used in template computations, `static_assert`s, and type-level arithmetic. The `convert` template divides the source ratio by the target ratio to get a conversion factor, all computed at compile time.
 
 ### Q2: Show how std::chrono uses std::ratio for period definitions (std::milli, std::nano)
 
 **Answer:**
 
-```cpp
+The reason `std::chrono` can prevent you from accidentally adding milliseconds to seconds without a cast is exactly because the period is encoded as a `std::ratio` in the type. The compiler compares those ratios and refuses conversions that would lose data.
 
+```cpp
 #include <chrono>
 #include <ratio>
 #include <iostream>
@@ -191,7 +196,7 @@ int main() {
 
     // ratio enables implicit safe conversions (no data loss):
     std::chrono::seconds sec(1);
-    std::chrono::milliseconds ms = sec;  // OK: 1s → 1000ms (widening)
+    std::chrono::milliseconds ms = sec;  // OK: 1s -> 1000ms (widening)
     std::cout << "1 second = " << ms.count() << " ms\n"; // 1000
 
     // Narrowing requires duration_cast:
@@ -199,17 +204,15 @@ int main() {
     auto sec2 = std::chrono::duration_cast<std::chrono::seconds>(ms2);
     std::cout << "1500 ms = " << sec2.count() << " s (truncated)\n"; // 1
 }
-
 ```
 
-**Explanation:** `std::chrono::duration<Rep, Period>` uses `std::ratio` as its `Period` template parameter — `std::ratio<1, 1000>` for milliseconds means each tick represents 1/1000 of a second. This type-level encoding of units prevents accidentally adding minutes to nanoseconds without conversion. The compiler uses ratio arithmetic to compute conversion factors at compile time.
+`std::chrono::duration<Rep, Period>` uses `std::ratio` as its `Period` template parameter - `std::ratio<1, 1000>` for milliseconds means each tick represents 1/1000 of a second. This type-level encoding of units prevents accidentally adding minutes to nanoseconds without conversion. The compiler uses ratio arithmetic to compute conversion factors at compile time.
 
 ### Q3: Use std::ratio_add, std::ratio_multiply to compute ratios at compile time
 
 **Answer:**
 
 ```cpp
-
 #include <ratio>
 #include <iostream>
 
@@ -256,36 +259,17 @@ int main() {
               << "/" << two_frames::den << " second\n";
     // 2 frames at 60fps = 1/30 second
 }
-
 ```
 
-**Explanation:** All `ratio_*` operations produce a new `std::ratio` type with the result in reduced form. The entire computation happens at compile time — zero runtime cost. These type aliases can chain: `ratio_multiply<ratio_add<A, B>, C>` computes `(A + B) × C`. The results are available as `::num` and `::den` static constexpr members.
+All `ratio_*` operations produce a new `std::ratio` type with the result in reduced form. The entire computation happens at compile time - zero runtime cost. These type aliases can chain: `ratio_multiply<ratio_add<A, B>, C>` computes `(A + B) × C`. The results are available as `::num` and `::den` static constexpr members.
 
 ---
 
 ## Notes
 
 - **Always reduced:** `std::ratio<6,9>` has `num=2, den=3`. The sign is always on the numerator: `std::ratio<1,-3>::num == -1`, `den == 3`.
-- **Overflow protection:** If the numerator or denominator would overflow `std::intmax_t` during arithmetic, the program is ill-formed (compile error). This is by design — silent overflow would defeat the purpose.
-- **Not a runtime type:** `std::ratio` has no runtime instances. It's purely a type-level construct — you use `::num` and `::den` to extract values.
+- **Overflow protection:** If the numerator or denominator would overflow `std::intmax_t` during arithmetic, the program is ill-formed (compile error). This is by design - silent overflow would defeat the purpose.
+- **Not a runtime type:** `std::ratio` has no runtime instances. It's purely a type-level construct - you use `::num` and `::den` to extract values.
 - **`chrono` connection:** Every `std::chrono::duration` has a `::period` member type that's a `std::ratio`. This enables the type system to prevent mixing incompatible time units.
-- **Zero denominator:** `std::ratio<1, 0>` is ill-formed — compile error.
+- **Zero denominator:** `std::ratio<1, 0>` is ill-formed - compile error.
 - Compile with `-std=c++20 -Wall -Wextra`.
-
-```cpp
-
-**How this works:**
-
-- Std::ratio_add, std::ratio_multiply to compute ratios at compile time.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

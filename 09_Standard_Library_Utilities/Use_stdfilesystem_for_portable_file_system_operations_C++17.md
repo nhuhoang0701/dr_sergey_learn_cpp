@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`std::filesystem` (in `<filesystem>`, namespace `std::filesystem` or `namespace fs = std::filesystem`) provides portable file/directory operations — listing, creating, copying, removing, querying — that work identically on Windows, Linux, and macOS.
+`std::filesystem` (in `<filesystem>`, namespace `std::filesystem` or `namespace fs = std::filesystem`) provides portable file/directory operations - listing, creating, copying, removing, querying - that work identically on Windows, Linux, and macOS.
+
+Before C++17, portable file I/O meant either wrapping POSIX calls (which do not exist on Windows), using Boost.Filesystem, or writing your own platform-switching code. `std::filesystem` ended that. The same path arithmetic, directory iteration, and file queries now compile and work on every major platform.
 
 ### Key Types
 
@@ -24,8 +26,9 @@
 
 ### Path Arithmetic
 
-```cpp
+`fs::path` overloads `/=` and `/` so you can build paths by concatenating components without worrying about which separator character to use on which OS.
 
+```cpp
 namespace fs = std::filesystem;
 fs::path p = "/home/user";
 p /= "documents";           // p = "/home/user/documents"
@@ -36,13 +39,13 @@ p.stem();           // "report"
 p.extension();      // ".pdf"
 p.parent_path();    // "/home/user/documents"
 p.root_path();      // "/"
-
 ```
 
 ### Core Syntax
 
-```cpp
+Here is a minimal tour: get the current directory, create a nested directory tree, check existence, query file size, and clean up.
 
+```cpp
 #include <filesystem>
 #include <iostream>
 
@@ -68,7 +71,6 @@ int main() {
     // Remove
     fs::remove_all("test");  // recursive delete
 }
-
 ```
 
 ---
@@ -79,8 +81,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The second loop in the example shows how to handle errors per-entry using `std::error_code`. This is the robust pattern for real code where you might hit permission-denied directories mid-traversal.
 
+```cpp
 #include <filesystem>
 #include <iostream>
 #include <vector>
@@ -123,7 +126,6 @@ int main() {
         }
     }
 }
-
 ```
 
 **Key points:**
@@ -139,8 +141,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Notice the `fs::relative` and `fs::canonical` utilities - these go beyond simple concatenation and let you normalize paths and compute relative relationships between them, which comes up constantly in build tools and project file management.
 
+```cpp
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -200,7 +203,6 @@ int main() {
     std::cout << "\n";
     // Output: ["/"] ["usr"] ["local"] ["bin"] ["gcc"]
 }
-
 ```
 
 ---
@@ -209,8 +211,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Every `std::filesystem` function that can fail comes in two flavors: one that throws `fs::filesystem_error` and one that takes an `std::error_code` reference and sets it instead. Use the exception version when failure is unexpected; use the `error_code` version in loops or anywhere you expect some operations to fail.
 
+```cpp
 #include <filesystem>
 #include <iostream>
 
@@ -232,7 +235,7 @@ int main() {
     auto size = fs::file_size("/nonexistent/file.txt", ec);
     if (ec) {
         std::cerr << "Error: " << ec.message() << "\n";
-        // No exception thrown — suitable for hot paths
+        // No exception thrown - suitable for hot paths
     } else {
         std::cout << "Size: " << size << "\n";
     }
@@ -275,10 +278,9 @@ int main() {
             std::cout << it->path().filename().string()
                       << ": " << fsize << " bytes\n";
         }
-        // Skip files we can't stat — no exception, no crash
+        // Skip files we can't stat - no exception, no crash
     }
 }
-
 ```
 
 **When to use which:**
@@ -292,28 +294,7 @@ int main() {
 
 - On GCC < 9, link with `-lstdc++fs`. On Clang/libc++ < 9, link with `-lc++fs`.
 - `fs::path` uses `wchar_t` on Windows and `char` on POSIX. Use `.string()` for narrow string, `.wstring()` for wide.
-- `fs::remove` deletes a single file/empty directory. `fs::remove_all` is recursive — use with caution.
-- `fs::last_write_time` returns a `std::filesystem::file_time_type` — convert to `system_clock` via `std::chrono::clock_cast` (C++20).
+- `fs::remove` deletes a single file/empty directory. `fs::remove_all` is recursive - use with caution.
+- `fs::last_write_time` returns a `std::filesystem::file_time_type` - convert to `system_clock` via `std::chrono::clock_cast` (C++20).
 - `fs::space()` returns disk space info (capacity, free, available).
-- Always handle errors when working with the filesystem — permissions, missing files, and race conditions are common.
-
-int main() {
-    std::error_code obj; // create and use
-    return 0;
-}
-
-```cpp
-
-- Handle errors using std::error_code overloads to avoid exceptions in performance-critical paths.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- Always handle errors when working with the filesystem - permissions, missing files, and race conditions are common.

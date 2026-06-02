@@ -9,45 +9,44 @@
 
 ## Topic Overview
 
-`std::mdspan` (C++23) is a non-owning, multi-dimensional view over a contiguous range of elements — essentially an N-dimensional generalization of `std::span`. It decouples the logical shape (extents), memory layout (layout policy), and element access (accessor policy) from storage, enabling zero-copy multi-dimensional access to flat arrays.
+`std::mdspan` (C++23) is a non-owning, multi-dimensional view over a contiguous range of elements - think of it as an N-dimensional generalization of `std::span`. You have a flat array (or `vector`, or any contiguous buffer), and `mdspan` gives it a shape, a layout policy, and a safe element-access API without touching the data itself. The big idea is that storage and shape are completely decoupled: the same buffer can be viewed as a 2×3 matrix, a 6-element vector, or a column-major 3×2 matrix, all through different `mdspan` objects pointing at identical memory.
 
 ### Template Parameters
 
 ```cpp
-
 std::mdspan<ElementType, Extents, LayoutPolicy, AccessorPolicy>
-
 ```
 
 | Parameter | Purpose | Default |
 | --- | --- | --- |
-| `ElementType` | Type of elements (e.g., `double`) | — (required) |
-| `Extents` | Logical dimensions — mix of static and dynamic | — (required) |
+| `ElementType` | Type of elements (e.g., `double`) | - (required) |
+| `Extents` | Logical dimensions - mix of static and dynamic | - (required) |
 | `LayoutPolicy` | Memory ordering | `layout_right` (row-major, C-style) |
 | `AccessorPolicy` | How elements are read/written | `default_accessor<ElementType>` |
 
 ### Layout Policies
 
-```cpp
+Understanding the layout policies is crucial, especially if you interface with BLAS or NumPy. Row-major and column-major both describe valid ways to flatten a 2D grid into a 1D array - they just differ in which axis is contiguous in memory:
 
+```text
 Row-major (layout_right, C/C++ default):
-  Logical [i][j] → data[i * cols + j]
+  Logical [i][j] -> data[i * cols + j]
 
   Memory: [0,0] [0,1] [0,2] | [1,0] [1,1] [1,2]
-          ─── row 0 ───────   ─── row 1 ───────
+          --- row 0 -------   --- row 1 -------
 
 Column-major (layout_left, Fortran/BLAS):
-  Logical [i][j] → data[j * rows + i]
+  Logical [i][j] -> data[j * rows + i]
 
   Memory: [0,0] [1,0] | [0,1] [1,1] | [0,2] [1,2]
-          ── col 0 ──   ── col 1 ──   ── col 2 ──
-
+          -- col 0 --   -- col 1 --   -- col 2 --
 ```
 
-### Core Syntax — Creating and Using mdspan
+### Core Syntax - Creating and Using mdspan
+
+The `[i, j]` multi-dimensional subscript is new in C++23. On C++20 with a reference implementation, use `(i, j)` instead:
 
 ```cpp
-
 #include <mdspan>
 #include <vector>
 #include <iostream>
@@ -78,13 +77,13 @@ int main() {
     std::mdspan<double, std::extents<int, 2, 3, 4>> cube(cube_data);
     cube[1, 2, 3] = 42.0;
 }
-
 ```
 
 ### Column-Major Layout
 
-```cpp
+Here the same six integers are viewed through a `layout_left` (column-major) `mdspan`. The logical coordinates are the same, but the mapping to flat memory is different - so the printed values differ:
 
+```cpp
 #include <mdspan>
 #include <iostream>
 
@@ -105,7 +104,6 @@ int main() {
     // 1 3 5
     // 2 4 6
 }
-
 ```
 
 ---
@@ -116,8 +114,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The key thing to notice is that `flat` never moves. The `mdspan` wraps a raw pointer and adds the row/column arithmetic on top - it's purely a view:
 
+```cpp
 #include <mdspan>
 #include <vector>
 #include <iostream>
@@ -133,7 +132,7 @@ int main() {
 
     // Access elements using multidimensional subscript
     std::cout << "mat[0,0] = " << mat[0, 0] << "\n"; // 10
-    std::cout << "mat[1,2] = " << mat[1, 2] << "\n"; // 70 (row 1, col 2 → index 1*4+2=6 → 70)
+    std::cout << "mat[1,2] = " << mat[1, 2] << "\n"; // 70 (row 1, col 2 -> index 1*4+2=6 -> 70)
     std::cout << "mat[2,3] = " << mat[2, 3] << "\n"; // 120
 
     // Print entire matrix
@@ -143,16 +142,17 @@ int main() {
         std::cout << "\n";
     }
     // Output:
-    // 10	20	30	40
-    // 50	60	70	80
-    // 90	100	110	120
+    // 10  20  30  40
+    // 50  60  70  80
+    // 90  100 110 120
 }
-
 ```
 
-**Explanation:** `mdspan` wraps a raw pointer (`flat.data()`) with extents (3×4). The `[i, j]` syntax uses C++23 multidimensional subscript. With `layout_right` (default), `mat[i, j]` maps to `flat[i * 4 + j]`. The vector's data is never copied — `mdspan` is purely a view.
+**Explanation:** `mdspan` wraps a raw pointer (`flat.data()`) with extents (3×4). The `[i, j]` syntax uses C++23 multidimensional subscript. With `layout_right` (default), `mat[i, j]` maps to `flat[i * 4 + j]`. The vector's data is never copied - `mdspan` is purely a view.
 
 ### Q2: Explain the difference between row-major (C) and column-major (Fortran) layout policies
+
+The layout affects which traversal order is cache-friendly. Accessing memory out of sequential order forces the CPU to fetch cache lines that aren't needed yet, which can cause a dramatic slowdown on large matrices.
 
 | Property | Row-major (`layout_right`) | Column-major (`layout_left`) |
 | --- | --- | --- |
@@ -162,8 +162,9 @@ int main() {
 | Cache-friendly traversal | Inner loop over columns: `for(j)` | Inner loop over rows: `for(i)` |
 | `mdspan` layout | `std::layout_right` (default) | `std::layout_left` |
 
-```cpp
+The same six-element array viewed two different ways:
 
+```cpp
 #include <mdspan>
 #include <iostream>
 
@@ -177,8 +178,8 @@ int main() {
     std::cout << "Row-major [0,1] = " << row_major[0, 1] << "\n"; // 2
     std::cout << "Col-major [0,1] = " << col_major[0, 1] << "\n"; // 3
 
-    // Row-major mapping: [0,1] → 0*3+1 = index 1 → data[1] = 2
-    // Col-major mapping: [0,1] → 1*2+0 = index 2 → data[2] = 3
+    // Row-major mapping: [0,1] -> 0*3+1 = index 1 -> data[1] = 2
+    // Col-major mapping: [0,1] -> 1*2+0 = index 2 -> data[2] = 3
 
     // Cache-friendly iteration for row-major:
     for (int i = 0; i < 2; ++i)         // outer: rows
@@ -194,15 +195,15 @@ int main() {
             std::cout << col_major[i, j] << " ";
     // 1 2 3 4 5 6 — sequential memory access
 }
-
 ```
 
-**Key insight:** The layout determines which traversal order gives sequential memory access. Mismatching loop order with layout can cause cache thrashing in large matrices — potentially orders-of-magnitude slowdown.
+**Key insight:** The layout determines which traversal order gives sequential memory access. Mismatching loop order with layout can cause cache thrashing in large matrices - potentially orders-of-magnitude slowdown.
 
 ### Q3: Show how mdspan enables zero-copy interoperability with BLAS/LAPACK style APIs
 
-```cpp
+`mdspan::data_handle()` returns the raw pointer that C/Fortran APIs need. `extent(n)` and `stride(n)` give you the dimension metadata. Because you're using the same pointer the `mdspan` already holds, no data is copied at any point:
 
+```cpp
 #include <mdspan>
 #include <vector>
 #include <iostream>
@@ -253,33 +254,22 @@ int main() {
     std::cout << "Matrix (column-major via mdspan):\n";
     print_matrix(A);
     // Output:
-    // 1	3	5
-    // 2	4	6
+    // 1  3  5
+    // 2  4  6
 
     std::cout << "y = " << y[0] << ", " << y[1] << "\n";
 }
-
 ```
 
-**Explanation:** `mdspan::data_handle()` returns the raw pointer BLAS expects. `extent(n)` and `stride(n)` provide the dimension metadata. By using `layout_left` (column-major), the mdspan's logical layout already matches BLAS conventions — no transposition or copying needed. This is the core value proposition: the same memory block has a safe, typed, bounds-checkable C++ API (`mdspan`) and can be passed directly to legacy C/Fortran BLAS routines through its raw pointer.
+**Explanation:** `mdspan::data_handle()` returns the raw pointer BLAS expects. `extent(n)` and `stride(n)` provide the dimension metadata. By using `layout_left` (column-major), the mdspan's logical layout already matches BLAS conventions - no transposition or copying needed. This is the core value proposition: the same memory block has a safe, typed, bounds-checkable C++ API (`mdspan`) and can be passed directly to legacy C/Fortran BLAS routines through its raw pointer.
 
 ---
 
 ## Notes
 
 - **Compiler support (2024):** `mdspan` is available in GCC 14+, Clang 18+, MSVC 17.9+. Kokkos provides a standalone reference implementation at [github.com/kokkos/mdspan](https://github.com/kokkos/mdspan).
-- **`submdspan()` (C++26):** Creates sub-views of mdspan — e.g., extract a row, column, or sub-matrix. Available in the reference implementation today.
-- **`mdarray` (future):** An owning counterpart to `mdspan` — like `std::vector` is to `std::span`. Expected in C++26.
+- **`submdspan()` (C++26):** Creates sub-views of mdspan - e.g., extract a row, column, or sub-matrix. Available in the reference implementation today.
+- **`mdarray` (future):** An owning counterpart to `mdspan` - like `std::vector` is to `std::span`. Expected in C++26.
 - **Performance:** `mdspan` has zero overhead over raw pointer arithmetic when extents are static. Dynamic extents add one integer per dynamic dimension.
 - **Multidimensional subscript:** `m[i, j]` requires C++23. On C++20, use `m(i, j)` with the reference implementation (operator() overload).
 - Compile with `-std=c++23 -Wall -Wextra`.
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

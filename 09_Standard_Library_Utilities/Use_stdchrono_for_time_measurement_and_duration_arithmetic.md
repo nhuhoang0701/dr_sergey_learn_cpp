@@ -11,25 +11,27 @@
 
 The `<chrono>` library provides type-safe time utilities: **clocks** (source of time), **time points** (an instant in time), and **durations** (a span of time). The type system prevents accidental mixing of incompatible time units.
 
+The reason this library feels a bit verbose at first is that it encodes dimensional analysis into the type system. You cannot accidentally pass seconds where milliseconds are expected, and you cannot silently lose precision by assigning a millisecond value to a seconds variable. The compiler catches those mistakes for you - the price is that you sometimes have to write `duration_cast` explicitly, but that is a feature: it makes lossy conversions visible.
+
 ### Three Main Clocks
 
 | Clock | Properties | Use for |
 | --- | --- | --- |
 | `std::chrono::system_clock` | Wall clock, adjustable, epoch = Unix epoch | Calendar dates, file timestamps |
 | `std::chrono::steady_clock` | Monotonic, not adjustable | Measuring elapsed time, timeouts |
-| `std::chrono::high_resolution_clock` | Alias for one of the above | Avoid — use `steady_clock` explicitly |
+| `std::chrono::high_resolution_clock` | Alias for one of the above | Avoid - use `steady_clock` explicitly |
 
 ### Duration Types
 
-```cpp
+These are all aliases for the same `duration<Rep, Period>` template. The key thing to understand is that the `Rep` is the underlying numeric type and `Period` is the ratio to one second.
 
+```cpp
 using nanoseconds  = duration<int64_t, std::nano>;
 using microseconds = duration<int64_t, std::micro>;
 using milliseconds = duration<int64_t, std::milli>;
 using seconds      = duration<int64_t>;
 using minutes      = duration<int64_t, std::ratio<60>>;
 using hours        = duration<int64_t, std::ratio<3600>>;
-
 ```
 
 ### C++20 Additions
@@ -40,8 +42,9 @@ using hours        = duration<int64_t, std::ratio<3600>>;
 
 ### Core Syntax
 
-```cpp
+Here is the full basic pattern in one place: take a timestamp, do some work, take another, subtract them, cast to the unit you want, and read `.count()`.
 
+```cpp
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -71,7 +74,6 @@ int main() {
     std::cout << "65s = " << m.count() << " min (truncated)\n";
     // Output: 65s = 1 min (truncated)
 }
-
 ```
 
 ---
@@ -82,8 +84,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The comment in the code is important: `steady_clock` is the right choice for elapsed-time measurement because it is guaranteed to be monotonic. `system_clock` can jump backwards if an NTP sync happens mid-measurement.
 
+```cpp
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -122,14 +125,13 @@ int main() {
     std::cout << "compute(500K): " << time.count() << " µs, result = " << val << "\n";
 
     // Why steady_clock and not system_clock:
-    // - steady_clock is monotonic — cannot go backwards (no NTP adjustments)
+    // - steady_clock is monotonic - cannot go backwards (no NTP adjustments)
     // - system_clock can jump forward/backward due to time sync
     // - For measuring durations, steady_clock is the only correct choice
 
     static_assert(std::chrono::steady_clock::is_steady,
                   "steady_clock must be monotonic");
 }
-
 ```
 
 ---
@@ -138,8 +140,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The rule is straightforward once you see it: widening (smaller unit to larger precision) is implicit and safe; narrowing (larger unit to smaller precision, which truncates) requires an explicit `duration_cast`. C++17 also added `floor`, `ceil`, and `round` for when truncation toward zero is not what you want.
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -162,8 +165,8 @@ int main() {
     // --- Narrowing conversions: require duration_cast (lossy) ---
     milliseconds ms2 = 2567ms;
     seconds s2 = duration_cast<seconds>(ms2);   // truncates to 2
-    std::cout << "2567ms → " << s2.count() << "s (truncated)\n";
-    // Output: 2567ms → 2s (truncated)
+    std::cout << "2567ms -> " << s2.count() << "s (truncated)\n";
+    // Output: 2567ms -> 2s (truncated)
 
     // --- floor, ceil, round (C++17) ---
     auto floored = floor<seconds>(ms2);    // 2s  (toward negative infinity)
@@ -188,7 +191,6 @@ int main() {
     std::cout << "total: " << fp_seconds.count() << " seconds\n";
     // Output: total: 5445.5 seconds
 }
-
 ```
 
 ---
@@ -197,8 +199,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+This is one of those features where the benefit only becomes obvious when you imagine the bug it prevents. A function that takes `milliseconds` simply will not compile if you pass a raw integer or a duration of the wrong type without an explicit acknowledgment.
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -213,7 +216,7 @@ int main() {
     // --- Type safety: cannot pass raw integers ---
     // process_timeout(5000);       // COMPILE ERROR: int is not milliseconds
     process_timeout(5000ms);        // OK: explicitly milliseconds
-    process_timeout(5s);            // OK: implicit widening (5s → 5000ms)
+    process_timeout(5s);            // OK: implicit widening (5s -> 5000ms)
 
     // --- Cannot accidentally lose precision ---
     milliseconds ms = 1500ms;
@@ -232,7 +235,7 @@ int main() {
 
     // --- Comparison is type-safe ---
     if (500ms < 1s) {
-        std::cout << "500ms < 1s ✓\n";  // works across types
+        std::cout << "500ms < 1s\n";  // works across types
     }
 
     // --- Custom duration types ---
@@ -250,14 +253,13 @@ int main() {
     std::cout << "as ticks: " << t.count() << "\n";
     // Output: as ticks: 2000
 }
-
 ```
 
 **Key type-safety benefits:**
 
 - Raw `int` values cannot be accidentally used as durations.
-- Widening conversions (seconds → milliseconds) are implicit and safe.
-- Narrowing conversions (milliseconds → seconds) require explicit `duration_cast`.
+- Widening conversions (seconds -> milliseconds) are implicit and safe.
+- Narrowing conversions (milliseconds -> seconds) require explicit `duration_cast`.
 - Mixed arithmetic returns the finest common unit.
 - Comparisons work correctly across different duration types.
 
@@ -265,9 +267,9 @@ int main() {
 
 ## Notes
 
-- Always use `steady_clock` for measuring elapsed time — `system_clock` can jump due to NTP.
+- Always use `steady_clock` for measuring elapsed time - `system_clock` can jump due to NTP.
 - Use `std::chrono_literals` (`1s`, `500ms`, `100us`, `50ns`) for readable code.
 - `duration<double>` allows floating-point durations without casting.
 - C++20 adds `std::chrono::days`, `std::chrono::weeks`, `std::chrono::months`, `std::chrono::years`.
-- Avoid `.count()` where possible — work with duration types to maintain type safety. Use `.count()` only at system boundaries (printing, APIs that take raw numbers).
-- `high_resolution_clock` is implementation-defined — on some platforms it's `system_clock` (non-monotonic). Always prefer `steady_clock`.
+- Avoid `.count()` where possible - work with duration types to maintain type safety. Use `.count()` only at system boundaries (printing, APIs that take raw numbers).
+- `high_resolution_clock` is implementation-defined - on some platforms it's `system_clock` (non-monotonic). Always prefer `steady_clock`.

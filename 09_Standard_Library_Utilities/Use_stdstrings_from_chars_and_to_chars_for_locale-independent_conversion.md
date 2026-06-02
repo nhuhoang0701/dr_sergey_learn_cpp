@@ -1,6 +1,6 @@
 # Use std::string's from_chars and to_chars for locale-independent conversion
 
-**Category:** Standard Library — Utilities  
+**Category:** Standard Library - Utilities  
 **Item:** #364  
 **Reference:** <https://en.cppreference.com/w/cpp/utility/from_chars>  
 
@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-`std::from_chars` and `std::to_chars` (header `<charconv>`, C++17) provide the fastest, locale-independent number↔string conversion in C++. They operate on raw `char` arrays with no allocation, no exceptions, no locale-dependent behavior (always uses `.` for decimal point), and no null-terminator requirement.
+`std::from_chars` and `std::to_chars` (header `<charconv>`, C++17) provide the fastest, locale-independent number-to-string and string-to-number conversion in C++. They operate on raw `char` arrays with no allocation, no exceptions, no locale-dependent behavior (always uses `.` for decimal point), and no null-terminator requirement.
+
+The reason people reach for these instead of `stoi` or `snprintf` comes down to two things: correctness and speed. If you're writing data to a file or network protocol, you cannot afford the decimal separator to silently change based on the user's locale. And if you're parsing millions of values in a hot loop, the overhead of exceptions and locale lookup adds up fast.
 
 ### Comparison
 
@@ -22,10 +24,11 @@
 | Thread-safe | Depends on locale | Depends on locale | Always |
 | Standard | C++11 | C89 | C++17 |
 
-### from_chars — String to Number
+### from_chars - String to Number
+
+The signature looks a little unusual if you're used to `stoi`, so let's walk through it. You pass two pointers that define the range to parse, plus a reference to the variable to fill. The result tells you where parsing stopped and whether it succeeded.
 
 ```cpp
-
 #include <charconv>
 #include <system_error>
 
@@ -41,13 +44,15 @@ struct from_chars_result {
     const char* ptr;  // Points past the last parsed character
     std::errc ec;     // std::errc{} on success
 };
-
 ```
 
-### to_chars — Number to String
+Notice that the result struct tells you both the error code and where the parser stopped. The `ptr` field is useful when you're parsing multiple values out of a single buffer - you just advance your pointer and call again.
+
+### to_chars - Number to String
+
+The counterpart follows the same pointer-range pattern. You hand it a buffer and get back a pointer to one past the last written character.
 
 ```cpp
-
 #include <charconv>
 
 // Signature:
@@ -62,13 +67,13 @@ struct to_chars_result {
     char* ptr;     // Points past the last written character
     std::errc ec;  // std::errc{} on success, value_too_large if buffer too small
 };
-
 ```
 
 ### Core Examples
 
-```cpp
+Here is everything in action - integer and double parsing, integer and hex formatting, and error handling without a try/catch in sight.
 
+```cpp
 #include <charconv>
 #include <iostream>
 #include <string_view>
@@ -109,8 +114,9 @@ int main() {
         std::cout << "Parse failed: invalid argument\n";
     // Output: Parse failed: invalid argument
 }
-
 ```
+
+The parser stopped as soon as it hit a non-digit, stored the error code, and returned without throwing. You check `ec`, react, and move on.
 
 ---
 
@@ -120,8 +126,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+This example shows the two approaches side by side so the cost difference is concrete.
 
+```cpp
 #include <charconv>
 #include <string>
 #include <iostream>
@@ -162,22 +169,20 @@ int main() {
     }
 
     // WHY from_chars is better for parsing untrusted input:
-    // 1. No exception overhead — checking errc is a simple comparison
-    // 2. No string construction needed — works on raw char*
-    // 3. Predictable performance — no try/catch unwinding
+    // 1. No exception overhead - checking errc is a simple comparison
+    // 2. No string construction needed - works on raw char*
+    // 3. Predictable performance - no try/catch unwinding
     // 4. Can parse substrings without copying (no null terminator needed)
 }
-
 ```
 
-**Explanation:** `stoi` throws `std::invalid_argument` and `std::out_of_range` — exceptions that involve heap allocation for the error message and unwinding cost. `from_chars` returns a trivial `from_chars_result` struct with an `std::errc` code — zero overhead error handling. For parsing millions of values (e.g., CSV files, network protocols), this difference is significant.
+`stoi` throws `std::invalid_argument` and `std::out_of_range` - exceptions that involve heap allocation for the error message and unwinding cost. `from_chars` returns a trivial `from_chars_result` struct with an `std::errc` code - zero overhead error handling. For parsing millions of values (e.g., CSV files, network protocols), this difference is significant.
 
 ### Q2: Benchmark from_chars vs stoi for parsing millions of integers from a buffer
 
 **Answer:**
 
 ```cpp
-
 #include <charconv>
 #include <string>
 #include <vector>
@@ -230,17 +235,17 @@ int main() {
         std::cout << "Speedup: " << static_cast<double>(stoi_time.count()) / fc_time.count()
                   << "x\n";
 }
-
 ```
 
-**Explanation:** `from_chars` avoids three major costs that `stoi` pays: (1) exception infrastructure (try/catch setup), (2) locale handling (checking current locale for digit characters), and (3) `std::string` parameter construction. For bulk parsing workloads (CSV, JSON, log files), `from_chars` is the fastest standard option.
+`from_chars` avoids three major costs that `stoi` pays: exception infrastructure (try/catch setup), locale handling (checking current locale for digit characters), and `std::string` parameter construction. For bulk parsing workloads (CSV, JSON, log files), `from_chars` is the fastest standard option.
 
 ### Q3: Use to_chars to convert a double to a char buffer without locale dependency
 
 **Answer:**
 
-```cpp
+The default format (no explicit `chars_format`) produces the shortest decimal representation that round-trips exactly back to the same `double`. That is the round-trip guarantee - and it is something `printf`-style functions do not provide.
 
+```cpp
 #include <charconv>
 #include <iostream>
 #include <array>
@@ -279,7 +284,7 @@ int main() {
     auto [p4, e4] = std::to_chars(buf.data(), buf.data() + buf.size(), val);
     std::string_view formatted(buf.data(), p4);
     std::cout << "Locale-free: " << formatted << "\n";
-    // Output: 1234.5678 — always uses '.', never ','
+    // Output: 1234.5678 - always uses '.', never ','
 
     // === Round-trip guarantee ===
     // Default to_chars produces the shortest representation that
@@ -292,10 +297,9 @@ int main() {
     std::cout << "Round-trip match: " << std::boolalpha
               << (original == recovered) << "\n"; // true
 }
-
 ```
 
-**Explanation:** `to_chars` with no format specifier produces the shortest decimal representation that round-trips perfectly through `from_chars`. It never consults the locale — the decimal separator is always `.`. This makes it safe for serialization formats (JSON, CSV, binary protocols) where locale-dependent formatting would corrupt data.
+`to_chars` with no format specifier produces the shortest decimal representation that round-trips perfectly through `from_chars`. It never consults the locale - the decimal separator is always `.`. This makes it safe for serialization formats (JSON, CSV, binary protocols) where locale-dependent formatting would corrupt data.
 
 ---
 
@@ -308,7 +312,3 @@ int main() {
 - **JSON/CSV serialization:** Use `to_chars`/`from_chars` for any portable data format. Using `snprintf` with `%f` in a French locale would write `"3,14"` instead of `"3.14"`, breaking parsers.
 - **Performance tip:** For bulk conversion, reuse the same buffer across calls.
 - Compile with `-std=c++17 -Wall -Wextra` (or `-std=c++20`).
-
-// Your practice code
-
-```text

@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-C++23 introduces `std::stacktrace` and `std::stacktrace_entry` (header `<stacktrace>`) for programmatic capture and inspection of call stacks. Before C++23, stack traces required platform-specific APIs (backtrace(), CaptureStackBackTrace, libunwind) or third-party libraries (Boost.Stacktrace). Now it's standardized.
+C++23 introduces `std::stacktrace` and `std::stacktrace_entry` (header `<stacktrace>`) for programmatic capture and inspection of call stacks. Before C++23, getting a stack trace required platform-specific APIs (`backtrace()`, `CaptureStackBackTrace`, `libunwind`) or third-party libraries like Boost.Stacktrace. Now it's standardized and works the same way everywhere.
 
 ### Key Types
 
@@ -17,7 +17,7 @@ C++23 introduces `std::stacktrace` and `std::stacktrace_entry` (header `<stacktr
 | --- | --- |
 | `std::stacktrace` | A sequence of `stacktrace_entry` objects representing the current call stack |
 | `std::stacktrace_entry` | A single frame: source file, line number, function description |
-| `std::stacktrace::current()` | Static method — captures the current stack trace |
+| `std::stacktrace::current()` | Static method - captures the current stack trace |
 
 ### stacktrace_entry Methods
 
@@ -29,8 +29,9 @@ C++23 introduces `std::stacktrace` and `std::stacktrace_entry` (header `<stacktr
 
 ### Core Example
 
-```cpp
+The simplest use is to call `std::stacktrace::current()` at the point where you want the trace. You get back a range of `stacktrace_entry` objects you can iterate, or you can just stream the whole thing directly.
 
+```cpp
 #include <stacktrace>
 #include <iostream>
 #include <string>
@@ -64,13 +65,13 @@ int main() {
 //   outer_function() at main.cpp:19
 //   main at main.cpp:23
 //   __libc_start_main
-
 ```
 
 ### Embedding in Exceptions
 
-```cpp
+One of the most practical uses of `std::stacktrace` is storing it in a custom exception so you always know where the throw happened - even after the stack has unwound. The trick is to use the same default-parameter pattern as `std::source_location`:
 
+```cpp
 #include <stacktrace>
 #include <stdexcept>
 #include <string>
@@ -110,13 +111,13 @@ int main() {
     //  1# main at main.cpp:25
     //  ...
 }
-
 ```
 
 ### Skipping Frames
 
-```cpp
+When `stacktrace` is used inside a logging or error-handling helper, the top frame will be the helper itself - which is noise. Pass a skip count to strip those off:
 
+```cpp
 #include <stacktrace>
 #include <iostream>
 
@@ -128,7 +129,6 @@ void log_with_trace(const std::string& msg) {
 
 // Also: current(skip, max_depth) to limit capture depth
 // auto trace = std::stacktrace::current(0, 5); // top 5 frames only
-
 ```
 
 ---
@@ -140,7 +140,6 @@ void log_with_trace(const std::string& msg) {
 **Answer:**
 
 ```cpp
-
 #include <stacktrace>
 #include <stdexcept>
 #include <string>
@@ -191,17 +190,15 @@ int main() {
     //  1# process_request(int) at main.cpp:26
     //  2# main at main.cpp:30
 }
-
 ```
 
-**Explanation:** `std::stacktrace::current(1)` captures the call stack, skipping 1 frame (the constructor itself). The trace is stored as a member and formatted into `what()` during construction. When caught, the exception message includes the complete call chain leading to the error.
+`std::stacktrace::current(1)` captures the call stack, skipping 1 frame (the constructor itself). The trace is stored as a member and formatted into `what()` during construction. When caught, the exception message includes the complete call chain leading to the error.
 
 ### Q2: Print a stacktrace to stderr on SIGSEGV using a signal handler
 
 **Answer:**
 
 ```cpp
-
 #include <stacktrace>
 #include <iostream>
 #include <csignal>
@@ -247,7 +244,6 @@ int main() {
 //  1# dangerous_function(int*) at main.cpp:24
 //  2# caller() at main.cpp:29
 //  3# main at main.cpp:35
-
 ```
 
 **Important caveats:**
@@ -259,17 +255,16 @@ int main() {
 
 ### Q3: Explain why std::stacktrace may include or exclude inlined frames depending on optimization
 
-When the compiler inlines a function, it copies the function's code directly into the caller — no actual function call occurs at runtime. Since stack traces are captured at **runtime** by walking the actual call stack (frame pointers or unwind tables), inlined functions have no stack frame to discover.
+When the compiler inlines a function, it copies the function's code directly into the caller - no actual function call occurs at runtime. Since stack traces are captured at **runtime** by walking the actual call stack (frame pointers or unwind tables), inlined functions have no stack frame to discover. The function's code is there, but it doesn't have its own frame in the call stack any more.
 
 | Optimization | Inlined? | Visible in stacktrace? |
 | --- | --- | --- |
-| `-O0` (debug) | No — all functions have stack frames | Yes — every function appears |
+| `-O0` (debug) | No - all functions have stack frames | Yes - every function appears |
 | `-O1` | Some small functions inlined | Those functions disappear from trace |
 | `-O2` / `-O3` | Aggressive inlining | Many functions absent, call chain compressed |
 | `-Og` (debug-optimized) | Minimal inlining | Most functions present |
 
 ```cpp
-
 #include <stacktrace>
 #include <iostream>
 
@@ -295,10 +290,9 @@ int main() {
     middle();
 }
 
-// At -O0:     main → middle → show_trace (all visible)
-// At -O2:     main → show_trace  (middle may be inlined away)
+// At -O0:     main -> middle -> show_trace (all visible)
+// At -O2:     main -> show_trace  (middle may be inlined away)
 // At -O3:     main only          (everything inlined into main)
-
 ```
 
 **What determines visibility:**
@@ -314,7 +308,7 @@ int main() {
 **Practical advice:**
 
 - For diagnostic builds: compile with `-O0 -g -fno-omit-frame-pointer`
-- For production with traces: `-O2 -g -fno-omit-frame-pointer` — keeps debug info even with optimization
+- For production with traces: `-O2 -g -fno-omit-frame-pointer` - keeps debug info even with optimization
 - For critical diagnostic functions: mark them `__attribute__((noinline))` or `[[gnu::noinline]]`
 
 ---
@@ -324,7 +318,7 @@ int main() {
 - **Linking:** On GCC/Clang, link with `-lstdc++_libbacktrace` or `-lstdc++exp` for stacktrace support. MSVC includes it automatically.
 - **Performance:** `stacktrace::current()` is relatively expensive (microseconds). Don't call it in hot paths. Use it for error reporting, not logging.
 - **`current(skip, max_depth)`:** `skip` frames from the top, capture at most `max_depth` frames. Useful for wrapper functions and limiting overhead.
-- **Allocator support:** `std::basic_stacktrace<Allocator>` allows custom allocators — useful in embedded/real-time contexts where heap allocation is restricted.
+- **Allocator support:** `std::basic_stacktrace<Allocator>` allows custom allocators - useful in embedded/real-time contexts where heap allocation is restricted.
 - **`to_string(entry)`:** Individual entries can be converted to strings for custom formatting.
 - **Empty traces:** `stacktrace` may be empty if debug information is unavailable or if the platform doesn't support stack unwinding.
 - Compile with `-std=c++23 -g -Wall -Wextra` and link with stacktrace library.

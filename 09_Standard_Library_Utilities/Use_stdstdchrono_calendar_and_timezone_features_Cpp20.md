@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-C++20 extends `<chrono>` with calendar types (year, month, day), timezone support, and formatting — replacing the error-prone C `<ctime>` API.
+C++20 extends `<chrono>` with calendar types (year, month, day), timezone support, and formatting - replacing the error-prone C `<ctime>` API. The old `<ctime>` API is a grab-bag of functions that use global buffers, give you raw integers with no units, and silently let you mix days with seconds. The C++20 chrono additions give you actual types for calendar concepts, so the compiler catches mistakes at compile time.
 
 ### Calendar Types
 
-```cpp
+Here's the new syntax for working with dates. The `/` operator is overloaded to build calendar types, which is unusual but quite readable once you're used to it:
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -40,13 +41,15 @@ int main() {
     year_month_day last_day{last_feb};
     std::cout << last_day << "\n";        // 2024-02-29 (leap year!)
 }
-
 ```
+
+Notice `.ok()` - the type tracks whether the date is valid, so you can construct `February/30` without an immediate crash and then check it.
 
 ### Time Zones
 
-```cpp
+`zoned_time` pairs a time point with a timezone and handles all the offset and DST arithmetic for you. You just name the IANA timezone and let the library convert:
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -71,13 +74,13 @@ void timezone_example() {
     auto meeting_london = zoned_time{"Europe/London", meeting_utc};
     std::cout << "Meeting: " << meeting_ny << " / " << meeting_london << "\n";
 }
-
 ```
 
 ### Duration Arithmetic
 
-```cpp
+The chrono literals (`h`, `min`, `s`) make duration arithmetic very clean. You can add durations of different units directly:
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -92,7 +95,6 @@ void duration_example() {
     auto s = duration - h - m;
     std::cout << h.count() << "h " << m.count() << "m " << s.count() << "s\n";
 }
-
 ```
 
 ---
@@ -101,12 +103,11 @@ void duration_example() {
 
 ### Q1: What's the difference between system_clock and utc_clock
 
-`system_clock` measures Unix time (ignoring leap seconds). `utc_clock` accounts for leap seconds. For most applications, `system_clock` is correct. Use `utc_clock` only if you need sub-second accuracy across leap second boundaries.
+`system_clock` measures Unix time, which ignores leap seconds - it pretends each day has exactly 86400 seconds. `utc_clock` accounts for leap seconds, so it represents the actual elapsed time since the UTC epoch. For most applications, `system_clock` is the right choice. You only need `utc_clock` if you're doing sub-second calculations that must remain correct across a leap second boundary.
 
 ### Q2: How to find the next occurrence of a weekday
 
 ```cpp
-
 auto next_friday() {
     auto today = floor<days>(system_clock::now());
     auto wd = weekday{today};
@@ -114,12 +115,13 @@ auto next_friday() {
     if (days_until <= 0) days_until += 7;
     return today + days{days_until};
 }
-
 ```
+
+`floor<days>` truncates the current time point to midnight, then `weekday{today}` extracts the day of week. The subtraction `Friday - wd` gives a signed count of days to advance - if the result is zero or negative (today is Friday or past it in the week), you add 7 to get next Friday.
 
 ### Q3: Why use std::chrono over ctime
 
-Type safety (can't mix seconds and milliseconds), no string parsing for timezones, no thread-safety issues (`localtime` uses static buffer), and compile-time unit conversion. `chrono` prevents the most common time-handling bugs at the type level.
+`<chrono>` gives you type safety so you can't accidentally add seconds to milliseconds without a cast, no string parsing for timezones, no thread-safety issues (`localtime` uses a static buffer that can be clobbered from another thread), and compile-time unit conversion via `std::ratio`. The short answer is that `chrono` prevents the most common time-handling bugs at the type level, while `<ctime>` lets you commit all of them silently.
 
 ---
 

@@ -9,15 +9,15 @@
 
 ## Topic Overview
 
-C++23 introduces `std::ispanstream`, `std::ospanstream`, and `std::spanstream` (header `<spanstream>`) — stream classes that perform I/O on a fixed-size, externally-owned buffer via `std::span<char>`. Unlike `std::stringstream` which owns and dynamically allocates its buffer, spanstream operates on pre-allocated memory with **zero allocations**.
+C++23 introduces `std::ispanstream`, `std::ospanstream`, and `std::spanstream` (header `<spanstream>`) - stream classes that perform I/O on a fixed-size, externally-owned buffer via `std::span<char>`. Unlike `std::stringstream` which owns and dynamically allocates its buffer, spanstream operates on pre-allocated memory with **zero allocations**. This makes it the right tool any time you need stream-style formatting but can't afford - or don't want - heap allocation.
 
 ### Comparison with stringstream
 
 | Property | `std::stringstream` | `std::spanstream` |
 | --- | --- | --- |
 | Buffer ownership | Owns (internal `std::string`) | Non-owning (`std::span<char>`) |
-| Allocation | Dynamic (heap) | None — user provides buffer |
-| Growth | Automatic resize | Fixed size — can't grow |
+| Allocation | Dynamic (heap) | None - user provides buffer |
+| Growth | Automatic resize | Fixed size - can't grow |
 | Best for | General-purpose parsing | Embedded, real-time, performance-critical |
 | Copy on `str()` | Yes (returns a copy) | Returns `span` (no copy) |
 | Standard | C++98 | C++23 |
@@ -32,8 +32,9 @@ C++23 introduces `std::ispanstream`, `std::ospanstream`, and `std::spanstream` (
 
 ### Core Examples
 
-```cpp
+Here's the basic read/write pattern. You hand the stream a `span` over your buffer, use the familiar `>>` and `<<` operators, then call `.span()` to get back a view of exactly what was written - no copy involved.
 
+```cpp
 #include <spanstream>
 #include <span>
 #include <iostream>
@@ -63,13 +64,13 @@ int main() {
 
     // No dynamic allocation occurred!
 }
-
 ```
 
 ### Serialization into a Fixed Buffer
 
-```cpp
+A practical pattern: embed serialize/deserialize methods directly on your data type, taking a `span` as the buffer contract. The caller owns the memory; the stream just provides the formatting machinery.
 
+```cpp
 #include <spanstream>
 #include <span>
 #include <iostream>
@@ -114,19 +115,17 @@ int main() {
               << " hum=" << parsed.humidity << "\n";
     // Parsed: id=42 temp=23.5 hum=65.2
 }
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Parse binary data from a std::span<const char> using ispanstream without copying
+### Q1: Parse binary data from a `std::span<const char>` using ispanstream without copying
 
 **Answer:**
 
 ```cpp
-
 #include <spanstream>
 #include <span>
 #include <iostream>
@@ -168,17 +167,15 @@ int main() {
     std::cout << name << " age=" << age << " salary=" << salary << "\n";
     // Alice age=30 salary=75000.5
 }
-
 ```
 
-**Explanation:** `std::ispanstream` wraps a `std::span<const char>` as a `std::istream`. It reads directly from the provided buffer with zero allocation and zero copy. This is critical in embedded/real-time systems where dynamic allocation is prohibited, or in high-throughput parsers where copying large buffers would waste bandwidth.
+`std::ispanstream` wraps a `std::span<const char>` as a `std::istream`. It reads directly from the provided buffer with zero allocation and zero copy. This is critical in embedded or real-time systems where dynamic allocation is prohibited, or in high-throughput parsers where copying large buffers would waste bandwidth.
 
 ### Q2: Write a serializer using ospanstream that formats directly into a user-provided buffer
 
 **Answer:**
 
 ```cpp
-
 #include <spanstream>
 #include <span>
 #include <iostream>
@@ -237,26 +234,24 @@ int main() {
     // Entry 1: value=10
     // Entry 2: value=20
 }
-
 ```
 
-**Explanation:** `std::ospanstream` writes formatted output directly into the caller's buffer via `std::span<char>`. The stream tracks the write position; `span()` returns a view of only the written portion. If the buffer overflows, the stream enters a fail state (`fail()` returns true). This is ideal for formatting into pre-allocated ring buffers, stack buffers, or shared memory.
+`std::ospanstream` writes formatted output directly into the caller's buffer via `std::span<char>`. The stream tracks the write position; `span()` returns a view of only the written portion. If the buffer overflows, the stream enters a fail state (`fail()` returns true). This is ideal for formatting into pre-allocated ring buffers, stack buffers, or shared memory.
 
 ### Q3: Compare spanstream with stringstream for performance in embedded or real-time contexts
 
 | Criterion | `std::stringstream` | `std::spanstream` |
 | --- | --- | --- |
-| **Heap allocations** | Yes — internal string allocates/reallocates | None — operates on external buffer |
-| **Real-time safe** | No — allocator may lock, fragmentation risk | Yes — fully deterministic timing |
-| **Buffer growth** | Automatic (may trigger allocation) | Fixed — write beyond end → failbit |
+| **Heap allocations** | Yes - internal string allocates/reallocates | None - operates on external buffer |
+| **Real-time safe** | No - allocator may lock, fragmentation risk | Yes - fully deterministic timing |
+| **Buffer growth** | Automatic (may trigger allocation) | Fixed - write beyond end -> failbit |
 | **Memory fragmentation** | Yes (repeated alloc/free) | No |
-| **Latency** | Unpredictable (allocator jitter) | Constant — no system calls |
+| **Latency** | Unpredictable (allocator jitter) | Constant - no system calls |
 | **Embedded suitability** | Poor (requires heap) | Excellent (stack/static buffers) |
 | **API** | `str()` returns a copy | `span()` returns a view (no copy) |
 | **Extra copies** | `str()` copies internal buffer | Zero copies |
 
 ```cpp
-
 #include <spanstream>
 #include <sstream>
 #include <iostream>
@@ -296,10 +291,9 @@ int main() {
               << "x\n";
     // Typical result: spanstream is 2-5x faster due to zero allocation
 }
-
 ```
 
-**Key insight for real-time:** Real-time systems (audio processing, motor control, trading systems) require hard latency bounds. A single heap allocation can cause unbounded latency (e.g., if the allocator must request pages from the OS). `spanstream` guarantees zero allocations — every operation is bounded in time.
+The real-time argument is worth spelling out. Real-time systems - audio processing, motor control, trading systems - require hard latency bounds. A single heap allocation can cause unbounded latency if the allocator needs to request pages from the OS. `spanstream` guarantees zero allocations, which means every formatting operation is bounded in time.
 
 ---
 
@@ -311,7 +305,3 @@ int main() {
 - **Not a string replacement:** `spanstream` is for fixed-size, allocation-free I/O. If you need dynamically growing output, use `std::ostringstream` or `std::format_to` with a `back_insert_iterator`.
 - **Compiler support (2024):** GCC 14+, MSVC 17.6+. Clang support pending.
 - Compile with `-std=c++23 -Wall -Wextra`.
-
-// Your practice code
-
-```text

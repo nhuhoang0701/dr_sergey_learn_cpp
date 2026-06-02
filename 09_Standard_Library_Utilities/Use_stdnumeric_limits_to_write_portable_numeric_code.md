@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-`std::numeric_limits<T>` (header `<limits>`) is a class template providing compile-time information about the properties of arithmetic types — ranges, precision, special values, and representation details. It replaces C macros like `INT_MAX`, `FLT_EPSILON`, etc. with a type-safe, generic, `constexpr` interface that works in templates and compile-time contexts.
+`std::numeric_limits<T>` (header `<limits>`) is a class template that gives you compile-time information about any arithmetic type - its range, precision, special values, and representation details. It replaces C macros like `INT_MAX` and `FLT_EPSILON` with a type-safe, generic, `constexpr` interface that actually works inside templates and compile-time contexts.
+
+The big practical reason to prefer it over macros is genericity: if you're writing a template function that needs "the largest possible value of type T", `std::numeric_limits<T>::max()` works for any arithmetic type, while `INT_MAX` only works for `int`.
 
 ### Key Members
 
@@ -17,7 +19,7 @@
 | `min()` | Minimum finite value | `-2147483648` | `2.22507e-308` (smallest positive normal) |
 | `max()` | Maximum finite value | `2147483647` | `1.79769e+308` |
 | `lowest()` | Most negative finite value | `-2147483648` | `-1.79769e+308` |
-| `epsilon()` | Smallest value ε where `1 + ε ≠ 1` | 0 | `2.22045e-16` |
+| `epsilon()` | Smallest value e where `1 + e != 1` | 0 | `2.22045e-16` |
 | `digits` | Number of radix digits | 31 (sign bit excluded) | 53 (mantissa bits) |
 | `digits10` | Decimal digits of precision | 9 | 15 |
 | `is_signed` | Whether type is signed | `true` | `true` |
@@ -28,24 +30,27 @@
 | `quiet_NaN()` | Quiet NaN | N/A | `NaN` |
 | `has_denorm` | Denormalized number support | N/A | `denorm_present` |
 
-### `min()` vs `lowest()` — The Critical Distinction
+### `min()` vs `lowest()` - The Critical Distinction
 
-```cpp
+This is the trap that catches almost everyone at least once. For integers the two are the same, but for floating-point they are very different:
 
+```text
 For integers:     min() == lowest()    (both are the most negative value)
 For floats:       min() = smallest POSITIVE normal
                   lowest() = most NEGATIVE value
 
-                  ←─── lowest() ───── 0 ── min() ── max() ───→
+                  <--- lowest() ----- 0 -- min() -- max() --->
                   -1.8e308           0   2.2e-308   1.8e308
-                                         ↑ smallest positive normal
-
+                                         ^ smallest positive normal
 ```
+
+If you initialize a running minimum with `std::numeric_limits<double>::min()`, thinking it means "most negative", you'll get a very hard to find bug because it's actually a tiny positive number close to zero.
 
 ### Core Usage Patterns
 
-```cpp
+Here are the four patterns you'll reach for most often: initializing min/max accumulators, floating-point comparison with epsilon, overflow detection, and querying type properties:
 
+```cpp
 #include <limits>
 #include <iostream>
 #include <iomanip>
@@ -99,19 +104,19 @@ int main() {
     std::cout << "float epsilon = " << std::numeric_limits<float>::epsilon() << "\n";   // 1.19209e-07
     std::cout << "int is_signed = " << std::numeric_limits<int>::is_signed << "\n";     // 1
 }
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Use std::numeric_limits<int>::max() to initialize a running minimum without magic constants
+### Q1: Use `std::numeric_limits<int>::max()` to initialize a running minimum without magic constants
 
 **Answer:**
 
-```cpp
+The pattern is: initialize your accumulator to the most extreme possible value in the opposite direction, so the first real element always beats it. For a running minimum, start at `max()`. For a running maximum, start at `lowest()` (not `min()` - remember the floating-point trap):
 
+```cpp
 #include <limits>
 #include <iostream>
 #include <vector>
@@ -156,7 +161,6 @@ int main() {
     // - numeric_limits<T>::max() works for ANY arithmetic type T
     // - It's constexpr, so it can be used in compile-time contexts
 }
-
 ```
 
 **Explanation:** By initializing `result` to `numeric_limits<T>::max()`, any value in the input collection will be less than or equal to it, ensuring the first comparison always updates the minimum. This pattern is generic (works for `int`, `long long`, `float`, `double`, etc.) and avoids platform-dependent magic constants.
@@ -165,8 +169,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The key technique is to rearrange the check so you never perform the potentially overflowing operation in order to test it. For addition, instead of checking `a + b > MAX` (which itself overflows), check `a > MAX - b` - that subtraction is always safe:
 
+```cpp
 #include <limits>
 #include <iostream>
 #include <cstdint>
@@ -221,14 +226,13 @@ int main() {
     }
     // Output: unsigned overflow detected
 }
-
 ```
 
 **Explanation:** The key technique is to rearrange the overflow condition using subtraction/division instead of performing the potentially overflowing operation. For addition: instead of checking `a + b > MAX` (which requires computing `a + b`), check `a > MAX - b` (which is always safe). This pattern extends to subtraction and multiplication.
 
-### Q3: Compare numeric_limits<float>::epsilon() with a practical floating-point comparison function
+### Q3: Compare `numeric_limits<float>::epsilon()` with a practical floating-point comparison function
 
-`epsilon()` is the smallest `float` value ε such that `1.0f + ε ≠ 1.0f`. For `float`, it's approximately `1.19209e-07`. However, using raw epsilon for equality comparison is almost always wrong:
+`epsilon()` is the smallest `float` value e such that `1.0f + e != 1.0f`. For `float`, it's approximately `1.19209e-07`. The reason this trips people up is that using raw `epsilon()` for equality comparison is almost always wrong - it only makes sense for values near 1.0.
 
 | Approach | Code | Problem |
 | --- | --- | --- |
@@ -238,7 +242,6 @@ int main() {
 | ULP-based | Compare ULP distance | Most rigorous but complex |
 
 ```cpp
-
 #include <limits>
 #include <cmath>
 #include <iostream>
@@ -269,7 +272,7 @@ int main() {
 
     // Case 2: Large values — raw epsilon FAILS
     float c = 1'000'000.0f, d = 1'000'000.125f;
-    // Difference = 0.125 >> epsilon (1.19e-07) → raw epsilon says "not equal"
+    // Difference = 0.125 >> epsilon (1.19e-07) -> raw epsilon says "not equal"
     // But the relative difference is tiny: 0.125 / 1e6 = 1.25e-07
     std::cout << "bad_equal(1e6, 1e6+0.125):  " << bad_equal(c, d) << "\n";    // 0 (WRONG)
     std::cout << "nearly_equal(1e6, 1e6+0.125): " << nearly_equal(c, d) << "\n"; // 1 (correct)
@@ -285,7 +288,6 @@ int main() {
     std::cout << "float digits10: " << std::numeric_limits<float>::digits10 << "\n"; // 6
     // digits10=6 means float reliably represents ~6 significant decimal digits
 }
-
 ```
 
 **Key takeaway:** `epsilon()` tells you the precision limit of the type, but it should NOT be used directly as a comparison tolerance. Instead, use a combined relative + absolute tolerance function that adapts to the magnitude of the values being compared.
@@ -295,9 +297,9 @@ int main() {
 ## Notes
 
 - **`min()` vs `lowest()` trap:** For floating-point, `min()` returns the smallest *positive normal* value, NOT the most negative. Use `lowest()` for the most negative representable value. For integers, they're the same.
-- **`constexpr`:** All `numeric_limits` members are `constexpr` — usable in template arguments, `static_assert`, `constexpr` functions, array sizes, etc.
+- **`constexpr`:** All `numeric_limits` members are `constexpr` - usable in template arguments, `static_assert`, `constexpr` functions, array sizes, etc.
 - **Custom types:** You can specialize `numeric_limits` for user-defined numeric types (e.g., a `BigInt` class). Just specialize the full template.
 - **`is_iec559`:** If `numeric_limits<double>::is_iec559` is `true`, the type conforms to IEEE 754, guaranteeing special values (±infinity, NaN, denormals) behave as specified.
-- **`quiet_NaN()` and `signaling_NaN()`:** Only meaningful when `has_quiet_NaN` / `has_signaling_NaN` is `true`. NaN ≠ NaN by definition.
+- **`quiet_NaN()` and `signaling_NaN()`:** Only meaningful when `has_quiet_NaN` / `has_signaling_NaN` is `true`. NaN != NaN by definition.
 - **`digits` vs `digits10`:** `digits` is the number of bits in the mantissa (binary precision); `digits10` is the number of decimal digits that survive round-trip conversion.
 - Compile with `-std=c++20 -Wall -Wextra`.

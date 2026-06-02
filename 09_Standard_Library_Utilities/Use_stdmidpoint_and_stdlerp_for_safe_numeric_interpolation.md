@@ -8,30 +8,29 @@
 
 ## Topic Overview
 
-C++20 introduces `std::midpoint` and `std::lerp` in `<numeric>` and `<cmath>` respectively, providing mathematically correct interpolation functions that avoid the overflow and precision pitfalls of naive implementations.
+C++20 introduces `std::midpoint` and `std::lerp` in `<numeric>` and `<cmath>` respectively. They exist because the "obvious" implementations of both operations have subtle but real bugs - integer overflow for midpoint, and precision loss or incorrect endpoint behavior for lerp. These functions give you the mathematically correct result with no extra effort.
 
 ### The Problem with Naive Approaches
 
-```cpp
+The bugs here are easy to miss because the naive code looks completely reasonable. The problem only surfaces at large values:
 
-// DANGER: signed integer overflow → undefined behavior
+```cpp
+// DANGER: signed integer overflow -> undefined behavior
 int mid_bad(int a, int b) {
     return (a + b) / 2;  // UB when a + b > INT_MAX
 }
 // Example: a = 2'000'000'000, b = 2'000'000'000
-// a + b = 4'000'000'000 → overflows int32 → UB
+// a + b = 4'000'000'000 -> overflows int32 -> UB
 
 // DANGER: floating-point precision loss
 double mid_bad(double a, double b) {
     return (a + b) / 2.0;  // Loss of precision for very large values
 }
-
 ```
 
-### std::midpoint — Signature and Behavior
+### std::midpoint - Signature and Behavior
 
 ```cpp
-
 #include <numeric>
 
 // For integers: rounds toward a when the true midpoint is between two integers
@@ -42,28 +41,25 @@ constexpr long   midpoint(long a, long b);
 // For floating-point:
 constexpr float  midpoint(float a, float b);
 constexpr double midpoint(double a, double b);
-
 ```
 
 | Property | Detail |
 | --- | --- |
 | Header | `<numeric>` |
-| Integer overflow | Impossible — uses subtraction-based algorithm |
+| Integer overflow | Impossible - uses subtraction-based algorithm |
 | Rounding (integers) | Rounds toward `a` (first argument) |
 | Floating-point | At most one ULP error; no overflow for finite inputs |
 | Constexpr | Yes |
 | Pointer version | `midpoint(p, q)` returns pointer to midpoint element |
 
-### std::lerp — Signature and Behavior
+### std::lerp - Signature and Behavior
 
 ```cpp
-
 #include <cmath>
 
-// Linear interpolation: lerp(a, b, t) = a + t*(b − a)
+// Linear interpolation: lerp(a, b, t) = a + t*(b - a)
 constexpr float  lerp(float a, float b, float t);
 constexpr double lerp(double a, double b, double t);
-
 ```
 
 | Property | Detail |
@@ -80,8 +76,9 @@ constexpr double lerp(double a, double b, double t);
 
 ### Core Examples
 
-```cpp
+Here's a quick tour of both functions together. Notice the pointer version of `midpoint` and the exact endpoint guarantee of `lerp`:
 
+```cpp
 #include <numeric>
 #include <cmath>
 #include <iostream>
@@ -118,7 +115,6 @@ int main() {
     std::cout << std::lerp(start, end, 1.0)  << "\n"; // 100 (exactly)
     std::cout << std::lerp(start, end, 1.5)  << "\n"; // 150 (extrapolation)
 }
-
 ```
 
 ---
@@ -129,8 +125,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The binary search use case is probably the most common place people write this bug without realizing it. `std::midpoint(lo, hi)` is cleaner than `lo + (hi - lo) / 2` and has the same safety guarantees:
 
+```cpp
 #include <numeric>
 #include <iostream>
 #include <climits>
@@ -139,7 +136,7 @@ int main() {
 int main() {
     int a = 2'000'000'000;
     int b = 1'800'000'000;
-    // a + b = 3'800'000'000 → overflows int32 (max 2'147'483'647) → UB!
+    // a + b = 3'800'000'000 -> overflows int32 (max 2'147'483'647) -> UB!
 
     // Naive approach — UNDEFINED BEHAVIOR:
     // int bad = (a + b) / 2;  // DON'T DO THIS
@@ -150,7 +147,7 @@ int main() {
     // Output: midpoint(2000000000, 1800000000) = 1900000000
 
     // Verify: no overflow occurred, result is mathematically correct
-    // True midpoint: (2e9 + 1.8e9) / 2 = 1.9e9 ✓
+    // True midpoint: (2e9 + 1.8e9) / 2 = 1.9e9
 
     // Rounding behavior: rounds toward first argument
     std::cout << std::midpoint(1, 4) << "\n"; // 2 (rounds toward 1)
@@ -164,17 +161,17 @@ int main() {
     std::cout << "binary search mid = " << mid << "\n";
     // Output: binary search mid = 1073741823
 }
-
 ```
 
-**Explanation:** `std::midpoint` internally uses a subtraction-based algorithm (roughly `a + (b - a) / 2` with careful unsigned arithmetic) that never causes overflow. The naive `(a + b) / 2` computes `a + b` first, which for large values exceeds `INT_MAX` — producing undefined behavior on signed integers. The midpoint function is also `constexpr`, making it usable in compile-time computations.
+**Explanation:** `std::midpoint` internally uses a subtraction-based algorithm (roughly `a + (b - a) / 2` with careful unsigned arithmetic) that never causes overflow. The naive `(a + b) / 2` computes `a + b` first, which for large values exceeds `INT_MAX` - producing undefined behavior on signed integers. The midpoint function is also `constexpr`, making it usable in compile-time computations.
 
 ### Q2: Apply std::lerp(a, b, t) for smooth animation interpolation with t in [0,1]
 
 **Answer:**
 
-```cpp
+The guarantee that matters for animation is that `lerp(a, b, 1.0)` returns exactly `b` - not `b - epsilon`. Without that guarantee, your object never quite arrives at its destination, which can cause subtle rendering bugs:
 
+```cpp
 #include <cmath>
 #include <iostream>
 #include <iomanip>
@@ -208,7 +205,7 @@ int main() {
     // Frame  2: t=0.2  pos=(180.0, 170.0)
     // ...
     // Frame  9: t=0.9  pos=(460.0, 65.0)
-    // Frame 10: t=1.0  pos=(500.0, 50.0)   ← exactly end position
+    // Frame 10: t=1.0  pos=(500.0, 50.0)   <- exactly end position
 
     // Color interpolation (0-255 range)
     double red_start = 255.0, red_end = 0.0;
@@ -222,26 +219,26 @@ int main() {
     // t=0.75 red=63.8 (actually 63.75)
     // t=1.0 red=0.0
 }
-
 ```
 
-**Explanation:** `std::lerp` guarantees monotonicity and exact endpoint values (`lerp(a,b,0)==a`, `lerp(a,b,1)==b`). This is critical for animation — the object always starts exactly at `start` and arrives exactly at `end`. A naive `a + t*(b-a)` might not return exactly `b` at `t=1` due to floating-point rounding, causing visual glitches.
+**Explanation:** `std::lerp` guarantees monotonicity and exact endpoint values (`lerp(a,b,0)==a`, `lerp(a,b,1)==b`). This is critical for animation - the object always starts exactly at `start` and arrives exactly at `end`. A naive `a + t*(b-a)` might not return exactly `b` at `t=1` due to floating-point rounding, causing visual glitches.
 
 ### Q3: Explain the UB that (a+b)/2 triggers for large signed integers and how midpoint avoids it
 
-The expression `(a + b) / 2` performs **signed integer addition** first. When `a + b` exceeds `INT_MAX` (or falls below `INT_MIN`), signed integer overflow occurs — which is **undefined behavior** in C and C++.
+The expression `(a + b) / 2` performs **signed integer addition** first. When `a + b` exceeds `INT_MAX` (or falls below `INT_MIN`), signed integer overflow occurs - which is **undefined behavior** in C and C++. The reason this matters in practice is that optimizing compilers are allowed to assume signed overflow never happens, so they can generate code that produces any result at all.
 
 | Scenario | `a` | `b` | `a + b` | UB? |
 | --- | --- | --- | --- | --- |
 | Normal | 10 | 20 | 30 | No |
-| Near limit | 2'000'000'000 | 1'000'000'000 | 3'000'000'000 | **YES** — exceeds INT_MAX (2'147'483'647) |
-| Negative overflow | -2'000'000'000 | -1'000'000'000 | -3'000'000'000 | **YES** — below INT_MIN |
+| Near limit | 2'000'000'000 | 1'000'000'000 | 3'000'000'000 | **YES** - exceeds INT_MAX (2'147'483'647) |
+| Negative overflow | -2'000'000'000 | -1'000'000'000 | -3'000'000'000 | **YES** - below INT_MIN |
 | Mixed safe | -1'000'000'000 | 1'000'000'000 | 0 | No |
 
 **How `std::midpoint` avoids it:**
 
-```cpp
+The implementation never adds `a + b`. Instead it works with the *difference*, which is safe because the difference between two same-sign integers always fits:
 
+```cpp
 // Conceptual implementation for unsigned integers:
 constexpr unsigned midpoint(unsigned a, unsigned b) {
     // Uses SUBTRACTION (never adds a + b):
@@ -256,11 +253,11 @@ constexpr unsigned midpoint(unsigned a, unsigned b) {
 // 2. Divide by 2
 // 3. Add to the smaller value
 // This NEVER adds a + b, so overflow is impossible
-
 ```
 
-```cpp
+Here's the concrete proof with boundary values:
 
+```cpp
 #include <numeric>
 #include <iostream>
 #include <climits>
@@ -269,11 +266,11 @@ int main() {
     int a = INT_MAX;     // 2147483647
     int b = INT_MAX - 2; // 2147483645
 
-    // (a + b) would be 4294967292 → overflows int → UB
+    // (a + b) would be 4294967292 -> overflows int -> UB
     // But midpoint computes: a + (b - a) / 2 = 2147483647 + (-2) / 2
     //                      = 2147483647 + (-1) = 2147483646
     int result = std::midpoint(a, b);
-    std::cout << result << "\n"; // 2147483646 ✓
+    std::cout << result << "\n"; // 2147483646
 
     // For pointers: midpoint(p, q) divides the distance, never adds addresses
     int arr[100]{};
@@ -282,7 +279,6 @@ int main() {
     int* m = std::midpoint(p, q); // arr + 94
     std::cout << (m - arr) << "\n"; // 94
 }
-
 ```
 
 **Key takeaway:** `std::midpoint` is a drop-in replacement for `(a + b) / 2` that is always correct. Use it in binary search (`std::midpoint(lo, hi)` instead of `lo + (hi - lo) / 2`), running averages, and any context where two values must be averaged safely.
@@ -292,10 +288,8 @@ int main() {
 ## Notes
 
 - **Header locations:** `std::midpoint` is in `<numeric>`; `std::lerp` is in `<cmath>`. Both are C++20.
-- **`constexpr`:** Both functions are `constexpr` — usable in compile-time expressions, `static_assert`, template parameters, etc.
+- **`constexpr`:** Both functions are `constexpr` - usable in compile-time expressions, `static_assert`, template parameters, etc.
 - **Pointer midpoint:** `std::midpoint(p, q)` requires `p` and `q` to point into the same array (or one past the end). It returns the pointer to the element at the midpoint index.
 - **`lerp` extrapolation:** `std::lerp(a, b, t)` works for `t` outside [0,1]. When `t = -1`, it returns `a - (b - a)` = `2a - b`. Useful for extending motion beyond endpoints.
-- **Binary search idiom:** Replace `int mid = lo + (hi - lo) / 2;` with `int mid = std::midpoint(lo, hi);` — cleaner, more intent-revealing, and equally correct.
+- **Binary search idiom:** Replace `int mid = lo + (hi - lo) / 2;` with `int mid = std::midpoint(lo, hi);` - cleaner, more intent-revealing, and equally correct.
 - Compile with `-std=c++20 -Wall -Wextra`.
-
-```text

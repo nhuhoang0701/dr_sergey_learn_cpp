@@ -1,6 +1,6 @@
 # Use std::strong_ordering, weak_ordering, partial_ordering as <=> return types
 
-**Category:** Standard Library — Utilities  
+**Category:** Standard Library - Utilities  
 **Item:** #368  
 **Standard:** C++20  
 **Reference:** <https://en.cppreference.com/w/cpp/utility/compare/strong_ordering>  
@@ -11,25 +11,25 @@
 
 C++20's three-way comparison operator `<=>` (spaceship) returns one of three comparison category types. The return type tells the compiler **which comparison guarantees your type provides**, and it automatically synthesizes all six relational operators from one `<=>` definition.
 
+The reason there are three categories - not just one - is that "equal" means different things to different types. For `int`, equal really means identical and substitutable. For a case-insensitive string, "Hello" and "HELLO" might sort the same but aren't interchangeable. For `double`, two values might not be orderable at all because of NaN. The three categories let you express exactly which guarantee you're making.
+
 ### Three Comparison Categories
 
 ```cpp
-
                 ┌──────────────────────┐
                 │  partial_ordering    │   Can be "unordered" (NaN != NaN)
                 └─────────┬────────────┘
                           │ (refines)
                 ┌─────────▼────────────┐
-                │   weak_ordering      │   Equal ≠ identical (e.g., "abc" == "ABC")
+                │   weak_ordering      │   Equal != identical (e.g., "abc" == "ABC")
                 └─────────┬────────────┘
                           │ (refines)
                 ┌─────────▼────────────┐
-                │  strong_ordering     │   Equal ⟹ identical (substitutable)
+                │  strong_ordering     │   Equal => identical (substitutable)
                 └──────────────────────┘
-
 ```
 
-| Category | Named values | Unordered? | Equal ⟹ identical? | Use case |
+| Category | Named values | Unordered? | Equal => identical? | Use case |
 | --- | --- | --- | --- | --- |
 | `strong_ordering` | `less`, `equal`, `greater` | No | Yes | `int`, `std::string`, IDs |
 | `weak_ordering` | `less`, `equivalent`, `greater` | No | No | Case-insensitive strings |
@@ -37,12 +37,13 @@ C++20's three-way comparison operator `<=>` (spaceship) returns one of three com
 
 ### Implicit Conversions
 
-`strong_ordering` → `weak_ordering` → `partial_ordering` (widening is implicit, narrowing requires explicit cast).
+`strong_ordering` -> `weak_ordering` -> `partial_ordering` (widening is implicit, narrowing requires explicit cast).
 
 ### Core Example
 
-```cpp
+Here are all three categories in one file. Notice the different named values: `strong_ordering` uses `equal`, while `weak_ordering` and `partial_ordering` use `equivalent` to signal that equivalence does not imply identity.
 
+```cpp
 #include <compare>
 #include <iostream>
 #include <string>
@@ -69,7 +70,7 @@ struct CIString {
         }
         if (data.size() < other.data.size()) return std::weak_ordering::less;
         if (data.size() > other.data.size()) return std::weak_ordering::greater;
-        return std::weak_ordering::equivalent; // "abc" ≡ "ABC" but not identical
+        return std::weak_ordering::equivalent; // "abc" == "ABC" but not identical
     }
 
     bool operator==(const CIString& other) const {
@@ -88,26 +89,27 @@ struct Measurement {
 };
 
 int main() {
-    // strong_ordering — all six operators work
+    // strong_ordering - all six operators work
     StudentID a{1}, b{2};
     std::cout << std::boolalpha;
     std::cout << (a < b) << "\n";   // true
     std::cout << (a == b) << "\n";  // false
     std::cout << (a >= b) << "\n";  // false
 
-    // weak_ordering — "Hello" == "hello"
+    // weak_ordering - "Hello" == "hello"
     CIString s1{"Hello"}, s2{"hello"};
     std::cout << (s1 == s2) << "\n";  // true  ("equivalent" but different bytes)
     std::cout << (s1 < s2) << "\n";   // false
 
-    // partial_ordering — NaN is unordered
+    // partial_ordering - NaN is unordered
     Measurement m1{3.14}, m2{NAN};
     std::cout << (m1 < m2) << "\n";   // false
     std::cout << (m1 > m2) << "\n";   // false
-    std::cout << (m1 == m2) << "\n";  // false — NaN is unordered with everything
+    std::cout << (m1 == m2) << "\n";  // false - NaN is unordered with everything
 }
-
 ```
+
+The `Measurement` example illustrates why NaN forces `partial_ordering`: NaN is not less than, greater than, or equal to anything - including itself. `partial_ordering` has a fourth named value `unordered` precisely for these situations.
 
 ---
 
@@ -117,8 +119,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Any struct that holds a `double` must use `partial_ordering` if it defaults its `<=>` operator - the compiler won't let you claim `strong_ordering` when a member's comparison is weaker.
 
+```cpp
 #include <compare>
 #include <iostream>
 #include <cmath>
@@ -172,17 +175,17 @@ int main() {
     // Since double <=> returns partial_ordering, the defaulted <=> also returns
     // partial_ordering. You cannot force strong_ordering on a type with double members.
 }
-
 ```
 
-**Explanation:** `double`'s `<=>` inherently returns `std::partial_ordering` because NaN creates values that are incomparable with everything (including themselves). If your struct contains a `double`, the defaulted `<=>` will automatically return `partial_ordering`. You cannot "upgrade" it to `strong_ordering` — that would incorrectly claim all values are comparable.
+`double`'s `<=>` inherently returns `std::partial_ordering` because NaN creates values that are incomparable with everything (including themselves). If your struct contains a `double`, the defaulted `<=>` will automatically return `partial_ordering`. You cannot "upgrade" it to `strong_ordering` - that would incorrectly claim all values are comparable.
 
 ### Q2: Explain when weak_ordering is appropriate: equality that does not imply identity (e.g., case-insensitive string)
 
 **Answer:**
 
-```cpp
+The key distinction is between "equivalent for ordering purposes" and "identical in every observable way." `weak_ordering` covers the first case - two values compare as equal but are not substitutable.
 
+```cpp
 #include <compare>
 #include <iostream>
 #include <string>
@@ -221,7 +224,7 @@ struct CaseInsensitive {
 
 // Why NOT strong_ordering?
 // strong_ordering::equal means the two values are substitutable.
-// "Hello" and "HELLO" are NOT substitutable — they print differently,
+// "Hello" and "HELLO" are NOT substitutable - they print differently,
 // hash differently, and have different byte representations.
 // Claiming strong_ordering would be a LIE about your type's semantics.
 
@@ -238,26 +241,26 @@ int main() {
 
     // WHEN TO USE EACH:
     //
-    // strong_ordering:  a == b ⟹ f(a) == f(b) for ALL observable functions
+    // strong_ordering:  a == b => f(a) == f(b) for ALL observable functions
     //   Examples: int, char, std::string (exact), unique identifiers
     //
-    // weak_ordering:    a == b ⟹ a and b are in the same "equivalence class"
-    //   Examples: case-insensitive strings, priority (same priority ≠ same task)
+    // weak_ordering:    a == b => a and b are in the same "equivalence class"
+    //   Examples: case-insensitive strings, priority (same priority != same task)
     //
     // partial_ordering: some pairs of values are incomparable
     //   Examples: double (NaN), sets (subset ordering), intervals
 }
-
 ```
 
-**Explanation:** `weak_ordering` is the correct choice when your comparison groups values into equivalence classes but equivalent values are not interchangeable. The term `equivalent` (used by `weak_ordering`) differs from `equal` (used by `strong_ordering`). If you used `strong_ordering`, you'd be promising that equal values are identical in every observable way — a promise that case-insensitive comparison cannot keep.
+`weak_ordering` is the correct choice when your comparison groups values into equivalence classes but equivalent values are not interchangeable. The term `equivalent` (used by `weak_ordering`) differs from `equal` (used by `strong_ordering`). If you used `strong_ordering`, you'd be promising that equal values are identical in every observable way - a promise that case-insensitive comparison cannot keep.
 
 ### Q3: Show how the standard library derives all six comparison operators from <=> returning strong_ordering
 
 **Answer:**
 
-```cpp
+With `= default`, you get all six relational operators for free. Here is what the compiler actually generates, and how `std::set` and `std::sort` benefit from it automatically.
 
+```cpp
 #include <compare>
 #include <iostream>
 #include <set>
@@ -284,11 +287,11 @@ struct Point {
 // }
 //
 // From these two, the compiler synthesizes:
-//   operator!=  →  !(a == b)
-//   operator<   →  (a <=> b) < 0
-//   operator>   →  (a <=> b) > 0
-//   operator<=  →  (a <=> b) <= 0
-//   operator>=  →  (a <=> b) >= 0
+//   operator!=  ->  !(a == b)
+//   operator<   ->  (a <=> b) < 0
+//   operator>   ->  (a <=> b) > 0
+//   operator<=  ->  (a <=> b) <= 0
+//   operator>=  ->  (a <=> b) >= 0
 
 int main() {
     Point a{1, 2, 3}, b{1, 2, 4}, c{1, 2, 3};
@@ -308,7 +311,7 @@ int main() {
     for (auto& [x, y, z] : points)
         std::cout << "(" << x << "," << y << "," << z << ") ";
     std::cout << "\n";
-    // Output: (1,2,3) (1,2,4) (3,2,1) — sorted lexicographically
+    // Output: (1,2,3) (1,2,4) (3,2,1) - sorted lexicographically
 
     std::vector<Point> v{{5,1,0}, {1,2,3}, {3,3,3}};
     std::sort(v.begin(), v.end()); // uses operator<
@@ -319,10 +322,9 @@ int main() {
     Point p1{1, 5, 0}, p2{2, 0, 0};
     std::cout << "p1 < p2: " << (p1 < p2) << "\n"; // true (1 < 2, y and z irrelevant)
 }
-
 ```
 
-**Explanation:** With `= default`, the compiler generates `<=>` that compares members in declaration order (lexicographic). From the `<=>` and `==` pair, the compiler synthesizes all remaining operators. The return type is the common comparison category of all members — if all members are `int`, the result is `strong_ordering`. If any member is `double`, the result weakens to `partial_ordering`.
+With `= default`, the compiler generates `<=>` that compares members in declaration order (lexicographic). From the `<=>` and `==` pair, the compiler synthesizes all remaining operators. The return type is the common comparison category of all members - if all members are `int`, the result is `strong_ordering`. If any member is `double`, the result weakens to `partial_ordering`.
 
 ---
 

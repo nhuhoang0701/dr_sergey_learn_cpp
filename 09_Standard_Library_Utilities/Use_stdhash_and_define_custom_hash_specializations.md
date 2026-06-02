@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`std::hash<T>` is a function object that computes hash values, used by `std::unordered_map`, `std::unordered_set`, etc. The standard provides specializations for built-in types and standard library types. For user-defined types, you must provide your own.
+`std::hash<T>` is the function object that powers `std::unordered_map`, `std::unordered_set`, and their siblings. When you insert or look up a key, the container calls `std::hash<KeyType>{}(key)` to decide which bucket to use. The standard library already provides specializations for the built-in types and most standard library types, but for your own types you have to write one yourself.
 
 ### Standard Specializations
 
@@ -20,21 +20,22 @@
 | `std::string`, `std::string_view` | Yes |
 | `std::shared_ptr<T>`, `std::unique_ptr<T>` | Yes |
 | Pointers (`T*`) | Yes |
-| User-defined types | **No** — you must specialize |
+| User-defined types | **No** - you must specialize |
 
 ### Hash Requirements
 
-A good hash function should:
+A good hash function has to satisfy a few properties to keep unordered containers fast:
 
-1. Be **deterministic** — same input always gives same output.
-2. Have **uniform distribution** — spread values evenly across buckets.
-3. Have **low collision rate** — different inputs should rarely hash to the same value.
-4. Be **fast** — hashing must be cheaper than the operations it enables.
+1. Be **deterministic** - same input always gives same output.
+2. Have **uniform distribution** - spread values evenly across buckets.
+3. Have **low collision rate** - different inputs should rarely hash to the same value.
+4. Be **fast** - hashing must be cheaper than the operations it enables.
 
 ### Core Syntax
 
-```cpp
+The hash object is usually invoked implicitly by a container, but you can call it directly to see what it produces:
 
+```cpp
 #include <functional>
 #include <unordered_map>
 #include <string>
@@ -51,7 +52,6 @@ int main() {
     std::unordered_map<std::string, int> scores;
     scores["Alice"] = 95;  // std::hash<string> called internally
 }
-
 ```
 
 ---
@@ -62,8 +62,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+There are two approaches: specializing `std::hash` in namespace `std` (so the type "just works" everywhere), or providing a local hash functor and passing it as a template argument to the container. The first is more ergonomic; the second avoids touching `namespace std`.
 
+```cpp
 #include <functional>
 #include <unordered_map>
 #include <string>
@@ -112,8 +113,9 @@ int main() {
     };
     std::unordered_map<Employee, double, EmployeeHash> alt_map;
 }
-
 ```
+
+Note that you also need `operator==` alongside the hash - the container uses equality to confirm two keys that land in the same bucket are actually the same key. Without it, your type won't compile as a map key.
 
 ---
 
@@ -121,8 +123,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The naive approach of XORing field hashes together has a silent flaw: XOR is commutative. That means `hash(name) ^ hash(id)` produces the same value regardless of which field is `name` and which is `id`. Swap two fields and you get the same hash - which means objects that differ only in field order all collide. The `hash_combine` pattern avoids this by making the mixing order-dependent:
 
+```cpp
 #include <functional>
 #include <unordered_set>
 #include <string>
@@ -185,10 +188,9 @@ int main() {
     std::cout << "different: " << std::boolalpha << (s1 != s2) << "\n";
     // Output: different: true
 }
-
 ```
 
-**Why `0x9e3779b9`?** It's the integer part of `φ⁻¹ × 2³²` (golden ratio inverse). This constant provides good bit mixing — ensuring that similar inputs produce very different hash values.
+**Why `0x9e3779b9`?** It's the integer part of the golden ratio inverse times 2^32. This constant has good "avalanche" properties - a small change in the input ripples through many bits of the output, which is exactly what you want from a mixing step.
 
 ---
 
@@ -196,7 +198,7 @@ int main() {
 
 **Answer:**
 
-`std::unordered_map` uses a **hash table with separate chaining** (linked lists in buckets). Performance depends on how evenly keys distribute across buckets:
+`std::unordered_map` stores keys in **buckets** using separate chaining (a linked list per bucket). When the hash function works well, keys spread evenly and each bucket holds only a few elements - O(1) expected lookup. When the hash is poor, many keys land in the same bucket and you're effectively searching a linked list.
 
 | Scenario | Avg lookup | Worst lookup |
 | --- | --- | --- |
@@ -204,8 +206,9 @@ int main() {
 | Poor hash (many collisions) | O(n) | O(n) |
 | Constant hash (all same) | **O(n)** | **O(n)** |
 
-```cpp
+The extreme case is a hash that always returns the same constant. Every key lands in one bucket, and every operation becomes a linear scan. Here's the timing difference made concrete:
 
+```cpp
 #include <unordered_map>
 #include <string>
 #include <iostream>
@@ -234,7 +237,7 @@ struct GoodHash {
 int main() {
     constexpr int N = 10000;
 
-    // Bad hash: all elements in one bucket → linked list traversal
+    // Bad hash: all elements in one bucket -> linked list traversal
     std::unordered_map<Point, int, BadHash> bad_map;
     auto t1 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
@@ -243,7 +246,7 @@ int main() {
     auto t2 = std::chrono::steady_clock::now();
     auto bad_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
 
-    // Good hash: elements spread evenly → near O(1) per operation
+    // Good hash: elements spread evenly -> near O(1) per operation
     std::unordered_map<Point, int, GoodHash> good_map;
     t1 = std::chrono::steady_clock::now();
     for (int i = 0; i < N; ++i) {
@@ -271,19 +274,16 @@ int main() {
     std::cout << "good hash largest bucket: " << max_bucket << " elements\n";
     // Output: good hash largest bucket: ~3-5 elements
 }
-
 ```
 
-**Why O(n):** When all elements hash to the same bucket, every lookup must traverse the entire chain in that bucket — effectively a linear search through an unsorted list of size n.
+**Why O(n):** When all elements hash to the same bucket, every lookup must traverse the entire chain in that bucket - effectively a linear search through an unsorted list of size n. You paid for a hash table and got a linked list.
 
 ---
 
 ## Notes
 
-- `std::hash` is not required to be deterministic across program runs — the standard allows randomized hashing.
-- Always implement `operator==` alongside `std::hash` — unordered containers need both.
+- `std::hash` is not required to be deterministic across program runs - the standard allows randomized hashing.
+- Always implement `operator==` alongside `std::hash` - unordered containers need both.
 - For `std::pair` and `std::tuple`, there is no standard `std::hash` specialization. You must provide your own or use a library.
 - In C++17, `std::hash<std::string_view>` was added, compatible with `std::hash<std::string>` for transparent lookup.
-- Consider `boost::hash` or `absl::Hash` for production code — they provide better hash combining and type support than manual implementations.
-
-```text
+- Consider `boost::hash` or `absl::Hash` for production code - they provide better hash combining and type support than manual implementations.

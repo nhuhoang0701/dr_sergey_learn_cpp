@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-C++26 introduces `<linalg>` (based on proposal P1673), bringing a standardized, header-only linear algebra library built on top of `std::mdspan`. It provides BLAS-level primitives — dot products, matrix-vector products, matrix-matrix products, triangular solves, etc. — as free function templates that operate on any `mdspan`-compatible data.
+C++26 introduces `<linalg>` (based on proposal P1673), bringing a standardized linear algebra library built on top of `std::mdspan`. Think of it as BLAS-level primitives - dot products, matrix-vector products, matrix-matrix products, triangular solves - expressed as free function templates that never allocate memory and work with any `mdspan`-compatible storage.
 
 ### Architecture
 
-```cpp
+The layering is important to understand because it explains why the design works the way it does:
 
+```text
 ┌──────────────────────────────────────────────┐
 │              User code                       │
 │   double data[6] = {1,2,3,4,5,6};          │
@@ -31,7 +32,6 @@ C++26 introduces `<linalg>` (based on proposal P1673), bringing a standardized, 
 │        Raw contiguous storage                │
 │  std::vector, std::array, C array, new[]     │
 └──────────────────────────────────────────────┘
-
 ```
 
 ### Key Functions in `<linalg>`
@@ -39,7 +39,7 @@ C++26 introduces `<linalg>` (based on proposal P1673), bringing a standardized, 
 | Function | Description |
 | --- | --- |
 | `std::linalg::dot(x, y)` | Inner (dot) product of two vectors |
-| `std::linalg::scale(alpha, x)` | In-place scalar multiplication x *= α |
+| `std::linalg::scale(alpha, x)` | In-place scalar multiplication x *= alpha |
 | `std::linalg::add(x, y, z)` | z = x + y element-wise |
 | `std::linalg::matrix_vector_product(A, x, y)` | y = A * x |
 | `std::linalg::matrix_product(A, B, C)` | C = A * B |
@@ -50,15 +50,16 @@ C++26 introduces `<linalg>` (based on proposal P1673), bringing a standardized, 
 
 ### Key Design Principles
 
-1. **Zero-copy via mdspan** — functions take `mdspan` parameters, never allocate, never own data
-2. **Layout-agnostic** — works with `layout_left` (column-major, Fortran/BLAS), `layout_right` (row-major, C), or custom layouts
-3. **Execution policies** — all functions accept an optional first `std::execution::par` (or similar) argument for parallel execution
-4. **Accessor-based scaling** — `scaled()` and `conjugated()` return lazy views that avoid copying
+1. **Zero-copy via mdspan** - functions take `mdspan` parameters, never allocate, never own data
+2. **Layout-agnostic** - works with `layout_left` (column-major, Fortran/BLAS), `layout_right` (row-major, C), or custom layouts
+3. **Execution policies** - all functions accept an optional first `std::execution::par` (or similar) argument for parallel execution
+4. **Accessor-based scaling** - `scaled()` and `conjugated()` return lazy views that avoid copying
 
-### Core Example — Matrix-Vector Product
+### Core Example - Matrix-Vector Product
+
+Here's the simplest possible demonstration: wrap flat arrays in `mdspan` views, then hand them to `matrix_vector_product`. Notice there is no allocation inside the function - all memory is caller-owned.
 
 ```cpp
-
 // NOTE: C++26 — requires a compiler that supports <linalg>.
 // As of 2024, available in experimental form via reference implementations
 // (e.g., the mdspan/linalg reference impl on GitHub).
@@ -92,13 +93,13 @@ int main() {
     // y[0] = 6     (1+2+3)
     // y[1] = 15    (4+5+6)
 }
-
 ```
 
 ### Dot Product and Scaling
 
-```cpp
+`scaled()` is a good example of the lazy-view design. It returns an accessor-wrapped `mdspan` that applies the scale factor on each read without modifying the underlying data:
 
+```cpp
 #include <linalg>
 #include <mdspan>
 #include <iostream>
@@ -121,7 +122,6 @@ int main() {
     // half_b[0]==2, half_b[1]==2.5, half_b[2]==3
     std::cout << "scaled b[0] = " << half_b[0] << "\n"; // 2
 }
-
 ```
 
 ---
@@ -132,8 +132,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The caller allocates all storage and wraps it in `mdspan` views. The function signature makes the sizes clear from the types alone - a 3×2 matrix times a 2-element vector produces a 3-element result:
 
+```cpp
 #include <linalg>
 #include <mdspan>
 #include <iostream>
@@ -163,10 +164,9 @@ int main() {
     // y[1] = 110   (3*10 + 4*20)
     // y[2] = 170   (5*10 + 6*20)
 }
-
 ```
 
-**Explanation:** `matrix_vector_product(A, x, y)` computes `y = A · x`. The matrix is represented as a rank-2 `mdspan`, the input and output vectors as rank-1 `mdspan`s. No memory is allocated inside the function — all storage is provided by the caller through `mdspan` views.
+**Explanation:** `matrix_vector_product(A, x, y)` computes `y = A · x`. The matrix is represented as a rank-2 `mdspan`, the input and output vectors as rank-1 `mdspan`s. No memory is allocated inside the function - all storage is provided by the caller through `mdspan` views.
 
 ### Q2: Explain how std::linalg integrates with std::mdspan for matrix representation
 
@@ -174,14 +174,15 @@ int main() {
 
 | Aspect | Detail |
 | --- | --- |
-| **Non-owning** | `mdspan` is a view — `linalg` never allocates or frees memory |
+| **Non-owning** | `mdspan` is a view - `linalg` never allocates or frees memory |
 | **Layout policies** | `layout_right` (row-major) or `layout_left` (column-major) are both accepted; custom layouts too |
 | **Extents** | Static extents (`extents<int,3,3>`) enable compile-time size checks; dynamic extents (`dextents<int,2>`) allow runtime sizes |
 | **Accessor policies** | `scaled()` and `conjugated()` return `mdspan` objects with custom accessor policies that perform arithmetic lazily |
 | **Subviews** | `std::submdspan(A, pair{0,2}, full_extent)` creates sub-matrix views; these can be passed directly to `linalg` functions |
 
-```cpp
+The example below shows a dynamic-extent matrix and the `transposed()` view. The transposition produces no copy - it's just a new `mdspan` with swapped layout strides:
 
+```cpp
 #include <linalg>
 #include <mdspan>
 #include <vector>
@@ -204,20 +205,19 @@ int main() {
     std::cout << "A[0,1]=" << A[0,1] << "  At[0,1]=" << At[0,1] << "\n";
     // Both 0 for identity, but for non-identity they'd differ
 }
-
 ```
 
-The key insight: `linalg` is a *vocabulary* built entirely on `mdspan` views. If you can wrap your memory in an `mdspan`, `linalg` can operate on it — whether it's a `std::vector`, a `new[]` buffer, GPU shared memory, or a mmap'd file.
+The key insight: `linalg` is a vocabulary built entirely on `mdspan` views. If you can wrap your memory in an `mdspan`, `linalg` can operate on it - whether it's a `std::vector`, a `new[]` buffer, GPU shared memory, or a mmap'd file.
 
 ### Q3: Compare std::linalg with BLAS for portability and performance in small matrices
 
 | Aspect | BLAS (C/Fortran) | std::linalg (C++26) |
 | --- | --- | --- |
 | **Language** | C / Fortran calling conventions | Pure C++ templates |
-| **Header** | Vendor-specific headers (MKL, OpenBLAS, ATLAS…) | `#include <linalg>` — standard |
-| **Matrix representation** | Raw pointer + leading dimension int | `std::mdspan` — type-safe, layout-aware |
-| **Column-major assumption** | Yes (Fortran heritage) | No — works with any layout policy |
-| **Small matrix perf** | BLAS call overhead can dominate for <16×16 | Templates inline fully — zero call overhead |
+| **Header** | Vendor-specific headers (MKL, OpenBLAS, ATLAS...) | `#include <linalg>` - standard |
+| **Matrix representation** | Raw pointer + leading dimension int | `std::mdspan` - type-safe, layout-aware |
+| **Column-major assumption** | Yes (Fortran heritage) | No - works with any layout policy |
+| **Small matrix perf** | BLAS call overhead can dominate for <16x16 | Templates inline fully - zero call overhead |
 | **Parallel execution** | Library-internal threads (MKL, OpenBLAS) | Explicit `std::execution::par` policy |
 | **Complex numbers** | Separate `z`/`c` prefixed routines | Same template, `std::complex<double>` |
 | **Compile-time sizes** | None | Static extents enable unrolling/vectorization |
@@ -225,18 +225,19 @@ The key insight: `linalg` is a *vocabulary* built entirely on `mdspan` views. If
 
 **When to prefer std::linalg:**
 
-- Small fixed-size matrices (2×2, 3×3, 4×4) — template inlining beats BLAS call overhead
+- Small fixed-size matrices (2×2, 3×3, 4×4) - template inlining beats BLAS call overhead
 - Portable code that must compile without external libraries
 - Integration with other C++ stdlib features (ranges, execution policies)
 
 **When to prefer BLAS:**
 
-- Large matrices (1000×1000+) — vendor-tuned BLAS (MKL, cuBLAS) has years of optimization
-- GPU offloading — cuBLAS/rocBLAS are industry standard
+- Large matrices (1000×1000+) - vendor-tuned BLAS (MKL, cuBLAS) has years of optimization
+- GPU offloading - cuBLAS/rocBLAS are industry standard
 - Existing Fortran/C codebases
 
-```cpp
+The API difference is dramatic at a glance:
 
+```cpp
 // Conceptual comparison: 3×3 matrix multiply
 
 // BLAS approach (C interface):
@@ -249,7 +250,6 @@ The key insight: `linalg` is a *vocabulary* built entirely on `mdspan` views. If
 // std::linalg approach:
 // std::linalg::matrix_product(A_mdspan, B_mdspan, C_mdspan);
 // 3 parameters, type-safe, layout-flexible, no linking dependency
-
 ```
 
 ---
@@ -257,14 +257,8 @@ The key insight: `linalg` is a *vocabulary* built entirely on `mdspan` views. If
 ## Notes
 
 - **Availability (2024):** `<linalg>` is part of C++26 but not yet available in major compilers' standard libraries. The reference implementation at [github.com/kokkos/stdBLAS](https://github.com/kokkos/stdBLAS) is usable today as a header-only library.
-- **Conjugated views:** `std::linalg::conjugated(x)` returns an `mdspan` with an accessor that applies `conj()` on read — enables Hermitian operations without copying complex data.
+- **Conjugated views:** `std::linalg::conjugated(x)` returns an `mdspan` with an accessor that applies `conj()` on read - enables Hermitian operations without copying complex data.
 - **In-place vs out-of-place:** Some operations like `scale()` work in-place; others like `matrix_vector_product(A, x, y)` write to a separate output. The standard guarantees no aliasing issues when `x` and `y` are distinct.
 - **Overwriting vs updating:** Many functions have `_update` variants (e.g., conceptually `y = alpha*A*x + beta*y` via `matrix_vector_product` with execution policy + scaled views).
 - **Integration with `<execution>`:** All `linalg` functions accept an execution policy as the first argument, enabling `std::execution::par` for CPU parallelism or custom policies for GPU dispatch.
 - Compile with `-std=c++26` or use the reference implementation with `-std=c++23`.
-
-```cpp
-
-// Your practice code
-
-```

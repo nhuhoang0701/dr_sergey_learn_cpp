@@ -9,23 +9,25 @@
 
 ## Topic Overview
 
-`std::generator<T>` is a C++23 coroutine return type that produces a lazy sequence of values via `co_yield`. It satisfies `std::ranges::input_range`, integrating seamlessly with ranges and range-based for loops — no hand-written promise/iterator boilerplate needed.
+`std::generator<T>` is C++23's standard coroutine return type for producing lazy sequences. You write a function that uses `co_yield` to produce values one at a time, and the caller gets something that behaves like a range - it plugs straight into range-based for loops and composes with `std::views` pipelines. Before C++23, getting this behavior required a pile of hand-written promise type, iterator, and sentinel boilerplate. Now the library handles all of that for you.
 
 ### How It Works
 
-```cpp
+A generator function suspends at each `co_yield` and hands the value back to the caller. The caller resumes the coroutine on the next iteration:
 
+```cpp
 std::generator<int> count(int from, int to) {
     for (int i = from; i < to; ++i)
         co_yield i;   // suspend, produce value
 }
 // caller resumes on each iteration
-
 ```
+
+Three things are worth keeping in mind:
 
 1. The function is a **coroutine** because it uses `co_yield`.
 2. `std::generator<int>` handles the promise type, coroutine handle, and iterator protocol.
-3. Values are produced **lazily** — computed only when the caller advances the iterator.
+3. Values are produced **lazily** - computed only when the caller advances the iterator.
 
 ### Key Properties
 
@@ -34,13 +36,14 @@ std::generator<int> count(int from, int to) {
 | Range category | `input_range` (single-pass) |
 | Copyable? | No (move-only) |
 | Rewindable? | No |
-| Infinite? | Yes — can produce values forever |
-| Recursive? | Yes — via `co_yield std::ranges::elements_of(sub_gen)` |
+| Infinite? | Yes - can produce values forever |
+| Recursive? | Yes - via `co_yield std::ranges::elements_of(sub_gen)` |
 
 ### Core Syntax
 
-```cpp
+Here's the classic lazy sequence example. The Fibonacci generator runs forever - values are only computed as the caller pulls them, so `std::views::take(10)` stops the process cleanly after ten:
 
+```cpp
 #include <generator>
 #include <ranges>
 #include <iostream>
@@ -64,7 +67,6 @@ int main() {
     std::cout << "\n";
     // Output: 0 1 1 2 3 5 8 13 21 34
 }
-
 ```
 
 ---
@@ -75,8 +77,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The interesting thing here is `co_yield std::ranges::elements_of(sub_generator)`. Without it you'd have to manually flatten the recursion into an explicit stack. With it, each recursive call just delegates its output into the parent generator:
 
+```cpp
 #include <generator>
 #include <iostream>
 #include <memory>
@@ -141,7 +144,6 @@ int main() {
     std::cout << "\n";
     // Output: preorder: 4 2 1 3 6 5 7
 }
-
 ```
 
 **Key insight:** `co_yield std::ranges::elements_of(sub_generator)` enables **recursive generators** without flattening the recursion manually. Each recursive call produces a nested generator, and `elements_of` yields all its values into the parent.
@@ -152,8 +154,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+You can prove this at compile time with `static_assert`. The `!forward_range` assertion is just as important as the `input_range` one - it's a reminder that you cannot iterate the generator a second time or hold multiple positions in it:
 
+```cpp
 #include <generator>
 #include <ranges>
 #include <iostream>
@@ -215,7 +218,6 @@ int main() {
     // [line 2]
     // [line 3]
 }
-
 ```
 
 ---
@@ -224,16 +226,17 @@ int main() {
 
 **Answer:**
 
-A `std::generator` is backed by a **coroutine frame** — a block of heap-allocated memory that stores the coroutine's local variables and suspension point. This inherently makes it single-pass:
+This is one of those things that trips people up when they first meet coroutines. A `std::generator` is backed by a **coroutine frame** - a heap-allocated block that stores the coroutine's local variables and the current suspension point. That design makes rewinding fundamentally impossible:
 
-1. **Coroutine state is mutable and progresses forward.** When you resume a coroutine, it continues from its last `co_yield` — there is no mechanism to "reset" to the beginning.
+1. **Coroutine state is mutable and progresses forward.** When you resume a coroutine, it continues from its last `co_yield`. There is no mechanism to "reset" to the beginning - the frame only knows where it currently is.
 
 2. **No copy semantics.** `std::generator` is move-only. You cannot create a second independent copy that starts from the beginning.
 
 3. **Values are ephemeral.** After advancing to the next value, the previous value's storage may be reused by the coroutine.
 
-```cpp
+The code below shows the concrete consequence: iterating partway through a generator advances its internal state, and you cannot go back.
 
+```cpp
 #include <generator>
 #include <iostream>
 
@@ -265,8 +268,9 @@ int main() {
     std::cout << "\n";
     // Output: 0 1 2  (fresh start)
 }
-
 ```
+
+If you need a quick mental model: a generator is like reading from a pipe. You can read forward, but the data is gone once consumed. A `std::vector` is more like a book - you can flip back to any page.
 
 **Comparison:**
 
@@ -285,30 +289,7 @@ int main() {
 
 - `std::generator` is in `<generator>` (C++23), not `<coroutine>`.
 - Compiler support: MSVC 17.5+, GCC 14+, Clang 18+ (partial).
-- `co_yield std::ranges::elements_of(...)` enables recursive generators — the only standard way to "yield from" a sub-generator.
-- `std::generator<T>` stores a `T` value in the promise, so large objects are stored by value — prefer `std::generator<const T&>` for large types.
+- `co_yield std::ranges::elements_of(...)` enables recursive generators - the only standard way to "yield from" a sub-generator.
+- `std::generator<T>` stores a `T` value in the promise, so large objects are stored by value - prefer `std::generator<const T&>` for large types.
 - Memory: each active coroutine frame is typically heap-allocated (compiler may elide in some cases).
 - Generators are the standard replacement for custom iterator pairs or callback-based traversals.
-
-**1.** Explain why std::generator is single-pass.
-**2.** Cannot be rewound.
-
-**Illustration:**
-
-```cpp
-
-// Key types: std::generator
-
-```
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

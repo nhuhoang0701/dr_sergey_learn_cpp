@@ -9,20 +9,21 @@
 
 ## Topic Overview
 
-C++23 adds three monadic operations to `std::optional` — `transform`, `and_then`, and `or_else` — enabling functional-style chaining that eliminates nested `if (opt.has_value())` checks. These operations mirror the monad pattern: they compose operations that might fail (return `optional`) into clean pipelines.
+C++23 adds three monadic operations to `std::optional` - `transform`, `and_then`, and `or_else` - so you can chain operations that might fail without writing nested `if (opt.has_value())` checks at every step. The idea comes from functional programming: each operation either threads the value forward through the next step, or short-circuits to empty. You get flat, readable pipelines instead of pyramids of null-checks.
 
 ### The Three Operations
 
 | Operation | Signature (simplified) | Behavior |
 | --- | --- | --- |
-| `transform(f)` | `optional<T> → (T→U) → optional<U>` | If engaged, apply `f` to the value and wrap result in `optional<U>`. If empty, return empty `optional<U>`. |
-| `and_then(f)` | `optional<T> → (T→optional<U>) → optional<U>` | If engaged, apply `f` (which itself returns `optional`). If empty, return empty. **Flat-maps** — avoids `optional<optional<U>>`. |
-| `or_else(f)` | `optional<T> → (()→optional<T>) → optional<T>` | If engaged, return `*this`. If empty, call `f()` and return its result. |
+| `transform(f)` | `optional<T> -> (T->U) -> optional<U>` | If engaged, apply `f` to the value and wrap result in `optional<U>`. If empty, return empty `optional<U>`. |
+| `and_then(f)` | `optional<T> -> (T->optional<U>) -> optional<U>` | If engaged, apply `f` (which itself returns `optional`). If empty, return empty. **Flat-maps** - avoids `optional<optional<U>>`. |
+| `or_else(f)` | `optional<T> -> (()->optional<T>) -> optional<T>` | If engaged, return `*this`. If empty, call `f()` and return its result. |
 
 ### Visual Pipeline
 
-```cpp
+The contrast between the monadic style and the manual if-check style makes the motivation clear. Both do the same thing - the monadic version just reads as a straight pipeline:
 
+```cpp
 optional<string> username = get_user(id);
 
 username.and_then(find_profile)      // optional<Profile> — may fail
@@ -30,25 +31,25 @@ username.and_then(find_profile)      // optional<Profile> — may fail
         .or_else([] { return optional<string>{"default.png"}; });
                                       // fallback if any step produced nullopt
 
-Without monadic ops (C++20):
-  auto user = get_user(id);
-  if (!user) return "default.png";
-  auto profile = find_profile(*user);
-  if (!profile) return "default.png";
-  return get_avatar_url(*profile);
-
+// Without monadic ops (C++20):
+//   auto user = get_user(id);
+//   if (!user) return "default.png";
+//   auto profile = find_profile(*user);
+//   if (!profile) return "default.png";
+//   return get_avatar_url(*profile);
 ```
 
 ### Core Examples
 
-```cpp
+Here's a full pipeline that parses a string, validates the result, takes a square root, and converts back to string - with a fallback at the end. If any step produces `nullopt`, everything after it is skipped:
 
+```cpp
 #include <optional>
 #include <string>
 #include <iostream>
 #include <charconv>
 
-// transform: T → U (wraps result in optional)
+// transform: T -> U (wraps result in optional)
 std::optional<int> parse_int(const std::string& s) {
     int result{};
     auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), result);
@@ -57,7 +58,7 @@ std::optional<int> parse_int(const std::string& s) {
     return std::nullopt;
 }
 
-// and_then: T → optional<U> (flat-maps)
+// and_then: T -> optional<U> (flat-maps)
 std::optional<double> safe_sqrt(int n) {
     if (n < 0) return std::nullopt;
     return std::sqrt(static_cast<double>(n));
@@ -66,11 +67,11 @@ std::optional<double> safe_sqrt(int n) {
 int main() {
     std::optional<std::string> input = "49";
 
-    // Pipeline: parse string → check non-negative → sqrt → double result
+    // Pipeline: parse string -> check non-negative -> sqrt -> double result
     auto result = input
-        .and_then(parse_int)          // optional<string> → optional<int>
-        .and_then(safe_sqrt)          // optional<int> → optional<double>
-        .transform([](double d) {     // optional<double> → optional<std::string>
+        .and_then(parse_int)          // optional<string> -> optional<int>
+        .and_then(safe_sqrt)          // optional<int> -> optional<double>
+        .transform([](double d) {     // optional<double> -> optional<std::string>
             return std::to_string(d);
         })
         .or_else([]() -> std::optional<std::string> {
@@ -91,24 +92,24 @@ int main() {
 
     std::cout << *result2 << "\n"; // "computation failed"
 }
-
 ```
 
 ### transform vs and_then
 
-```cpp
+The distinction is important: use `transform` when your function returns a plain value, and `and_then` when it returns an `optional`. Getting it backwards creates an `optional<optional<T>>` - double-wrapped and awkward:
 
+```cpp
 #include <optional>
 #include <iostream>
 
 int main() {
     std::optional<int> val = 42;
 
-    // transform: f returns a plain value → wrapped in optional
+    // transform: f returns a plain value -> wrapped in optional
     auto doubled = val.transform([](int x) { return x * 2; });
     // doubled is optional<int>{84}
 
-    // and_then: f returns optional → NOT double-wrapped
+    // and_then: f returns optional -> NOT double-wrapped
     auto checked = val.and_then([](int x) -> std::optional<int> {
         if (x > 100) return std::nullopt;
         return x;
@@ -124,7 +125,6 @@ int main() {
     std::cout << *doubled << "\n";  // 84
     std::cout << *checked << "\n";  // 42
 }
-
 ```
 
 ---
@@ -135,8 +135,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Each function in the chain returns `optional`. If any of them returns `nullopt`, the rest of the chain is skipped entirely and `nullopt` propagates to the end. No special wiring required - that's the whole point:
 
+```cpp
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -176,9 +177,9 @@ int main() {
 
     // WITH and_then (C++23) — flat, composable:
     auto result = std::optional<int>{1}
-        .and_then(find_user)       // optional<int> → optional<string>
-        .and_then(find_email)      // optional<string> → optional<string>
-        .and_then(is_verified);    // optional<string> → optional<bool>
+        .and_then(find_user)       // optional<int> -> optional<string>
+        .and_then(find_email)      // optional<string> -> optional<string>
+        .and_then(is_verified);    // optional<string> -> optional<bool>
 
     if (result)
         std::cout << "Verified: " << std::boolalpha << *result << "\n";
@@ -194,17 +195,17 @@ int main() {
 
     std::cout << result2.has_value() << "\n"; // 0 (false)
 }
-
 ```
 
-**Explanation:** `and_then` chains functions that each return `optional`. If any step returns `nullopt`, the rest of the chain is skipped and `nullopt` propagates. This is the "monadic bind" pattern — it eliminates the pyramid of if-checks while preserving short-circuit behavior.
+**Explanation:** `and_then` chains functions that each return `optional`. If any step returns `nullopt`, the rest of the chain is skipped and `nullopt` propagates. This is the "monadic bind" pattern - it eliminates the pyramid of if-checks while preserving short-circuit behavior.
 
 ### Q2: Use transform to apply a function to an optional value if present, without unwrapping
 
 **Answer:**
 
-```cpp
+`transform` is like applying a lambda to the inside of the box - if the box is empty, nothing happens and you get an empty box back. The function never has to deal with `nullopt` explicitly:
 
+```cpp
 #include <optional>
 #include <string>
 #include <iostream>
@@ -245,7 +246,6 @@ int main() {
         });
     std::cout << empty_result.has_value() << "\n"; // 0
 }
-
 ```
 
 **Explanation:** `transform` is like `std::ranges::transform` but for `optional`. It applies a function to the contained value and wraps the result in a new `optional`. If the source is empty, the function is never called and an empty optional is returned. Unlike `and_then`, the function must return a plain value (not `optional`).
@@ -254,8 +254,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+`or_else` is the complement: it only fires when the optional is empty, giving you a chance to try an alternative source or supply a default. A chain of `or_else` calls lets you express a priority order of data sources cleanly:
 
+```cpp
 #include <optional>
 #include <string>
 #include <iostream>
@@ -313,10 +314,9 @@ int main() {
 
     std::cout << *final_result << "\n"; // "fallback!"
 }
-
 ```
 
-**Explanation:** `or_else` is the complement of `and_then` — it activates only when the optional is empty, attempting an alternative computation. If the optional has a value, `or_else` returns it unchanged. The fallback function must return `optional<T>` (same type), allowing cascading fallback chains.
+**Explanation:** `or_else` is the complement of `and_then` - it activates only when the optional is empty, attempting an alternative computation. If the optional has a value, `or_else` returns it unchanged. The fallback function must return `optional<T>` (same type), allowing cascading fallback chains.
 
 ---
 
@@ -329,11 +329,3 @@ int main() {
 - **Lambda return types:** `or_else` lambdas often need explicit return type annotation: `[]() -> std::optional<T> { ... }`.
 - **No short-circuit on transform:** `transform` always wraps the result. If your function can fail, use `and_then` instead.
 - Compile with `-std=c++23 -Wall -Wextra`.
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

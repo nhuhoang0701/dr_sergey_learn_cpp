@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-C++23 adds `std::print` and `std::println` (header `<print>`) as direct replacements for `std::cout << std::format(...)`. They combine the type-safety of `std::format` with the convenience of a single function call, and they write directly to the output stream without creating an intermediate string.
+C++23 adds `std::print` and `std::println` (header `<print>`) as direct replacements for the `std::cout << std::format(...)` pattern. They combine the type-safety of `std::format` with the convenience of a single function call, and they write directly to the output stream without allocating an intermediate string. If you already know `std::format`, you already know the format syntax - it's identical.
 
 ### Comparison
 
@@ -26,7 +26,6 @@ C++23 adds `std::print` and `std::println` (header `<print>`) as direct replacem
 ### Signatures
 
 ```cpp
-
 #include <print>
 
 // Print to stdout:
@@ -40,13 +39,13 @@ std::println(stream, fmt, args...);
 
 // Print to stderr:
 std::print(stderr, "Error: {}\n", msg);
-
 ```
 
 ### Core Examples
 
-```cpp
+Notice that `std::println()` with no arguments gives you a bare newline - handy after a loop of `std::print` calls:
 
+```cpp
 #include <print>
 #include <string>
 #include <vector>
@@ -79,13 +78,13 @@ int main() {
         std::print("{} ", n);
     std::println();  // trailing newline after: 1 2 3 4 5
 }
-
 ```
 
 ### Custom Formatter with println
 
-```cpp
+Any type that has a `std::formatter` specialization works with `std::println` automatically - you write the formatter once and it works everywhere:
 
+```cpp
 #include <print>
 #include <format>
 #include <string>
@@ -113,13 +112,13 @@ int main() {
     // (1.0, 1.0)
     // (2.0, 4.0)
 }
-
 ```
 
 ### Flushing Behavior
 
-```cpp
+`std::print` does not flush after every write - it buffers for performance. This matters whenever you need output to appear immediately (progress bars, prompts, crash diagnostics):
 
+```cpp
 #include <print>
 #include <thread>
 #include <chrono>
@@ -143,7 +142,6 @@ int main() {
     }
     std::println();  // final newline
 }
-
 ```
 
 ---
@@ -154,8 +152,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The output is identical - the difference is purely ergonomic. `std::println` removes the `std::cout <<`, the `<< "\n"`, and the intermediate string allocation all at once:
 
+```cpp
 #include <format>
 #include <iostream>
 #include <print>
@@ -200,7 +199,6 @@ int main() {
     // --------------- ----- ------------
     // Alice              30     75000.50
 }
-
 ```
 
 **Explanation:** `std::println` replaces the `std::cout << std::format(...) << "\n"` pattern. It uses the same format string syntax but writes directly to the stream (no intermediate `std::string` allocation) and appends a newline automatically. `std::print` is the same without the newline.
@@ -209,8 +207,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The performance win from buffering is real - flushing on every write means a system call on every write, which can be 10-100x slower for many small outputs. The downside is that output may not appear immediately, and buffered output can be lost if the program crashes before the buffer flushes:
 
+```cpp
 #include <print>
 #include <chrono>
 #include <iostream>
@@ -250,13 +249,12 @@ int main() {
     // Fix: std::fflush(stdout); or use std::println(stderr, ...)
 
     // === Performance comparison concept ===
-    // std::print: write to buffer → kernel writes buffer to device (few syscalls)
+    // std::print: write to buffer -> kernel writes buffer to device (few syscalls)
     // std::cout with endl: write + flush EACH TIME (many syscalls)
     // The buffered approach can be 10-100x faster for many small writes
 
     std::println("\nDone.");
 }
-
 ```
 
 **Explanation:** `std::print` writes to a buffer (typically 4-8 KB). The OS flushes the buffer when it's full, when the program exits, or when explicitly requested. This is faster than flushing after every write (`std::endl`), but means output isn't immediately visible. For interactive output (progress bars, prompts), call `std::fflush(stdout)` after printing.
@@ -265,8 +263,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The `parse` method reads your custom format spec (the text between `:` and `}`), and the `format` method writes the output. Once the formatter is defined, the type works with `std::print`, `std::println`, `std::format`, and `std::format_to` - all using the same code path:
 
+```cpp
 #include <print>
 #include <format>
 #include <string>
@@ -330,10 +329,9 @@ int main() {
     // rgb(0, 0, 255)       #0000ff
     // rgb(255, 255, 0)     #ffff00
 }
-
 ```
 
-**Explanation:** A custom `std::formatter<T>` specialization has two methods: `parse()` reads the format spec (text between `:` and `}`) and `format()` writes the output. Once defined, the type works with `std::print`, `std::println`, `std::format`, and `std::format_to` — all using the same formatter. The `parse` method enables custom format specifiers (`:hex` here).
+**Explanation:** A custom `std::formatter<T>` specialization has two methods: `parse()` reads the format spec (text between `:` and `}`) and `format()` writes the output. Once defined, the type works with `std::print`, `std::println`, `std::format`, and `std::format_to` - all using the same formatter. The `parse` method enables custom format specifiers (`:hex` here).
 
 ---
 
@@ -346,30 +344,3 @@ int main() {
 - **`std::println()` with no args:** C++26 allows `std::println()` as a simple newline. In C++23, use `std::println("")` or `std::print("\n")`.
 - **Thread safety:** `std::print` to the same stream from multiple threads requires synchronization, same as `printf` or `cout`.
 - Compile with `-std=c++23 -Wall -Wextra`.
-
-// Using std::formatter, std::println
-
-int main() {
-    std::formatter obj; // create and use
-    std::println obj; // create and use
-    return 0;
-}
-
-```cpp
-
-**How this works:**
-
-- Write a custom std::formatter.
-- Use it with std::println.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

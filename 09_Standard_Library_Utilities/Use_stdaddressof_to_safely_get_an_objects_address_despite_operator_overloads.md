@@ -13,16 +13,16 @@
 
 ### The Problem
 
-```cpp
+C++ allows a class to overload unary `operator&`. When a type does this, writing `&obj` no longer gives you the object's address - it calls the overload instead and returns whatever that function returns. Here is a minimal example:
 
+```cpp
 struct Evil {
     int* operator&() { return nullptr; }  // overloaded operator&
 };
 
 Evil e;
-// &e returns nullptr — NOT the real address!
+// &e returns nullptr - NOT the real address!
 // std::addressof(e) returns the actual address of e
-
 ```
 
 ### Why It Exists
@@ -33,8 +33,9 @@ Evil e;
 
 ### How It Works (Conceptually)
 
-```cpp
+The implementation casts to `char&` first because `char` is one of the few types that cannot have an overloaded `operator&`. From there it takes the address and casts back.
 
+```cpp
 // Simplified implementation:
 template<class T>
 T* addressof(T& arg) noexcept {
@@ -42,7 +43,6 @@ T* addressof(T& arg) noexcept {
         &const_cast<char&>(
             reinterpret_cast<const volatile char&>(arg)));
 }
-
 ```
 
 The trick: cast to `char&` (which cannot have an overloaded `operator&`), take its address, then cast back.
@@ -58,8 +58,9 @@ The trick: cast to `char&` (which cannot have an overloaded `operator&`), take i
 
 ### Core Syntax
 
-```cpp
+The two printouts for `Tricky` can differ because the overloaded `operator&` returns the address of `t.value`, not of `t` itself. `std::addressof` bypasses that entirely.
 
+```cpp
 #include <memory>
 #include <iostream>
 
@@ -76,14 +77,13 @@ int main() {
     Normal n;
     std::cout << "&n              = " << &n << "\n";
     std::cout << "addressof(n)    = " << std::addressof(n) << "\n";
-    // Both are the same — Normal doesn't overload operator&
+    // Both are the same - Normal doesn't overload operator&
 
     Tricky t;
     std::cout << "&t              = " << &t << "\n";              // address of t.value!
     std::cout << "addressof(t)    = " << std::addressof(t) << "\n"; // real address of t
     // &t and std::addressof(t) may differ!
 }
-
 ```
 
 ---
@@ -94,8 +94,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+After the overloaded `operator&` fires and returns `nullptr`, notice that `std::addressof` gives back a usable pointer you can actually write through.
 
+```cpp
 #include <memory>
 #include <iostream>
 #include <cassert>
@@ -103,7 +104,7 @@ int main() {
 struct Proxy {
     int data = 10;
 
-    // Overloaded operator& — returns something unexpected
+    // Overloaded operator& - returns something unexpected
     void* operator&() {
         std::cout << "  custom operator& called\n";
         return nullptr;  // deliberately wrong
@@ -133,7 +134,6 @@ int main() {
     assert(real_addr != nullptr);
     std::cout << "addressof works correctly!\n";
 }
-
 ```
 
 ---
@@ -142,12 +142,11 @@ int main() {
 
 **Answer:**
 
-The standard library is **generic** — it operates on user-supplied types where `operator&` may be overloaded. Using the plain `&` operator would silently return the wrong address, leading to undefined behavior (constructing objects at wrong locations, corrupting memory, etc.).
+The standard library is **generic** - it operates on user-supplied types where `operator&` may be overloaded. Using the plain `&` operator would silently return the wrong address, leading to undefined behavior (constructing objects at wrong locations, corrupting memory, etc.).
 
 **Example: a custom allocator that must use addressof:**
 
 ```cpp
-
 #include <memory>
 #include <iostream>
 
@@ -186,7 +185,6 @@ int main() {
     p->~Widget();
     alloc.deallocate(p, 1);
 }
-
 ```
 
 **Key rule:** In any template code that takes an arbitrary type `T`, always use `std::addressof(obj)` instead of `&obj` to get the object's address.
@@ -200,7 +198,6 @@ int main() {
 A classic real-world case is COM programming on Windows, where `operator&` is overloaded on smart pointer wrappers to support the `QueryInterface` pattern:
 
 ```cpp
-
 #include <memory>
 #include <iostream>
 #include <cassert>
@@ -254,7 +251,6 @@ int main() {
     assert(real->get()->id == 99);
     std::cout << "addressof works with COM-style wrappers\n";
 }
-
 ```
 
 **Explanation:**
@@ -266,14 +262,8 @@ int main() {
 
 ## Notes
 
-- `std::addressof` is `constexpr` since C++17 — it can be used in constant expressions.
+- `std::addressof` is `constexpr` since C++17 - it can be used in constant expressions.
 - It works with `const` and `volatile` qualified objects.
 - Never overload `operator&` in your own types unless you have a very compelling reason (COM interop is the classic case).
 - In C++20 ranges and concepts, `std::addressof` is used internally to ensure correctness with arbitrary iterator/sentinel types.
-- `std::addressof` cannot be used with rvalues — it requires an lvalue reference.
-
-```cpp
-
-// Your practice code
-
-```
+- `std::addressof` cannot be used with rvalues - it requires an lvalue reference.

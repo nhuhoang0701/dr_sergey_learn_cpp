@@ -11,16 +11,16 @@
 
 Network protocols (TCP/IP) use **big-endian** byte order, while most modern CPUs (x86, ARM in default mode) are **little-endian**. C++20 added `std::endian` to detect the native byte order at compile time, and C++23 added `std::byteswap` to reverse byte order portably.
 
+Before these additions, every codebase that dealt with network data had to use platform-specific functions (`htonl`, `ntohl` on POSIX; `_byteswap_ulong` on MSVC) or roll their own byte-reversal. Neither approach was `constexpr`, and neither worked transparently across platforms. These two C++ additions give you a clean, portable, compiler-optimized solution.
+
 ### std::endian (C++20, `<bit>`)
 
 ```cpp
-
 enum class endian {
     little = /* implementation-defined */,
     big    = /* implementation-defined */,
     native = /* little or big, depending on platform */
 };
-
 ```
 
 | Platform | `std::endian::native` equals |
@@ -32,21 +32,20 @@ enum class endian {
 ### std::byteswap (C++23, `<bit>`)
 
 ```cpp
-
 template<class T>
 constexpr T byteswap(T value) noexcept;
-
 ```
 
 - Reverses the bytes of `value`.
 - `T` must be an integral type with no padding bits.
-- `constexpr` — works at compile time.
+- `constexpr` - works at compile time.
 - Compilers emit a single `BSWAP` instruction on x86.
 
 ### Core Syntax
 
-```cpp
+Here is the basic effect: `0x01020304` becomes `0x04030201`, each byte moving to the mirror position.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -71,7 +70,6 @@ int main() {
         std::cout << "This platform is mixed-endian\n";
     }
 }
-
 ```
 
 ---
@@ -82,8 +80,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+`byteswap` works on all integral sizes - `uint16_t`, `uint32_t`, `uint64_t` all just work. The `static_assert` at the end confirms you can rely on this at compile time too.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -118,7 +117,6 @@ int main() {
     // constexpr usage
     static_assert(std::byteswap(uint32_t{0x01020304}) == 0x04030201);
 }
-
 ```
 
 ---
@@ -127,8 +125,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The key insight here is that `if constexpr` lets the compiler eliminate the dead branch entirely - on a big-endian platform, `host_to_big` compiles to a no-op with zero instructions. On little-endian it compiles to a single `BSWAP`. That is the ideal outcome.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -172,12 +171,11 @@ int main() {
     // static_assert works because host_to_big is constexpr
     static_assert(big_to_host(host_to_big(uint16_t{0x1234})) == 0x1234);
 }
-
 ```
 
 **Why `if constexpr` instead of runtime `if`:**
 
-- The compiler eliminates the unused branch entirely — zero runtime cost.
+- The compiler eliminates the unused branch entirely - zero runtime cost.
 - On big-endian platforms, `host_to_big` compiles to nothing.
 - On little-endian platforms, it compiles to a single `BSWAP` instruction.
 
@@ -187,8 +185,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The POSIX functions `ntohl`/`htonl` are not `constexpr`, are not templated, and require platform-specific headers. Here is a portable, `constexpr`, type-safe replacement. The single-byte specialization in the generic version is a nice touch - swapping a `uint8_t` is always a no-op.
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <iostream>
@@ -246,19 +245,10 @@ int main() {
     uint16_t length = my_ntohs(raw_length);
     uint32_t ip = my_ntohl(raw_ip);
 
-    std::cout << "Packet length: " << length << " bytes\n";
-    // On little-endian: Output: Packet length: 20480  (after swap of 0x0050)
-    // Wait — 0x0050 in big-endian IS 80. After ntohs on LE:
-    // 0x0050 → 0x5000 = 20480? That's wrong for this example.
-    // Actually, if the network byte has value 80 stored as big-endian:
-    // 80 = 0x0050 — stored in memory as 00 50 on big-endian
-    // ntohs swaps → 0x5000 = 20480 on little-endian...
-    // This is because 0x0050 interpreted as little-endian would be 80*256 = 20480
-    
     // Correct simulation: if the value IS 80, the big-endian bytes are 0x0050
     // On a little-endian host, reading these bytes directly as uint16_t gives 0x5000
-    // ntohs(0x5000) = byteswap(0x5000) = 0x0050 = 80 ✓
-    
+    // ntohs(0x5000) = byteswap(0x5000) = 0x0050 = 80
+
     uint16_t as_read_on_le = 0x5000;  // how LE host reads big-endian 0x0050
     std::cout << "ntohs(0x5000) = " << my_ntohs(as_read_on_le) << "\n";
     // Output: ntohs(0x5000) = 80
@@ -271,15 +261,14 @@ int main() {
     uint64_t big = ntoh(uint64_t{0x0102030405060708});
     std::cout << std::hex << "ntoh64: 0x" << big << "\n";
 }
-
 ```
 
 **Advantages over POSIX ntohl():**
 
-- **`constexpr`** — usable at compile time.
-- **Type-safe** — templates prevent mixing 16-bit and 32-bit accidentally.
-- **No platform headers** — no need for `<arpa/inet.h>` (POSIX) or `<winsock2.h>` (Windows).
-- **Portable** — works correctly on both little-endian and big-endian platforms.
+- **`constexpr`** - usable at compile time.
+- **Type-safe** - templates prevent mixing 16-bit and 32-bit accidentally.
+- **No platform headers** - no need for `<arpa/inet.h>` (POSIX) or `<winsock2.h>` (Windows).
+- **Portable** - works correctly on both little-endian and big-endian platforms.
 
 ---
 
@@ -290,25 +279,3 @@ int main() {
 - `std::byteswap` on a single byte (`uint8_t`) returns the value unchanged.
 - For floating-point byteswap, use `bit_cast` to integer, swap, then `bit_cast` back.
 - All functions are `constexpr` and `noexcept`.
-
-    return 0;
-}
-
-```cpp
-
-**How this works:**
-
-- Write a portable ntohl() equivalent using std::endian.
-- Std::byteswap.
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
