@@ -11,26 +11,30 @@
 
 The **Liskov Substitution Principle (LSP)** states: *If S is a subtype of T, then objects of type T may be replaced with objects of type S without altering program correctness.* In practical C++ terms: any code that works with a `Base&` must also work correctly when handed a `Derived&`.
 
+This sounds abstract, but the violation is easy to spot in practice. If you write a function that takes a `Base&` and it throws unexpectedly, or produces wrong results, when given a `Derived&`, you have a LSP violation.
+
 ### LSP Rules (Behavioral Subtyping)
+
+The principle breaks down into four concrete rules. Think of these as the contract that derived classes must honor:
 
 | Rule | Meaning | Violation Example |
 | --- | --- | --- |
-| **Preconditions cannot be strengthened** | Derived can't require MORE from callers | `Base::deposit(amount > 0)` → `Derived::deposit(amount > 100)` ❌ |
-| **Postconditions cannot be weakened** | Derived can't promise LESS to callers | `Base::sort()` → always sorted. `Derived::sort()` → sometimes not ❌ |
-| **Invariants must be preserved** | Derived can't break base class invariants | Rectangle's area invariant broken by Square ❌ |
-| **History constraint** | Derived can't allow state changes the base forbids | Immutable base → mutable derived ❌ |
+| **Preconditions cannot be strengthened** | Derived can't require MORE from callers | `Base::deposit(amount > 0)` -> `Derived::deposit(amount > 100)` No |
+| **Postconditions cannot be weakened** | Derived can't promise LESS to callers | `Base::sort()` -> always sorted. `Derived::sort()` -> sometimes not No |
+| **Invariants must be preserved** | Derived can't break base class invariants | Rectangle's area invariant broken by Square No |
+| **History constraint** | Derived can't allow state changes the base forbids | Immutable base -> mutable derived No |
 
 ### Visual Check
 
-```cpp
+Here's the classic test. If you can substitute a derived object and the assertion still holds, you're compliant. If it breaks, you've violated LSP:
 
+```cpp
 Function f(Base& b):
   b.set_width(5);
   b.set_height(3);
   assert(b.area() == 15);  // MUST hold for ALL subtypes
-  
-  If Square : Base → set_width(5) also sets height=5 → area=25 ≠ 15 → LSP VIOLATION
 
+  If Square : Base -> set_width(5) also sets height=5 -> area=25 != 15 -> LSP VIOLATION
 ```
 
 ---
@@ -39,10 +43,11 @@ Function f(Base& b):
 
 ### Q1: Give a canonical example where derived class preconditions are stronger than base (LSP violation)
 
-**Solution — Strengthened Preconditions:**
+The reason this trips people up is that strengthening a precondition in the derived class looks like it could be a useful feature - but it silently breaks any code that relied on the weaker base contract.
+
+**Solution - Strengthened Preconditions:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <cassert>
@@ -65,7 +70,7 @@ public:
     double balance() const { return balance_; }
 };
 
-// ❌ LSP VIOLATION: strengthened precondition
+// LSP VIOLATION: strengthened precondition
 class PremiumAccount : public Account {
 public:
     // Precondition: amount >= 1000 (STRONGER than base's amount > 0)
@@ -76,7 +81,7 @@ public:
     }
 };
 
-// Function that works with base class — expects base's precondition
+// Function that works with base class - expects base's precondition
 void make_small_deposit(Account& acct) {
     acct.deposit(50.0);  // Valid per Base's contract (50 > 0)
     std::cout << "Balance: " << acct.balance() << "\n";
@@ -84,11 +89,11 @@ void make_small_deposit(Account& acct) {
 
 int main() {
     Account regular;
-    make_small_deposit(regular);  // ✅ Works: 50 > 0
+    make_small_deposit(regular);  // Works: 50 > 0
 
     PremiumAccount premium;
     try {
-        make_small_deposit(premium);  // ❌ THROWS: 50 < 1000
+        make_small_deposit(premium);  // THROWS: 50 < 1000
     } catch (const std::exception& e) {
         std::cout << "LSP Violation: " << e.what() << "\n";
     }
@@ -105,22 +110,24 @@ int main() {
 // Expected output:
 //   Balance: 50
 //   LSP Violation: Premium accounts require min $1000 deposit
-
 ```
+
+The fix is shown in the comment: honor the base class precondition first, then layer the premium bonus logic on top. The caller's expectation (`amount > 0` is enough) is never broken.
 
 ---
 
 ### Q2: Show how a Rectangle/Square hierarchy violates LSP and refactor it to satisfy it
 
-**Solution — The Classic Rectangle/Square Problem:**
+This is the canonical LSP example. It feels like a Square "is-a" Rectangle geometrically, but in code, that relationship breaks down the moment you have independent setters for width and height.
+
+**Solution - The Classic Rectangle/Square Problem:**
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <cassert>
 
-// ❌ LSP VIOLATION: Square derives from Rectangle
+// LSP VIOLATION: Square derives from Rectangle
 class Rectangle {
 protected:
     int width_, height_;
@@ -139,7 +146,7 @@ class Square : public Rectangle {
 public:
     Square(int side) : Rectangle(side, side) {}
 
-    // Must maintain w == h invariant → overrides set_width/set_height
+    // Must maintain w == h invariant -> overrides set_width/set_height
     void set_width(int w) override { width_ = w; height_ = w; }
     void set_height(int h) override { width_ = h; height_ = h; }
 };
@@ -157,29 +164,31 @@ void test_rectangle(Rectangle& r) {
 
 int main() {
     Rectangle rect(4, 4);
-    test_rectangle(rect);  // ✅ OK: 5 * 3 = 15
+    test_rectangle(rect);  // OK: 5 * 3 = 15
 
     Square sq(4);
     try {
-        test_rectangle(sq);  // ❌ FAILS: set_height(3) → 3*3 = 9, not 15
+        test_rectangle(sq);  // FAILS: set_height(3) -> 3*3 = 9, not 15
     } catch (...) {}
 }
 // Expected output:
 //   Expected: 15, Got: 15
 //   Expected: 15, Got: 9
 //   (assertion failure)
-
 ```
 
-**Refactored — LSP-Compliant Design:**
+The assertion fires because `Square::set_height(3)` secretly also changes the width to 3, giving `3*3 = 9` instead of `5*3 = 15`. The caller had no idea that `set_height` could change the width.
+
+The fix is to stop treating Square as a specialization of Rectangle. They both *describe shapes*, but they have different constraints. Make them siblings under a common `Shape` interface instead:
+
+**Refactored - LSP-Compliant Design:**
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <cmath>
 
-// ✅ SOLUTION: Shape is the interface, Rectangle and Square are siblings
+// SOLUTION: Shape is the interface, Rectangle and Square are siblings
 
 class Shape {
 public:
@@ -240,24 +249,26 @@ int main() {
 //     Area: 60, Perimeter: 32
 //   Square:
 //     Area: 64, Perimeter: 32
-
 ```
+
+Now there is no dangerous `set_width`/`set_height` interface on `Shape` at all, so the substitution problem disappears. Both types correctly fulfill the `Shape` contract.
 
 ---
 
 ### Q3: Explain how concepts can encode LSP requirements at compile time for generic code
 
-**Solution — Concepts as Compile-Time LSP Enforcement:**
+Traditional LSP is a runtime concern - you discover violations when tests fail or assertions fire. C++20 concepts let you push that to compile time: if a type doesn't satisfy the behavioral contract, the code simply won't compile.
+
+**Solution - Concepts as Compile-Time LSP Enforcement:**
 
 ```cpp
-
 #include <iostream>
 #include <concepts>
 #include <string>
 #include <vector>
 #include <memory>
 
-// Concept defines the "behavioral contract" — the LSP requirements
+// Concept defines the "behavioral contract" - the LSP requirements
 template <typename T>
 concept Drawable = requires(T t, int x, int y) {
     { t.draw() } -> std::same_as<void>;
@@ -265,7 +276,7 @@ concept Drawable = requires(T t, int x, int y) {
     { t.name() } -> std::convertible_to<std::string>;
 };
 
-// Concept for containers — models the container LSP contract
+// Concept for containers - models the container LSP contract
 template <typename C>
 concept Container = requires(C c, typename C::value_type v) {
     { c.size() } -> std::convertible_to<std::size_t>;
@@ -275,7 +286,7 @@ concept Container = requires(C c, typename C::value_type v) {
     // without breaking code that uses these operations
 };
 
-// Generic code constrained by concept — LSP at compile time
+// Generic code constrained by concept - LSP at compile time
 void render(const Drawable auto& shape) {
     std::cout << shape.name() << ": area = " << shape.area() << "\n";
     shape.draw();
@@ -296,7 +307,7 @@ struct Triangle {
     std::string name() const { return "Triangle"; }
 };
 
-// ❌ This type does NOT satisfy the concept — compile error if used
+// This type does NOT satisfy the concept - compile error if used
 struct BadShape {
     void draw() { /* non-const! */ }
     // missing area() and name()
@@ -306,10 +317,10 @@ int main() {
     Circle c{5.0};
     Triangle t{10.0, 4.0};
 
-    render(c);  // ✅ Circle satisfies Drawable
-    render(t);  // ✅ Triangle satisfies Drawable
+    render(c);  // Circle satisfies Drawable
+    render(t);  // Triangle satisfies Drawable
 
-    // render(BadShape{});  // ❌ compile error: doesn't satisfy Drawable
+    // render(BadShape{});  // ERROR: doesn't satisfy Drawable
 
     // Verify concept satisfaction at compile time:
     static_assert(Drawable<Circle>);
@@ -323,13 +334,13 @@ int main() {
 //   Triangle: area = 20
 //     Drawing triangle
 //   All concept checks passed.
-
 ```
+
+The `static_assert` lines are a great way to document your intent: you're explicitly stating which types are valid substitutes, and the compiler will enforce it forever.
 
 **Concepts as Compile-Time LSP:**
 
 ```cpp
-
 Traditional LSP (runtime):
   Code using Base& works for any Derived&
   Violation detected at RUNTIME (unexpected behavior)
@@ -339,16 +350,15 @@ Concept-based LSP (compile-time):
   Violation detected at COMPILE TIME (clear error message)
 
   Stronger guarantee: if it compiles, the behavioral contract is met
-
 ```
 
 ---
 
 ## Notes
 
-- **LSP is about behavior, not just interface** — a class can implement all methods of an interface but still violate LSP if postconditions differ.
-- **Covariant return types** are LSP-compatible — returning a more specific type than the base is fine.
-- **`final`** can help enforce LSP — prevent further derivation if subclassing would risk violation.
-- **"Prefer composition over inheritance"** often avoids LSP issues entirely — if Square doesn't inherit from Rectangle, there's no substitution problem.
-- **Concepts (C++20)** provide compile-time LSP for generic code — types either satisfy the concept or produce a clear compiler error.
+- **LSP is about behavior, not just interface** - a class can implement all methods of an interface but still violate LSP if postconditions differ.
+- **Covariant return types** are LSP-compatible - returning a more specific type than the base is fine.
+- **`final`** can help enforce LSP - prevent further derivation if subclassing would risk violation.
+- **"Prefer composition over inheritance"** often avoids LSP issues entirely - if Square doesn't inherit from Rectangle, there's no substitution problem.
+- **Concepts (C++20)** provide compile-time LSP for generic code - types either satisfy the concept or produce a clear compiler error.
 - **Design smell:** If a derived class throws `UnsupportedOperationException` or does nothing in an override, it's likely violating LSP.

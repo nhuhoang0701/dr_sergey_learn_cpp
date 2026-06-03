@@ -9,39 +9,41 @@
 
 ## Topic Overview
 
-A standard `lock_guard` blocks until the mutex is acquired. In many scenarios you need **non-blocking** or **timed** lock acquisition — polling a shared resource, avoiding priority inversion, or preventing deadlocks. The standard library provides several mechanisms:
+A standard `lock_guard` blocks until the mutex is acquired. In many scenarios you need **non-blocking** or **timed** lock acquisition - polling a shared resource, avoiding priority inversion, or preventing deadlocks. The standard library provides several mechanisms:
 
 | Mechanism | Header | Blocking? | RAII? |
 | --- | --- | --- | --- |
-| `lock_guard<M>` | `<mutex>` | Yes — blocks | Yes |
-| `unique_lock<M>(m, try_to_lock)` | `<mutex>` | No — returns immediately | Yes |
-| `unique_lock<M>(m, defer_lock)` | `<mutex>` | Deferred — lock later | Yes |
-| `m.try_lock()` | `<mutex>` | No | **No** — manual unlock |
+| `lock_guard<M>` | `<mutex>` | Yes - blocks | Yes |
+| `unique_lock<M>(m, try_to_lock)` | `<mutex>` | No - returns immediately | Yes |
+| `unique_lock<M>(m, defer_lock)` | `<mutex>` | Deferred - lock later | Yes |
+| `m.try_lock()` | `<mutex>` | No | No - manual unlock |
 | `unique_lock<M>::try_lock_for(dur)` | `<mutex>` | Timed | Yes |
-| `scoped_lock<M1, M2, ...>` | `<mutex>` | Yes — deadlock-free | Yes |
+| `scoped_lock<M1, M2, ...>` | `<mutex>` | Yes - deadlock-free | Yes |
+
+The important distinction is that `try_lock`-based locking gives you a guard that *might not own the mutex*. The guard tracks whether it owns the lock and only unlocks on destruction if it does. That's optional ownership.
 
 ### RAII Try-Lock Flow
 
-```cpp
+Here's what happens in both cases - the key insight is that the destructor behaves differently depending on whether the lock was acquired:
 
+```cpp
 try_to_lock                          try_lock_for(100ms)
-    │                                        │
-    ▼                                        ▼
+    |                                        |
+    v                                        v
 mutex.try_lock()                   mutex.try_lock_for(100ms)
-    │                                        │
- ┌──┴──┐                                ┌───┴───┐
- │     │                                │       │
+    |                                        |
+ +--+--+                                +---+---+
+ |     |                                |       |
 true  false                           true    false
- │     │                                │       │
- ▼     ▼                                ▼       ▼
+ |     |                                |       |
+ v     v                                v       v
 owns  !owns                           owns   !owns
 lock  lock                            lock    lock
- │     │                                │       │
- └──┬──┘                                └───┬───┘
-    ▼                                        ▼
+ |     |                                |       |
+ +--+--+                                +---+---+
+    v                                        v
 ~unique_lock()                       ~unique_lock()
 unlock if owns_lock()                unlock if owns_lock()
-
 ```
 
 ---
@@ -50,10 +52,11 @@ unlock if owns_lock()                unlock if owns_lock()
 
 ### Q1: Write a TryLockGuard that attempts to acquire a mutex and exposes a bool for success
 
-**Solution — Custom TryLockGuard:**
+The design here mirrors `unique_lock` but is simpler - the constructor does exactly one `try_lock` attempt, stores the result, and the destructor only unlocks if that attempt succeeded.
+
+**Solution - Custom TryLockGuard:**
 
 ```cpp
-
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -113,13 +116,14 @@ int main() {
 //   Thread 1 could NOT acquire lock, skipping
 //   Thread 2 acquired lock, counter=3
 //   ...
-//   Final counter: <some value ≤ 15>
-
+//   Final counter: <some value <= 15>
 ```
+
+Notice that `explicit operator bool` lets you write the idiomatic `if (guard)` check. The `explicit` means it won't silently convert to bool in unintended contexts, but it works cleanly in `if` conditions.
 
 **Key design decisions:**
 
-- Constructor calls `try_lock()` — never blocks
+- Constructor calls `try_lock()` - never blocks
 - Destructor calls `unlock()` only if `locked_ == true`
 - Non-copyable/non-movable prevents double-unlock bugs
 - `explicit operator bool` for idiomatic `if (guard)` usage
@@ -128,10 +132,11 @@ int main() {
 
 ### Q2: Use `std::unique_lock` with `std::try_to_lock` to implement non-blocking lock acquisition
 
+Rather than rolling your own guard, `std::unique_lock` handles all of this with tag dispatch. Pass `std::try_to_lock` at construction and you get exactly the same optional-ownership semantics.
+
 **Solution:**
 
 ```cpp
-
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -146,13 +151,13 @@ void try_update(int id) {
     std::unique_lock<std::mutex> lock(data_mutex, std::try_to_lock);
 
     if (lock.owns_lock()) {
-        // ✅ We own the lock — safe to modify shared state
+        // We own the lock - safe to modify shared state
         ++shared_data;
         std::cout << "[Thread " << id << "] Updated data to " << shared_data << "\n";
         // Simulate long critical section
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     } else {
-        // ❌ Lock not acquired — do fallback work
+        // Lock not acquired - do fallback work
         std::cout << "[Thread " << id << "] Lock busy, doing other work...\n";
     }
     // unique_lock destructor: unlocks ONLY if owns_lock() == true
@@ -193,7 +198,6 @@ int main() {
 
     std::cout << "\nFinal data: " << shared_data << "\n";
 }
-
 ```
 
 **`unique_lock` tag dispatch overview:**
@@ -209,10 +213,11 @@ int main() {
 
 ### Q3: Show the timed variant using `try_lock_for` and its use in deadlock avoidance strategies
 
-**Solution — Timed Locking for Deadlock Avoidance:**
+Classic deadlock happens when two threads each hold one lock and are waiting for the other. Timed locking breaks out of that situation by giving up after a timeout, releasing the lock already held, and retrying from scratch.
+
+**Solution - Timed Locking for Deadlock Avoidance:**
 
 ```cpp
-
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -224,8 +229,8 @@ std::timed_mutex mutex_a;
 std::timed_mutex mutex_b;
 
 // Deadlock-prone WITHOUT timed locking:
-//   Thread 1: lock(A) → lock(B)
-//   Thread 2: lock(B) → lock(A)  ← classic deadlock!
+//   Thread 1: lock(A) -> lock(B)
+//   Thread 2: lock(B) -> lock(A)  <- classic deadlock!
 
 // Deadlock avoidance with try_lock_for:
 void safe_transfer(int id, std::timed_mutex& first, std::timed_mutex& second) {
@@ -240,18 +245,18 @@ void safe_transfer(int id, std::timed_mutex& first, std::timed_mutex& second) {
         // Step 2: Try second mutex with timeout
         std::unique_lock lock2(second, std::defer_lock);
         if (!lock2.try_lock_for(100ms)) {
-            // ❗ Release first lock and retry both
+            // Release first lock and retry both
             lock1.unlock();
             std::cout << "[" << id << "] Timeout on second mutex, backing off...\n";
             std::this_thread::sleep_for(10ms);  // back-off to reduce contention
             continue;
         }
 
-        // ✅ Both locks acquired — perform operation
+        // Both locks acquired - perform operation
         std::cout << "[" << id << "] Both locks acquired, performing transfer\n";
         break;
     }
-    // Both unique_locks go out of scope → automatic unlock
+    // Both unique_locks go out of scope -> automatic unlock
 }
 
 void thread1_work() { safe_transfer(1, mutex_a, mutex_b); }
@@ -267,8 +272,9 @@ int main() {
 //   [1] Both locks acquired, performing transfer
 //   [2] Timeout on second mutex, backing off...
 //   [2] Both locks acquired, performing transfer
-
 ```
+
+The `lock1.unlock()` call before backing off is critical. If you hold the first lock while giving up on the second, you're essentially recreating the deadlock condition for the next attempt. Release everything and start fresh.
 
 **Comparison of deadlock avoidance strategies:**
 
@@ -280,22 +286,22 @@ int main() {
 | Lock ordering | Always lock in same global order | Zero overhead | Hard to enforce globally |
 
 ```cpp
-
 // Preferred: std::scoped_lock when you can lock both at once
 void simplest_approach() {
     std::scoped_lock both(mutex_a, mutex_b);  // deadlock-free, RAII
     // ... use both resources ...
 }
-
 ```
+
+When you can acquire all needed locks at once, `std::scoped_lock` is the cleanest answer. Reach for timed locking only when you need to do real work in the gaps between attempts.
 
 ---
 
 ## Notes
 
-- **Prefer `std::scoped_lock`** for multi-mutex locking when you can acquire all at once — it uses a deadlock-avoidance algorithm internally.
+- **Prefer `std::scoped_lock`** for multi-mutex locking when you can acquire all at once - it uses a deadlock-avoidance algorithm internally.
 - **`unique_lock` is heavier** than `lock_guard` (stores a `bool owns_` flag + supports deferred/timed locking). Use `lock_guard` when you don't need the extra features.
 - **`try_lock()` is not fair:** On most platforms, repeated try-lock loops can starve other threads. Add back-off (`yield()` or `sleep_for()`) to mitigate.
-- **`std::timed_mutex`** has higher overhead than `std::mutex` — use it only when you need `try_lock_for`/`try_lock_until`.
+- **`std::timed_mutex`** has higher overhead than `std::mutex` - use it only when you need `try_lock_for`/`try_lock_until`.
 - **`std::shared_timed_mutex`** (C++14) supports `try_lock_shared_for()` for timed reader locks.
-- **`std::unique_lock::release()`** transfers ownership *without* unlocking — useful when passing a locked mutex to another function that will manage it.
+- **`std::unique_lock::release()`** transfers ownership *without* unlocking - useful when passing a locked mutex to another function that will manage it.

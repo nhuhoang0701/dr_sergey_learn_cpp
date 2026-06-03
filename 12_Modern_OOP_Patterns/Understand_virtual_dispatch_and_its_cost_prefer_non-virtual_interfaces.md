@@ -8,30 +8,32 @@
 
 ## Topic Overview
 
-**Virtual dispatch** is how C++ calls the correct overridden function through a base pointer. It uses a **vtable** (virtual function table) — every polymorphic object contains a hidden `vptr` that points to its class's vtable.
+**Virtual dispatch** is how C++ calls the correct overridden function through a base pointer. It uses a **vtable** (virtual function table) - every polymorphic object contains a hidden `vptr` that points to its class's vtable.
+
+Understanding the mechanism matters because virtual dispatch is not free, and in tight loops where it gets called millions of times, the cost adds up. On the other hand, for most program code (UI events, file I/O, business logic), the ~2 nanoseconds per call are genuinely irrelevant - don't over-optimize.
 
 ### Virtual Dispatch Mechanism
 
-```cpp
+Here's what actually happens in hardware when you call a virtual function versus a plain function:
 
+```cpp
 Stack/Heap:                          Vtable (static, per-class):
 ┌────────────────────┐               ┌──────────────────────────┐
 │ Dog object:         │               │ Dog vtable:               │
-│   vptr ─────────────┼──────────────▶│   [0] Dog::speak()        │
+│   vptr ─────────────┼──────────────>│   [0] Dog::speak()        │
 │   name_ = "Rex"     │               │   [1] Dog::eat()          │
 │   breed_ = "Lab"    │               │   [2] Animal::sleep()     │
 └────────────────────┘               └──────────────────────────┘
 
 Virtual call: animal->speak()
 
-  1. Load vptr from object             (memory read — cache miss possible)
-  2. Load function pointer from vtable  (memory read — cache miss possible)
-  3. Call through function pointer      (indirect branch — misprediction possible)
+  1. Load vptr from object             (memory read - cache miss possible)
+  2. Load function pointer from vtable  (memory read - cache miss possible)
+  3. Call through function pointer      (indirect branch - misprediction possible)
 
 Non-virtual call: animal.bark()
 
   1. Call known address directly        (one instruction, fully predicted)
-
 ```
 
 ### Cost Summary
@@ -39,10 +41,12 @@ Non-virtual call: animal.bark()
 | Aspect | Virtual Call | Direct Call |
 | --- | --- | --- |
 | Instructions | ~3 memory loads + indirect call | 1 direct call |
-| Branch prediction | Indirect branch — harder to predict | Always predicted |
+| Branch prediction | Indirect branch - harder to predict | Always predicted |
 | Inlining | **Cannot inline** (address unknown at compile time) | Fully inlinable |
 | Cache pressure | Two extra cache lines (vptr + vtable) | None |
 | Overhead per call | ~2-10 ns (depends on cache) | ~0.5-1 ns |
+
+The inability to inline is often the bigger cost. When the compiler can inline a function, it can constant-fold, eliminate dead branches, and combine the call with surrounding code. A virtual call blocks all of that.
 
 ---
 
@@ -50,10 +54,9 @@ Non-virtual call: animal.bark()
 
 ### Q1: Benchmark virtual dispatch vs non-virtual call in a tight loop and quantify the overhead
 
-**Solution:**
+This benchmark isolates the virtual call overhead by doing minimal work in the function itself. Real-world overhead will vary depending on how hot the vtable is in cache - if the same object type is called repeatedly, the branch predictor learns the pattern and the cost drops significantly.
 
 ```cpp
-
 #include <iostream>
 #include <chrono>
 #include <memory>
@@ -113,17 +116,19 @@ int main() {
 //   Non-virtual call: ~0.8 ns/call
 //   Direct (known type): ~0.8 ns/call  (devirtualized!)
 //   Overhead ratio: ~3x
-
 ```
+
+Notice that the "direct (known type)" case matches the non-virtual cost. The compiler was able to devirtualize that call because it could prove at compile time that `d` is definitely a `Derived`, so there's no need for the vtable at all.
 
 ---
 
 ### Q2: Implement the Non-Virtual Interface (NVI) pattern and explain why it separates interface from customization
 
-**Solution:**
+The NVI pattern is one of the most useful structural patterns in C++ class design. The idea is simple: public methods are non-virtual (they define the stable interface and can add pre/post-conditions), while the virtual methods are private or protected (they're the customization hooks for derived classes).
+
+The reason this matters is that it lets the base class control the protocol around each operation without requiring every derived class to remember to call the right setup or teardown code.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -132,11 +137,11 @@ int main() {
 // NVI: Public methods are NON-VIRTUAL (the interface).
 //      Private/protected methods are VIRTUAL (the customization points).
 class Document {
-    // Public NON-VIRTUAL interface — controls the protocol
+    // Public NON-VIRTUAL interface - controls the protocol
 public:
     virtual ~Document() = default;
 
-    // Users call this — it's the stable public API
+    // Users call this - it's the stable public API
     void save(const std::string& path) {
         // Pre-conditions / logging / locking happen HERE
         std::cout << "[Document] Validating...\n";
@@ -159,7 +164,7 @@ public:
 private:
     std::chrono::system_clock::time_point last_saved_;
 
-    // Private VIRTUAL — derived classes customize ONLY these
+    // Private VIRTUAL - derived classes customize ONLY these
     virtual void validate() const {}  // default: no validation
     virtual void do_save(const std::string& path) const = 0;
     virtual std::string do_type_name() const = 0;
@@ -216,7 +221,6 @@ int main() {
 //   [Document] Saving to /tmp/image.png...
 //     [ImageDocument] Encoding 1920x1080 to /tmp/image.png
 //   [Document] Recording timestamp...
-
 ```
 
 **Why NVI separates interface from customization:**
@@ -233,10 +237,9 @@ int main() {
 
 ### Q3: Show how devirtualization optimization can eliminate virtual call overhead in simple cases
 
-**Solution:**
+The compiler is allowed to eliminate a virtual call whenever it can prove which function will actually be called. The most common case is a local variable of a known concrete type. The `final` keyword is the most reliable way to give the compiler the information it needs.
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 
@@ -253,27 +256,27 @@ public:
     double area() const override { return 3.14159 * r_ * r_; }
 };
 
-// Case 1: Compiler KNOWS the concrete type → devirtualizes
+// Case 1: Compiler KNOWS the concrete type -> devirtualizes
 double case_devirtualized() {
     Circle c(5.0);
-    return c.area();  // Compiler knows it's Circle → direct call, inlined
+    return c.area();  // Compiler knows it's Circle -> direct call, inlined
     // Generated assembly: just computes 3.14159 * 25.0 = 78.54 (constant folded!)
 }
 
-// Case 2: Compiler CANNOT devirtualize → virtual call
+// Case 2: Compiler CANNOT devirtualize -> virtual call
 double case_virtual(Shape& s) {
-    return s.area();  // Unknown type → must use vtable
+    return s.area();  // Unknown type -> must use vtable
 }
 
-// Case 3: make_unique with local scope → can devirtualize
+// Case 3: make_unique with local scope -> can devirtualize
 double case_local_unique_ptr() {
     auto c = std::make_unique<Circle>(5.0);
     return c->area();  // Compiler may devirtualize (knows type from make_unique)
 }
 
-// Case 4: Global/external pointer → CANNOT devirtualize
+// Case 4: Global/external pointer -> CANNOT devirtualize
 double case_external(std::unique_ptr<Shape>& s) {
-    return s->area();  // Type unknown → virtual call
+    return s->area();  // Type unknown -> virtual call
 }
 
 int main() {
@@ -292,7 +295,6 @@ int main() {
 //   Virtual: 78.5398
 //   Local unique_ptr: 78.5398
 //   External: 78.5398
-
 ```
 
 **When compilers can devirtualize:**
@@ -305,8 +307,9 @@ int main() {
 | `Shape* s = get_shape(); s->area()` | **No** | Type unknown at compile time |
 | `final` class or method | **Yes** | Compiler knows no further override exists |
 
-```cpp
+Using `final` is the most explicit signal you can give the compiler:
 
+```cpp
 // Using 'final' to help devirtualization:
 class Square final : public Shape {
     double s_;
@@ -317,16 +320,15 @@ public:
 
 // Even through Shape*, if compiler proves it's Square (e.g., LTO),
 // it can devirtualize because 'final' guarantees no further overrides.
-
 ```
 
 ---
 
 ## Notes
 
-- **`final` keyword** is the most reliable way to enable devirtualization — mark classes and methods `final` when you don't intend further derivation.
+- **`final` keyword** is the most reliable way to enable devirtualization - mark classes and methods `final` when you don't intend further derivation.
 - **LTO (Link-Time Optimization)** significantly improves devirtualization by seeing all translation units at once.
 - **Herb Sutter's NVI guideline:** "Make non-leaf non-virtual functions be public. Make virtual functions be private."
 - **Benchmark tip:** Use `benchmark::DoNotOptimize()` (Google Benchmark) or `volatile` to prevent the compiler from optimizing away the entire loop.
 - **Hot path rule:** Virtual dispatch overhead matters only in tight loops (millions of calls). For occasional calls (UI events, file I/O), the ~2ns overhead is irrelevant.
-- **Alternatives to virtual dispatch:** CRTP (compile-time polymorphism), `std::variant` + `std::visit`, type erasure with SBO — all avoid vtable overhead.
+- **Alternatives to virtual dispatch:** CRTP (compile-time polymorphism), `std::variant` + `std::visit`, type erasure with SBO - all avoid vtable overhead.

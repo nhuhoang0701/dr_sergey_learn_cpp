@@ -10,16 +10,17 @@
 
 The **Template Method pattern** defines an algorithm's structure in a base class and lets derived classes override specific steps without changing the overall sequence. In C++, this is typically implemented using the **Non-Virtual Interface (NVI) idiom**: a public non-virtual method calls private/protected virtual hooks.
 
-```cpp
+It is worth stressing upfront: "Template Method" is a GoF design pattern name. It has nothing to do with C++ templates. The name refers to the idea that the base class method is a *template* for an algorithm - it lays out the skeleton and leaves the details for derived classes to fill in.
 
+```cpp
 ┌──────────────────────────────────────┐
 │  DataProcessor (base)                │
 │                                      │
 │  public (NON-VIRTUAL):               │
 │    void process() {                  │
-│      validate();    ◄── hook 1       │
-│      transform();   ◄── hook 2       │
-│      output();      ◄── hook 3       │
+│      validate();    <- hook 1        │
+│      transform();   <- hook 2        │
+│      output();      <- hook 3        │
 │    }                                 │
 │                                      │
 │  private (VIRTUAL):                  │
@@ -27,15 +28,14 @@ The **Template Method pattern** defines an algorithm's structure in a base class
 │    virtual void transform() = 0;     │
 │    virtual void output() = 0;        │
 └──────────────────────────────────────┘
-         ▲                  ▲
-         │                  │
+         ^                  ^
+         |                  |
 ┌────────┴──────┐  ┌───────┴───────┐
 │  CsvProcessor │  │ JsonProcessor │
 │  validate()   │  │  validate()   │
 │  transform()  │  │  transform()  │
 │  output()     │  │  output()     │
 └───────────────┘  └───────────────┘
-
 ```
 
 ### Key Properties
@@ -53,17 +53,16 @@ The **Template Method pattern** defines an algorithm's structure in a base class
 
 ### Q1: Write a base class with a non-virtual public method that calls virtual private hooks
 
-**Solution:**
+The public `generate()` method is the skeleton - it decides the order of steps. The three private virtual methods are the hooks that each subclass customizes. Notice that `HtmlReport` and `TextReport` cannot reorder the steps; they can only replace individual steps:
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
 
 class Report {
 public:
-    // Template Method — NON-VIRTUAL, defines the algorithm skeleton
+    // Template Method -- NON-VIRTUAL, defines the algorithm skeleton
     void generate() {
         auto data = gather_data();
         auto formatted = format(data);
@@ -73,7 +72,7 @@ public:
     virtual ~Report() = default;
 
 private:
-    // Virtual hooks — derived classes customize these
+    // Virtual hooks -- derived classes customize these
     virtual std::vector<std::string> gather_data() = 0;
     virtual std::string format(const std::vector<std::string>& data) = 0;
     virtual void output(const std::string& result) = 0;
@@ -124,7 +123,7 @@ private:
 
 int main() {
     HtmlReport html;
-    html.generate();  // calls: gather_data → format → output
+    html.generate();  // calls: gather_data -> format -> output
 
     std::cout << "\n";
 
@@ -142,17 +141,15 @@ int main() {
 //   === Text Report ===
 //   - Alice: 95
 //   - Bob: 87
-
 ```
 
 ---
 
 ### Q2: Show how NVI enforces pre/post conditions in the base class
 
-**Solution:**
+This is where NVI really earns its keep. The derived class cannot bypass validation, cannot skip the timing measurement, and cannot mess up the commit/rollback order - those are all baked into `execute()` in the base class and the derived class simply cannot reach them:
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -160,7 +157,7 @@ int main() {
 
 class Transaction {
 public:
-    // NVI Template Method — enforces invariants around the hooks
+    // NVI Template Method -- enforces invariants around the hooks
     void execute() {
         // PRE-CONDITION: validate before doing anything
         if (!validate()) {
@@ -188,12 +185,12 @@ public:
     virtual ~Transaction() = default;
 
 protected:
-    // Optional hook — derived can override (default: always valid)
+    // Optional hook -- derived can override (default: always valid)
     virtual bool validate() { return true; }
     virtual void commit() { /* default: no-op */ }
 
 private:
-    // Required hook — derived MUST implement
+    // Required hook -- derived MUST implement
     virtual void do_execute() = 0;
 };
 
@@ -236,7 +233,6 @@ int main() {
 //
 //   Invalid transfer:
 //     [REJECTED] Validation failed!
-
 ```
 
 **NVI enforcements the derived class cannot bypass:**
@@ -250,16 +246,15 @@ int main() {
 
 ### Q3: Compare Template Method with Strategy pattern for the same extensibility requirement
 
-**Solution:**
+Both patterns solve "how do I let the caller customize one step of an algorithm?" The choice comes down to whether you need tight access to the base class state and whether the algorithm skeleton should be locked down. Template Method uses inheritance; Strategy uses composition:
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <memory>
 #include <string>
 
-// ═══ TEMPLATE METHOD approach ═══
+// === TEMPLATE METHOD approach ===
 class Sorter {
 public:
     void sort(std::vector<int>& data) {
@@ -283,7 +278,7 @@ class BubbleSorter : public Sorter {
     }
 };
 
-// ═══ STRATEGY approach ═══
+// === STRATEGY approach ===
 class SorterStrategy {
     std::function<void(std::vector<int>&)> strategy_;
 public:
@@ -325,17 +320,18 @@ int main() {
 //   Preparing data...
 //     (std::sort strategy used)
 //   Sort complete. Size: 5
-
 ```
+
+Both produce the same output. The difference is flexibility: Strategy lets you swap the algorithm at runtime without creating a new class. Template Method locks in the structure but gives derived classes access to protected members.
 
 **Comparison:**
 
 | Aspect | Template Method | Strategy |
 | --- | --- | --- |
 | **Mechanism** | Inheritance (virtual override) | Composition (`std::function`, interface) |
-| **Coupling** | Tight — derived is bound to base | Loose — strategy is injected |
-| **Runtime swap** | No (type is fixed at construction) | **Yes** (swap strategy any time) |
-| **Number of classes** | One per variant (BubbleSorter, QuickSorter...) | Zero — use lambdas |
+| **Coupling** | Tight - derived is bound to base | Loose - strategy is injected |
+| **Runtime swap** | No (type is fixed at construction) | Yes (swap strategy any time) |
+| **Number of classes** | One per variant (BubbleSorter, QuickSorter...) | Zero - use lambdas |
 | **Access to base state** | Full (protected members) | Limited (only what's passed) |
 | **Best for** | Algorithm skeletons with many hooks | Single variation point |
 | **NVI/invariants** | Natural (base controls flow) | Must be enforced manually |
@@ -344,8 +340,8 @@ int main() {
 
 ## Notes
 
-- **Template Method ≠ C++ templates.** The name refers to the GoF design pattern, not the language feature.
+- **Template Method != C++ templates.** The name refers to the GoF design pattern, not the language feature.
 - **Protected vs Private hooks:** Use `private` virtual for hooks that should never be called directly. Use `protected` virtual when derived classes need to call the base implementation (`Base::do_step()`).
-- **Default hooks:** Provide non-pure virtual hooks with reasonable defaults — derived classes only override what they need.
+- **Default hooks:** Provide non-pure virtual hooks with reasonable defaults - derived classes only override what they need.
 - **Combine both:** Use Template Method for the algorithm skeleton and inject Strategy objects for specific steps: `process() { validate(); strategy_(data); commit(); }`
 - **C++20 alternative:** Use concepts to constrain hook types at compile time instead of runtime virtual dispatch.

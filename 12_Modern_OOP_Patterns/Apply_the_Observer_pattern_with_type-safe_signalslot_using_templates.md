@@ -9,25 +9,27 @@
 
 ## Topic Overview
 
-The Observer pattern decouples event producers from consumers. A modern C++ implementation uses **variadic templates** to create type-safe `Signal<Args...>` that can connect to any callable matching the signature — lambdas, function pointers, bound member functions — without base classes or runtime type checks.
+The Observer pattern decouples event producers from consumers. A modern C++ implementation uses **variadic templates** to create a type-safe `Signal<Args...>` that can connect to any callable matching the signature - lambdas, function pointers, bound member functions - without base classes or runtime type checks.
+
+The key insight is that the signal's template parameters lock in the argument types at the point where you declare it. There's no casting, no `void*`, and no way to accidentally connect a slot with the wrong signature.
 
 ### Architecture
 
-```cpp
+Here's the basic shape of the system. A signal holds a list of slots (stored as `std::function`), and calling `emit` fires all of them with the same arguments:
 
+```cpp
 Signal<int, std::string>
   ┌──────────────────────────────────────┐
   │ slots_: vector<function<void(int,string)>> │
   │                                      │
-  │ connect(callable) → id               │
+  │ connect(callable) -> id               │
   │ disconnect(id)                       │
-  │ emit(42, "hello") ────┬──▶ slot[0](42,"hello") │
-  │                       ├──▶ slot[1](42,"hello") │
-  │                       └──▶ slot[2](42,"hello") │
+  │ emit(42, "hello") ────┬──> slot[0](42,"hello") │
+  │                       ├──> slot[1](42,"hello") │
+  │                       └──> slot[2](42,"hello") │
   └──────────────────────────────────────┘
 
 Type safety: Signal<int,string> ONLY accepts functions matching void(int,string)
-
 ```
 
 ### Why Templates Over Virtual Dispatch
@@ -44,10 +46,11 @@ Type safety: Signal<int,string> ONLY accepts functions matching void(int,string)
 
 ### Q1: Implement a `Signal<Args...>` that notifies all connected functions with typed arguments
 
-**Solution — Type-Safe Signal:**
+Notice how `SlotId` gives every connection a unique handle. Without it you'd have no way to disconnect a specific slot later.
+
+**Solution - Type-Safe Signal:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -69,7 +72,7 @@ private:
     SlotId next_id_ = 0;
 
 public:
-    // Connect a callable — returns an ID for later disconnection
+    // Connect a callable - returns an ID for later disconnection
     SlotId connect(SlotType slot) {
         SlotId id = next_id_++;
         slots_.push_back({id, std::move(slot)});
@@ -150,17 +153,19 @@ int main() {
 //   After disconnecting handler 1:
 //   [Button] clicked
 //     Handler 2: logging click event
-
 ```
+
+After the disconnect, only Handler 2 fires. The `id1` returned by `connect` is the key - store it whenever you need the ability to unsubscribe.
 
 ---
 
 ### Q2: Show automatic disconnection using `weak_ptr`-based slot guards
 
-**Solution — RAII-Based Auto-Disconnect:**
+Manual disconnect by ID works, but it requires the observer to hold onto the ID and remember to call `disconnect`. A cleaner approach ties slot lifetime to object lifetime: when the observer is destroyed, its slots vanish on the next `emit` automatically.
+
+**Solution - RAII-Based Auto-Disconnect:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -180,7 +185,7 @@ class SafeSignal {
     std::vector<SlotEntry> slots_;
 
 public:
-    // Connect with a lifetime guard — when guard expires, slot auto-disconnects
+    // Connect with a lifetime guard - when guard expires, slot auto-disconnects
     void connect(std::shared_ptr<void> guard, SlotType slot) {
         slots_.push_back({guard, std::move(slot)});
     }
@@ -203,17 +208,17 @@ public:
     std::size_t slot_count() const { return slots_.size(); }
 };
 
-// Connection guard — destructor triggers auto-disconnect on next emit
+// Connection guard - destructor triggers auto-disconnect on next emit
 class Connection {
     std::shared_ptr<void> guard_;
 public:
     Connection() : guard_(std::make_shared<int>(0)) {}
     std::shared_ptr<void> guard() const { return guard_; }
-    // When Connection is destroyed, guard's refcount drops → weak_ptr expires
+    // When Connection is destroyed, guard's refcount drops -> weak_ptr expires
 };
 
 class Logger {
-    Connection conn_;  // destroyed with Logger → auto-disconnects
+    Connection conn_;  // destroyed with Logger -> auto-disconnects
 public:
     void subscribe(SafeSignal<const std::string&>& signal) {
         signal.connect(conn_.guard(), [this](const std::string& msg) {
@@ -232,7 +237,7 @@ int main() {
         on_message.emit("Hello");   // Logger receives this
         std::cout << "Slots before: " << on_message.slot_count() << "\n";
     }
-    // logger destroyed here → Connection destroyed → guard expired
+    // logger destroyed here -> Connection destroyed -> guard expired
 
     on_message.emit("World");  // Logger does NOT receive this (auto-disconnected)
     std::cout << "Slots after cleanup: " << on_message.slot_count() << "\n";
@@ -241,18 +246,21 @@ int main() {
 //   [Logger] Hello
 //   Slots before: 1
 //   Slots after cleanup: 0
-
 ```
+
+The `weak_ptr` guard is the elegance here. The signal holds only a `weak_ptr`, so destroying the `Logger` (and its `Connection` member) is enough to invalidate it. No manual `disconnect` needed, no dangling function pointers.
 
 ---
 
 ### Q3: Compare with Qt signals/slots and Boost.Signals2 for lifecycle management
 
+It's worth knowing what the established libraries look like so you understand the trade-offs when you choose to roll your own.
+
 **Comparison Table:**
 
 | Feature | Hand-rolled `Signal<Args...>` | Qt Signals/Slots | Boost.Signals2 |
 | --- | --- | --- | --- |
-| **Type safety** | ✅ Compile-time (templates) | ⚠️ Runtime (MOC generates glue code) | ✅ Compile-time |
+| **Type safety** | Compile-time (templates) | Runtime (MOC generates glue code) | Compile-time |
 | **Connection lifetime** | Manual or weak_ptr guard | `QObject` parent-child auto-disconnect | `scoped_connection` RAII |
 | **Thread safety** | Not built-in (add mutex) | Auto queued connections across threads | Mutex-based by default |
 | **Signature match** | Compile error on mismatch | Runtime warning | Compile error |
@@ -262,7 +270,6 @@ int main() {
 | **Disconnect** | By ID or RAII guard | `disconnect()` or `~QObject` | `connection::disconnect()` |
 
 ```cpp
-
 // Qt style (requires MOC):
 // class Button : public QObject {
 //     Q_OBJECT
@@ -280,28 +287,25 @@ int main() {
 // Signal<int> sig;
 // auto id = sig.connect([](int x) { ... });
 // sig.disconnect(id);  // manual
-
 ```
 
 **When to Use Which:**
 
 ```cpp
-
 Hand-rolled Signal<Args...>:
-  ✓ Small projects, no external dependencies
-  ✓ Learning exercise
-  ✓ When you need minimal overhead
+  // Small projects, no external dependencies
+  // Learning exercise
+  // When you need minimal overhead
 
 Qt Signals/Slots:
-  ✓ Qt applications (already using the framework)
-  ✓ Cross-thread communication (auto-queued)
-  ✓ Rich tooling (Qt Designer, signal spy)
+  // Qt applications (already using the framework)
+  // Cross-thread communication (auto-queued)
+  // Rich tooling (Qt Designer, signal spy)
 
 Boost.Signals2:
-  ✓ Non-Qt projects needing mature signal library
-  ✓ Thread-safe by default
-  ✓ Combiner support (aggregate return values)
-
+  // Non-Qt projects needing mature signal library
+  // Thread-safe by default
+  // Combiner support (aggregate return values)
 ```
 
 ---

@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`override` and `final` are contextual keywords (C++11) that catch virtual function signature mismatches at compile time and control inheritance hierarchies.
+`override` and `final` are contextual keywords (C++11) that catch virtual function signature mismatches at compile time and control inheritance hierarchies. They cost nothing at runtime - they are purely a safety net that the compiler enforces during compilation.
 
 ### Quick Reference
 
@@ -21,24 +21,24 @@
 
 ### The Problem Without `override`
 
-```cpp
+This is the silent bug that `override` was designed to prevent. A one-character difference in signature creates a brand-new virtual function instead of overriding the base one, and the compiler says nothing:
 
+```cpp
 Base:       virtual void process(int x);
-Derived:    virtual void process(int x) const;   // ← SILENT NEW FUNCTION!
+Derived:    virtual void process(int x) const;   // <- SILENT NEW FUNCTION!
                                                   //   Different signature (const)
                                                   //   Never overrides Base::process
                                                   //   Compiles without warning!
-
 ```
 
 With `override`:
 
 ```cpp
-
-Derived:    void process(int x) const override;   // ← COMPILER ERROR!
+Derived:    void process(int x) const override;   // <- COMPILER ERROR!
             // error: 'process' marked override but does not override
-
 ```
+
+The moment you add `override`, the compiler immediately tells you exactly what went wrong. Without it, the bug lives silently in production.
 
 ---
 
@@ -46,10 +46,9 @@ Derived:    void process(int x) const override;   // ← COMPILER ERROR!
 
 ### Q1: Show a silent bug where a derived class virtual function signature differs by one `const` from the base
 
-**Solution:**
+This is the most common form of the bug. The derived class adds `const` to the method and the programmer believes they have overridden the base class, but they have not. Notice the surprising output:
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 
@@ -59,30 +58,29 @@ struct Document {
 };
 
 struct HtmlDocument : Document {
-    // BUG: added 'const' — this does NOT override base!
+    // BUG: added 'const' -- this does NOT override base!
     // It creates a COMPLETELY NEW virtual function.
     virtual std::string render() const { return "HtmlDocument::render"; }
 };
 
 int main() {
     std::unique_ptr<Document> doc = std::make_unique<HtmlDocument>();
-    
-    // Calls Document::render() — NOT HtmlDocument::render() const!
+
+    // Calls Document::render() -- NOT HtmlDocument::render() const!
     std::cout << doc->render() << "\n";  // Surprise!
 
     // Direct call to the derived class works:
     HtmlDocument html;
-    std::cout << html.render() << "\n";  // calls non-const → Document::render!
-    
+    std::cout << html.render() << "\n";  // calls non-const -> Document::render!
+
     // Only const reference calls the derived version:
     const HtmlDocument& chtml = html;
-    std::cout << chtml.render() << "\n";  // calls const → HtmlDocument::render
+    std::cout << chtml.render() << "\n";  // calls const -> HtmlDocument::render
 }
 // Expected output:
 //   Document::render
 //   Document::render
 //   HtmlDocument::render
-
 ```
 
 **Why this is dangerous:** The code compiles, runs, and produces wrong results silently. In production, `render()` through a base pointer always calls the base version. The programmer thinks they overrode it but actually declared a new unrelated virtual function.
@@ -100,10 +98,9 @@ int main() {
 
 ### Q2: Add `override` to fix the bug and explain how the compiler catches the mismatch
 
-**Solution:**
+Adding `override` forces the compiler to verify that a matching virtual function exists in the base class. If the signatures don't align exactly, you get a clear compile-time error instead of a silent runtime surprise:
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 
@@ -112,7 +109,7 @@ struct Document {
     virtual ~Document() = default;
 };
 
-// FIX: Use override — compiler immediately catches the error
+// FIX: Use override -- compiler immediately catches the error
 struct HtmlDocument : Document {
     // std::string render() const override { ... }
     // ───────────────────────────────────────────
@@ -142,40 +139,38 @@ int main() {
 // Expected output:
 //   HtmlDocument::render
 //   # MarkdownDocument
-
 ```
+
+The virtual dispatch now works correctly. Both types report through the base pointer as intended.
 
 **Rules for `override`:**
 
 1. Can only be used on virtual member functions in derived classes
 2. The base class function must be `virtual` (or itself an override)
 3. Signature must match **exactly**: return type, parameters, const/volatile, ref-qualifiers
-4. `override` does **not** make a function virtual — it requires an existing virtual in base
-5. Compiler checks at compile time — zero runtime cost
+4. `override` does **not** make a function virtual - it requires an existing virtual in base
+5. Compiler checks at compile time - zero runtime cost
 
 **Compiler flags that help further:**
 
 ```cpp
-
 GCC/Clang: -Wsuggest-override     Warns when override is missing
 MSVC:      /W4                     Partial detection
 clang-tidy: modernize-use-override Auto-fixes missing override
-
 ```
 
 ---
 
 ### Q3: Use `final` on a class to prevent further inheritance and explain a use case
 
-**Solution:**
+`final` has two forms. On a single virtual function it stops that particular function from being overridden further down the hierarchy. On a class it prevents the class from being subclassed at all. The latter also enables a compiler optimization called devirtualization:
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <vector>
 
-// ─── final on a virtual function ───
+// --- final on a virtual function ---
 struct Shape {
     virtual double area() const = 0;
     virtual std::string name() const = 0;
@@ -196,7 +191,7 @@ struct Circle : Shape {
 //     // ERROR: cannot override 'final' function 'Circle::name'
 // };
 
-// ─── final on a class ───
+// --- final on a class ---
 struct Square final : Shape {
     double side;
     Square(double s) : side(s) {}
@@ -207,11 +202,11 @@ struct Square final : Shape {
 // struct RoundedSquare : Square { };
 // ERROR: cannot derive from 'final' class 'Square'
 
-// ─── Use case: devirtualization optimization ───
+// --- Use case: devirtualization optimization ---
 // When a class is final, the compiler KNOWS the exact type.
-// It can replace virtual dispatch with a direct call → inlining possible.
+// It can replace virtual dispatch with a direct call -> inlining possible.
 void print_area(const Square& s) {
-    // Compiler can devirtualize: s.area() → direct call, no vtable lookup
+    // Compiler can devirtualize: s.area() -> direct call, no vtable lookup
     std::cout << s.name() << ": " << s.area() << "\n";
 }
 
@@ -234,15 +229,16 @@ int main() {
 //   Circle area = 28.2743
 //   Square area = 4
 //   Square: 16
-
 ```
+
+When `Square` is `final`, the compiler can see `print_area` taking a `const Square&` and know that `s.area()` will always dispatch to `Square::area` - never to any subclass. It can then call it directly and potentially inline it.
 
 **When to use `final`:**
 
 | Use Case | Explanation |
 | --- | --- |
 | **Security classes** | Prevent subclassing of crypto/auth classes that have invariants |
-| **Performance** | Enable devirtualization — compiler eliminates vtable lookup |
+| **Performance** | Enable devirtualization - compiler eliminates vtable lookup |
 | **Framework leaf classes** | Signal "this class is not designed for extension" |
 | **Singleton/RAII guards** | Classes that must not be subclassed to work correctly |
 | **Value semantics** | Types that use CRTP or expect exact type match |
@@ -251,8 +247,8 @@ int main() {
 
 ## Notes
 
-- **Always use `override`** — it costs nothing and prevents an entire class of bugs. Enable `-Wsuggest-override` in CI.
-- `override` and `final` are **contextual keywords** — they're only keywords in these positions. You can still have variables named `override` or `final` (though you shouldn't).
-- A function can be both `override` and `final`: `void f() override final;` — "I override the base AND nobody overrides me."
-- The `virtual` keyword on derived overrides is **redundant** when using `override` — prefer `void f() override` over `virtual void f() override`.
+- **Always use `override`** - it costs nothing and prevents an entire class of bugs. Enable `-Wsuggest-override` in CI.
+- `override` and `final` are **contextual keywords** - they're only keywords in these positions. You can still have variables named `override` or `final` (though you shouldn't).
+- A function can be both `override` and `final`: `void f() override final;` - "I override the base AND nobody overrides me."
+- The `virtual` keyword on derived overrides is **redundant** when using `override` - prefer `void f() override` over `virtual void f() override`.
 - `final` on destructors is allowed but rare: `~Derived() override final = default;`

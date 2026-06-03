@@ -38,13 +38,13 @@ Inheritance, virtual functions, CRTP, type erasure, mixins, and modern OOP desig
 
 ## Notes
 
-- Prefer composition over inheritance — deep hierarchies are fragile and hard to modify
-- The NVI (Non-Virtual Interface) pattern separates public interface from virtual implementation
-- CRTP (Curiously Recurring Template Pattern) enables static polymorphism without vtable overhead
-- Virtual destructors are required in base classes intended for polymorphic deletion
-- override and inal keywords prevent accidental hiding and enable devirtualization
-- The Pimpl idiom (pointer to implementation) hides implementation details and reduces compile dependencies
-- Mixin classes via CRTP or template parameters add behavior without deep inheritance
-- Type erasure (e.g., std::function, std::any) provides runtime polymorphism without inheritance
-- Multiple inheritance in C++ requires careful diamond problem handling with virtual inheritance
-- Prefer strong types (wrapper classes) over primitive types to enforce semantics at compile time
+- Prefer composition over inheritance - deep hierarchies are fragile and hard to modify.
+- The NVI (Non-Virtual Interface) pattern separates public interface from virtual implementation, letting the base class control pre/post-conditions while derived classes provide only the customization points.
+- CRTP (Curiously Recurring Template Pattern) enables static polymorphism without vtable overhead - useful when the full type hierarchy is known at compile time.
+- Virtual destructors are required in base classes intended for polymorphic deletion; without one, deleting a derived object through a base pointer is undefined behavior.
+- The `override` and `final` keywords prevent accidental hiding and give the compiler enough information to devirtualize calls.
+- The Pimpl idiom (pointer to implementation) hides implementation details and reduces compile-time dependencies between translation units.
+- Mixin classes via CRTP or template parameters add reusable behavior without requiring a deep inheritance hierarchy.
+- Type erasure (e.g., `std::function`, `std::any`) provides runtime polymorphism without inheritance - useful when the set of types is open but the interface is fixed.
+- Multiple inheritance in C++ requires careful handling of the diamond problem; virtual inheritance resolves the ambiguity at the cost of slightly more complex object layout.
+- Prefer strong types (wrapper classes) over primitive types to enforce semantics at compile time and make function signatures self-documenting.

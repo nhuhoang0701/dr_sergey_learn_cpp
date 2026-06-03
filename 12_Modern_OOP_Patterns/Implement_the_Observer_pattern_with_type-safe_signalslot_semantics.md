@@ -15,19 +15,19 @@ This file focuses on the **implementation** side: Signal class, lifetime managem
 
 ### Signal/Slot Architecture
 
-```cpp
+Here's the basic shape. Slots are stored as `std::function` objects and called in sequence when `emit` fires:
 
-┌──────────────┐   emit(x, y)    ┌──────────────────────┐
-│    Signal     │ ───────────────▶│  slot1(x, y)         │
+```cpp
++──────────────+   emit(x, y)    +──────────────────────+
+│    Signal     │ ───────────────>│  slot1(x, y)         │
 │  <int, int>   │                 │  slot2(x, y)         │
-│               │                 │  weak_ptr → slot3    │
+│               │                 │  weak_ptr -> slot3    │
 │  connect()    │                 │    (expired? remove)  │
-│  disconnect() │                 └──────────────────────┘
+│  disconnect() │                 +──────────────────────+
 │  emit()       │
-└──────────────┘
++──────────────+
 
 Slots are std::function<void(Args...)> stored in a list.
-
 ```
 
 ---
@@ -36,10 +36,11 @@ Slots are std::function<void(Args...)> stored in a list.
 
 ### Q1: Write a `Signal<Args...>` class that stores and invokes a list of `std::function` callbacks
 
+The variadic template `Args...` is what makes this type-safe. A `Signal<int, int>` can only connect callables that accept two `int` arguments - anything else is a compile error.
+
 **Solution:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -62,7 +63,7 @@ private:
     SlotId next_id_ = 0;
 
 public:
-    // Connect a callable — returns an ID for later disconnection
+    // Connect a callable - returns an ID for later disconnection
     SlotId connect(SlotType slot) {
         SlotId id = next_id_++;
         slots_.push_back({id, std::move(slot)});
@@ -78,7 +79,7 @@ public:
         );
     }
 
-    // Emit — call all connected slots
+    // Emit - call all connected slots
     void emit(Args... args) const {
         for (const auto& entry : slots_)
             entry.func(args...);
@@ -122,17 +123,19 @@ int main() {
 //   Button clicked!
 //   Button moved to (100, 200)
 //   After disconnect, clicked slots: 0
-
 ```
+
+After `disconnect(id1)`, the slot is removed from the list and the next `click()` produces no output. The returned `SlotId` is the only handle you have for removing a specific connection, so store it if you'll need to disconnect later.
 
 ---
 
 ### Q2: Handle observer lifetime: use `weak_ptr` to auto-disconnect destroyed observers
 
+Manual disconnect requires the observer to remember to call it - easy to forget, especially during destruction. The `weak_ptr` approach is cleaner: when the observer is destroyed, its `weak_ptr` guard expires, and the signal automatically removes the dead slot on the next `emit`.
+
 **Solution:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <memory>
@@ -149,7 +152,7 @@ class SafeSignal {
     std::vector<WeakSlot> slots_;
 
 public:
-    // Connect with a weak_ptr guard — slot auto-expires when guard dies
+    // Connect with a weak_ptr guard - slot auto-expires when guard dies
     void connect(std::shared_ptr<void> guard, std::function<void(Args...)> slot) {
         slots_.push_back({guard, std::move(slot)});
     }
@@ -162,7 +165,7 @@ public:
                 it->func(args...);
                 ++it;
             } else {
-                // Observer is dead — auto-remove
+                // Observer is dead - auto-remove
                 it = slots_.erase(it);
             }
         }
@@ -223,41 +226,43 @@ int main() {
 //   Emit with 1 observer (Bob auto-disconnected):
 //     Alice received: 99
 //   Slots: 1
-
 ```
+
+After `obs2.reset()`, the `shared_ptr` holding `Bob` is released. The signal still holds only a `weak_ptr` to the guard, so when `emit` runs next, `guard.lock()` returns null and the slot is cleaned up automatically. No dangling pointer, no crash.
 
 ---
 
 ### Q3: Show thread-safety issues in a naive observer implementation and fix with a mutex
 
-**Problem — Data Race in Naive Implementation:**
+The race condition here is one of the most common bugs in event systems. One thread adds a slot while another thread is iterating the slot list during `emit`. The vector's internal state gets corrupted.
+
+**Problem - Data Race in Naive Implementation:**
 
 ```cpp
-
 // UNSAFE: No synchronization
 template <typename... Args>
 class UnsafeSignal {
     std::vector<std::function<void(Args...)>> slots_;
 public:
     void connect(std::function<void(Args...)> f) {
-        slots_.push_back(std::move(f));  // ❌ RACE: concurrent with emit
+        slots_.push_back(std::move(f));  // RACE: concurrent with emit
     }
     void emit(Args... args) {
-        for (auto& s : slots_)  // ❌ RACE: vector may be modified during iteration
+        for (auto& s : slots_)  // RACE: vector may be modified during iteration
             s(args...);
     }
 };
 
-// Thread A: signal.connect(mySlot);   ← modifies slots_
-// Thread B: signal.emit(42);          ← iterates slots_
-// → UNDEFINED BEHAVIOR (data race on vector)
-
+// Thread A: signal.connect(mySlot);   <- modifies slots_
+// Thread B: signal.emit(42);          <- iterates slots_
+// -> UNDEFINED BEHAVIOR (data race on vector)
 ```
 
-**Solution — Mutex-Protected Signal:**
+The fix takes a snapshot of the slot list under the lock, then iterates the snapshot outside the lock. This is important: if you hold the lock during invocation, a slot that tries to call `connect()` on the same signal will deadlock.
+
+**Solution - Mutex-Protected Signal:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -315,17 +320,18 @@ int main() {
         }
     });
 }
-// Output is non-deterministic but safe — no data races
-
+// Output is non-deterministic but safe - no data races
 ```
 
 **Why copy the slot list before invoking:**
 
 | Approach | Re-entrancy safe? | Performance | Risk |
 | --- | --- | --- | --- |
-| Lock during iteration | No — deadlock if slot calls `connect()` | Good (no copy) | **Deadlock** |
-| Copy-then-invoke | Yes — slots can freely call `connect()` | Copy overhead | Safe |
-| `shared_mutex` (read/write lock) | Partial — still deadlocks on re-entrant `connect()` | Better read perf | Same deadlock risk |
+| Lock during iteration | No - deadlock if slot calls `connect()` | Good (no copy) | **Deadlock** |
+| Copy-then-invoke | Yes - slots can freely call `connect()` | Copy overhead | Safe |
+| `shared_mutex` (read/write lock) | Partial - still deadlocks on re-entrant `connect()` | Better read perf | Same deadlock risk |
+
+The copy-then-invoke approach costs a vector allocation per emission, but it eliminates the deadlock risk entirely. For most event systems, that's a good trade.
 
 ---
 
@@ -334,5 +340,5 @@ int main() {
 - **Boost.Signals2** solves all these problems (thread-safety, lifetime, ordering) but adds a dependency.
 - **Qt Signals/Slots** uses a code generator (moc) for type-safe signals with rich features: cross-thread delivery, queued connections, automatic disconnection.
 - **`std::function` overhead:** Each slot has ~32 bytes + possible heap allocation. For high-frequency signals (e.g., per-frame game events), consider using function pointers or type-erased small-buffer callbacks.
-- **Connection objects** (RAII disconnect): Instead of returning an ID, return a `Connection` RAII object whose destructor calls `disconnect()` — guarantees cleanup even on exceptions.
+- **Connection objects** (RAII disconnect): Instead of returning an ID, return a `Connection` RAII object whose destructor calls `disconnect()` - guarantees cleanup even on exceptions.
 - **Emission during disconnect:** If a slot disconnects itself during `emit()`, the copy-then-invoke approach handles this correctly because iteration is over the local copy.

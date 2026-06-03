@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-The Strategy pattern encapsulates interchangeable algorithms behind a common interface. In modern C++, there are two primary approaches: **compile-time strategies** (template parameters — zero overhead, fixed at compile time) and **runtime strategies** (`std::function` — flexible, switchable at runtime).
+The Strategy pattern encapsulates interchangeable algorithms behind a common interface. In modern C++, there are two primary approaches: **compile-time strategies** (template parameters - zero overhead, fixed at compile time) and **runtime strategies** (`std::function` - flexible, switchable at runtime).
+
+Understanding which to use comes down to one question: do you know the strategy when you compile, or does it depend on something that only exists at runtime (user input, config files, plugins)?
 
 ### Two Flavors
 
-```cpp
+Here's the side-by-side mental model. The left is faster and the right is more flexible:
 
+```cpp
 Compile-time Strategy (Template):      Runtime Strategy (std::function):
 ┌─────────────────────────────┐       ┌─────────────────────────────┐
 │ template <typename Compare>  │       │ class Sorter {              │
@@ -25,7 +28,6 @@ Compile-time Strategy (Template):      Runtime Strategy (std::function):
 │ // Sorter<std::less<>> s;    │       │   void set(cmp) { compare_ = cmp; } │
 │ // Type is fixed forever     │       │   // Can change at runtime  │
 └─────────────────────────────┘       └─────────────────────────────┘
-
 ```
 
 ---
@@ -34,10 +36,11 @@ Compile-time Strategy (Template):      Runtime Strategy (std::function):
 
 ### Q1: Implement a `Sorter` class parameterized on a comparison strategy using a template policy
 
-**Solution — Template-Based Strategy:**
+The strategy types here are simple empty structs with an `operator()`. The compiler sees exactly what the comparison does and can inline it completely - no function call overhead at all.
+
+**Solution - Template-Based Strategy:**
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -101,17 +104,19 @@ int main() {
 //   Ascending: 1 2 3 5 8 9
 //   Descending: 9 8 5 3 2 1
 //   By length: fig kiwi apple banana
-
 ```
+
+Each `Sorter<X>` is a distinct type, which means the strategy is baked in at compile time. You get maximum performance, but you can't swap strategies without constructing a new object of a different type.
 
 ---
 
 ### Q2: Contrast compile-time strategy (template) vs runtime strategy (`std::function` member)
 
-**Solution — Side-by-Side Comparison:**
+This example puts both approaches side by side so you can see the key difference: the runtime version lets you call `set_strategy` and change behavior on the fly, which is simply impossible with templates.
+
+**Solution - Side-by-Side Comparison:**
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -124,7 +129,7 @@ public:
     void sort(std::vector<int>& v) {
         std::sort(v.begin(), v.end(), Cmp{});  // inlined, no overhead
     }
-    // Type is baked in: CompileTimeSorter<std::less<>> ≠ CompileTimeSorter<std::greater<>>
+    // Type is baked in: CompileTimeSorter<std::less<>> != CompileTimeSorter<std::greater<>>
 };
 
 // ===== Runtime strategy =====
@@ -135,7 +140,7 @@ public:
         : compare_(std::move(cmp)) {}
 
     void set_strategy(std::function<bool(int, int)> cmp) {
-        compare_ = std::move(cmp);  // ✅ can change at runtime!
+        compare_ = std::move(cmp);  // can change at runtime!
     }
 
     void sort(std::vector<int>& v) {
@@ -177,12 +182,11 @@ int main() {
 // Expected output:
 //   Runtime (asc): 1 2 5 8 9
 //   Runtime (desc): 9 8 5 2 1
-
 ```
 
 | Feature | Compile-Time (Template) | Runtime (`std::function`) |
 | --- | --- | --- |
-| **Performance** | Zero overhead — inlined | ~20-40 bytes per function, indirect call |
+| **Performance** | Zero overhead - inlined | ~20-40 bytes per function, indirect call |
 | **Flexibility** | Fixed at compile time | Changeable at runtime |
 | **Type identity** | Different types per strategy | Same type regardless of strategy |
 | **Container storage** | Can't mix different strategies | Can store in `vector<RuntimeSorter>` |
@@ -193,10 +197,11 @@ int main() {
 
 ### Q3: Show how `std::function` enables storing strategies in a container for dynamic dispatch
 
-**Solution — Strategy Registry:**
+This is where `std::function` really earns its place. Because it erases the concrete type of any callable, you can store lambdas, function pointers, and functors all in the same `unordered_map`. A template approach can't do this - different strategies are different types and can't live in the same container.
+
+**Solution - Strategy Registry:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -206,7 +211,7 @@ int main() {
 // Strategy type: transforms a string
 using TextTransform = std::function<std::string(const std::string&)>;
 
-// Strategies stored in a map — selected by name at runtime
+// Strategies stored in a map - selected by name at runtime
 class TextProcessor {
     std::unordered_map<std::string, TextTransform> strategies_;
     std::vector<std::string> pipeline_;  // ordered list of strategy names to apply
@@ -276,17 +281,16 @@ int main() {
 // Expected output:
 //   Result: [HELLO WORLD!!!]
 //   Result: [hello world]
-
 ```
 
-**Key insight:** `std::function` erases the concrete callable type, allowing storage in homogeneous containers. You can't do this with templates alone — `std::function<R(Args...)>` is the bridge between compile-time callables and runtime collections.
+`std::function` erases the concrete callable type, allowing storage in homogeneous containers. You can't do this with templates alone - `std::function<R(Args...)>` is the bridge between compile-time callables and runtime collections.
 
 ---
 
 ## Notes
 
 - **`std::function` has overhead:** type erasure, possible heap allocation, non-inlinable indirect call. For hot paths, prefer template parameters.
-- **`std::move_only_function` (C++23):** like `std::function` but supports move-only callables — useful for strategies holding `unique_ptr` or other non-copyable state.
-- **Stateful strategies:** Both template and `std::function` strategies can carry state — the template approach stores state in the policy object, `std::function` captures it in a lambda.
+- **`std::move_only_function` (C++23):** like `std::function` but supports move-only callables - useful for strategies holding `unique_ptr` or other non-copyable state.
+- **Stateful strategies:** Both template and `std::function` strategies can carry state - the template approach stores state in the policy object, `std::function` captures it in a lambda.
 - **Combine both approaches:** Use template strategies for core algorithms, `std::function` for user-facing extensibility points.
-- **`std::sort` itself uses the Strategy pattern** — its comparator parameter is a compile-time strategy (template parameter).
+- **`std::sort` itself uses the Strategy pattern** - its comparator parameter is a compile-time strategy (template parameter).

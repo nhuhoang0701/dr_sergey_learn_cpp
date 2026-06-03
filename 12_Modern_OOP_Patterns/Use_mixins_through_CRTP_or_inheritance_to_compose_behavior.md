@@ -11,14 +11,17 @@
 
 A **mixin** is a class that provides a set of operations to a derived class, composing behavior without the overhead of virtual dispatch. CRTP (Curiously Recurring Template Pattern) is the classic C++ mixin mechanism: a base class is templated on the derived class so it can call derived methods statically.
 
-```cpp
+The reason CRTP exists is that sometimes you want a base class to call methods that only exist on the derived type - but without the runtime cost of a virtual call. By passing the derived type as a template argument, the base class can `static_cast<Derived&>(*this)` and call derived methods directly. The compiler resolves everything at compile time, so there is no vtable involved.
 
+The nice part is that each mixin is a distinct template instantiation, so combining multiple mixins does not create a diamond inheritance problem.
+
+```cpp
 ┌──────────────────────────────────┐
 │  Mixin Composition               │
 │                                  │
 │  template<typename D>            │
 │  struct Printable { ... };       │     Each mixin is independent
-│                                  │     — no diamond problem!
+│                                  │     -- no diamond problem!
 │  template<typename D>            │
 │  struct Serializable { ... };    │
 │                                  │
@@ -26,7 +29,6 @@ A **mixin** is a class that provides a set of operations to a derived class, com
 │                  Serializable<Widget>│
 │  { ... };                        │
 └──────────────────────────────────┘
-
 ```
 
 ### Key Benefits
@@ -44,10 +46,9 @@ A **mixin** is a class that provides a set of operations to a derived class, com
 
 ### Q1: Implement a Comparable mixin that provides <=, >, >=, != from a single < operator
 
-**Solution:**
+The goal is to let a class define only `operator<` and get the rest for free. The mixin derives all other comparisons from that one. Watch how `Temperature` only writes one operator, yet all five work:
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <compare>
@@ -65,7 +66,7 @@ struct Comparable {
 struct Temperature : Comparable<Temperature> {
     double celsius;
 
-    // Only define this ONE operator — mixin provides the rest!
+    // Only define this ONE operator -- mixin provides the rest!
     friend bool operator<(const Temperature& a, const Temperature& b) {
         return a.celsius < b.celsius;
     }
@@ -100,8 +101,9 @@ int main() {
 //   body != boiling:    true
 //   high > low: true
 //   low <= high: true
-
 ```
+
+Both `Temperature` and `Priority` share the same mixin definition but get completely independent operator sets because they are separate template instantiations.
 
 > **C++20 note:** With `<=>`, you can use `auto operator<=>(const T&) const = default;` directly. The CRTP mixin approach is valuable for pre-C++20 code or when you need custom comparison logic.
 
@@ -109,15 +111,14 @@ int main() {
 
 ### Q2: Show how multiple CRTP bases can be composed without diamond inheritance issues
 
-**Solution:**
+The key insight here is in the comment after the code: `Printable<Sensor>`, `Serializable<Sensor>`, and `Cloneable<Sensor>` are three completely different types, so there is no shared base, and therefore no diamond:
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <sstream>
 
-// Mixin 1: Printable — adds print() based on to_string()
+// Mixin 1: Printable -- adds print() based on to_string()
 template <typename Derived>
 struct Printable {
     void print() const {
@@ -126,7 +127,7 @@ struct Printable {
     }
 };
 
-// Mixin 2: Serializable — adds serialize() based on to_string()
+// Mixin 2: Serializable -- adds serialize() based on to_string()
 template <typename Derived>
 struct Serializable {
     std::string serialize() const {
@@ -135,7 +136,7 @@ struct Serializable {
     }
 };
 
-// Mixin 3: Cloneable — adds clone() returning unique_ptr
+// Mixin 3: Cloneable -- adds clone() returning unique_ptr
 template <typename Derived>
 struct Cloneable {
     std::unique_ptr<Derived> clone() const {
@@ -144,7 +145,7 @@ struct Cloneable {
     }
 };
 
-// Compose ALL THREE mixins — no diamond!
+// Compose ALL THREE mixins -- no diamond!
 // Each CRTP base is a DIFFERENT template instantiation:
 //   Printable<Sensor>, Serializable<Sensor>, Cloneable<Sensor>
 struct Sensor : Printable<Sensor>,
@@ -182,32 +183,28 @@ int main() {
 //   {"data":"temperature=23.5"}
 //   temperature=99
 //   temperature=23.5
-
 ```
 
 **Why no diamond:** Each CRTP base `Mixin<Derived>` is a distinct type. There's no shared base class, so no ambiguity:
 
 ```cpp
-
   Printable<Sensor>  Serializable<Sensor>  Cloneable<Sensor>
          \                  |                   /
           \                 |                  /
            ─────────── Sensor ────────────────
-
 ```
 
 ---
 
 ### Q3: Compare mixin composition with multiple inheritance and explain the tradeoffs
 
-**Solution:**
+The following example implements the same `LoggableMixin` and `CountableMixin` behaviors two different ways - once with CRTP (no virtual, fully static) and once with traditional multiple inheritance (virtual dispatch):
 
 ```cpp
-
 #include <iostream>
 #include <string>
 
-// ─── Approach 1: CRTP Mixin Composition ───
+// --- Approach 1: CRTP Mixin Composition ---
 template <typename D>
 struct LoggableMixin {
     void log(const std::string& msg) const {
@@ -228,7 +225,7 @@ struct ServiceA : LoggableMixin<ServiceA>, CountableMixin<ServiceA> {
     std::string get_name() const { return "ServiceA"; }
 };
 
-// ─── Approach 2: Traditional Multiple Inheritance ───
+// --- Approach 2: Traditional Multiple Inheritance ---
 struct Loggable {
     virtual std::string get_name() const = 0;
     void log(const std::string& msg) const {
@@ -249,12 +246,12 @@ struct ServiceB : Loggable, Countable {
 };
 
 int main() {
-    // CRTP mixin — no virtual dispatch
+    // CRTP mixin -- no virtual dispatch
     ServiceA a;
     a.log("started");
     std::cout << "ServiceA alive: " << ServiceA::alive() << "\n";
 
-    // Multiple inheritance — uses virtual dispatch
+    // Multiple inheritance -- uses virtual dispatch
     ServiceB b;
     b.log("started");
     std::cout << "ServiceB alive: " << ServiceB::alive() << "\n";
@@ -264,8 +261,9 @@ int main() {
 //   ServiceA alive: 1
 //   [ServiceB] started
 //   ServiceB alive: 1
-
 ```
+
+Both approaches produce the same output, but `ServiceA` calls `get_name()` as a direct function call with zero overhead, while `ServiceB` goes through a vtable lookup. The tradeoff is that `ServiceA` cannot be stored behind a `Loggable*` pointer.
 
 **Tradeoffs comparison:**
 
@@ -274,8 +272,8 @@ int main() {
 | **Dispatch type** | Static (zero overhead) | Dynamic (vtable) |
 | **Runtime polymorphism** | No (cannot hold base pointer) | Yes (`Loggable* p = &b;`) |
 | **Diamond problem** | Impossible (distinct base types) | Possible (needs virtual inheritance) |
-| **Per-type state** | Natural (`CountableMixin<A>` ≠ `CountableMixin<B>`) | Shared static (`Countable::count_` is ONE counter) |
-| **Code bloat** | Yes — each instantiation duplicates code | No — single implementation |
+| **Per-type state** | Natural (`CountableMixin<A>` != `CountableMixin<B>`) | Shared static (`Countable::count_` is ONE counter) |
+| **Code bloat** | Yes - each instantiation duplicates code | No - single implementation |
 | **Compilation time** | Slower (template instantiation) | Faster |
 | **Debugging** | Harder (template error messages) | Easier |
 | **Suitable for** | Performance-critical, library internals | Public APIs, plugin systems |
@@ -287,5 +285,5 @@ int main() {
 - **CRTP mixin rule:** The derived class must appear as the template argument: `struct X : Mixin<X>`. Passing the wrong type compiles but causes UB.
 - **C++23 alternative:** Use deducing-this (`this auto& self`) to write mixins without templates.
 - **Empty base optimization (EBO):** CRTP mixin bases with no data members take zero extra bytes.
-- **Variadic mixin pattern:** `template<typename... Mixins> struct Composed : Mixins...{};` — combine arbitrary mixins at the call site.
+- **Variadic mixin pattern:** `template<typename... Mixins> struct Composed : Mixins...{};` - combine arbitrary mixins at the call site.
 - **Scope:** Mixins shouldn't be instantiated directly. Consider making their constructors `protected`.

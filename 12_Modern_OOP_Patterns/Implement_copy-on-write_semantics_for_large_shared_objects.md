@@ -11,40 +11,42 @@
 
 **Copy-on-Write (COW)** is an optimization strategy: multiple owners share a single copy of data. A deep copy is made only when one owner needs to *modify* the data. Until then, everyone reads from the same allocation.
 
+The motivation is simple. If you have a large object that's mostly read and only occasionally modified, paying for a full deep copy on every assignment is wasteful. COW defers that cost until it's actually necessary.
+
 ### COW State Diagram
 
+Here's the lifecycle of a shared COW string. Notice that the copy is cheap until someone mutates:
+
 ```cpp
+Initial:  a = COW("Hello World - a big expensive string")
 
-Initial:  a = COW("Hello World — a big expensive string")
-
-          a ──┐
-              ▼
-         ┌───────────┐
-         │ ref_count=1│
-         │ "Hello..." │
-         └───────────┘
+          a --+
+              v
+         +───────────+
+         | ref_count=1|
+         | "Hello..." |
+         +───────────+
 
 After:    b = a;  (cheap: increment ref_count)
 
-          a ──┐
-              ▼
-         ┌───────────┐
-         │ ref_count=2│  ← shared, no copy yet
-         │ "Hello..." │
-         └───────────┘
-              ▲
-          b ──┘
+          a --+
+              v
+         +───────────+
+         | ref_count=2|  <- shared, no copy yet
+         | "Hello..." |
+         +───────────+
+              ^
+          b --+
 
 After:    b.mutate("World");  (copy triggered!)
 
-          a ──┐           b ──┐
-              ▼               ▼
-         ┌───────────┐  ┌───────────┐
-         │ ref_count=1│  │ ref_count=1│
-         │ "Hello..." │  │ "World"   │
-         └───────────┘  └───────────┘
-                         ← deep copy only at mutation
-
+          a --+           b --+
+              v               v
+         +───────────+  +───────────+
+         | ref_count=1|  | ref_count=1|
+         | "Hello..." |  | "World"   |
+         +───────────+  +───────────+
+                         <- deep copy only at mutation
 ```
 
 ### When to Use COW
@@ -62,10 +64,11 @@ After:    b.mutate("World");  (copy triggered!)
 
 ### Q1: Use `shared_ptr` + `unique()` check to implement lazy copying: share until mutation
 
-**Solution — COW String:**
+The core of COW is the `detach()` method. Every mutating operation calls it first. If the data is shared (ref count > 1), detach makes a private copy before the mutation proceeds. If it's already private (ref count == 1), the data is already exclusively owned and no copy is needed.
+
+**Solution - COW String:**
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <string>
@@ -77,7 +80,7 @@ class CowString {
     // Detach: if shared, make a private copy before mutating
     void detach() {
         if (data_.use_count() > 1) {
-            std::cout << "  [COW] Detaching — deep copy triggered\n";
+            std::cout << "  [COW] Detaching - deep copy triggered\n";
             data_ = std::make_shared<std::string>(*data_);
         }
     }
@@ -87,11 +90,11 @@ public:
     CowString(const std::string& s = "")
         : data_(std::make_shared<std::string>(s)) {}
 
-    // Read access — no copy needed
+    // Read access - no copy needed
     const std::string& read() const { return *data_; }
     size_t length() const { return data_->size(); }
 
-    // Write access — detach if shared
+    // Write access - detach if shared
     void write(const std::string& s) {
         detach();
         *data_ = s;
@@ -113,7 +116,7 @@ int main() {
     std::cout << "a ref_count=" << a.use_count()
               << " ptr=" << a.data_ptr() << "\n\n";
 
-    // Copy is CHEAP — just shared_ptr copy (ref_count++)
+    // Copy is CHEAP - just shared_ptr copy (ref_count++)
     CowString b = a;
     std::cout << "After b = a:\n";
     std::cout << "  a ref_count=" << a.use_count()
@@ -137,15 +140,14 @@ int main() {
 //
 //   After b = a:
 //     a ref_count=2 ptr=0x1234
-//     b ref_count=2 ptr=0x1234    ← SAME pointer! No copy.
+//     b ref_count=2 ptr=0x1234    <- SAME pointer! No copy.
 //     Same pointer? YES
 //
 //   Mutating b:
-//     [COW] Detaching — deep copy triggered
+//     [COW] Detaching - deep copy triggered
 //     a: "Hello, this is a large string payload" ptr=0x1234
-//     b: "Modified string" ptr=0x5678   ← different pointer now
+//     b: "Modified string" ptr=0x5678   <- different pointer now
 //     Same pointer? NO
-
 ```
 
 **Note:** `shared_ptr::unique()` was deprecated in C++17 and removed in C++20. Use `use_count() == 1` or `use_count() > 1` instead.
@@ -154,10 +156,11 @@ int main() {
 
 ### Q2: Show how COW avoids unnecessary deep copies when multiple owners only read
 
-**Solution — Measuring Copy Avoidance:**
+This example makes the performance difference concrete. Creating 100 "copies" costs essentially nothing when they're all just reading the same data.
+
+**Solution - Measuring Copy Avoidance:**
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <string>
@@ -189,11 +192,11 @@ class CowConfig {
 public:
     CowConfig() : data_(std::make_shared<LargeConfig>()) {}
 
-    // Read-only access — never copies
+    // Read-only access - never copies
     const std::string& get(size_t i) const { return data_->entries[i]; }
     size_t size() const { return data_->entries.size(); }
 
-    // Write access — copies only when shared
+    // Write access - copies only when shared
     void set(size_t i, const std::string& val) {
         detach();
         data_->entries[i] = val;
@@ -206,24 +209,24 @@ int main() {
     CowConfig original;  // 10,000 entries
     std::cout << "Original created: " << original.size() << " entries\n\n";
 
-    // Create 100 "copies" — all cheap (just shared_ptr copies)
+    // Create 100 "copies" - all cheap (just shared_ptr copies)
     auto start = std::chrono::high_resolution_clock::now();
     std::vector<CowConfig> readers(100, original);
     auto end = std::chrono::high_resolution_clock::now();
 
     auto copy_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "100 COW copies created in " << copy_us << " µs\n";
+    std::cout << "100 COW copies created in " << copy_us << " us\n";
     std::cout << "Ref count: " << original.use_count() << "\n";
-    std::cout << "All reading from same data — zero deep copies\n\n";
+    std::cout << "All reading from same data - zero deep copies\n\n";
 
-    // Only one reader mutates — only that one triggers a deep copy
+    // Only one reader mutates - only that one triggers a deep copy
     std::cout << "Mutating readers[50]...\n";
     start = std::chrono::high_resolution_clock::now();
     readers[50].set(0, "MODIFIED");
     end = std::chrono::high_resolution_clock::now();
 
     auto mut_us = std::chrono::duration_cast<std::chrono::microseconds>(end - start).count();
-    std::cout << "Mutation took " << mut_us << " µs (one deep copy)\n";
+    std::cout << "Mutation took " << mut_us << " us (one deep copy)\n";
     std::cout << "Original entry[0]: " << original.get(0) << "\n";
     std::cout << "Modified entry[0]: " << readers[50].get(0) << "\n";
     std::cout << "Other readers[0]:  " << readers[0].get(0) << " (unchanged)\n";
@@ -231,57 +234,59 @@ int main() {
 // Expected output:
 //   Original created: 10000 entries
 //
-//   100 COW copies created in ~X µs (very fast, no deep copies)
+//   100 COW copies created in ~X us (very fast, no deep copies)
 //   Ref count: 101
-//   All reading from same data — zero deep copies
+//   All reading from same data - zero deep copies
 //
 //   Mutating readers[50]...
-//   Mutation took ~Y µs (one deep copy of 10000 entries)
+//   Mutation took ~Y us (one deep copy of 10000 entries)
 //   Original entry[0]: entry_0
 //   Modified entry[0]: MODIFIED
 //   Other readers[0]:  entry_0 (unchanged)
-
 ```
+
+The ref count reaches 101 (1 original + 100 readers) and only `readers[50]` breaks away from the pack when it mutates. The other 99 readers and the original remain on the same allocation.
 
 ---
 
 ### Q3: Explain why COW is broken in multi-threaded code without careful synchronization
 
+This is a subtle bug that's easy to miss. The issue isn't with `shared_ptr`'s reference count - that's already atomic. The problem is that `detach()` is a *check-then-act* sequence, and that sequence is not atomic. Two threads can each check `use_count() > 1`, both decide they need to detach, and both make copies - which is wasteful. Worse scenarios can cause actual correctness bugs:
+
 **The Race Condition:**
 
 ```cpp
-
 Thread A:                    Thread B:
 ─────────                    ─────────
-read use_count() → 2        read use_count() → 2
+read use_count() -> 2        read use_count() -> 2
   (shared, need detach)        (shared, need detach)
 
 detach(): make copy          detach(): make copy
   data_ = make_shared(copy)    data_ = make_shared(copy)
-  
+
   now both have private copies... BUT:
 
 What if Thread A reads use_count() BETWEEN Thread B's read and detach?
 
 Timeline problem:
-  B reads use_count() = 2   ← shared
-  A reads use_count() = 2   ← shared  
-  B detaches → use_count on original drops to 1
+  B reads use_count() = 2   <- shared
+  A reads use_count() = 2   <- shared
+  B detaches -> use_count on original drops to 1
   A sees use_count was 2, but now original has count 1
-  A detaches too → unnecessary copy (harmless but wasteful)
+  A detaches too -> unnecessary copy (harmless but wasteful)
 
 WORSE scenario (without atomic ref-count):
-  A reads ref_count → 2
-  B decrements ref_count → 1 (non-atomic)
-  A decrements ref_count → 0 (non-atomic)  ← DOUBLE DECREMENT BUG
-  Memory freed while B still using it! → UNDEFINED BEHAVIOR
-
+  A reads ref_count -> 2
+  B decrements ref_count -> 1 (non-atomic)
+  A decrements ref_count -> 0 (non-atomic)  <- DOUBLE DECREMENT BUG
+  Memory freed while B still using it! -> UNDEFINED BEHAVIOR
 ```
 
-**Solution — Thread-Safe COW:**
+The good news is that `shared_ptr`'s reference count *is* atomic in C++, so the double-decrement bug doesn't happen with it. But the check-then-act problem remains, and the fix requires a mutex around the whole detach operation:
+
+**Solution - Thread-Safe COW:**
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -332,7 +337,7 @@ int main() {
     std::vector<std::jthread> threads;
     for (int i = 0; i < 5; ++i) {
         threads.emplace_back([&shared_str, i] {
-            // Multiple threads reading — shares one copy
+            // Multiple threads reading - shares one copy
             std::cout << "[" << i << "] Read: " << shared_str.read() << "\n";
         });
     }
@@ -343,8 +348,9 @@ int main() {
     shared_str.write("Modified by writer");
     std::cout << "After write: " << shared_str.read() << "\n";
 }
-
 ```
+
+Once you add a mutex to protect the check-then-act, much of the performance win from COW evaporates - you're paying for synchronization on every read and write. This is exactly why `std::string` abandoned COW in C++11.
 
 **Why `std::string` abandoned COW (C++11):**
 
@@ -354,14 +360,14 @@ int main() {
 | **Thread safety cost** | Atomic ref-count + mutex for detach eliminates the performance win |
 | **Move semantics** | C++11 move semantics make deep copies rare anyway |
 | **ABI break** | GCC's libstdc++ had COW strings pre-C++11; switching was an ABI change |
-| **Standard requirement** | C++11 §21.4.1/6 requires `operator[]` not to invalidate references — incompatible with COW |
+| **Standard requirement** | C++11 §21.4.1/6 requires `operator[]` not to invalidate references - incompatible with COW |
 
 ---
 
 ## Notes
 
 - **COW was the dominant `std::string` implementation** (GCC libstdc++) until C++11 mandated non-COW. SSO (Small String Optimization) replaced it.
-- **Qt still uses COW** for `QString`, `QByteArray`, `QList`, and other container types — it's called "implicit sharing".
+- **Qt still uses COW** for `QString`, `QByteArray`, `QList`, and other container types - it's called "implicit sharing".
 - **`shared_ptr` ref-count is atomic** in C++, so `use_count()` itself is thread-safe, but the *read-then-act* pattern (`if (use_count() > 1) detach()`) is NOT atomic without a mutex.
-- **Immutable data structures** (functional programming style) avoid the COW problem entirely — no mutation means no detach needed.
-- **`std::shared_ptr::use_count()` is approximate** in concurrent code — it's intended for debugging, not for logic. For production COW, protect with a mutex.
+- **Immutable data structures** (functional programming style) avoid the COW problem entirely - no mutation means no detach needed.
+- **`std::shared_ptr::use_count()` is approximate** in concurrent code - it's intended for debugging, not for logic. For production COW, protect with a mutex.
