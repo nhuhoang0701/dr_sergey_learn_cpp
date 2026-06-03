@@ -11,9 +11,11 @@
 
 C++20 provides **`std::ranges::` versions** of every classic `<algorithm>` function. These accept a **range** (any object with `begin()`/`end()`) directly, eliminating the repetitive `.begin(), .end()` pattern and adding **projections** as a first-class parameter.
 
+The upgrade is not just cosmetic. The ranges versions also give you concept-constrained errors (so "forgot to sort before binary search" is a compile error, not a bug), structured return types (so you know where the algorithm stopped), and dangling protection (so passing a temporary that would dangle becomes a compile error, not undefined behavior).
+
 ### Classic vs Ranges Algorithm Comparison
 
-| Classic (C++98–C++17) | Ranges (C++20) |
+| Classic (C++98-C++17) | Ranges (C++20) |
 | --- | --- |
 | `std::sort(v.begin(), v.end())` | `std::ranges::sort(v)` |
 | `std::find(v.begin(), v.end(), 42)` | `std::ranges::find(v, 42)` |
@@ -24,25 +26,23 @@ C++20 provides **`std::ranges::` versions** of every classic `<algorithm>` funct
 
 ### Key Advantages
 
-1. **Less boilerplate** — no `.begin(), .end()` pairs.
-2. **Projections** — sort/find/transform by a member or transformation without writing a lambda.
-3. **Concept-constrained** — compile errors are clearer (e.g., "does not satisfy `sortable`").
-4. **Structured return types** — `ranges::copy` returns `{in, out}`, `ranges::minmax` returns `{min, max}`.
-5. **Dangling protection** — passing a temporary where the result would dangle yields `std::ranges::dangling` instead of a silent bug.
+1. **Less boilerplate** - no `.begin(), .end()` pairs.
+2. **Projections** - sort/find/transform by a member or transformation without writing a lambda.
+3. **Concept-constrained** - compile errors are clearer (e.g., "does not satisfy `sortable`").
+4. **Structured return types** - `ranges::copy` returns `{in, out}`, `ranges::minmax` returns `{min, max}`.
+5. **Dangling protection** - passing a temporary where the result would dangle yields `std::ranges::dangling` instead of a silent bug.
 
 ### Projection Parameter
 
-Projection is a callable applied to each element **before** comparison/predicate:
+A projection is a callable applied to each element **before** comparison or predicate evaluation. This lets you sort, find, and count by any extracted property without writing a custom comparator lambda:
 
 ```cpp
-
 ranges::sort(people, std::less{}, &Person::age);
 //                   ^^^^^^^^^^   ^^^^^^^^^^^^^
 //                   comparator   projection: extracts .age
-
 ```
 
-The default projection is `std::identity{}` (a no-op).
+The default projection is `std::identity{}` (a no-op), so if you omit it you get the usual comparison on the elements directly.
 
 ---
 
@@ -50,8 +50,9 @@ The default projection is `std::identity{}` (a no-op).
 
 ### Q1: Replace `std::sort(v.begin(), v.end())` with `std::ranges::sort(v)` and show both side by side
 
-```cpp
+The functional results are identical. The ranges version is just less typing and eliminates one class of bug: you can't accidentally pass iterators from different containers to `std::ranges::sort` because it takes a single range.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -64,7 +65,7 @@ int main() {
     // Classic (C++98)
     std::sort(v1.begin(), v1.end());
 
-    // Ranges (C++20) — cleaner
+    // Ranges (C++20) - cleaner
     std::ranges::sort(v2);
 
     // Both produce the same result
@@ -87,19 +88,15 @@ int main() {
 // Classic: 1 2 5 8 9
 // Ranges:  1 2 5 8 9
 // Partial: 9 7 1 3 5 8 6 4 2
-
 ```
 
-**How this works:**
-
-- `std::ranges::sort(v)` deduces `begin(v)` and `end(v)` internally—no manual iterator pairs.
-- Both produce identical results; the ranges version is just less typing and less error-prone (you can't accidentally pass mismatched iterators from different containers).
-- You can still sort a sub-range by passing a `subrange` or an iterator+sentinel pair.
+The partial-sort example shows that `std::ranges::sort` still accepts an iterator pair when you need it - you just wrap the pair in a `subrange`. You get the safety and clarity of ranges while keeping the flexibility of manual slicing.
 
 ### Q2: Show that `ranges::sort` accepts a projection to sort by a struct member
 
-```cpp
+This is one of the most practically useful features. Before projections, sorting a vector of structs by a specific field meant writing a lambda comparator every time. With projections, you just hand the member pointer to the algorithm.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -148,15 +145,9 @@ int main() {
 //   Bob
 //   Alice
 // Youngest: Charlie (age 28)
-
 ```
 
-**How this works:**
-
-- `&Employee::salary` is a **pointer to data member**—ranges algorithms invoke it as a projection.
-- The comparator `std::less{}` (or `std::greater{}`) compares the **projected** values, not the `Employee` objects.
-- Without projections, you'd write: `std::sort(team.begin(), team.end(), [](const auto& a, const auto& b){ return a.salary < b.salary; });` — much more verbose.
-- `ranges::min` also accepts a projection, returning the element itself (not just the projected value).
+Notice that `ranges::min` returns the full `Employee` object, not just the projected value. The projection is used only for comparison - the result is the original element. That's exactly what you want: find the youngest person, get back all their data.
 
 ### Q3: Explain why ranges algorithms do not have execution policy overloads and what to use instead
 
@@ -166,12 +157,11 @@ int main() {
 
 2. **Projection + parallel = complexity.** Adding projections on top of execution policies creates a large combinatorial surface that the committee chose not to standardize initially.
 
-3. **ADL and customization concerns.** Ranges algorithms use `niebloid` objects (not found via ADL), and integrating them with the parallel TS model would require redesign.
+3. **ADL and customization concerns.** Ranges algorithms use niebloid objects (not found via ADL), and integrating them with the parallel TS model would require redesign.
 
-**What to use instead:**
+**What to use instead:** materialize the view into a container first, then apply the classic parallel algorithm to the container. You get the expressiveness of ranges for the filtering/transformation step and the parallelism of the classic algorithms for the heavy work.
 
 ```cpp
-
 #include <algorithm>
 #include <execution>
 #include <iostream>
@@ -201,7 +191,6 @@ int main() {
 // Expected output:
 // 1 2 3 4 5 6 7 8 9
 // 5 6 7 8 9 10
-
 ```
 
 **Summary table:**
@@ -210,7 +199,7 @@ int main() {
 | --- | --- |
 | Parallel sort | `std::sort(std::execution::par, v.begin(), v.end())` |
 | Parallel transform | `std::transform(std::execution::par_unseq, ...)` |
-| Ranges pipeline → parallel | Materialize with `ranges::to<vector>()`, then use classic parallel algorithm |
+| Ranges pipeline -> parallel | Materialize with `ranges::to<vector>()`, then use classic parallel algorithm |
 | Future | P2408 proposes adding execution policies to ranges algorithms |
 
 ---
@@ -219,5 +208,5 @@ int main() {
 
 - Ranges algorithms are **niebloids** (function objects, not function templates), preventing unintended ADL.
 - Passing a temporary container to a ranges algorithm that returns an iterator produces `std::ranges::dangling` at compile time instead of a silent dangling iterator.
-- The `{}` default comparator in `ranges::sort(v, {}, &T::member)` means `std::ranges::less{}` (the default), not `std::less<>`—though they behave the same for most types.
+- The `{}` default comparator in `ranges::sort(v, {}, &T::member)` means `std::ranges::less{}` (the default), not `std::less<>` - though they behave the same for most types.
 - Most ranges algorithms have both a **range overload** (`ranges::sort(range)`) and an **iterator-sentinel overload** (`ranges::sort(first, last)`).

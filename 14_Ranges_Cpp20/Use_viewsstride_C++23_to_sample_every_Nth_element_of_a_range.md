@@ -9,30 +9,32 @@
 
 ## Topic Overview
 
-`views::stride(n)` advances the iterator by `n` steps on each increment, effectively selecting every Nth element from the source range.
+`views::stride(n)` advances the iterator by `n` steps on each increment, effectively selecting every Nth element from the source range. It's the cleanest way to downsample a sequence - think of it as "pick one, skip n-1, repeat."
 
 ### How stride Works
 
-```cpp
+The diagram below makes the skip pattern concrete. With `stride(3)`, you land on indices 0, 3, 6, 9 - everything in between is silently stepped over.
 
+```cpp
 Source:  [0] [1] [2] [3] [4] [5] [6] [7] [8] [9]
 
 stride(3):
   [0]         [3]         [6]         [9]
    ^    skip   ^    skip   ^    skip   ^
-
 ```
 
 ### Properties
 
 | Property | Value |
 | --- | --- |
-| Lazy | Yes — no intermediate storage |
+| Lazy | Yes - no intermediate storage |
 | Category | Same as source (preserves random-access, bidirectional, etc.) |
-| Sized | If source is sized: ⌈size / n⌉ |
-| `stride(1)` | Identity — returns every element |
+| Sized | If source is sized: ceil(size / n) |
+| `stride(1)` | Identity - returns every element |
 
 ### Comparison with chunk
+
+These two views are often confused. The distinction is simple: `stride` picks one element per group, while `chunk` gives you the whole group.
 
 | Operation | What it produces |
 | --- | --- |
@@ -43,14 +45,14 @@ stride(3):
 
 ### Pre-C++23 Alternative
 
-```cpp
+If you're stuck on C++20, you can approximate `stride` with `filter` and `enumerate`, though it's considerably more verbose and loses iterator category information.
 
+```cpp
 // Manual stride with filter + enumerate
 auto manual_stride = v
     | views::enumerate
     | views::filter([](auto pair) { return std::get<0>(pair) % 3 == 0; })
     | views::elements<1>;
-
 ```
 
 ---
@@ -59,8 +61,9 @@ auto manual_stride = v
 
 ### Q1: Downsample a vector of sensor readings using `views::stride(4)` to take every 4th reading
 
-```cpp
+This is a classic signal processing pattern. You have more data than you need and you want to thin it out by picking one sample per group. Here's how `stride` handles that.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -100,20 +103,15 @@ int main() {
 // Stride 2 (10 elements): 1 1.2 2 2.2 3 3.2 4 4.2 5 5.2
 // Stride 5 (4 elements): 1 2.1 3.2 4.3
 // Stride 10 (2 elements): 1 3
-
 ```
 
-**How this works:**
-
-- `stride(4)` selects elements at indices 0, 4, 8, 12, 16—one per group of 4.
-- The view is lazy—it simply advances the iterator by 4 each time.
-- The result count is ⌈N/n⌉ (ceiling division of source size by stride).
-- Useful for signal processing: downsampling reduces data rate without intermediate storage.
+`stride(4)` selects elements at indices 0, 4, 8, 12, 16 - one per group of 4. The result count is always ceil(N/n), and the view is lazy so it simply advances the iterator by 4 each step rather than building any intermediate collection.
 
 ### Q2: Combine `views::stride` with `views::transform` for a decimation filter
 
-```cpp
+This example introduces an important distinction in signal processing: naive decimation (just pick every Nth sample) versus averaging decimation (average each group first, then pick one). `stride` handles the first; combining `chunk` with `transform` handles the second.
 
+```cpp
 #include <cmath>
 #include <iostream>
 #include <numeric>
@@ -162,19 +160,13 @@ int main() {
 // Original (24 samples): ... (24 values)
 // Simple stride-4 (6 samples): ... (6 values)
 // Averaged chunks (6 samples): ... (6 values, smoother)
-
 ```
 
-**How this works:**
-
-- **Simple decimation** with `stride(4)` picks every 4th sample—fast but loses information.
-- **Averaging decimation** with `chunk(4) | transform(average)` averages each group before downsampling—preserves more information (acts as a low-pass filter).
-- Both approaches produce 6 output samples from 24 inputs (4x reduction).
-- The `chunk | transform` approach is the standard decimation filter pattern in signal processing.
+**Simple decimation** with `stride(4)` picks every 4th sample - fast but potentially lossy if the discarded samples carry signal. **Averaging decimation** with `chunk(4) | transform(average)` averages each group before downsampling, which acts as a basic low-pass filter and preserves more information. Both produce 6 output samples from 24 inputs (a 4x reduction). The `chunk | transform` approach is the standard decimation filter pattern in signal processing.
 
 ### Q3: Explain the iterator category of `stride_view`
 
-**`stride_view` preserves the iterator category of the source range:**
+`stride_view` is unusual in that it preserves whatever iterator category the source has. If you feed it a random-access range, you get a random-access stride view. If you feed it a forward-only range, you get a forward-only stride view. The reason is that `stride_view`'s `operator++` just calls `++` on the underlying iterator `n` times (or uses `+= n` for random access), so it naturally inherits whatever capabilities the underlying iterator already has.
 
 | Source category | stride_view category |
 | --- | --- |
@@ -183,10 +175,9 @@ int main() {
 | forward | forward |
 | input | input |
 
-**Proof:**
+The code below uses `static_assert` to prove these claims at compile time, not just at runtime.
 
 ```cpp
-
 #include <concepts>
 #include <forward_list>
 #include <iostream>
@@ -199,7 +190,7 @@ int main() {
     std::list<int>        lst = {1, 2, 3, 4, 5, 6, 7, 8};
     std::forward_list<int> fwd = {1, 2, 3, 4, 5, 6, 7, 8};
 
-    // vector (random_access) → stride is random_access
+    // vector (random_access) -> stride is random_access
     auto sv = vec | std::views::stride(3);
     static_assert(std::ranges::random_access_range<decltype(sv)>);
     static_assert(std::ranges::sized_range<decltype(sv)>);
@@ -208,13 +199,13 @@ int main() {
     // O(1) random access on stride view
     std::cout << "  sv[0]=" << sv[0] << " sv[1]=" << sv[1] << " sv[2]=" << sv[2] << '\n';
 
-    // list (bidirectional) → stride is bidirectional
+    // list (bidirectional) -> stride is bidirectional
     auto sl = lst | std::views::stride(2);
     static_assert(std::ranges::bidirectional_range<decltype(sl)>);
     static_assert(!std::ranges::random_access_range<decltype(sl)>);
     std::cout << "list | stride(2): bidirectional\n";
 
-    // forward_list (forward) → stride is forward
+    // forward_list (forward) -> stride is forward
     auto sf = fwd | std::views::stride(2);
     static_assert(std::ranges::forward_range<decltype(sf)>);
     static_assert(!std::ranges::bidirectional_range<decltype(sf)>);
@@ -225,10 +216,9 @@ int main() {
 //   sv[0]=1 sv[1]=4 sv[2]=7
 // list | stride(2): bidirectional
 // forward_list | stride(2): forward
-
 ```
 
-**Why categories are preserved:** `stride_view`'s `operator++` advances the underlying iterator by `n` steps, and `operator--` (if available) retreats by `n` steps. If the source supports `it += n` (random_access), so does stride; if it supports `--it` (bidirectional), so does stride via `n` decrements.
+Notice that `sv[0]`, `sv[1]`, `sv[2]` work because the underlying `vector` supports O(1) index access. `stride_view`'s `operator[]` maps `sv[i]` to `source[i * n]` directly, which is also O(1). That convenience disappears for `list` because lists don't support index access, and `stride_view` makes no attempt to fake it.
 
 ---
 

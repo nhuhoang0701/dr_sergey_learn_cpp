@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-C++20 provides two split views: `views::split` (eager, forward subranges) and `views::lazy_split` (truly lazy, input-compatible). C++20 initially had only one `split` that was hard to use; P2210R2 renamed the original to `lazy_split` and introduced a more usable `split`.
+C++20 provides two split views: `views::split` (eager, forward subranges) and `views::lazy_split` (truly lazy, input-compatible). The history here is a bit bumpy - C++20 initially shipped only one `split` that turned out to be surprisingly hard to use in practice. The paper P2210R2 then renamed the original to `lazy_split` and introduced a more ergonomic `split` to replace it. If you see confusing behavior in early C++20 toolchains, that's almost certainly why.
 
 ### split vs lazy_split
+
+The table below lays out the essential differences. If it feels like a lot, the short version is: use `split` for strings and string views, use `lazy_split` only when you're dealing with a single-pass input source like a stream.
 
 | Property | `views::split` | `views::lazy_split` |
 | --- | --- | --- |
@@ -22,8 +24,9 @@ C++20 provides two split views: `views::split` (eager, forward subranges) and `v
 
 ### How split Works
 
-```cpp
+The diagram below shows what `split` actually produces. Each token you get back is not a copy of the characters - it's a window (a subrange) into the original string, pointing at exactly the right slice.
 
+```cpp
 Source:    "one,two,,four"
 Delimiter: ','
 
@@ -31,15 +34,16 @@ split(",") produces:
   ["one"]  ["two"]  [""]  ["four"]
    ^^^^    ^^^^    ^^    ^^^^^^
    subrange into original string
-
 ```
 
-Each token is a **subrange** (view) into the original string—no allocation.
+Each token is a **subrange** (view) into the original string - no allocation.
 
 ### Delimiter Options
 
+You have a few choices for how to express the delimiter:
+
 - Single character: `split(',')`
-- String pattern: `split(", "sv)` (splits on the two-character sequence)
+- String pattern: `split(", "sv)` (splits on the two-character sequence, not each character individually)
 - Single-element range: works with any forward range as delimiter
 
 ---
@@ -48,8 +52,9 @@ Each token is a **subrange** (view) into the original string—no allocation.
 
 ### Q1: Split a `string_view` by delimiter using `views::split` and collect the parts
 
-```cpp
+Here's a walkthrough of the most common usage patterns: splitting on a single character, collecting into a vector, and splitting on a multi-character delimiter.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -91,19 +96,13 @@ int main() {
 // Parts: "Alice" "Bob" "Charlie" "Diana"
 // Collected 4 names: Alice Bob Charlie Diana
 // Split by '::': "one" "two" "three"
-
 ```
 
-**How this works:**
-
-- `views::split(',')` splits the string_view at each comma, yielding subranges.
-- Each subrange's `begin()`/`end()` are iterators into the original string_view—no heap allocation.
-- `std::string_view(part.begin(), part.end())` constructs a view over the token.
-- Multi-character delimiters work by matching the entire pattern.
+Notice that constructing a `string_view` from `part.begin()` and `part.end()` is a zero-cost operation - those iterators already point into the original `string_view`, so no characters are ever copied. The multi-character delimiter `"::"` matches the whole two-character sequence, not each colon individually.
 
 ### Q2: Explain when `lazy_split` is preferred over `split`
 
-**`lazy_split` works with `input_range`** (single-pass), while `split` requires `forward_range`:
+**`lazy_split` works with `input_range`** (single-pass), while `split` requires `forward_range`. In most real-world code you want `split`. `lazy_split` is specifically for sources you can only read once - like a network stream or an `std::istream`.
 
 | Use case | Which to use | Why |
 | --- | --- | --- |
@@ -112,8 +111,9 @@ int main() {
 | Splitting a generator/coroutine output | `lazy_split` | Generators are typically input_only |
 | Performance-critical string parsing | `split` | Subranges are contiguous; faster conversion to string_view |
 
-```cpp
+The code below shows both approaches side by side. Notice how `lazy_split` forces you to loop over individual characters to reconstruct a word, while `split` lets you grab the token as a `string_view` in one step.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <sstream>
@@ -145,15 +145,15 @@ int main() {
 // Expected output:
 // Hello World Test
 // Hello World Test
-
 ```
 
-**Key difference:** `split` produces subranges that are easy to convert to `string_view`. `lazy_split` produces inner ranges that must be iterated element by element.
+Both produce the same output, but the `split` version is much cleaner. The `lazy_split` version requires iterating character by character because its inner range type doesn't guarantee contiguous storage.
 
 ### Q3: Show the difference in behavior when the delimiter appears at the start or end
 
-```cpp
+This is the kind of edge case that bites people. The behavior is consistent and well-defined, but it can surprise you if you haven't seen it before. The key rule: every delimiter creates a boundary, and boundaries always produce two sides - even if one side is empty.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string_view>
@@ -186,15 +186,14 @@ int main() {
 // "" split by ',': [] (1 parts)
 // ",," split by ',': [][][] (3 parts)
 // "abc" split by ',': [abc] (1 parts)
-
 ```
 
-**Key observations:**
+The key observations are:
 
-- **Delimiter at start** produces an **empty first token**: `",a,b"` → `["", "a", "b"]`.
-- **Delimiter at end** produces an **empty last token**: `"a,b,"` → `["a", "b", ""]`.
+- **Delimiter at start** produces an **empty first token**: `",a,b"` -> `["", "a", "b"]`.
+- **Delimiter at end** produces an **empty last token**: `"a,b,"` -> `["a", "b", ""]`.
 - **Empty string** produces **one empty token** (the whole empty range).
-- **Consecutive delimiters** produce **empty tokens** between them: `",,"` → `["", "", ""]`.
+- **Consecutive delimiters** produce **empty tokens** between them: `",,"` -> `["", "", ""]`.
 - This matches the behavior of Python's `str.split(',')` (not `str.split()` which collapses whitespace).
 
 ---
@@ -204,4 +203,4 @@ int main() {
 - `views::split` was significantly improved by P2210R2. Pre-P2210 implementations (early C++20) had different, harder-to-use semantics.
 - `split` with a `string_view` delimiter matches the **exact** sequence, not individual characters.
 - For splitting on any of several delimiters (like `strtok`), use `views::split` per delimiter or a custom predicate-based approach.
-- `views::split` is lazy—tokens are found on demand during iteration, not all at once upfront.
+- `views::split` is lazy - tokens are found on demand during iteration, not all at once upfront.

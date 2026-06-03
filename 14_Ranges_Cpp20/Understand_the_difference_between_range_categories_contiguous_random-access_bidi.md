@@ -9,21 +9,21 @@
 
 ## Topic Overview
 
-C++20 defines a **hierarchy of range concepts** mirroring the iterator categories. Each level adds capabilities:
+C++20 defines a **hierarchy of range concepts** mirroring the iterator categories. Each level adds capabilities, and each stronger category is a superset of everything below it. Think of it as a ladder: the higher you are, the more operations are available to you.
 
 ```cpp
-
-    contiguous_range       ← strongest (elements in contiguous memory)
-         ↑
-    random_access_range    ← O(1) subscript, advance, distance
-         ↑
-    bidirectional_range    ← can go backward (--it)
-         ↑
-    forward_range          ← multi-pass (can iterate multiple times)
-         ↑
-    input_range            ← weakest (single-pass, read-only)
-
+    contiguous_range       <- strongest (elements in contiguous memory)
+         ^
+    random_access_range    <- O(1) subscript, advance, distance
+         ^
+    bidirectional_range    <- can go backward (--it)
+         ^
+    forward_range          <- multi-pass (can iterate multiple times)
+         ^
+    input_range            <- weakest (single-pass, read-only)
 ```
+
+The reason this hierarchy matters in practice is that view adaptors can *downgrade* a range's category. A `vector` is contiguous, but after you apply `views::filter` to it, you only get a bidirectional range back. That directly affects which algorithms and operations you can use on the result.
 
 | Category | Example Container | Example View | Key Operation |
 | --- | --- | --- | --- |
@@ -39,10 +39,9 @@ C++20 defines a **hierarchy of range concepts** mirroring the iterator categorie
 
 ### Q1: List a container or view example for each of the five range categories
 
-**Solution:**
+Notice the last line of output: `filter_view<vector>` is only bidirectional even though the underlying `vector` is contiguous. That downgrade is intentional and explained in Q2.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <deque>
@@ -98,17 +97,17 @@ int main() {
 //   forward_list: forward (not bidirectional)
 //   istream_view: input (not forward)
 //   filter_view<vector>: bidirectional (downgraded!)
-
 ```
+
+The `static_assert` calls are there to check these things at compile time, not just print them. If you ever get a category wrong, you'll find out immediately rather than hitting a confusing runtime error.
 
 ---
 
 ### Q2: Show why `views::filter` downgrades the range category
 
-**Solution:**
+This is probably the most important thing to understand about range categories in practice. The downgrade is not a limitation of the implementation - it's logically required. Here's why: if `filter` skipped elements, then `v[3]` would need to mean "the fourth element that passes the predicate," which requires scanning from the beginning. That's O(n), not O(1), so random-access subscript is simply wrong to offer.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -129,7 +128,7 @@ int main() {
 
     // WHY? Because filter skips elements.
     // v[3] would mean "the 4th MATCHING element" which requires scanning
-    // from the beginning — O(n), not O(1)!
+    // from the beginning - O(n), not O(1)!
     // So random-access subscript is WRONG for filter.
 
     // f[0];  // ERROR: no subscript operator
@@ -161,17 +160,17 @@ int main() {
 //   transform(vector): random_access (preserved)
 //   t[3] = 8
 // ...
-
 ```
+
+The contrast between `filter` and `transform` is the key takeaway. `transform` maps every element 1-to-1, so element `i` is always `i` steps from the start - random access works. `filter` can skip elements, breaking that guarantee. The compiler enforces this distinction so you can't accidentally write O(n) subscripts that look like O(1).
 
 ---
 
 ### Q3: Write a constrained algorithm that requires `bidirectional_range`
 
-**Solution:**
+When you write a template constrained on `bidirectional_range`, you're documenting that your algorithm genuinely needs `--it`. Passing a `forward_list` will give a clear concept-constraint error rather than a confusing internal failure when `--it` is attempted.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <list>
@@ -200,7 +199,7 @@ bool is_palindrome(R&& r) {
 }
 
 int main() {
-    // Works with vector (contiguous ⊃ bidirectional):
+    // Works with vector (contiguous is a superset of bidirectional):
     std::vector<int> v1 = {1, 2, 3, 2, 1};
     std::vector<int> v2 = {1, 2, 3, 4, 5};
     std::cout << "vector {1,2,3,2,1}: " << std::boolalpha << is_palindrome(v1) << "\n";
@@ -228,15 +227,16 @@ int main() {
 //   list 'racecar': true
 //   string 'abcba': true
 //   filtered: true
-
 ```
+
+The fact that `is_palindrome` accepts `filter_view<vector>` (which is bidirectional) but rejects `forward_list` (which is only forward) shows the hierarchy working exactly as intended. The constraint is checked at the call site, and the error message names the unsatisfied concept directly.
 
 ---
 
 ## Notes
 
-- **Refinement hierarchy:** Each category refines the one below: `contiguous ⊃ random_access ⊃ bidirectional ⊃ forward ⊃ input`.
-- **`output_range`** is orthogonal — it means elements can be written to.
-- **`sized_range`:** Orthogonal concept — means `ranges::size()` is O(1). Not all random-access ranges are sized (e.g., unbounded `iota`).
-- **View adaptors** may downgrade the category. Always check with `static_assert`.
+- **Refinement hierarchy:** Each category refines the one below: `contiguous` is a superset of `random_access`, which is a superset of `bidirectional`, and so on down to `input`.
+- **`output_range`** is orthogonal - it means elements can be written to.
+- **`sized_range`:** Orthogonal concept - means `ranges::size()` is O(1). Not all random-access ranges are sized (e.g., unbounded `iota`).
+- **View adaptors** may downgrade the category. Always check with `static_assert` if the category matters to your code.
 - **`common_range`:** A range where `begin()` and `end()` return the same type. Required by some legacy algorithms.

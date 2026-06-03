@@ -8,36 +8,36 @@
 
 ## Topic Overview
 
-`views::take_while(pred)` yields elements from the front **while** `pred` is true, stopping at the first `false`. `views::drop_while(pred)` skips elements **while** `pred` is true, yielding everything after.
+`views::take_while(pred)` yields elements from the front **while** `pred` is true, stopping at the first `false`. `views::drop_while(pred)` skips elements **while** `pred` is true, yielding everything after. Think of them as the predicate-based cousins of `take(n)` and `drop(n)`, except instead of counting elements you're watching for a condition to flip.
 
 ### Visual Comparison
 
-```cpp
+The diagram below is worth staring at for a moment. Notice that the two views produce non-overlapping halves of the original range - `take_while` takes the prefix, `drop_while` takes everything from the boundary onward (the boundary element itself is included in `drop_while`'s output).
 
+```cpp
 Source:       [1] [2] [3] [7] [4] [5] [2]
                            ^
                            first element where (x < 5) is false
 
-take_while(x < 5):  [1] [2] [3]              ← stops BEFORE 7
-drop_while(x < 5):              [7] [4] [5] [2]  ← starts FROM 7
+take_while(x < 5):  [1] [2] [3]              <- stops BEFORE 7
+drop_while(x < 5):              [7] [4] [5] [2]  <- starts FROM 7
 
 Note: take_while + drop_while = entire range (non-overlapping split)
-
 ```
 
 ### Key Properties
 
 | View | Stops when | Includes the boundary element? |
 | --- | --- | --- |
-| `take_while(pred)` | `pred` returns `false` | No — the first failing element is excluded |
-| `drop_while(pred)` | `pred` returns `false` | Yes — the first failing element starts the output |
+| `take_while(pred)` | `pred` returns `false` | No - the first failing element is excluded |
+| `drop_while(pred)` | `pred` returns `false` | Yes - the first failing element starts the output |
 
 ### Comparison with take/drop (count-based)
 
 | Count-based | Predicate-based |
 | --- | --- |
-| `take(5)` — first 5 elements | `take_while(pred)` — elements while pred is true |
-| `drop(3)` — skip first 3 | `drop_while(pred)` — skip while pred is true |
+| `take(5)` - first 5 elements | `take_while(pred)` - elements while pred is true |
+| `drop(3)` - skip first 3 | `drop_while(pred)` - skip while pred is true |
 
 ---
 
@@ -45,8 +45,9 @@ Note: take_while + drop_while = entire range (non-overlapping split)
 
 ### Q1: Use `take_while` to read elements until a sentinel condition is met
 
-```cpp
+`take_while` is particularly useful when you have data that signals its own end with a special value - like HTTP headers terminated by an empty line, or a C-style null-terminated pattern encoded in a container.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -91,19 +92,15 @@ int main() {
 //   Header: Accept
 //   Header: Auth
 // Sorted prefix: 1 3 5 7
-
 ```
 
-**How this works:**
-
-- `take_while(!empty)` yields headers until the first empty line—the empty line and everything after are excluded.
-- The sorted-prefix example uses a **mutable lambda** with captured state to detect where the ascending sequence breaks.
-- `take_while` is lazy: it evaluates the predicate one element at a time and stops immediately.
+The sorted-prefix example uses a **mutable lambda** with a captured `prev` variable to track state across calls. The reason this trips people up is that lambdas are `const` by default, so you can't modify captures without the `mutable` keyword. Here it's essential because the predicate needs to remember the last element it saw. `take_while` is lazy throughout - it evaluates the predicate one element at a time and stops the moment it returns `false`.
 
 ### Q2: Use `drop_while` to skip leading whitespace tokens in a tokenized range
 
-```cpp
+`drop_while` is the mirror image: it keeps skipping as long as the predicate holds, then includes everything from the first non-matching element onward - even elements that would have matched the predicate.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -140,19 +137,15 @@ int main() {
 // Expected output:
 // After skipping whitespace tokens: [Hello] [World] [ ] [End]
 // After dropping leading zeros: 4207
-
 ```
 
-**How this works:**
-
-- `drop_while(is_whitespace)` skips `"  "`, `"\t"`, `""` and starts from `"Hello"`.
-- Elements after the first non-matching element are **all included**, even if they would match the predicate (` ` token appears in output).
-- `drop_while` evaluates the predicate only on the leading elements; once it finds a non-match, it includes everything from that point.
+Notice that the single-space token `" "` appears in the output even though it would match `is_whitespace`. That's expected: `drop_while` evaluates the predicate only on the leading run of elements. Once it finds the first non-matching element (`"Hello"`), it stops evaluating and includes everything from that point forward unconditionally.
 
 ### Q3: Combine take_while and drop_while to extract a middle segment matching a pattern
 
-```cpp
+You can compose these two views to extract a contiguous run of matching elements from the middle of a sequence. The idea: first skip everything before the run with `drop_while`, then take the run with `take_while`.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -220,15 +213,9 @@ int main() {
 // Before: 1 2 3
 // Middle: 10 11 12 13
 // After:  4 5 6
-
 ```
 
-**How this works:**
-
-- `drop_while(x < 10)` skips `{1, 2, 3}` and starts from `10`.
-- `take_while(x >= 10)` then takes `{10, 11, 12, 13}` and stops before `4`.
-- The combination extracts the **first contiguous run** matching the pattern.
-- The three-segment decomposition (before/middle/after) shows how drop_while + take_while partition a range.
+The three-segment breakdown at the bottom is a nice way to see the complete picture. `take_while(x < 10)` gives you the prefix, `drop_while(x < 10) | take_while(x >= 10)` gives you the middle run, and two chained `drop_while` calls give you the suffix. Together they account for every element exactly once.
 
 ---
 

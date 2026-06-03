@@ -10,13 +10,15 @@
 
 `views::elements<N>` projects a range of **tuple-like** elements to their Nth component. It works on any type that supports `std::get<N>()`: `std::tuple`, `std::pair`, `std::array`, and structured bindings-compatible types.
 
+Think of it as a way to "zoom in" on one column of a table. If you have a range of student records as `(id, name, gpa)` tuples, `views::elements<1>` hands you just the names, without you having to write a lambda or manually index each element.
+
 ### Syntax
 
-```cpp
+Here is what the pipe syntax looks like for extracting specific fields:
 
+```cpp
 auto names = pairs | std::views::elements<1>;  // extract second element
 auto ids    = pairs | std::views::elements<0>;  // extract first element
-
 ```
 
 ### Convenience Aliases
@@ -25,21 +27,19 @@ auto ids    = pairs | std::views::elements<0>;  // extract first element
 | --- | --- | --- |
 | `views::keys` | `views::elements<0>` | `pair`, `tuple`, `map` iterators |
 | `views::values` | `views::elements<1>` | `pair`, `tuple`, `map` iterators |
-| `views::elements<N>` | (general form) | Any tuple-like with ≥ N+1 elements |
+| `views::elements<N>` | (general form) | Any tuple-like with >= N+1 elements |
 
 ### How It Works Internally
 
-```cpp
+The view yields references into the original tuples, not copies. That means writing through the view changes the original data.
 
+```cpp
 Source: range of tuple<A, B, C>
 
-views::elements<0>  →  range of A&     (references into original tuples)
-views::elements<1>  →  range of B&
-views::elements<2>  →  range of C&
-
+views::elements<0>  ->  range of A&     (references into original tuples)
+views::elements<1>  ->  range of B&
+views::elements<2>  ->  range of C&
 ```
-
-The view is **non-owning**—it yields references to the original tuple members. Modifications through the view modify the original data.
 
 ### Supported Tuple-Like Types
 
@@ -55,8 +55,9 @@ The view is **non-owning**—it yields references to the original tuple members.
 
 ### Q1: Project the second element of a `vector<pair<int,string>>` using `views::elements<1>`
 
-```cpp
+Here is the most common scenario: you have key-value pairs and you want to work with only one side. Notice that the view gives you references - writing through `names` actually modifies the original pairs.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -79,7 +80,7 @@ int main() {
         std::cout << name << ' ';
     std::cout << '\n';
 
-    // Extract just the IDs (first element) — equivalent to views::keys
+    // Extract just the IDs (first element) - equivalent to views::keys
     auto ids = students | std::views::elements<0>;
 
     std::cout << "IDs: ";
@@ -100,19 +101,19 @@ int main() {
 // Names: Alice Bob Charlie Diana
 // IDs: 101 102 103 104
 // Modified: 101=[Alice] 102=[Bob] 103=[Charlie] 104=[Diana]
-
 ```
 
-**How this works:**
+The modification loop proves the view is non-owning - those bracket-wrapped names are sitting in the original `students` vector, not in some separate copy.
 
 - `views::elements<1>` extracts the second element (`string`) from each `pair<int, string>`.
-- The result is a range of `string&` references—writing through the view modifies the original pairs.
-- `views::elements<0>` extracts the first element—identical to `views::keys`.
+- The result is a range of `string&` references - writing through the view modifies the original pairs.
+- `views::elements<0>` extracts the first element - identical to `views::keys`.
 
 ### Q2: Show that `views::elements<0>` is equivalent to `views::keys`
 
-```cpp
+`views::keys` and `views::values` are not magic aliases - they are literally defined in the standard as `views::elements<0>` and `views::elements<1>`. The `static_assert` below confirms they produce the exact same type.
 
+```cpp
 #include <iostream>
 #include <map>
 #include <ranges>
@@ -129,7 +130,7 @@ int main() {
         std::cout << name << ' ';
     std::cout << '\n';
 
-    // Using views::elements<0> — identical result
+    // Using views::elements<0> - identical result
     std::cout << "elements<0>: ";
     for (const auto& name : scores | std::views::elements<0>)
         std::cout << name << ' ';
@@ -158,10 +159,9 @@ int main() {
 // values:      95 87 92
 // elements<1>: 95 87 92
 // Same type: yes (static_assert passed)
-
 ```
 
-**How this works:**
+One subtlety worth knowing: on `std::map`, the iterator yields `pair<const Key, Value>`, so `elements<0>` extracts `const Key&` (you can't modify a map key through the view), while `elements<1>` extracts a mutable `Value&`.
 
 - `views::keys` is literally defined as `views::elements<0>` in the standard.
 - `views::values` is literally defined as `views::elements<1>`.
@@ -170,8 +170,9 @@ int main() {
 
 ### Q3: Use `views::elements` on a range of 3-tuples to extract the third field
 
-```cpp
+With three-field tuples the general `views::elements<N>` form really earns its keep - `views::keys` and `views::values` only reach the first two fields. Here the filter+elements pipeline shows how you can compose projection with filtering cleanly.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -228,10 +229,9 @@ int main() {
 //   #2 Bob (GPA: 3.5)
 //   #3 Charlie (GPA: 3.7)
 //   #4 Diana (GPA: 4)
-
 ```
 
-**How this works:**
+The `filter | elements` pipeline is particularly elegant: you describe what you want (records with GPA > 3.6, then their names) and the pipeline handles the details. Each `elements<N>` view yields references into the original tuples, so no copying happens at any stage.
 
 - `views::elements<2>` extracts the third field (`double` GPA) from each `tuple<int, string, double>`.
 - The filter+elements pipeline first filters tuples by GPA > 3.6, then extracts names from the matching tuples.

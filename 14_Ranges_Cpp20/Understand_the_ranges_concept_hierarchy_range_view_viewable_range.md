@@ -9,17 +9,17 @@
 
 ## Topic Overview
 
-C++20 defines key **range concepts** that classify types by their capabilities:
+C++20 defines key **range concepts** that classify types by their capabilities. The most important distinction to internalize is the difference between a *range* (anything you can iterate over) and a *view* (a range that's cheap enough to pass around by value through a pipeline).
 
 ```cpp
-
-    range                ← has begin() and end()
-      ├─ borrowed_range   ← safe to use after the range object dies
-      ├─ sized_range      ← O(1) size()
-      ├─ viewable_range   ← can be piped into view adaptors
-      └─ view             ← O(1) copy/move, non-owning
-
+    range                <- has begin() and end()
+      +- borrowed_range   <- safe to use after the range object dies
+      +- sized_range      <- O(1) size()
+      +- viewable_range   <- can be piped into view adaptors
+      +- view             <- O(1) copy/move, non-owning
 ```
+
+The reason the `view` concept requires O(1) copy/move is that view adaptors pass views by value through the pipeline. If copying a view were O(n), every `|` would silently copy your entire data set. By requiring O(1), the standard guarantees that composing views with `|` is essentially free.
 
 | Concept | Key Requirement | Example YES | Example NO |
 | --- | --- | --- | --- |
@@ -34,10 +34,9 @@ C++20 defines key **range concepts** that classify types by their capabilities:
 
 ### Q1: Explain what a `view` is and why O(1) copy/move is required
 
-**Solution:**
+The intuition here is that a pipeline like `v | filter(p) | transform(f) | take(5)` creates view objects at each stage. If creating those objects were O(n), you'd pay the cost of the entire range just to build the pipeline description - before even iterating it. The O(1) requirement ensures the pipeline is built in constant time and all the actual work happens during iteration.
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -68,7 +67,7 @@ int main() {
     // View adaptors (|) pass views by VALUE through the pipeline.
     // If copying a view were O(n), a pipeline like:
     //   v | filter(p) | transform(f) | take(5)
-    // would create copies at each stage → O(n) per stage!
+    // would create copies at each stage -> O(n) per stage!
     // With O(1) views, the whole pipeline is essentially free.
 
     std::cout << "string_view is view: "
@@ -91,17 +90,17 @@ int main() {
 //   sizeof(string_view): 16
 //   sizeof(span<int>):   16
 //   sizeof(filter_view): <small, depends on lambda size>
-
 ```
+
+Look at those `sizeof` values - `string_view` and `span<int>` are just two pointers (or pointer + size). A `filter_view` is similarly tiny: a pointer to the source range plus the stored predicate. Nothing proportional to the number of elements.
 
 ---
 
 ### Q2: Show that `vector` is a range but not a view, while `string_view` is both
 
-**Solution:**
+This `classify` helper makes it easy to see the four properties side by side. The pattern you'll notice is that owning containers (`vector`, `string`) are ranges but not views and not borrowed, while non-owning wrappers (`string_view`, `span`) are all four.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -169,17 +168,17 @@ int main() {
 //
 //   2 4 6
 //   views::all(vector) is view: true
-
 ```
+
+The `views::all(v)` call at the end is what happens implicitly when you write `v | some_adaptor`. The pipe operator wraps the lvalue container in a `ref_view` (a view over a reference), so the pipeline sees a proper view. This is transparent to you in normal use, but understanding it explains why `v | transform(...)` works even though `vector` is not a view.
 
 ---
 
 ### Q3: Write a custom range type that satisfies `std::ranges::range`
 
-**Solution:**
+All you need to satisfy `std::ranges::range` is a working `begin()` and `end()`. But to get meaningful behavior from algorithms, your iterator needs the right operations and type aliases. This example starts from scratch and shows the minimum required.
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 #include <concepts>
@@ -191,7 +190,7 @@ struct IntRange {
     int end_val;
 
     // begin() and end() are ALL that's needed for std::ranges::range
-    int* begin() { return nullptr; }  // won't work — need proper iterators
+    int* begin() { return nullptr; }  // won't work - need proper iterators
 
     // Let's use a proper iterator:
     struct Iterator {
@@ -246,8 +245,9 @@ int main() {
 //   Squared: 1 4 9 16 25
 //   range: true
 //   view:  false
-
 ```
+
+`IntRange` is a `range` and even a `forward_range` (because `Iterator` supports multi-pass), but it's not a `view` - it doesn't have the O(1) copy guarantee, and it doesn't opt in via `view_interface`. If you wanted to use it directly in a pipe with `|`, you'd need to either wrap it with `views::all` or inherit from `view_interface<IntRange>`.
 
 ---
 

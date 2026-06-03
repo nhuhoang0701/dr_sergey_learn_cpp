@@ -11,16 +11,18 @@
 
 In classic C++, `begin()` and `end()` return the **same type** (iterator). C++20 ranges allow `end()` to return a **different type** called a **sentinel**. The sentinel is a lightweight object that an iterator can be compared against to detect the end.
 
-```cpp
+This is one of those things that sounds like an obscure language detail until you see why it matters. The motivating example is a null-terminated C string: you know you're done when you hit `'\0'`, not when a pointer reaches some pre-computed endpoint. Computing that endpoint requires a full pass through the string - which is exactly the work you were trying to avoid.
 
+```cpp
 Classic (same type):     [begin, end)     both are std::vector<int>::iterator
 Ranges (can differ):     [begin, sentinel)  sentinel can be a different type
 
 Example: null-terminated string
   begin = const char*     (pointer to first char)
   end   = NullSentinel     (compares == '\0')
-
 ```
+
+The sentinel is minimal on purpose. It only needs to answer one question: "has this iterator reached the end?" It doesn't need to be dereferenceable, incrementable, or anything else an iterator has to be.
 
 ### Why Sentinels
 
@@ -36,10 +38,9 @@ Example: null-terminated string
 
 ### Q1: Explain why `std::ranges` allows `begin()` and `end()` to have different types
 
-**Solution:**
+The comments in this example walk through the three main benefits. Pay attention to `std::unreachable_sentinel` at the end - it's a built-in sentinel that always compares not-equal to any iterator, which lets you express "this algorithm will terminate for a different reason" without needing an end iterator at all.
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -94,17 +95,17 @@ int main() {
 //   vector: same begin/end type
 //   C-string via sentinel: Hello
 //   Found: 2
-
 ```
+
+The reason `std::unreachable_sentinel` is useful is that it tells the optimizer you guarantee termination. Some algorithms can generate tighter code when they don't need to check an end condition on every iteration.
 
 ---
 
 ### Q2: Implement a null-terminated string range using a custom sentinel
 
-**Solution:**
+Here we're building a proper range type whose `begin()` and `end()` deliberately return different types. This is the pattern that makes your custom type work natively with range algorithms, `views::take`, and range-based for - all without computing the string length upfront.
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 
@@ -122,7 +123,7 @@ struct CStringRange {
     const char* begin() const { return str; }
     NullTermSentinel end() const { return {}; }
     // begin() returns const char*, end() returns NullTermSentinel
-    // → they are DIFFERENT types!
+    // - they are DIFFERENT types!
 };
 
 int main() {
@@ -157,17 +158,17 @@ int main() {
 //   Count of 'l': 3
 //   Upper 5: Hello
 //   Different begin/end types: confirmed
-
 ```
+
+Notice that `CStringRange` works with `std::views::take` even though its end type is a sentinel, not an iterator. That's the power of the sentinel abstraction - the view adaptor doesn't care what the end type is, as long as the iterator can compare equal to it.
 
 ---
 
 ### Q3: Show how pointer + sentinel avoids computing string length upfront
 
-**Solution:**
+This example makes the performance difference concrete. The old approach needs two passes: one to compute the length, and one for the actual search. The sentinel approach does both in one pass and can stop early.
 
 ```cpp
-
 #include <iostream>
 #include <cstring>
 #include <ranges>
@@ -180,13 +181,13 @@ struct NullSentinel {
 int main() {
     const char* long_str = "Find_the_X_in_this_string";
 
-    // ─── OLD: Must compute length first ───
+    // OLD: Must compute length first
     size_t len = std::strlen(long_str);  // O(n) traversal #1
     auto it = std::find(long_str, long_str + len, 'X');  // O(n) traversal #2
     std::cout << "Old: found at index " << (it - long_str) << "\n";
     // Total: TWO traversals!
 
-    // ─── NEW: Sentinel stops at null, ONE traversal ───
+    // NEW: Sentinel stops at null, ONE traversal
     auto it2 = std::ranges::find(long_str, NullSentinel{}, 'X');
     std::cout << "New: found at index " << (it2 - long_str) << "\n";
     // Total: ONE traversal! Stops as soon as 'X' is found.
@@ -224,8 +225,9 @@ int main() {
 //   New: found at index 10
 //   First 3 elements: 10
 //   Counted view: 10 20 30
-
 ```
+
+The `std::views::counted` example at the end shows the standard library's built-in solution for counted ranges - you give it a starting iterator and a count, and it handles the sentinel internally. You don't need to write `CountSentinel` by hand in real code.
 
 ---
 

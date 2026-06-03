@@ -9,22 +9,24 @@
 
 ## Topic Overview
 
-C++20 ranges algorithms accept an optional **projection** parameter—a callable applied to each element before the algorithm's operation. This eliminates many trivial lambdas.
+C++20 ranges algorithms accept an optional **projection** parameter - a callable applied to each element before the algorithm's operation. This eliminates many trivial lambdas that previously existed only to extract a field from a struct before a comparison.
 
 ### Without vs With Projections
 
-```cpp
+Here's the same sort written both ways. The projection form is not just shorter - it communicates intent more directly, because the "sort by name" logic is expressed as a data member pointer rather than buried inside a comparison lambda.
 
+```cpp
 // WITHOUT projection (C++17)
 std::sort(vec.begin(), vec.end(),
     [](const Person& a, const Person& b) { return a.name < b.name; });
 
 // WITH projection (C++20)
 std::ranges::sort(vec, {}, &Person::name);  // {} = default comparator
-
 ```
 
 ### What Can Be a Projection
+
+Projections are flexible - they accept anything that `std::invoke` can call on an element:
 
 | Projection type | Example | What it does |
 | --- | --- | --- |
@@ -36,24 +38,24 @@ std::ranges::sort(vec, {}, &Person::name);  // {} = default comparator
 
 ### How Projections Work Internally
 
-Ranges algorithms invoke the projection via `std::invoke(proj, element)` before passing the result to the comparator/predicate:
+The mechanics are simple: the algorithm calls `std::invoke(proj, element)` before passing the result to the comparator or predicate. You never see this call yourself, but understanding it helps explain why member function pointers and data member pointers both work - `std::invoke` handles both cases uniformly.
 
 ```cpp
-
 For ranges::sort(vec, comp, proj):
   comp(std::invoke(proj, a), std::invoke(proj, b))
-  → comp(a.name, b.name)  // when proj = &Person::name
-
+  -> comp(a.name, b.name)  // when proj = &Person::name
 ```
 
 ### Projection vs views::transform
 
+These two features serve different purposes. Projections are local to a single algorithm call; `views::transform` creates a reusable view in a pipeline.
+
 | Feature | Projection | views::transform |
 | --- | --- | --- |
 | Scope | Inside one algorithm call | Creates a new view |
-| Composable | No — per-algorithm only | Yes — pipes into other views |
-| Zero overhead | Yes — inlined by compiler | Yes — lazy, no copies |
-| Mutates original | Depends on algorithm | No — transforms on the fly |
+| Composable | No - per-algorithm only | Yes - pipes into other views |
+| Zero overhead | Yes - inlined by compiler | Yes - lazy, no copies |
+| Mutates original | Depends on algorithm | No - transforms on the fly |
 
 ---
 
@@ -61,8 +63,9 @@ For ranges::sort(vec, comp, proj):
 
 ### Q1: Use a member pointer as a projection in `std::ranges::sort(vec, {}, &Person::name)`
 
-```cpp
+This example shows sorting a vector of structs by different fields using projections. Notice that `{}` as the comparator argument means "use the default", which is `std::ranges::less{}` - i.e., ascending order.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -111,22 +114,15 @@ int main() {
 // By age:  Alice Diana Charlie Bob
 // By salary (desc): Diana Alice Charlie Bob
 // Highest paid: Diana
-
 ```
 
-**How this works:**
-
-- `&Person::name` is a pointer to data member—`std::invoke` applies it to extract the `name` field.
-- `{}` for the comparator means `std::ranges::less{}`—the default ascending order.
-- `std::greater{}` with `&Person::salary` sorts salaries in descending order.
-- `ranges::max` with projection returns the **Person object** (not just the salary) that has the maximum salary.
+`ranges::max` with a projection returns the full `Person` object that has the maximum salary - not just the salary value itself. This is a common pattern: you project a key for comparison, but the algorithm hands back the original element, not the projected key.
 
 ### Q2: Explain how projections are applied inside range algorithms and their zero-overhead nature
 
-**Projection application mechanism:**
+The pseudo-code below shows the internal structure of a projection-aware sort. The projection is called via `std::invoke` on each element before the comparator sees it, but the algorithm still moves/swaps the original elements.
 
 ```cpp
-
 // Simplified pseudo-code for ranges::sort with projection:
 template<typename R, typename Comp, typename Proj>
 void sort(R&& range, Comp comp, Proj proj) {
@@ -137,13 +133,11 @@ void sort(R&& range, Comp comp, Proj proj) {
     }
     // ...
 }
-
 ```
 
-**Zero-overhead proof:**
+The reason projections have zero overhead is that `std::invoke(&Employee::id, emp)` compiles to exactly `emp.id` - a plain member access with no indirection. The compiler inlines the whole thing.
 
 ```cpp
-
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -186,19 +180,15 @@ int main() {
 // Expected output:
 // Alice(1) Bob(2) Charlie(3)
 // By length: fig apple banana elderberry
-
 ```
 
-**Why zero-overhead:**
-
-1. `std::invoke(&Employee::id, emp)` compiles to `emp.id`—no virtual dispatch, no function pointer indirection.
-2. The compiler inlines the projection and comparator, producing the same machine code as a hand-written lambda.
-3. Projections are constrained by concepts at compile time, so invalid projections produce clear errors.
+Projections are also constrained by concepts at compile time. If you pass something that can't be invoked on an element, you get a clear error at the point of the call rather than a cryptic message buried inside the algorithm's implementation.
 
 ### Q3: Show that projections can be composed with `views::transform`
 
-```cpp
+Projections live inside algorithm calls; `views::transform` lives in pipelines. They play complementary roles, and you can use both together when the situation calls for it.
 
+```cpp
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -260,21 +250,15 @@ int main() {
 //   Widget: $499.5
 //   Gizmo: $449.7
 // Expensive: Gadget Gizmo
-
 ```
 
-**Composition insight:**
-
-- `views::transform(&Product::name)` is the **view equivalent** of a projection—it creates a named range of just the names.
-- Projections work **inside algorithms** (sort, find, count_if, etc.).
-- `views::transform` works **in pipelines** (composable with filter, take, etc.).
-- For complex projections (like `price * quantity`), a lambda works in both contexts.
+The general rule is: use a projection when you need the algorithm to compare or inspect by a key, and use `views::transform` when you want to build a pipeline that produces projected values as a new range. For complex computed keys like `price * quantity`, a lambda works in both positions. `views::transform(&Product::name)` is particularly clean - it takes a member pointer directly, exactly like a projection would, but produces a composable view of just the names.
 
 ---
 
 ## Notes
 
 - Projections are available on **all** ranges algorithms: `sort`, `find`, `count`, `min`, `max`, `copy_if`, etc.
-- The default projection is `std::identity{}`—doing nothing.
+- The default projection is `std::identity{}` - doing nothing.
 - `&T::member` works as projection because `std::invoke(ptr_to_member, object)` is defined to extract the member.
-- For chaining multiple projections, use `views::transform` instead—projections don't compose directly.
+- For chaining multiple projections, use `views::transform` instead - projections don't compose directly.

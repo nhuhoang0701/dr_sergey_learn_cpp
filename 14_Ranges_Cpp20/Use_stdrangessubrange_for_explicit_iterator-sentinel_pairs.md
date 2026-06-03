@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`std::ranges::subrange` is a lightweight, non-owning view that wraps an **iterator-sentinel** pair into a proper range. It bridges the gap between legacy APIs that return pairs of iterators and the modern ranges world that expects a single range object.
+`std::ranges::subrange` is a lightweight, non-owning view that wraps an **iterator-sentinel** pair into a proper range. Its main job is to bridge the gap between legacy APIs that return pairs of iterators and the modern ranges world that expects a single range object.
+
+Think of it as a named handle for a portion of a range. Instead of carrying around two separate iterators and remembering which is which, you wrap them into a `subrange` and get all the range operations for free.
 
 ### What subrange Provides
 
@@ -23,30 +25,26 @@
 ### Class Template Signature
 
 ```cpp
-
 template<std::input_or_output_iterator I,
          std::sentinel_for<I> S = I,
          std::ranges::subrange_kind K = /* deduced */>
 class subrange : public std::ranges::view_interface<subrange<I, S, K>>;
-
 ```
 
 ### Key Operations
 
 ```cpp
-
 subrange sr(first, last);     // from iterator pair
 sr.begin();                   // returns first
 sr.end();                     // returns last
 sr.size();                    // if sized
 sr.advance(n);                // returns subrange with begin advanced by n
 auto [b, e] = sr;             // structured bindings (C++17)
-
 ```
 
 ### When to Use subrange
 
-1. **Legacy API returns two iterators** — wrap them to use with ranges algorithms.
+1. **Legacy API returns two iterators** - wrap them to use with ranges algorithms.
 2. **Pass a sub-portion of a container** to `ranges::sort`, `ranges::find`, etc.
 3. **Store an iterator-sentinel pair** in a variable for reuse.
 4. **Destructure with structured bindings** for cleaner code.
@@ -57,8 +55,9 @@ auto [b, e] = sr;             // structured bindings (C++17)
 
 ### Q1: Construct a subrange from two iterators and pass it to a range algorithm
 
-```cpp
+The key thing here is that a `subrange` over five elements of a vector behaves exactly like any other range. You can sort it, count into it, and iterate it - and all changes happen in-place in the original vector.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -89,19 +88,15 @@ int main() {
 // After partial sort: 9 3 1 2 5 8 7 6 4
 // Elements > 5 in subrange: 1
 // First 4: 9 3 1 2
-
 ```
 
-**How this works:**
-
-- `subrange(data.begin() + 2, data.begin() + 7)` creates a view over 5 elements `{7, 1, 5, 8, 2}`.
-- `ranges::sort(sr)` sorts them in-place → `{1, 2, 5, 8, 7}`. The rest of `data` is untouched.
-- The subrange satisfies `random_access_range` and `sized_range`, so all algorithms work on it.
+`subrange` satisfies `random_access_range` and `sized_range` when constructed from random-access iterators, so all algorithms that require those properties work on it directly.
 
 ### Q2: Show how subrange bridges legacy iterator-pair APIs and range-based algorithms
 
-```cpp
+This is the most common real-world use case: you're calling a pre-C++20 function that returns a `std::pair<It, It>`, and you want to feed that result into a ranges pipeline. One `subrange` constructor call is all it takes.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -145,20 +140,15 @@ int main() {
 // Run of 3s has 3 elements
 // Transformed: 30 30 30
 // Equal range for 5: 5 5
-
 ```
 
-**How this works:**
-
-- `find_run_of` returns a legacy `std::pair<It, It>`.
-- Wrapping with `std::ranges::subrange(first, last)` converts it into a proper range.
-- Now `run` can be piped through views, passed to ranges algorithms, and used in range-for loops.
-- Note: `ranges::equal_range` already returns a `subrange` natively—no manual wrapping needed.
+Note that `ranges::equal_range` at the end already returns a `subrange` - you don't need to wrap it manually. Many ranges algorithms return subranges natively, so you'll often find yourself receiving one rather than constructing one.
 
 ### Q3: Use subrange with structured bindings to destructure `[begin, end)` from a function return
 
-```cpp
+This pattern is the modern replacement for the erase-remove idiom. Instead of `v.erase(std::remove(...), v.end())` in one long expression, you get the removed-tail subrange, destructure it into its boundaries, and then erase. Each step is readable on its own.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -198,21 +188,15 @@ int main() {
 // Valid elements: 1 2 3 4 6 7 8 9 10
 // After erase: 1 2 3 4 6 7 8 9 10
 // Odd partition: (odd numbers in unspecified order)
-
 ```
 
-**How this works:**
-
-- `ranges::remove` returns a `subrange` representing the "garbage" tail after the logical removal.
-- `auto [tail_begin, tail_end] = removed;` destructures the subrange into its two iterators.
-- This pattern replaces the old erase-remove idiom: `v.erase(std::remove(v.begin(), v.end(), 5), v.end());`.
-- Many ranges algorithms return subranges: `partition`, `remove`, `unique`, `equal_range`, etc.
+The structured bindings `auto [tail_begin, tail_end] = removed` are directly unpacking the `subrange`'s begin and end. This replaces the old erase-remove idiom `v.erase(std::remove(v.begin(), v.end(), 5), v.end())` with code that names each piece. Many ranges algorithms - `partition`, `remove`, `unique`, `equal_range` - return subranges for exactly this reason.
 
 ---
 
 ## Notes
 
-- `subrange` is a **borrowed range**—it doesn't own the data, so it's safe to return from functions when the underlying data outlives it.
+- `subrange` is a **borrowed range** - it doesn't own the data, so it's safe to return from functions when the underlying data outlives it.
 - Use `subrange(it, sentinel, size_hint)` to provide a size when the sentinel type doesn't support `operator-`.
-- `subrange::advance(n)` returns a new subrange with `begin()` advanced by `n` steps—useful for skipping elements.
-- `std::ranges::subrange` satisfies `view` (it's cheap to copy—just two iterators/sentinels) and can be used anywhere a view is expected.
+- `subrange::advance(n)` returns a new subrange with `begin()` advanced by `n` steps - useful for skipping elements.
+- `std::ranges::subrange` satisfies `view` (it's cheap to copy - just two iterators/sentinels) and can be used anywhere a view is expected.

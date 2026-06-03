@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-`std::ranges::view_interface<Derived>` is a CRTP base class that provides default implementations for common range operations based on `begin()` and `end()` you provide.
+`std::ranges::view_interface<Derived>` is a CRTP base class that provides default implementations for common range operations based on `begin()` and `end()` you provide. The idea is that most of a view's interface can be derived from just those two methods, so you shouldn't have to write the same `empty()`, `size()`, `front()`, `back()`, and `operator[]` boilerplate every time you create a custom view.
 
 ### What view_interface Gives You for Free
+
+Once you provide `begin()` and `end()`, the base class can synthesize the rest. What exactly it can synthesize depends on how capable your iterators are - a random-access range gets everything, a forward-only range gets less.
 
 | Method | Requires from Derived | What it provides |
 | --- | --- | --- |
@@ -25,23 +27,23 @@
 
 ### Minimum Requirements for a Custom View
 
+The requirements are intentionally minimal - if you can express `begin()` and `end()`, you can have a view:
+
 1. **Derive from `view_interface<YourView>`** (CRTP)
-2. **Provide `begin()` and `end()`** — can return different types (iterator + sentinel)
+2. **Provide `begin()` and `end()`** - can return different types (iterator + sentinel)
 3. **Must be O(1) copyable** (views are cheap to copy)
 4. **Must be default-constructible** (moved/copied views need it)
 
 ### Range Adaptor Closure Objects (C++23)
 
-C++23 adds `std::ranges::range_adaptor_closure<Derived>` for creating pipe-compatible adaptors:
+C++23 adds `std::ranges::range_adaptor_closure<Derived>` for creating pipe-compatible adaptors. Before C++23 you had to write the `operator|` overload by hand; now you just inherit from this base class and the pipe syntax works automatically.
 
 ```cpp
-
 struct my_adaptor : std::ranges::range_adaptor_closure<my_adaptor> {
     template<std::ranges::viewable_range R>
     auto operator()(R&& r) const { return my_view(std::forward<R>(r)); }
 };
 // Now works with pipe: data | my_adaptor{}
-
 ```
 
 ---
@@ -50,8 +52,9 @@ struct my_adaptor : std::ranges::range_adaptor_closure<my_adaptor> {
 
 ### Q1: Implement a custom `every_nth_view` that yields every Nth element of a range
 
-```cpp
+This example builds a complete custom view from scratch. It's a good template to study because it demonstrates all the moving parts: the view class, the iterator class, the CRTP inheritance, and the deduction guide. Read through the iterator's `operator++` carefully - that's where the "skip N-1 elements" logic lives.
 
+```cpp
 #include <iostream>
 #include <iterator>
 #include <ranges>
@@ -120,20 +123,15 @@ int main() {
 // Every 3rd: 0 3 6 9
 // Empty? false
 // Bool?  true
-
 ```
 
-**How this works:**
-
-- `every_nth_view` inherits from `view_interface`, getting `empty()`, `operator bool`, and `front()` for free.
-- The custom `iterator` advances by `step_` positions on each `++`.
-- The sentinel comparison allows early termination when the iterator reaches the end.
-- The deduction guide ensures `every_nth_view(data, 3)` wraps `data` in `views::all`.
+The deduction guide at the bottom is important: without it, `every_nth_view(data, 3)` would try to store the vector by value inside the view, which is expensive and wrong. The guide redirects it to `views::all_t<R>`, which wraps the vector in a `ref_view` (a cheap non-owning reference). This is the standard pattern for any view that wraps an existing range. Notice that `empty()` and `operator bool` are not written anywhere in the class - they come from `view_interface` for free.
 
 ### Q2: Use `view_interface` to get default implementations of `empty`, `size`, `front`, `back`
 
-```cpp
+This simpler example shows the maximum benefit from `view_interface` when you provide contiguous raw-pointer iterators. With pointers as iterators, the base class can deduce all seven operations automatically.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -148,7 +146,7 @@ public:
     span_view() = default;
     span_view(T* data, std::size_t size) : data_(data), size_(size) {}
 
-    // Provide begin() and end() — view_interface does the rest
+    // Provide begin() and end() - view_interface does the rest
     T* begin() const { return data_; }
     T* end()   const { return data_ + size_; }
 };
@@ -182,27 +180,17 @@ int main() {
 // data():  1
 // View is non-empty
 // Empty view: empty=true bool=false
-
 ```
 
-**How this works:**
-
-- `span_view` provides only `begin()` and `end()` (returning raw pointers).
-- Since raw pointers are **contiguous, random-access** iterators, `view_interface` deduces:
-  - `empty()` from `begin() == end()`
-  - `size()` from `end() - begin()` (sized_sentinel_for)
-  - `front()` from `*begin()`
-  - `back()` from `*prev(end())`
-  - `operator[]` from `begin()[n]`
-  - `data()` from `to_address(begin())`
-- This is the maximum benefit from `view_interface`—all 7 operations for free.
+Raw pointers are contiguous, random-access iterators, so `view_interface` can synthesize every method in the table from the overview. `empty()` comes from `begin() == end()`, `size()` from `end() - begin()`, `front()` from `*begin()`, `back()` from `*prev(end())`, `operator[]` from `begin()[n]`, and `data()` from `to_address(begin())`. The class itself is only about ten lines of real code; the interface has seven more operations for free.
 
 ### Q3: Compare implementing a custom range adaptor before and after C++23 range adaptor closure objects
 
-**Pre-C++23: Manual pipe operator overload**
+The need to write a pipe-compatible adaptor comes up regularly once you start building domain-specific view pipelines. Before C++23, you had to write the `operator|` friendship by hand. With C++23, you inherit from `range_adaptor_closure` and the pipe just works.
+
+Pre-C++23 - manual pipe operator overload:
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -235,13 +223,11 @@ int main() {
 }
 // Expected output:
 // Doubled: 2 4 6 8 10
-
 ```
 
-**C++23: Using `range_adaptor_closure`**
+C++23 - using `range_adaptor_closure`:
 
 ```cpp
-
 #include <iostream>
 #include <ranges>
 #include <vector>
@@ -280,7 +266,7 @@ inline constexpr multiply_by_closure multiply_by{};
 int main() {
     std::vector<int> data = {1, 2, 3, 4, 5};
 
-    // C++23 adaptor — pipe works automatically
+    // C++23 adaptor - pipe works automatically
     auto result = data | doubled23;
     std::cout << "Doubled: ";
     for (int x : result) std::cout << x << ' ';
@@ -303,16 +289,15 @@ int main() {
 // Doubled: 2 4 6 8 10
 // Tripled: 3 6 9 12 15
 // 6x: 6 12 18 24 30
-
 ```
 
-**Comparison:**
+The C++23 version also enables adaptor composition: `doubled23 | multiply_by(3)` creates a combined adaptor object that applies both transformations in sequence. That's only possible because `range_adaptor_closure` overloads `operator|` between two closure objects, not just between a range and a closure. The pre-C++23 version cannot do this without extra boilerplate.
 
 | Aspect | Pre-C++23 | C++23 with `range_adaptor_closure` |
 | --- | --- | --- |
 | Pipe support | Manual `friend operator\|` | Automatic from base class |
 | Adaptor composition | Not supported | `a \| b` creates combined adaptor |
-| Boilerplate | ~10 lines for pipe operator | 0 lines — just inherit |
+| Boilerplate | ~10 lines for pipe operator | 0 lines - just inherit |
 | Parameterized | Must handle argument binding manually | Return a closure from `operator()(args)` |
 
 ---
@@ -320,6 +305,6 @@ int main() {
 ## Notes
 
 - `view_interface` uses CRTP: always inherit as `view_interface<YourView>`.
-- A view must be **O(1) copyable**—store only iterators/sentinels/small data, never own a container.
+- A view must be **O(1) copyable** - store only iterators/sentinels/small data, never own a container.
 - Custom views should satisfy `std::ranges::enable_view<YourView>` (automatic when inheriting from `view_interface`).
-- For simple adaptors, composing existing views (transform, filter, take, etc.) is usually sufficient—only write custom views when the standard adaptors can't express your logic.
+- For simple adaptors, composing existing views (transform, filter, take, etc.) is usually sufficient - only write custom views when the standard adaptors can't express your logic.

@@ -33,13 +33,13 @@ Range-based views, adaptors, projections, and the ranges library for composable 
 
 ## Notes
 
-- Ranges replace iterator pairs with single range objects — cleaner and less error-prone
-- Views are lazy — `std::views::filter | std::views::transform` composes without allocation
-- `std::ranges::to<Container>()` (C++23) materializes a lazy view into a container
-- Range adaptors use the pipe (`|`) syntax for readable left-to-right composition
-- Sentinel-based ranges allow different types for begin and end — enables null-terminated strings
-- `std::views::zip` (C++23) combines multiple ranges element-wise into tuples
-- Borrowed ranges ensure iterators remain valid even after the range is destroyed
-- Projections in range algorithms eliminate the need for custom comparators in most cases
-- `std::views::chunk` and `std::views::slide` (C++23) enable windowed processing patterns
-- Custom views require implementing `begin()`, `end()`, and satisfying range concepts
+- Ranges replace iterator pairs with single range objects - cleaner and less error-prone.
+- Views are lazy - `std::views::filter | std::views::transform` composes without allocation.
+- `std::ranges::to<Container>()` (C++23) materializes a lazy view into a container.
+- Range adaptors use the pipe (`|`) syntax for readable left-to-right composition.
+- Sentinel-based ranges allow different types for begin and end - enables null-terminated strings.
+- `std::views::zip` (C++23) combines multiple ranges element-wise into tuples.
+- Borrowed ranges ensure iterators remain valid even after the range is destroyed.
+- Projections in range algorithms eliminate the need for custom comparators in most cases.
+- `std::views::chunk` and `std::views::slide` (C++23) enable windowed processing patterns.
+- Custom views require implementing `begin()`, `end()`, and satisfying range concepts.

@@ -11,32 +11,36 @@
 
 `views::cartesian_product` generates all **combinations** of elements from two or more ranges, yielding tuples. For ranges `R1 = {a,b}` and `R2 = {1,2,3}`, it produces `{(a,1), (a,2), (a,3), (b,1), (b,2), (b,3)}`.
 
+Think of it as those nested `for` loops you always end up writing when you need every pairing of two (or more) sets - except here it's lazy, composable, and expressed in a single line.
+
 ### How It Works
 
-```cpp
+Here is the layout of how those combinations are arranged:
 
+```cpp
 R1 = { A, B }       R2 = { 1, 2, 3 }
 
 cartesian_product(R1, R2):
-  (A, 1)  (A, 2)  (A, 3)    ← R1[0] × all of R2
-  (B, 1)  (B, 2)  (B, 3)    ← R1[1] × all of R2
+  (A, 1)  (A, 2)  (A, 3)    <- R1[0] x all of R2
+  (B, 1)  (B, 2)  (B, 3)    <- R1[1] x all of R2
 
-Total: |R1| × |R2| = 2 × 3 = 6 tuples
-
+Total: |R1| x |R2| = 2 x 3 = 6 tuples
 ```
 
-The **last range varies fastest** (like nested for-loops where the outermost loop is the first range).
+The **last range varies fastest** (like nested for-loops where the outermost loop is the first range). So R1 steps slowly while R2 cycles through all its values for each R1 element.
 
 ### Signature
 
-```cpp
+The call is straightforward - pass two or more ranges and you get back a range of tuples:
 
+```cpp
 views::cartesian_product(R1, R2, ...Rn);
 // Returns a range of tuple<range_reference_t<R1>, range_reference_t<R2>, ...>
-
 ```
 
 ### Range Category
+
+The resulting range category depends on what you feed in. If the table feels like a lot, the short version is: your result is at most as capable as your weakest input range.
 
 | Input ranges | Resulting category |
 | --- | --- |
@@ -59,8 +63,9 @@ The first range only needs to be `forward_range`; subsequent ranges must be `for
 
 ### Q1: Generate all (x, y) pairs for two ranges using `views::cartesian_product`
 
-```cpp
+Here you can see the basic pattern: two ranges go in, every combination comes out. Notice how structured bindings make destructuring each tuple painless.
 
+```cpp
 #include <iostream>
 #include <ranges>
 #include <string>
@@ -90,20 +95,20 @@ int main() {
 // Expected output:
 // (1,A) (1,B) (2,A) (2,B) (3,A) (3,B)
 // 3D grid cells: 12
-
 ```
 
-**How this works:**
+Notice that `ys` (the last range) varies fastest - so you get `(1,A), (1,B)` before moving on to `(2,A), (2,B)`. The three-range example just multiplies the sizes: 2 x 3 x 2 = 12 combinations, none of them stored at once.
 
 - `cartesian_product(xs, ys)` yields each `(int, char)` combination.
 - Structured bindings `auto [x, y]` destructure each tuple.
 - The last range (`ys`) varies fastest, so we get `(1,A), (1,B), (2,A), (2,B), ...`.
-- With 3 ranges of sizes 2×3×2, we get 12 combinations.
+- With 3 ranges of sizes 2x3x2, we get 12 combinations.
 
 ### Q2: Show that `cartesian_product` produces a random-access range when both inputs are random-access
 
-```cpp
+This one is worth understanding deeply because the random-access behavior enables O(1) indexing - the view can jump to element `[7]` without iterating all the previous elements.
 
+```cpp
 #include <array>
 #include <concepts>
 #include <iostream>
@@ -116,7 +121,7 @@ int main() {
 
     auto product = std::views::cartesian_product(a, b);
 
-    // Both inputs are random-access + sized → product is random-access + sized
+    // Both inputs are random-access + sized -> product is random-access + sized
     static_assert(std::ranges::random_access_range<decltype(product)>);
     static_assert(std::ranges::sized_range<decltype(product)>);
 
@@ -143,10 +148,9 @@ int main() {
 // Total combinations: 12
 // Element [7]: (20, 4)
 // Filtered product is bidirectional, not random-access
-
 ```
 
-**How this works:**
+The reason `it += 7` works in O(1) is that the view can decompose index 7 as `(7 / 4, 7 % 4)` = row 1, column 3, then directly point into `a[1]` and `b[3]`. As soon as you introduce a `filter_view` (which can't tell you its element positions in O(1)), that arithmetic breaks down and the whole product degrades to bidirectional.
 
 - `vector` and `array` are both random-access + sized, so the product inherits random-access.
 - `size()` is O(1): it simply multiplies the sizes of each input range.
@@ -155,8 +159,9 @@ int main() {
 
 ### Q3: Use `cartesian_product` to compute the Kronecker product of two small matrices lazily
 
-```cpp
+This example shows `cartesian_product` doing real mathematical work - generating all index pairs for a matrix product without any explicit nested loops.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <ranges>
@@ -193,7 +198,7 @@ int main() {
     }
 
     // Print the 4x4 Kronecker product
-    std::cout << "Kronecker product (A \u2297 B):\n";
+    std::cout << "Kronecker product (A (x) B):\n";
     for (int r = 0; r < K_rows; ++r) {
         for (int c = 0; c < K_cols; ++c)
             std::cout << K[r * K_cols + c] << '\t';
@@ -201,19 +206,18 @@ int main() {
     }
 }
 // Expected output:
-// Kronecker product (A ⊗ B):
+// Kronecker product (A (x) B):
 // 0	5	0	10
 // 6	7	12	14
 // 0	15	0	20
 // 18	21	24	28
-
 ```
 
-**How this works:**
+The key idea here is that `cartesian_product(iota(0,2), iota(0,2))` replaces two nested `for(int i=0; i<2; ++i)` loops cleanly. The view is lazy - index pairs are generated as needed, not stored in any intermediate container.
 
-- `cartesian_product(iota(0,2), iota(0,2))` generates all (row, col) index pairs for a 2×2 matrix.
-- The nested loop iterates all `(ai,aj)` × `(bi,bj)` combinations to compute each Kronecker entry.
-- The view is lazy—index pairs are generated on the fly, not stored in a container.
+- `cartesian_product(iota(0,2), iota(0,2))` generates all (row, col) index pairs for a 2x2 matrix.
+- The nested loop iterates all `(ai,aj)` x `(bi,bj)` combinations to compute each Kronecker entry.
+- The view is lazy - index pairs are generated on the fly, not stored in a container.
 - This replaces four nested `for(int i=0; i<N; ++i)` loops with more expressive range-based iteration.
 
 ---
@@ -224,4 +228,4 @@ int main() {
 - With zero-sized ranges, the product is empty.
 - The **first range** is iterated once; subsequent ranges may be iterated multiple times (once per element of the preceding range).
 - Equivalent nested loop: `for (auto& x : R1) for (auto& y : R2) ...` but `cartesian_product` can be composed with other views.
-- Memory usage is O(1)—only iterators are stored, not elements.
+- Memory usage is O(1) - only iterators are stored, not elements.
