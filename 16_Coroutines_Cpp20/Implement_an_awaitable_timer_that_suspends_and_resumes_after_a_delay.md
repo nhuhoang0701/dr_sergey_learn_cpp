@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-An **awaitable timer** suspends a coroutine and schedules its resumption after a specified delay. This combines coroutine machinery with an event loop or thread pool.
+An **awaitable timer** suspends a coroutine and schedules its resumption after a specified delay. This combines coroutine machinery with an event loop or thread pool. It is also one of the clearest illustrations of what the awaitable protocol actually does - the three methods `await_ready`, `await_suspend`, and `await_resume` map directly onto "should we bother suspending?", "what do we do with the handle while suspended?", and "what value does this expression produce?".
 
 ### Awaitable Timer Flow
 
-```cpp
+Here is the sequence of events when a coroutine hits `co_await timer(500ms)`. The coroutine suspends, hands its handle to the event loop, and has no further presence on any thread until the event loop calls `handle.resume()` after the delay:
 
+```cpp
 Coroutine                    Timer / Event Loop
    │                              │
    ├─ co_await timer(500ms)       │
@@ -25,7 +26,6 @@ Coroutine                    Timer / Event Loop
    │                              │── handle.resume()
    │   await_resume()        <────│
    ├─ continues execution         │
-
 ```
 
 ### Awaitable Protocol
@@ -42,8 +42,9 @@ Coroutine                    Timer / Event Loop
 
 ### Q1: Write an awaitable that suspends the coroutine and schedules its resumption via a timer
 
-```cpp
+The simplest possible timer implementation spawns a thread, sleeps for the requested duration, then calls `handle.resume()`. This works for demonstration but is wasteful in production (a real timer uses OS-level facilities like `epoll` or `IOCP`). The important thing to notice is that after `await_suspend` returns, the coroutine is suspended on a thread-pool thread - it does not resume on the original thread:
 
+```cpp
 #include <chrono>
 #include <coroutine>
 #include <iostream>
@@ -104,20 +105,15 @@ int main() {
 // Start
 // After 200ms
 // After 300ms more
-
 ```
 
-**How this works:**
-
-- `await_ready()` returns `false` for non-zero delays, causing suspension.
-- `await_suspend()` spawns a thread that sleeps then calls `handle.resume()`.
-- The coroutine resumes on the timer thread (not the original thread).
-- In production, use an event loop or thread pool instead of spawning threads per timer.
+`await_ready()` returns `false` for non-zero delays, causing suspension. `await_suspend()` spawns a thread that sleeps then calls `handle.resume()`. The coroutine resumes on the timer thread, not the original thread. In production, use an event loop or thread pool instead of spawning threads per timer.
 
 ### Q2: Show the symmetric transfer technique for resuming coroutines without stack overflow
 
-```cpp
+Without symmetric transfer, every `handle.resume()` call pushes a new stack frame. If you have a chain of a thousand coroutines each resuming the next, you get a thousand frames deep - stack overflow. Symmetric transfer solves this by making `await_suspend` return a `coroutine_handle<>`. The runtime then does a tail-call to resume that handle, so the chain of coroutines uses O(1) stack space no matter how long it is:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 
@@ -180,26 +176,22 @@ int main() {
 // Expected output:
 // ping 0
 // Counter: 1
-
 ```
 
-**Why symmetric transfer matters:**
-
-- **Without:** `handle.resume()` calls build up the stack (coroutine A resumes B resumes C → stack overflow).
-- **With:** `await_suspend` returns a `coroutine_handle<>`, and the compiler does a **tail-call** — no stack growth.
-- Pattern: `await_suspend(h) -> coroutine_handle<>` enables chains of thousands of coroutines.
+To summarise why this matters: without symmetric transfer, `handle.resume()` calls build up the stack (coroutine A resumes B resumes C -> stack overflow). With symmetric transfer, `await_suspend` returns a `coroutine_handle<>`, and the compiler does a **tail-call** - no stack growth. This pattern enables chains of thousands of coroutines.
 
 ### Q3: Explain the executor model: how resumption is dispatched to a thread pool
 
-```cpp
+The executor model is the standard way to decouple coroutines from threads in production systems. The key idea is that `await_suspend` does not call `handle.resume()` directly - it pushes the handle into a queue, and a worker thread from the pool eventually picks it up and calls `resume()`. This means the coroutine resumes on a pool thread, not the thread that originally suspended it:
 
+```cpp
 Coroutine suspends
        │
        │ await_suspend(handle)
        ▼
 ┌──────────────────┐
 │   Executor /       │
-│   Event Loop       │  ← stores handle in a queue
+│   Event Loop       │  <- stores handle in a queue
 │                    │
 │  queue.push(handle)│
 └─────────┬────────┘
@@ -209,15 +201,13 @@ Coroutine suspends
 ┌──────────────────┐
 │   Thread Pool      │
 │                    │
-│  handle.resume()   │  ← picks a worker thread to resume
+│  handle.resume()   │  <- picks a worker thread to resume
 └──────────────────┘
-
 ```
 
-**Simplified thread pool executor:**
+Here is a simplified thread pool executor that implements this pattern. The `ScheduleOn` awaitable is what a coroutine uses to hop onto the thread pool - it always suspends and immediately enqueues the handle:
 
 ```cpp
-
 #include <condition_variable>
 #include <coroutine>
 #include <functional>
@@ -278,15 +268,9 @@ struct ScheduleOn {
     }
     void await_resume() {}  // no result
 };
-
 ```
 
-**Model summary:**
-
-- `await_suspend(handle)` stores the handle in the executor's queue (not immediately resumed).
-- A worker thread picks up the handle and calls `handle.resume()`.
-- The coroutine resumes on whichever thread the executor chooses.
-- This decouples the coroutine from any specific thread.
+The model in a nutshell: `await_suspend(handle)` stores the handle in the executor's queue (not immediately resumed). A worker thread picks up the handle and calls `handle.resume()`. The coroutine resumes on whichever thread the executor chooses. This decouples the coroutine from any specific thread.
 
 ---
 
@@ -294,5 +278,5 @@ struct ScheduleOn {
 
 - **Never** call `handle.resume()` from inside `await_suspend()` unless you understand reentrancy. Use the executor pattern instead.
 - Symmetric transfer (`await_suspend` returning `coroutine_handle<>`) is critical for preventing stack overflow in coroutine chains.
-- `std::noop_coroutine()` is the "null" handle for symmetric transfer — returns control to the caller.
+- `std::noop_coroutine()` is the "null" handle for symmetric transfer - returns control to the caller.
 - Real-world timer implementations use OS-level timers (epoll, IOCP, kqueue) instead of `sleep_for`.

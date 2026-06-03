@@ -17,24 +17,24 @@ The key difference is the **iterator advancement**:
 | Sync `Generator<T>` | Calls `handle.resume()`, returns immediately | Always immediate (CPU-bound) |
 | `AsyncGenerator<T>` | Returns an awaitable; consumer `co_await`s it | May be delayed (I/O-bound) |
 
-Internally, the async generator's promise holds a **continuation handle** — the consumer's coroutine that is waiting for the next value. When the generator `co_yield`s a value, its `yield_value` awaiter transfers control back to the consumer via symmetric transfer. When the generator `co_await`s an async operation, both the generator *and* its consumer are suspended; the async callback eventually resumes the generator, which then yields to the consumer.
+Internally, the async generator's promise holds a **continuation handle** - the consumer's coroutine that is waiting for the next value. When the generator `co_yield`s a value, its `yield_value` awaiter transfers control back to the consumer via symmetric transfer. When the generator `co_await`s an async operation, both the generator *and* its consumer are suspended; the async callback eventually resumes the generator, which then yields to the consumer.
+
+The reason this is trickier than a sync generator is that there are now two coroutines interleaving - the generator and the consumer - and they take turns being suspended. Each `co_await gen.next()` in the consumer hands control to the generator. The generator runs until it either `co_yield`s a value (handing control back to the consumer via symmetric transfer) or `co_await`s an I/O operation (suspending both until I/O completes).
 
 ```cpp
-
 Consumer                   AsyncGenerator              Async I/O
    │                            │                          │
-   ├── co_await next() ────▶    │                          │
-   │   (suspended)              ├── running body ──▶       │
-   │                            ├── co_await read() ──▶    │
+   ├── co_await next() ────>    │                          │
+   │   (suspended)              ├── running body ──>       │
+   │                            ├── co_await read() ──>    │
    │                            │   (suspended)            ├── completes
-   │                            │   ◀── resume ────────────┘
-   │                            ├── co_yield value ──▶     │
-   │   ◀── symmetric transfer ──┘                          │
+   │                            │   <- resume ────────────┘
+   │                            ├── co_yield value ──>     │
+   │   <- symmetric transfer ──┘                          │
    ├── process value            │                          │
-
 ```
 
-The `AsyncGenerator<T>` pattern is vital for streaming data: reading database rows, consuming message queues, paginating API results — any scenario where producing the next element involves waiting.
+The `AsyncGenerator<T>` pattern is vital for streaming data: reading database rows, consuming message queues, paginating API results - any scenario where producing the next element involves waiting.
 
 ---
 
@@ -42,8 +42,9 @@ The `AsyncGenerator<T>` pattern is vital for streaming data: reading database ro
 
 ### Q1: Implement a minimal `AsyncGenerator<T>` with a consumer that `co_await`s each value
 
-```cpp
+This implementation is the heart of the pattern. The most important design decision is symmetric transfer in both `yield_value` and `final_suspend`: when the generator yields a value, it immediately transfers to the consumer; when it finishes, it also transfers to the consumer so the consumer can observe the end-of-stream (a `nullopt` from `await_resume`):
 
+```cpp
 #include <coroutine>
 #include <cstdio>
 #include <exception>
@@ -168,15 +169,15 @@ int main() {
     run();
     // Output: got: 10  got: 20  got: 30  got: 40  got: 50  done
 }
-
 ```
 
 ---
 
 ### Q2: Show the difference between sync and async generators when an asynchronous delay is involved
 
-```cpp
+The fundamental limitation of a sync generator is that it cannot `co_await`. As soon as you add an async wait between yields, a sync generator becomes ill-formed. This is why the async generator exists as a separate concept:
 
+```cpp
 #include <coroutine>
 #include <chrono>
 #include <cstdio>
@@ -229,15 +230,15 @@ AsyncGenerator<int> timed_sequence(int count,
 // | Caller context       | Regular function    | Must be a coroutine      |
 // | Suspension between   | Only at yield       | At yield AND at co_await |
 // |   points             |                     |                          |
-
 ```
 
 ---
 
 ### Q3: Implement an async generator that reads "pages" from a paginated source, yielding individual items — a real-world streaming pattern
 
-```cpp
+This is the pattern you'd use to consume a database cursor, a paginated REST API, or a Kafka topic. The generator handles all the batching and refetching logic internally. The consumer just sees a flat stream of items and uses `co_await gen.next()` for each one - completely unaware of how the data is batched:
 
+```cpp
 #include <coroutine>
 #include <cstdio>
 #include <optional>
@@ -308,28 +309,25 @@ int main() {
     // [5] echo
     // Total items: 5
 }
-
 ```
 
-**Architecture diagram:**
+Here is the architecture for the paginated stream case, showing how the three participants (consumer, generator, and the fetch awaitable) interleave:
 
 ```cpp
-
 consume()           paginated_stream()          FetchPageAwaitable
     │                      │                           │
-    ├─ co_await next() ──▶ │                           │
-    │                      ├─ co_await fetch(0) ──▶    │
-    │                      │                     ◀─────┤ {alpha,bravo,charlie}
-    │                      ├─ co_yield "alpha" ──▶     │
-    │  ◀── "alpha" ────────┘                           │
-    ├─ co_await next() ──▶ │                           │
-    │                      ├─ co_yield "bravo" ──▶     │
-    │  ◀── "bravo" ────────┘                           │
+    ├─ co_await next() ──> │                           │
+    │                      ├─ co_await fetch(0) ──>    │
+    │                      │                     <─────┤ {alpha,bravo,charlie}
+    │                      ├─ co_yield "alpha" ──>     │
+    │  <- "alpha" ────────┘                           │
+    ├─ co_await next() ──> │                           │
+    │                      ├─ co_yield "bravo" ──>     │
+    │  <- "bravo" ────────┘                           │
     ...
-    │                      ├─ co_await fetch(1) ──▶    │
-    │                      │                     ◀─────┤ {delta,echo}
+    │                      ├─ co_await fetch(1) ──>    │
+    │                      │                     <─────┤ {delta,echo}
     ...
-
 ```
 
 The consumer sees a flat stream of strings. The pagination logic, I/O waits, and batching are completely encapsulated inside the async generator.
@@ -339,8 +337,8 @@ The consumer sees a flat stream of strings. The pagination logic, I/O waits, and
 ## Notes
 
 - **Symmetric transfer** (`await_suspend` returning `coroutine_handle<>`) is essential for async generators to avoid stack overflow when chaining suspensions. Without it, each resume nests another stack frame.
-- An async generator's `final_suspend` must transfer to the consumer — otherwise the consumer remains permanently suspended, causing a deadlock/leak.
+- An async generator's `final_suspend` must transfer to the consumer - otherwise the consumer remains permanently suspended, causing a deadlock/leak.
 - Unlike `std::generator` (C++23), there is no standard async generator yet. P2502 covers sync generators; async generators remain a library-level concern.
 - In real systems, the `co_await` inside the generator integrates with an **event loop** (Boost.Asio, libuv, io_uring). The awaitables register callbacks that resume the coroutine when I/O completes.
-- Memory model: each async generator is one coroutine frame. The consumer is a separate frame. At most **two frames** are alive per producer-consumer pair — O(1) memory regardless of stream length.
+- Memory model: each async generator is one coroutine frame. The consumer is a separate frame. At most **two frames** are alive per producer-consumer pair - O(1) memory regardless of stream length.
 - Error propagation: if the generator's body throws, `unhandled_exception()` captures it, and the consumer's `co_await gen.next()` rethrows when `await_resume()` calls `rethrow_exception`.

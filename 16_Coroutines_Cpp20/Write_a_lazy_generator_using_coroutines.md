@@ -11,22 +11,27 @@
 
 A **lazy generator** produces values one at a time using `co_yield`, only computing the next value when requested. C++23 adds `std::generator<T>` in `<generator>`, but you can implement one from scratch in C++20.
 
+The "lazy" part is important: a lazy generator never runs ahead of the caller. It suspends after every value and waits to be asked for the next one. This makes infinite sequences perfectly practical - you just stop asking when you have enough values.
+
 ### Generator vs Eager Collection
 
-```cpp
+Here is the memory model difference between filling a vector upfront and using a lazy generator:
 
-Eager (vector):  [0] [1] [2] [3] [4] ... [999999]  ← all in memory
+```cpp
+Eager (vector):  [0] [1] [2] [3] [4] ... [999999]  <- all in memory
                   allocated upfront, O(N) memory
 
-Lazy (generator): ── 0 ── 1 ── 2 ── 3 ── ...  ← one value at a time
+Lazy (generator): -- 0 -- 1 -- 2 -- 3 -- ...  <- one value at a time
                   computed on demand, O(1) memory
-
 ```
 
-### std::generator<T> (C++23)
+For large or infinite sequences, the generator wins decisively. You only ever hold one value at a time.
+
+### std::generator (C++23)
+
+C++23 gives you a ready-made generator type so you do not have to write the boilerplate yourself. If your compiler supports it, this is the cleanest option:
 
 ```cpp
-
 #include <generator>
 
 std::generator<int> iota(int start = 0) {
@@ -36,8 +41,9 @@ std::generator<int> iota(int start = 0) {
 
 for (int x : iota() | std::views::take(5))
     std::cout << x << ' ';  // 0 1 2 3 4
-
 ```
+
+The rest of this file shows how to build the same machinery in C++20 so you understand what is happening under the hood.
 
 ---
 
@@ -45,8 +51,9 @@ for (int x : iota() | std::views::take(5))
 
 ### Q1: Implement a Fibonacci generator using `co_yield` that produces values on demand
 
-```cpp
+The generator here is a full C++20 implementation that also supports range-based `for` loops. The `iterator` struct is what makes `for (long long f : fibonacci())` work - it delegates to the coroutine handle under the hood. Each `operator++` resumes the coroutine, which runs until the next `co_yield` and then suspends again.
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <utility>
@@ -110,7 +117,7 @@ public:
     sentinel end() { return {}; }
 };
 
-// Fibonacci generator — infinite sequence
+// Fibonacci generator - infinite sequence
 Generator<long long> fibonacci() {
     long long a = 0, b = 1;
     while (true) {
@@ -153,15 +160,15 @@ int main() {
 // Expected output:
 // Fibonacci: 0 1 1 2 3 5 8 13 21 34 55 89
 // Primes:    2 3 5 7 11 13 17 19 23 29
-
 ```
+
+Both `fibonacci()` and `primes()` are infinite loops - they never stop yielding values on their own. The `break` in the range-for loop exits early, and the generator's RAII destructor cleans up the coroutine frame cleanly at that point. You never have to worry about the "rest" of the sequence leaking.
 
 ### Q2: Explain how the coroutine frame is allocated on the heap and when it can be elided
 
-**Coroutine frame allocation:**
+When you call a coroutine function, the compiler allocates a frame on the heap to store everything the coroutine needs to resume: its local variables, its current suspension point, the promise object, and the original parameters. Here is what that looks like for a Fibonacci generator:
 
 ```cpp
-
 Generator<int> gen = fibonacci();
     │
     ├─ Compiler calls operator new(frame_size)
@@ -172,19 +179,17 @@ Generator<int> gen = fibonacci();
     │     • Parameters (none for fibonacci)
     │
     ├─ get_return_object() creates Generator with handle
-    ├─ initial_suspend() = suspend_always → paused
+    ├─ initial_suspend() = suspend_always -> paused
     │
-    ├─ [resumed] body runs to first co_yield → paused
-    ├─ [resumed] body runs to second co_yield → paused
+    ├─ [resumed] body runs to first co_yield -> paused
+    ├─ [resumed] body runs to second co_yield -> paused
     │   ...
     ├─ [destroyed] operator delete(frame)
-
 ```
 
-**When HALO elision happens:**
+The heap allocation is the normal case. However, the compiler is allowed to elide it under a rule called **HALO (Heap Allocation eLision Optimization)** when it can prove the frame's lifetime is fully contained within the calling scope. This matters for performance-sensitive code:
 
 ```cpp
-
 // HALO eligible: generator consumed and destroyed in same scope
 int sum_first_10() {
     int total = 0;
@@ -200,27 +205,27 @@ int sum_first_10() {
 Generator<int> make_fib() {
     return fibonacci();  // handle escapes to caller
 }
-
 ```
 
+The reason HALO cannot kick in for `make_fib` is that the compiler cannot see when the returned generator will be destroyed - it could be stored anywhere. When the frame is used and destroyed within the same function, the compiler has full visibility and can put the frame on the stack instead of the heap.
+
 ### Q3: Compare a coroutine generator with a manual iterator class for the same sequence
+
+This is a useful comparison because it shows exactly what the compiler is doing for you when you write a generator. The squares sequence is simple enough to implement both ways in a short space:
 
 **Coroutine generator (concise):**
 
 ```cpp
-
 Generator<int> squares(int n) {
     for (int i = 0; i < n; ++i)
         co_yield i * i;
 }
 // 5 lines of logic
-
 ```
 
 **Manual iterator class (verbose):**
 
 ```cpp
-
 class SquareIterator {
     int current_ = 0;
     int limit_;
@@ -252,13 +257,11 @@ public:
     SquareIterator::sentinel end() const { return {}; }
 };
 // ~25 lines of boilerplate
-
 ```
 
-**Comparison:**
+Both produce identical output. The manual iterator stores its state as member variables and advances it in `operator++`. The coroutine generator stores its state implicitly in the coroutine frame and advances by resuming to the next `co_yield`. The coroutine version lets you write the algorithm as a loop - which is usually how you naturally think about it - rather than inverting it into an iterator state machine.
 
 ```cpp
-
 #include <iostream>
 
 int main() {
@@ -276,7 +279,6 @@ int main() {
 // Expected output:
 // Generator: 0 1 4 9 16 25
 // Iterator:  0 1 4 9 16 25
-
 ```
 
 | Aspect | Coroutine Generator | Manual Iterator |
@@ -293,7 +295,7 @@ int main() {
 
 ## Notes
 
-- C++23's `std::generator<T>` provides a ready-made generator type—no need to write your own.
+- C++23's `std::generator<T>` provides a ready-made generator type - no need to write your own.
 - `std::generator<T>` supports `std::ranges::range`, so it works with all range adaptors.
 - For recursive generators, `std::generator<T>` supports `co_yield std::ranges::elements_of(sub_gen)`.
 - Generator coroutines are always **lazy** (initial_suspend = suspend_always) and **pull-based** (caller drives iteration).

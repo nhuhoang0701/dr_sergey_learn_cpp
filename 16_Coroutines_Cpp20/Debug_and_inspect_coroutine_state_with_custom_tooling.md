@@ -10,18 +10,19 @@
 
 ### Why Coroutine Debugging Is Hard
 
-Coroutine frames are heap-allocated, opaque objects. When a coroutine suspends:
+Coroutine frames are heap-allocated, opaque objects. When a coroutine suspends, debugging becomes genuinely difficult in ways that don't apply to normal function calls:
 
-- The stack frame disappears — no call stack to inspect.
+- The stack frame disappears - there is no call stack to inspect.
 - The compiler-generated coroutine frame stores local variables in an implementation-defined layout.
 - Standard debuggers (GDB, LLDB, MSVC) have limited native coroutine support.
 
+The reason this is more painful than ordinary multithreaded debugging is that coroutines look synchronous in source code but behave asynchronously at runtime. A suspended coroutine has no thread, no stack, and no obvious location in memory that a standard debugger can follow. The solution is to build your own observability into the coroutine type itself.
+
 ### Inspecting Coroutine State Programmatically
 
-`std::coroutine_handle<>` provides basic inspection:
+`std::coroutine_handle<>` provides basic inspection. The `address()` method gives you the raw pointer to the coroutine frame, and `done()` tells you whether the coroutine has reached `final_suspend`. That's enough to start building diagnostic tools. Here is a simple utility that prints what it can about any coroutine handle:
 
 ```cpp
-
 #include <coroutine>
 #include <iostream>
 
@@ -34,15 +35,13 @@ void inspect_coroutine(std::coroutine_handle<Promise> h) {
         std::cout << "Promise:  " << &h.promise() << "\n";
     }
 }
-
 ```
 
 ### Building a Coroutine Registry
 
-Track all live coroutines for debugging:
+If you want to track all live coroutines - for a dashboard, for debugging a hang, or for finding leaks - a global registry keyed on the handle's address is a natural solution. Each coroutine registers itself when it starts and unregisters when it completes. Because coroutines can be resumed from different threads, the registry uses a mutex:
 
 ```cpp
-
 #include <coroutine>
 #include <unordered_map>
 #include <string>
@@ -99,15 +98,13 @@ public:
         std::cout << "=== Total: " << coroutines_.size() << " ===\n";
     }
 };
-
 ```
 
 ### Instrumenting the Promise Type
 
-Add tracking hooks to your coroutine's promise type:
+The cleanest place to hook into the registry is the promise type itself. `get_return_object()` is called right when the coroutine starts, so it is the right place to register. `final_suspend` is the right place to unregister. By using `std::source_location`, you can capture the filename and line number of the coroutine's declaration automatically - no manual tagging required:
 
 ```cpp
-
 #include <source_location>
 
 template<typename T>
@@ -139,13 +136,13 @@ struct tracked_promise {
         return std::suspend_always{};
     }
 };
-
 ```
 
 ### GDB/LLDB Tips for Coroutines
 
-```bash
+When you do need to drop to the debugger, these flags and commands help. Note that `-fcoroutines-debug` (Clang) is particularly valuable because it preserves local variable names inside the coroutine frame, which are otherwise lost after compilation:
 
+```bash
 # GDB: inspect coroutine frame memory
 (gdb) p/x *(char(*)[128])coroutine_handle.address()
 
@@ -158,13 +155,13 @@ struct tracked_promise {
 # Print all threads and look for coroutine resume functions
 (gdb) info threads
 (gdb) thread apply all bt
-
 ```
 
 ### Logging Awaiter for Debugging Suspension Points
 
-```cpp
+If you want to trace exactly when a coroutine suspends and resumes at a particular `co_await` point, the cleanest approach is a wrapper awaiter that adds logging around the inner awaitable. You drop this in when debugging and remove it for production. Notice that it works with any awaitable - the template parameter `Awaitable` is whatever the original `co_await` expression produced:
 
+```cpp
 template<typename Awaitable>
 struct logging_awaiter {
     Awaitable inner_;
@@ -189,7 +186,6 @@ struct logging_awaiter {
 };
 
 // Usage: co_await logging_awaiter{some_op(), "db_query"};
-
 ```
 
 ---
@@ -198,8 +194,9 @@ struct logging_awaiter {
 
 ### Q1: Implement a simple coroutine registry and show its dump output
 
-```cpp
+Here the registry itself is defined in the Topic Overview above. This example just exercises it directly by simulating three coroutines in different states, then calling `dump()` to see the output:
 
+```cpp
 // Using the CoroutineRegistry class from above
 int main() {
     auto& reg = CoroutineRegistry::instance();
@@ -220,19 +217,16 @@ int main() {
     //   0x3000 [send_response] SUSPENDED at handler.cpp:120
     // === Total: 3 ===
 }
-
 ```
 
 ### Q2: Write a logging awaiter that traces suspension and resumption
 
-See the `logging_awaiter` template above. Output example:
+See the `logging_awaiter` template in the Topic Overview above. The output you'd see wrapping a `db_query` operation looks like this - one line when it checks readiness, one when it actually suspends, one when it resumes:
 
 ```text
-
 [await:db_query] ready=false
 [await:db_query] suspending 0x55a8b3c0
 [await:db_query] resuming
-
 ```
 
 ### Q3: What compiler flags improve coroutine debugging
@@ -248,7 +242,7 @@ See the `logging_awaiter` template above. Output example:
 
 ## Notes
 
-- Native debugger support for coroutines is rapidly improving — check your debugger version.
+- Native debugger support for coroutines is rapidly improving - check your debugger version.
 - In production, use a coroutine registry with minimal overhead (atomic counters, not maps).
 - The `std::source_location` integration makes it easy to track where coroutines were created.
 - Consider building a web dashboard for the coroutine registry in long-running server applications.

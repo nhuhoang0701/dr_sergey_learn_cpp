@@ -8,9 +8,11 @@
 
 ## Topic Overview
 
-The C++20 coroutine specification provides **low-level machinery** (compiler transforms, `coroutine_handle`, promise types) but no ready-to-use coroutine types like `task<T>` or `generator<T>`. Several libraries fill this gap.
+The C++20 coroutine specification provides **low-level machinery** (compiler transforms, `coroutine_handle`, promise types) but no ready-to-use coroutine types like `task<T>` or `generator<T>`. This is by design - the standard defines the protocol, and libraries build the ergonomic types on top of it. Several libraries fill this gap, each with a different philosophy and set of trade-offs.
 
 ### Library Comparison
+
+Here is a quick orientation before diving into each one. The key axes are maturity, design philosophy (sender/receiver vs coroutine-first), and whether structured concurrency is a first-class concept:
 
 | Library | Maintainer | Status | Key Types | Structured Concurrency |
 | --- | --- | --- | --- | --- |
@@ -22,10 +24,9 @@ The C++20 coroutine specification provides **low-level machinery** (compiler tra
 
 ### cppcoro
 
-The original C++20 coroutine library by Lewis Baker. Now archived but widely referenced.
+The original C++20 coroutine library by Lewis Baker. It's now archived, but it remains the most widely cited reference for learning the patterns, and many newer libraries follow its API conventions. If you want to understand how coroutine libraries are supposed to feel to use, start here:
 
 ```cpp
-
 #include <cppcoro/task.hpp>
 #include <cppcoro/sync_wait.hpp>
 #include <cppcoro/when_all.hpp>
@@ -45,17 +46,15 @@ int main() {
     );
     // val == 42, str == "hello"
 }
-
 ```
 
-**Key features:** `task<T>`, `shared_task<T>`, `generator<T>`, `async_generator<T>`, `async_mutex`, `when_all`, `sync_wait`.
+`sync_wait` is the bridge between coroutine world and the rest of your program - it blocks the current thread until the coroutine completes and returns its result. **Key features:** `task<T>`, `shared_task<T>`, `generator<T>`, `async_generator<T>`, `async_mutex`, `when_all`, `sync_wait`.
 
 ### libunifex
 
-Facebook's library that implements the P2300 sender/receiver model with coroutine integration.
+Facebook's library that implements the P2300 sender/receiver model with coroutine integration. The interesting thing about libunifex is that it treats coroutines as one composition mechanism among several - you can mix coroutine-style code with sender/receiver pipelines, which makes it very flexible:
 
 ```cpp
-
 #include <unifex/task.hpp>
 #include <unifex/sync_wait.hpp>
 #include <unifex/just.hpp>
@@ -73,17 +72,15 @@ int main() {
     );
     // result == 7
 }
-
 ```
 
-**Key features:** P2300 sender/receiver, schedulers, `let_value`, `when_all`, cancellation via stop tokens.
+Notice the `unifex::on(scheduler, work)` pattern - you explicitly choose which scheduler runs the coroutine. **Key features:** P2300 sender/receiver, schedulers, `let_value`, `when_all`, cancellation via stop tokens.
 
 ### folly::coro
 
-Production-grade library used within Meta. Feature-rich with extensive async primitive support.
+Production-grade library used within Meta. If you need something battle-tested with a rich set of async primitives (retries, timeouts, scoped tasks, async generators), this is the answer. The API is coroutine-first and the ergonomics are polished from years of internal use:
 
 ```cpp
-
 #include <folly/experimental/coro/Task.h>
 #include <folly/experimental/coro/BlockingWait.h>
 #include <folly/experimental/coro/Collect.h>
@@ -104,17 +101,15 @@ folly::coro::Task<void> example() {
 int main() {
     folly::coro::blockingWait(example());
 }
-
 ```
 
 **Key features:** `Task<T>`, `AsyncGenerator<T>`, `collectAll`, `collectAny`, timeouts, `co_invoke`, retry policies, `AsyncScope`.
 
 ### stdexec (P2300 Reference Implementation)
 
-NVIDIA's reference implementation of `std::execution` (P2300).
+NVIDIA's reference implementation of `std::execution` (P2300). Where cppcoro and folly are coroutine-first, stdexec is sender/receiver-first, meaning you compose work as a pipeline of senders and only drop to coroutines when the imperative style helps. It also supports heterogeneous execution targets (CPU and GPU schedulers):
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 
@@ -130,10 +125,11 @@ int main() {
     auto [result] = stdexec::sync_wait(std::move(work)).value();
     // result == 42
 }
-
 ```
 
 ### Choosing a Library
+
+If you're not sure which to pick, here is the decision table. Library choice is a real architectural commitment - pick deliberately:
 
 | Need | Recommendation |
 | --- | --- |
@@ -149,8 +145,9 @@ int main() {
 
 ### Q1: Write a minimal coroutine using cppcoro-style `task<T>`
 
-```cpp
+Here is a recursive coroutine computing Fibonacci numbers with cppcoro. Each recursive call becomes a `co_await`, and `sync_wait` drives the whole thing from `main`. This is a clean demonstration of how a coroutine-based `task<T>` naturally replaces a plain function call for async work:
 
+```cpp
 #include <cppcoro/task.hpp>
 #include <cppcoro/sync_wait.hpp>
 #include <iostream>
@@ -166,13 +163,13 @@ int main() {
     int result = cppcoro::sync_wait(fibonacci(10));
     std::cout << "fib(10) = " << result << "\n";  // 55
 }
-
 ```
 
 ### Q2: Show concurrent fan-out with folly::coro
 
-```cpp
+`collectAll` is the workhorse for running a group of tasks concurrently and waiting for all of them. All three `fetch_price` calls are in flight at the same time; `collectAll` collects their results in order:
 
+```cpp
 folly::coro::Task<int> fetch_price(std::string symbol) {
     co_await folly::coro::sleep(std::chrono::milliseconds(100));
     co_return symbol.size() * 10;  // dummy
@@ -186,29 +183,28 @@ folly::coro::Task<void> portfolio() {
     );
     std::cout << "Total: " << a + b + c << "\n";
 }
-
 ```
 
 ### Q3: When would you choose stdexec over folly::coro
 
 Choose **stdexec** when:
 
-- You want alignment with the upcoming **C++ standard** (`std::execution`).
-- You need **heterogeneous execution** (CPU + GPU) — stdexec supports GPU schedulers.
-- You prefer the **sender/receiver** composition model over coroutine-first design.
-- You want to avoid the folly dependency ecosystem.
+- You want alignment with the upcoming **C++ standard** (`std::execution`). stdexec is tracking that proposal closely, so code written against it today will be easier to migrate when the standard ships.
+- You need **heterogeneous execution** (CPU + GPU) - stdexec supports GPU schedulers, which is unique among these libraries.
+- You prefer the **sender/receiver** composition model over coroutine-first design - senders compose more naturally with functional-style pipelines.
+- You want to avoid the folly dependency ecosystem, which can be heavyweight.
 
 Choose **folly::coro** when:
 
-- You need a **battle-tested production** library.
-- You want rich async primitives (retries, timeouts, scoped tasks) out of the box.
-- Your team is already using the folly ecosystem.
+- You need a **battle-tested production** library that has been run at scale inside Meta for years.
+- You want rich async primitives (retries, timeouts, scoped tasks) out of the box without having to build them yourself.
+- Your team is already using the folly ecosystem and the integration cost is low.
 
 ---
 
 ## Notes
 
-- C++23 added `std::generator<T>` to the standard — the first standard coroutine type.
-- P2300 (`std::execution`) is targeting C++26 and will provide standard sender/receiver types.
-- Most libraries define their own `task<T>` — they are not interchangeable without adapters.
-- Coroutine library choice is a major architectural decision — pick early and stick with it.
+- C++23 added `std::generator<T>` to the standard - the first standard coroutine type. If you only need lazy generation, you no longer need a third-party library.
+- P2300 (`std::execution`) is targeting C++26 and will provide standard sender/receiver types, making libunifex and stdexec effectively reference implementations for what's coming to the language.
+- Most libraries define their own `task<T>` - they are not interchangeable without adapters. This means switching libraries later is a significant refactor, so pick early and stick with it.
+- Coroutine library choice is a major architectural decision. The API shapes how you structure your entire async codebase.

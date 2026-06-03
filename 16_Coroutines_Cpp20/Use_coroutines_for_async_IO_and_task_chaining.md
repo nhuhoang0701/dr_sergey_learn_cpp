@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-Coroutines enable writing async I/O code that looks synchronous. Each `co_await` suspends the coroutine until the I/O completes, avoiding callback nesting ("callback hell").
+Coroutines enable writing async I/O code that looks synchronous. Each `co_await` suspends the coroutine until the I/O completes, avoiding callback nesting ("callback hell"). The result is code that reads top-to-bottom like ordinary sequential logic, even though it is non-blocking under the hood.
 
 ### Async I/O with Coroutines vs Callbacks
 
-```cpp
+Here is the same multi-step async operation written both ways. The left side is the classic callback pyramid - every step nests inside the previous one. The right side is the coroutine version, where each step is just another `co_await` on the next line:
 
+```cpp
 CALLBACK STYLE (deeply nested):       COROUTINE STYLE (flat):
 read_file(path, [](data) {             auto data = co_await read_file(path);
   parse(data, [](parsed) {             auto parsed = co_await parse(data);
@@ -25,17 +26,16 @@ read_file(path, [](data) {             auto data = co_await read_file(path);
     });
   });
 });
-
 ```
 
 ### Task Chaining Pattern
 
-```cpp
+When each step produces a value that feeds into the next, you get a pipeline. Coroutines make that pipeline look like a straight line:
 
-task<A> step1()    ──> co_await ──> task<B> step2(A) ──> co_await ──> task<C> step3(B)
+```cpp
+task<A> step1()    --> co_await --> task<B> step2(A) --> co_await --> task<C> step3(B)
                                     result of step1        result of step2
                                     feeds into step2       feeds into step3
-
 ```
 
 ---
@@ -44,8 +44,9 @@ task<A> step1()    ──> co_await ──> task<B> step2(A) ──> co_await �
 
 ### Q1: Write a `co_await`-based async file read that suspends until I/O completes
 
-```cpp
+The key piece here is `AsyncFileRead`. It is an awaitable whose `await_suspend` spins up a background thread to do the actual file read, and then resumes the coroutine handle when the work is done. From the coroutine's perspective, `co_await async_read(...)` looks like a synchronous call - it simply produces the file contents as a `std::string`.
 
+```cpp
 #include <coroutine>
 #include <fstream>
 #include <iostream>
@@ -131,13 +132,15 @@ int main() {
 }
 // Expected output:
 // Read 19 bytes
-
 ```
+
+Notice how `read_and_process` reads exactly like synchronous code - there is no callback, no future polling, no explicit thread join. The coroutine suspends at `co_await async_read(...)`, the background thread does its work, then the coroutine wakes up and continues on the next line.
 
 ### Q2: Chain two coroutines so that the result of one feeds into the next using `co_await`
 
-```cpp
+This example builds a three-stage pipeline: fetch raw CSV text, parse it into a vector of integers, then sum the integers. Each stage is its own coroutine, and the `pipeline()` coroutine chains them together with three `co_await` expressions. The result of each step flows directly into the parameter of the next.
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <optional>
@@ -198,7 +201,6 @@ Task<std::string> pipeline() {
     auto total  = co_await compute_sum(nums);    // int
 
     co_return "Sum of " + std::to_string(nums.size())
-
              + " numbers = " + std::to_string(total);
 
 }
@@ -209,26 +211,22 @@ int main() {
 }
 // Expected output:
 // Sum of 5 numbers = 1500
-
 ```
 
-**Chaining flow:**
+The pipeline reads exactly like a series of function calls, with each result named and immediately available on the next line. Tracing the data flow is straightforward:
 
 ```bash
-
-pipeline() ── co_await fetch_data()    → "100,200,..."
-           ── co_await parse_csv(raw)  → {100, 200, ...}
-           ── co_await compute_sum(v)  → 1500
-           ── co_return formatted string
-
+pipeline() -- co_await fetch_data()    -> "100,200,..."
+           -- co_await parse_csv(raw)  -> {100, 200, ...}
+           -- co_await compute_sum(v)  -> 1500
+           -- co_return formatted string
 ```
 
 ### Q3: Explain why coroutines avoid callback hell compared to traditional async code
 
-**Callback hell (traditional):**
+The callback style forces you to express sequential logic as nested closures. Every level of nesting is another step in the sequence, and because each callback is a separate lambda, error handling has to be repeated at every level - or scattered into separate error paths that are easy to miss. Here is what a real multi-step request handler looks like in callback style:
 
 ```cpp
-
 void process_request(Request req) {
     db.query(req.user_id, [&](auto user) {           // level 1
         auth.check(user, [&](bool ok) {               // level 2
@@ -245,13 +243,11 @@ void process_request(Request req) {
     // Error handling? Scattered across 5 callbacks!
     // Control flow? Nearly impossible to follow
 }
-
 ```
 
-**Coroutine version (flat, readable):**
+The coroutine version of the same logic is flat. Every step is one line. Errors from any step propagate to a single `catch` block at the top level:
 
 ```cpp
-
 Task<void> process_request(Request req) {
     try {
         auto user   = co_await db.query(req.user_id);   // flat!
@@ -266,10 +262,9 @@ Task<void> process_request(Request req) {
         handle_error(e);
     }
 }
-
 ```
 
-**Comparison:**
+The difference in readability is dramatic once you go beyond two or three steps. Here is the full comparison across the properties that matter most:
 
 | Aspect | Callbacks | Coroutines |
 | --- | --- | --- |
@@ -284,7 +279,7 @@ Task<void> process_request(Request req) {
 
 ## Notes
 
-- Coroutines are **not threads** — they run on whatever thread resumes them. Use an executor to control which thread.
+- Coroutines are **not threads** - they run on whatever thread resumes them. Use an executor to control which thread.
 - For real async I/O, integrate with OS-level mechanisms (IOCP on Windows, epoll on Linux).
 - Libraries like Boost.Asio provide `co_await`-compatible async operations.
 - `co_await` expresses **sequential** async operations. For **concurrent** operations, use a `when_all()` combinator.

@@ -8,37 +8,41 @@
 
 ## Topic Overview
 
-This topic focuses on **coroutine frame lifetime management** — when frames are created, when they're destroyed, and the specific scenarios that prevent the compiler from eliding heap allocation.
+This topic focuses on **coroutine frame lifetime management** - when frames are created, when they're destroyed, and the specific scenarios that prevent the compiler from eliding heap allocation.
+
+Understanding this well pays off in two ways. First, you avoid lifetime bugs (using a destroyed frame, double-destroying a handle). Second, you can write coroutines that the compiler's HALO optimisation can actually act on, avoiding heap allocation entirely for short-lived generators.
 
 ### Coroutine Frame Lifetime
 
+Every coroutine frame goes through a fixed sequence of events. The key thing to notice is that the frame is alive all the way through `final_suspend` - you must read your result from the promise before you call `destroy()`:
+
 ```cpp
-
 create coroutine
-    │
-    ├─ operator new (allocate frame)   ← or HALO (stack)
-    ├─ copy/move parameters into frame
-    ├─ construct promise_type
-    ├─ call get_return_object()
-    ├─ co_await initial_suspend()
-    │
-    ├─ [coroutine body runs / suspends / resumes]
-    │
-    ├─ co_await final_suspend()        ← frame still alive
-    │                                     (must read result before destroy)
-    ├─ destroy promise_type
-    ├─ destroy local variables
-    └─ operator delete (free frame)    ← or automatic (stack)
-
+    |
+    +- operator new (allocate frame)   <- or HALO (stack)
+    +- copy/move parameters into frame
+    +- construct promise_type
+    +- call get_return_object()
+    +- co_await initial_suspend()
+    |
+    +- [coroutine body runs / suspends / resumes]
+    |
+    +- co_await final_suspend()        <- frame still alive
+    |                                     (must read result before destroy)
+    +- destroy promise_type
+    +- destroy local variables
+    +- operator delete (free frame)    <- or automatic (stack)
 ```
 
 ### Lifetime vs Scope
+
+These two terms are easy to confuse. The scope of the handle variable is where the `coroutine_handle` object lives in your code. The lifetime of the frame is the actual period of allocation. HALO can only fire when the lifetime is contained entirely within the immediate caller's scope:
 
 | Concept | Description |
 | --- | --- |
 | **Scope** | Where the coroutine handle variable lives (caller's function) |
 | **Lifetime** | From `operator new` to `handle.destroy()` or auto-destroy |
-| **HALO condition** | Lifetime ⊆ scope of the immediate caller |
+| **HALO condition** | Lifetime is within the scope of the immediate caller |
 
 ---
 
@@ -48,10 +52,11 @@ create coroutine
 
 **HALO (Heap Allocation Elision Optimization) requirements:**
 
+The reason HALO is so picky is that "putting the frame on the caller's stack" only works if the compiler can guarantee the frame will never be accessed after the caller's stack frame is gone. That rules out several common patterns:
+
 1. **The coroutine is called and consumed in the same scope:**
 
 ```cpp
-
 // HALO-eligible: gen lives and dies in process()
 void process() {
     auto gen = my_generator();  // create
@@ -59,47 +64,41 @@ void process() {
         use(val);
     }                           // destroy
 }
-
 ```
 
-2. **The handle does not escape:**
+1. **The handle does not escape:**
 
 ```cpp
-
 // NOT HALO-eligible: handle escapes via return
 auto create() {
     return my_generator();  // handle escapes to caller!
 }
-
 ```
 
-3. **No cross-TU opacity:**
+1. **No cross-TU opacity:**
 
 ```cpp
-
 // NOT HALO-eligible without LTO: coroutine defined in another .cpp
 extern Generator make_gen();  // opaque to compiler
 void use() {
     auto g = make_gen();  // compiler can't see inside make_gen
 }
-
 ```
 
-4. **The compiler can determine the frame size at the call site:**
+1. **The compiler can determine the frame size at the call site:**
 
 ```cpp
-
 // NOT HALO-eligible: virtual/indirect call
 struct Base {
     virtual Generator gen() = 0;  // frame size unknown at call site
 };
-
 ```
 
 ### Q2: Show a case where heap elision is prevented: the coroutine outlives its call site
 
-```cpp
+This example shows three cases in the same file - two that prevent HALO and one that allows it. The contrast makes the rule concrete:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <memory>
@@ -127,18 +126,18 @@ Generator iota(int start) {
         co_yield i;
 }
 
-// Case 1: HALO PREVENTED — coroutine outlives creation scope
+// Case 1: HALO PREVENTED -- coroutine outlives creation scope
 Generator create_generator() {
-    return iota(0);  // returned to caller → outlives this function
+    return iota(0);  // returned to caller -> outlives this function
 }
 
-// Case 2: HALO PREVENTED — stored in heap-allocated object
+// Case 2: HALO PREVENTED -- stored in heap-allocated object
 struct Widget {
     Generator gen;
     Widget() : gen(iota(100)) {}  // gen outlives the constructor scope
 };
 
-// Case 3: HALO ELIGIBLE — consumed in same scope
+// Case 3: HALO ELIGIBLE -- consumed in same scope
 void consume_locally() {
     auto gen = iota(0);
     for (int i = 0; i < 5; ++i) {
@@ -146,7 +145,7 @@ void consume_locally() {
         std::cout << gen.handle.promise().val << ' ';
     }
     std::cout << '\n';
-    // gen destroyed here — same scope as creation
+    // gen destroyed here -- same scope as creation
 }
 
 int main() {
@@ -160,13 +159,15 @@ int main() {
 // Expected output:
 // 0 1 2 3 4
 // From factory: 0
-
 ```
+
+Cases 1 and 2 are the patterns that trip people up most often. Returning a generator from a factory function is a very common pattern, and it's also exactly the pattern that forces heap allocation. If you write a lot of small, short-lived generators, prefer consuming them immediately in the same function.
 
 ### Q3: Measure the overhead of coroutine frame heap allocation vs a comparable state machine
 
-```cpp
+This benchmark measures the per-resume overhead for a simple counting generator against a plain class-based state machine doing the same work. The ratio shows the cost of the heap allocation plus the indirect jump on resume:
 
+```cpp
 #include <chrono>
 #include <coroutine>
 #include <iostream>
@@ -241,17 +242,16 @@ int main() {
 // Ratio:         ~4x
 //
 // With HALO (coroutine inlined): ratio approaches 1x
-
 ```
 
-**Analysis:** The bulk of coroutine overhead is `resume()` call overhead (indirect jump through coroutine state), not the single heap allocation. HALO eliminates the allocation but the suspension/resumption overhead remains.
+**Analysis:** The bulk of coroutine overhead is `resume()` call overhead (indirect jump through coroutine state), not the single heap allocation. The heap allocation happens once per creation; the indirect jump happens on every resume. HALO eliminates the allocation but the suspension/resumption overhead remains. If you need zero overhead, you need the coroutine to be fully inlined and HALO to fire.
 
 ---
 
 ## Notes
 
-- A coroutine frame is destroyed when: (a) `handle.destroy()` is called or (b) the coroutine runs to completion and `final_suspend()` returns `suspend_never`.
-- **Never** destroy a coroutine handle while the coroutine is running — UB.
-- Custom `operator new`/`delete` in promise_type lets you use pool allocators to avoid per-coroutine `malloc`.
-- With `-O2` and full inlining, HALO can make coroutines zero-cost. Without optimization, always heap-allocate.
-- GCC 14+ and Clang 17+ have improved HALO; MSVC has limited HALO support.
+- A coroutine frame is destroyed when: (a) `handle.destroy()` is called explicitly, or (b) the coroutine runs to completion and `final_suspend()` returns `suspend_never`.
+- **Never** destroy a coroutine handle while the coroutine is actively running - that is undefined behavior.
+- Custom `operator new`/`delete` in promise_type lets you use pool allocators to avoid per-coroutine `malloc`. This is the standard approach for high-throughput servers where heap allocation pressure matters.
+- With `-O2` and full inlining, HALO can make coroutines zero-cost. Without optimization, the compiler always heap-allocates.
+- GCC 14+ and Clang 17+ have improved HALO; MSVC has limited HALO support as of current releases.

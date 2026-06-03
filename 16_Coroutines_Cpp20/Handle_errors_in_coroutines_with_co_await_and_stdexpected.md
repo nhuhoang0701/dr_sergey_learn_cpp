@@ -8,11 +8,13 @@
 
 ## Topic Overview
 
-Exception handling in coroutines is deceptively complex. When an exception escapes the coroutine body, the compiler-generated code calls `promise.unhandled_exception()` — typically storing `std::current_exception()` into an `std::exception_ptr`. The exception is then rethrown when the caller inspects the result (e.g., `.get()` or `co_await`). This two-phase model means **exceptions cross suspension boundaries**, which has performance and design implications.
+Exception handling in coroutines is deceptively complex. When an exception escapes the coroutine body, the compiler-generated code calls `promise.unhandled_exception()` - typically storing `std::current_exception()` into an `std::exception_ptr`. The exception is then rethrown when the caller inspects the result (e.g., `.get()` or `co_await`). This two-phase model means **exceptions cross suspension boundaries**, which has performance and design implications.
+
+The reason this trips people up is the timing. In a normal function, the exception propagates immediately up the call stack. In a coroutine, the exception is frozen as an `exception_ptr`, the coroutine frame is destroyed, and only later - when the caller accesses the result - does the exception surface again. This means the throw site and the catch site can be on completely different threads and at completely different points in time.
 
 C++23 `std::expected<T, E>` offers a value-or-error type that avoids exception overhead entirely. By making coroutines return `std::expected` and providing an `operator co_await` that **short-circuits on error**, you get monadic error propagation akin to Rust's `?` operator. If the awaited expected holds an error, the coroutine immediately `co_return`s that error without throwing.
 
-There are **three layers** of error handling in coroutines:
+There are **three layers** of error handling in coroutines, and choosing between them is mostly about frequency and cost:
 
 | Layer | Mechanism | When to Use |
 | --- | --- | --- |
@@ -20,15 +22,15 @@ There are **three layers** of error handling in coroutines:
 | `std::expected` short-circuit | `co_await expected_val` propagates error | Domain errors (validation, I/O, parsing) |
 | Error codes in promise | `yield_value` / `return_value` carry error | High-throughput paths where even `expected` wrapper cost matters |
 
-```cpp
+The flow for the `std::expected` short-circuit pattern is:
 
+```cpp
 co_await some_expected_value
     │
-    ├── has_value() == true  ──▶  await_resume() returns T  ──▶ continue
+    ├── has_value() == true  ──>  await_resume() returns T  ──> continue
     │
-    └── has_value() == false ──▶  await_suspend() does co_return error
+    └── has_value() == false ──>  await_suspend() does co_return error
                                   (short-circuit the coroutine)
-
 ```
 
 For production systems, prefer `std::expected` for domain errors and reserve `unhandled_exception` for genuinely unexpected failures. This avoids the overhead of exception unwinding across coroutine frames, which involves destroying the promise, deallocating the frame, and rethrowing.
@@ -39,8 +41,9 @@ For production systems, prefer `std::expected` for domain errors and reserve `un
 
 ### Q1: Implement `unhandled_exception()` patterns — store, rethrow on access, and demonstrate `exception_ptr` propagation across a suspension point
 
-```cpp
+The most important rule here is that `unhandled_exception()` must not rethrow - it must only *store* the exception. The coroutine frame is still being cleaned up when this function runs, and rethrowing would immediately hit `std::terminate`. You store the exception as an `exception_ptr` and rethrow it later when the caller calls `.get()`:
 
+```cpp
 #include <coroutine>
 #include <exception>
 #include <iostream>
@@ -101,17 +104,17 @@ int main() {
         std::cout << "caught: " << ex.what() << '\n';       // coroutine exploded
     }
 }
-
 ```
 
-**Critical rule:** Never call `std::rethrow_exception` inside `unhandled_exception()` — the coroutine is already unwinding. Store the pointer and rethrow when the caller accesses the result.
+The critical rule bears repeating: never call `std::rethrow_exception` inside `unhandled_exception()` - the coroutine is already unwinding. Store the pointer and rethrow when the caller accesses the result.
 
 ---
 
 ### Q2: Build a monadic `co_await` for `std::expected<T, E>` that short-circuits on error — the coroutine `?` operator
 
-```cpp
+This is the most elegant error handling pattern in modern C++ coroutines. The key mechanism is `await_transform` in the promise type - it intercepts every `co_await` expression inside the coroutine and wraps it in our custom `ExpectedAwaiter`. When the expected holds an error, the awaiter stores that error in the promise and destroys the coroutine handle - the body never resumes. From the outside, the coroutine simply returns an error-containing `expected`:
 
+```cpp
 #include <coroutine>
 #include <expected>
 #include <iostream>
@@ -205,17 +208,17 @@ int main() {
 // r1 = 60
 // r2 error: parse error: bad
 // r3 error: division by zero
-
 ```
 
-**Key mechanism:** `await_transform` intercepts every `co_await` expression inside the coroutine. When the expected holds an error, `await_suspend` stores the error in the promise and **destroys the coroutine handle** — the body never resumes.
+`await_transform` intercepts every `co_await` expression inside the coroutine. When the expected holds an error, `await_suspend` stores the error in the promise and **destroys the coroutine handle** - the body never resumes. This is legal and well-defined: destroying a coroutine handle inside `await_suspend` is explicitly allowed by the standard.
 
 ---
 
 ### Q3: Combine exception-based and expected-based error handling — catch exceptions from legacy code and convert to `std::expected` inside a coroutine
 
-```cpp
+The pattern here is a thin adapter function `try_call` that calls a potentially-throwing function and converts any exception into an `std::unexpected`. This lets you use the short-circuit `co_await` pattern even when you're calling legacy APIs that still throw. The boundary is explicit and localized:
 
+```cpp
 #include <coroutine>
 #include <expected>
 #include <iostream>
@@ -233,7 +236,7 @@ int legacy_sqrt(int v) {
     return r - 1;
 }
 
-// Wrapper: catch exception → expected
+// Wrapper: catch exception -> expected
 template <typename F, typename... Args>
 auto try_call(F&& f, Args&&... args)
     -> std::expected<decltype(f(args...)), Error>
@@ -263,8 +266,9 @@ int main() {
     if (!r2.value()) std::cout << "error: " << r2.value().error() << '\n';
     // error: negative input
 }
-
 ```
+
+Here is a summary of the three strategies and when to pick each one:
 
 | Strategy | Overhead | Use Case |
 | --- | --- | --- |
@@ -276,9 +280,9 @@ int main() {
 
 ## Notes
 
-- `unhandled_exception()` is called inside a catch block — `std::current_exception()` is guaranteed to be valid. Calling `throw;` inside it re-throws and immediately hits `std::terminate` because the coroutine frame is still unwinding.
-- Destroying a coroutine handle inside `await_suspend` is legal and well-defined. This is the key enabler for the short-circuit pattern — the coroutine frame is deallocated, and control returns to the caller.
+- `unhandled_exception()` is called inside a catch block - `std::current_exception()` is guaranteed to be valid. Calling `throw;` inside it re-throws and immediately hits `std::terminate` because the coroutine frame is still unwinding.
+- Destroying a coroutine handle inside `await_suspend` is legal and well-defined. This is the key enabler for the short-circuit pattern - the coroutine frame is deallocated, and control returns to the caller.
 - `await_transform` in the promise hijacks all `co_await` expressions. If you also need to `co_await` non-expected awaitables in the same coroutine, overload `await_transform` for those types too.
 - `std::expected` is available in C++23. For C++20, use `tl::expected` or a similar backport.
-- In coroutine chains (coroutine A `co_await`s coroutine B which `co_await`s C), exceptions propagate through `exception_ptr` at each level. This creates **N copies** of the exception — potentially expensive. The short-circuit pattern avoids this entirely.
+- In coroutine chains (coroutine A `co_await`s coroutine B which `co_await`s C), exceptions propagate through `exception_ptr` at each level. This creates **N copies** of the exception - potentially expensive. The short-circuit pattern avoids this entirely.
 - Mixing exceptions and `expected` in the same coroutine body works, but establishes a confusing contract. Choose one strategy per coroutine and document it.

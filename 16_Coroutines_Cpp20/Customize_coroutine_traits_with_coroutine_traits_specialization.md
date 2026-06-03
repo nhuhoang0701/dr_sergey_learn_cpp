@@ -10,9 +10,11 @@
 
 When the compiler encounters a function whose body contains `co_await`, `co_yield`, or `co_return`, it needs to locate the **promise type** that governs the coroutine's behaviour. The lookup rule is: `std::coroutine_traits<ReturnType, ArgTypes...>::promise_type`. The default primary template simply aliases `ReturnType::promise_type`, so if your return type already nests a `promise_type`, everything works automatically.
 
-However, you can **specialise** `std::coroutine_traits` to inject a promise type into return types you don't control — third-party types, standard library types, or even `void`. This is the mechanism that lets you write `std::future<int> compute() { co_return 42; }` without modifying `std::future` itself; you provide the specialisation, and the compiler uses it.
+However, you can **specialise** `std::coroutine_traits` to inject a promise type into return types you don't control - third-party types, standard library types, or even `void`. This is the mechanism that lets you write `std::future<int> compute() { co_return 42; }` without modifying `std::future` itself; you provide the specialisation, and the compiler uses it.
 
-The compiler also passes **all function parameters** (including the implicit `this` for member functions) as additional template arguments to `coroutine_traits`. This allows different promise types for the same return type depending on the calling context — e.g., a free function vs. a member function of a specific class.
+The reason this is so powerful is that it completely decouples the promise type from the return type. Normally these two are tightly coupled (the return type nests the promise), but `coroutine_traits` breaks that coupling. You can adapt any existing type - ones you wrote years ago, ones from a third-party library - into a coroutine return type without touching the original definition.
+
+The compiler also passes **all function parameters** (including the implicit `this` for member functions) as additional template arguments to `coroutine_traits`. This allows different promise types for the same return type depending on the calling context - e.g., a free function vs. a member function of a specific class.
 
 | Lookup Rule | Template Instantiation |
 | --- | --- |
@@ -21,17 +23,17 @@ The compiler also passes **all function parameters** (including the implicit `th
 | Member function `R C::f(A1) const` | `coroutine_traits<R, C const&, A1>::promise_type` |
 | Lambda `[](A1) -> R` | `coroutine_traits<R, LambdaType&, A1>::promise_type` |
 
-```cpp
+To make the compile-time lookup process concrete, here is what happens step by step when the compiler processes a coroutine:
 
+```cpp
 Compiler sees: R func(Args...) { co_await ... }
                   │
                   ▼
-std::coroutine_traits<R, Args...>::promise_type  ──▶  Promise P
+std::coroutine_traits<R, Args...>::promise_type  ──>  Promise P
                   │
                   ▼
 P p;    // promise object constructed
 auto return_obj = p.get_return_object();  // R
-
 ```
 
 ---
@@ -40,8 +42,9 @@ auto return_obj = p.get_return_object();  // R
 
 ### Q1: Specialise `coroutine_traits` so that a function returning `std::optional<T>` can use `co_return` and `co_await`
 
-```cpp
+The goal here is to make `std::optional<T>` a legal coroutine return type - something you normally cannot do because `std::optional` has no nested `promise_type`. The specialisation provides the missing promise, and an `operator co_await` overload on `optional` provides the short-circuiting `co_await` semantics. This gives you something close to Rust's `?` operator for optional chaining:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <optional>
@@ -78,7 +81,7 @@ struct OptionalAwaiter {
     std::optional<T> const& opt;
     bool await_ready() noexcept { return opt.has_value(); }
     void await_suspend(std::coroutine_handle<> h) noexcept {
-        h.destroy();  // nullopt → abandon coroutine
+        h.destroy();  // nullopt -> abandon coroutine
     }
     T await_resume() { return *opt; }
 };
@@ -106,17 +109,17 @@ int main() {
     std::cout << "a = " << a.value_or(-1) << '\n';  // 84
     std::cout << "b = " << b.value_or(-1) << '\n';  // -1
 }
-
 ```
 
-> **Note:** The simplified `get_return_object` above has a subtlety — the optional is copied before the body runs. A production implementation stores a `coroutine_handle` in a wrapper and extracts the value lazily. The pattern here illustrates the traits specialisation mechanism.
+> **Note:** The simplified `get_return_object` above has a subtlety - the optional is copied before the body runs. A production implementation stores a `coroutine_handle` in a wrapper and extracts the value lazily. The pattern here illustrates the traits specialisation mechanism.
 
 ---
 
 ### Q2: Use `coroutine_traits` to give different promise types to member coroutines vs free coroutines that return the same type
 
-```cpp
+The nice part about including the implicit `this` parameter in the traits lookup is that you can make the same return type behave differently depending on which class is doing the co_return. The free function gets one promise, and the member function of a specific class gets a completely different one - selected at compile time with zero runtime overhead:
 
+```cpp
 #include <coroutine>
 #include <cstdio>
 
@@ -178,17 +181,17 @@ int main() {
     auto t2 = s.schedule();
     t2.run();   // prints: [scheduler-member] running
 }
-
 ```
 
-**Key insight:** The compiler passes `Scheduler&` (implicit `this`) as the second template argument to `coroutine_traits<Task, Scheduler&>`, which matches our specialisation. Free functions get `coroutine_traits<Task>`, which falls through to the default.
+The key insight here is that the compiler passes `Scheduler&` (the implicit `this`) as the second template argument to `coroutine_traits<Task, Scheduler&>`, which matches the explicit specialisation. Free functions get `coroutine_traits<Task>`, which falls through to the default and picks up `Task::promise_type`.
 
 ---
 
 ### Q3: Specialise `coroutine_traits` for `void` return type to build a fire-and-forget coroutine
 
-```cpp
+`void` is the simplest possible return type - the caller gets nothing back. By specialising `coroutine_traits<void, Args...>`, you turn any `void`-returning function into a potential coroutine. This is how you get fire-and-forget semantics: the coroutine runs to completion on its own, and the caller doesn't hold a handle to it:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 
@@ -235,8 +238,9 @@ int main() {
     // Async result: 99
     // After launch
 }
-
 ```
+
+The table below shows how what `get_return_object()` returns changes the contract between the coroutine and its caller:
 
 | `get_return_object()` return | Meaning |
 | --- | --- |
@@ -250,7 +254,7 @@ int main() {
 
 - The primary `std::coroutine_traits<R, Args...>` template is defined in `<coroutine>` and simply exposes `R::promise_type`. Specialisations **replace** this entirely.
 - You may only specialise `coroutine_traits` for types in your own namespace or for program-defined types (ODR). Specialising for `std::string` is technically allowed but inadvisable.
-- The parameter list passed to `coroutine_traits` is the **decayed** parameter types — references are preserved, but arrays decay to pointers. For member functions, the implicit object parameter is added as the first argument after the return type.
-- Because `coroutine_traits` is resolved at compile time, there is **zero runtime cost** — the mechanism is purely a type-level dispatch.
+- The parameter list passed to `coroutine_traits` is the **decayed** parameter types - references are preserved, but arrays decay to pointers. For member functions, the implicit object parameter is added as the first argument after the return type.
+- Because `coroutine_traits` is resolved at compile time, there is **zero runtime cost** - the mechanism is purely a type-level dispatch.
 - Combining `coroutine_traits` with concepts (C++20) lets you SFINAE-constrain which functions can be coroutines. If `coroutine_traits<R, Args...>::promise_type` is ill-formed, the function cannot be a coroutine.
 - Avoid overuse: prefer nesting `promise_type` inside the return type when you own it. Reserve `coroutine_traits` specialisation for adapting third-party types.

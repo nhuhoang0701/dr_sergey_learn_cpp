@@ -10,28 +10,34 @@
 
 Every coroutine allocates a **coroutine frame** on the heap to store its local variables, parameters, promise object, and suspension point. **HALO** (Heap Allocation Elision Optimization) allows the compiler to eliminate this allocation when it can prove the frame's lifetime fits within the caller's scope.
 
+The reason the frame goes on the heap by default - rather than the stack - is that coroutines can outlive the call that created them. The calling function returns, its stack frame is gone, but the coroutine might still be suspended and waiting to be resumed. So the frame needs to live somewhere the caller's return doesn't destroy. That "somewhere" is the heap.
+
 ### Coroutine Frame Contents
 
+When you write a coroutine, the compiler generates a frame object that holds everything the coroutine needs to resume from any of its suspension points:
+
 ```cpp
-
-┌────────────────────────────────────┐
-│   Coroutine Frame (heap)           │
-│                                    │
-│   ┌─ promise_type object            │
-│   ├─ function parameters (copies)   │
-│   ├─ local variables                │
-│   ├─ suspension point index         │
-│   └─ compiler bookkeeping           │
-│                                    │
-└────────────────────────────────────┘
-
++------------------------------------+
+|   Coroutine Frame (heap)           |
+|                                    |
+|   +- promise_type object           |
+|   +- function parameters (copies)  |
+|   +- local variables               |
+|   +- suspension point index        |
+|   +- compiler bookkeeping          |
+|                                    |
++------------------------------------+
 ```
+
+The suspension point index is how the compiler knows where to jump when `handle.resume()` is called - it's essentially a generated state machine with a switch on that index.
 
 ### HALO Conditions
 
+HALO is a permitted compiler optimisation (similar to RVO for return values). The compiler is allowed to place the frame on the caller's stack instead of the heap when certain conditions hold. If any of these conditions is violated, the heap allocation is mandatory:
+
 | Condition | HALO possible? |
 | --- | --- |
-| Coroutine lifetime ⊆ caller scope | Yes |
+| Coroutine lifetime is within caller scope | Yes |
 | Coroutine handle escapes (e.g., stored in container) | No |
 | Coroutine resumed on different thread | No |
 | Compiler can see entire coroutine and caller | Yes (needs inlining) |
@@ -43,7 +49,7 @@ Every coroutine allocates a **coroutine frame** on the heap to store its local v
 
 ### Q1: Explain when the compiler can elide the coroutine frame heap allocation
 
-The compiler can apply HALO when it can prove:
+The compiler can apply HALO when it can prove all three of these things at once. The reason all three matter is that any one violation means the frame might need to outlive the caller's stack frame, and the compiler can't take that risk:
 
 1. **The coroutine's lifetime does not exceed the caller's scope.** The frame can be placed on the caller's stack.
 
@@ -51,8 +57,9 @@ The compiler can apply HALO when it can prove:
 
 3. **The compiler has full visibility.** The coroutine body and all callers must be visible (same TU or via LTO/inlining).
 
-```cpp
+Here is a HALO-eligible example. The generator is created, used entirely, and destroyed within `main` - the handle never goes anywhere else:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 
@@ -90,15 +97,15 @@ int main() {
 }
 // Expected output:
 // 1 2 3
-
 ```
 
 **HALO applies here because:** `gen` is local, the handle stays in `main()`'s scope, and the compiler can see both `count_to` and `main()`.
 
 ### Q2: Show a case where HALO applies: the coroutine doesn't outlive the caller's frame
 
-```cpp
+This example puts both cases side by side so you can see exactly what breaks HALO. The `sum_first_n` function is HALO-eligible because the generator never leaves that function. The `halo_prevented` function kills HALO the moment it pushes the handle into `global_handles`:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <vector>
@@ -133,7 +140,7 @@ int sum_first_n(int n) {
             total += gen.handle.promise().val;
     }
     return total;
-    // gen destroyed here — never escaped this scope
+    // gen destroyed here -- never escaped this scope
 }
 
 // HALO-unfriendly: handle escapes to a container
@@ -146,7 +153,7 @@ void halo_prevented() {
     }(5);
 
     global_handles.push_back(gen.handle);  // handle escapes!
-    // Compiler cannot prove lifetime → must heap-allocate
+    // Compiler cannot prove lifetime -> must heap-allocate
 }
 
 int main() {
@@ -154,15 +161,13 @@ int main() {
 }
 // Expected output:
 // Sum 1..5 = 15
-
 ```
 
 ### Q3: Measure the allocation overhead of coroutines vs callbacks when HALO does not apply
 
-**Comparison approach:**
+This benchmark quantifies the cost you pay for heap-allocated coroutine frames. The callback version never allocates a frame; the coroutine version allocates and frees one for every iteration. The ~10x difference is almost entirely allocation overhead, not the suspension mechanism itself:
 
 ```cpp
-
 #include <chrono>
 #include <coroutine>
 #include <functional>
@@ -225,15 +230,13 @@ int main() {
 // Coroutine: ~50 ms
 // Callback:  ~5 ms
 // Overhead:  ~10x (without HALO)
-
 ```
 
 **When HALO applies, the overhead drops to near-zero.** The frame is on the stack, no `operator new` is called.
 
-**Custom allocator to prove heap allocation:**
+If you want to verify empirically whether HALO fired, you can track allocations by overriding `operator new` in the promise type. If `alloc_count` is greater than zero after the run, HALO was not applied:
 
 ```cpp
-
 struct AllocTrackingPromise {
     static int alloc_count;
     void* operator new(std::size_t sz) {
@@ -244,15 +247,14 @@ struct AllocTrackingPromise {
     // ... rest of promise_type
 };
 // If alloc_count > 0 after running, HALO was NOT applied.
-
 ```
 
 ---
 
 ## Notes
 
-- HALO is not guaranteed by the standard — it's a permitted optimization (similar to RVO/NRVO).
-- Clang has the best HALO support; GCC and MSVC are improving.
-- Use `-O2` or higher for HALO to kick in. Debug builds always heap-allocate.
-- You can provide a custom `operator new`/`operator delete` in the promise type to use pool allocators.
-- The `promise_type::get_return_object_on_allocation_failure()` static method lets you handle allocation failures gracefully.
+- HALO is not guaranteed by the standard - it's a permitted optimization (similar to RVO/NRVO). You cannot rely on it for correctness, only for performance.
+- Clang has the best HALO support; GCC and MSVC are improving with each release.
+- Use `-O2` or higher for HALO to kick in. Debug builds always heap-allocate because the optimiser is disabled.
+- You can provide a custom `operator new`/`operator delete` in the promise type to use pool allocators, which is the practical middle ground when HALO doesn't apply but you still want to avoid the general-purpose allocator's overhead.
+- The `promise_type::get_return_object_on_allocation_failure()` static method lets you handle allocation failures gracefully instead of throwing `std::bad_alloc`.

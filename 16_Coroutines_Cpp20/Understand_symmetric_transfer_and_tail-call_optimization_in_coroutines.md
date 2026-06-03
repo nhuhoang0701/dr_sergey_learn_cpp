@@ -10,38 +10,42 @@
 
 **Symmetric transfer** is a mechanism where `await_suspend` returns a `coroutine_handle<>`, and the compiler resumes it via a **tail-call** rather than a nested call. This prevents stack growth in coroutine chains.
 
+The reason this matters so much is that coroutine chains can get long. If each `co_await` in a chain causes a new call frame to sit on the real stack, you will hit a stack overflow well before you hit any logical limit. Symmetric transfer is the fix that makes deep chains safe.
+
 ### The Problem Without Symmetric Transfer
 
-```cpp
+Without symmetric transfer, each coroutine resumes the next one as a nested function call. The old frame stays on the stack while the new coroutine runs, so the stack grows with every link in the chain:
 
+```cpp
 main() calls A.resume()
   A runs, calls B.resume() in await_suspend
     B runs, calls C.resume() in await_suspend
       C runs, calls D.resume() in await_suspend
         ... stack grows with each resume!
-
 ```
 
 ### The Solution With Symmetric Transfer
 
-```cpp
+With symmetric transfer, `await_suspend` does not call the next coroutine - it *returns* the next handle. The compiler turns that into a tail-call: the current frame is popped before the next coroutine starts. The stack stays flat no matter how long the chain is:
 
+```cpp
 main() calls A.resume()
   A suspends, await_suspend returns B's handle
-  → compiler does tail-call to B (A's frame popped)
+  -> compiler does tail-call to B (A's frame popped)
   B suspends, await_suspend returns C's handle
-  → compiler does tail-call to C (B's frame popped)
+  -> compiler does tail-call to C (B's frame popped)
   ... stack NEVER grows beyond one frame
-
 ```
 
 ### await_suspend Return Types
+
+The return type of `await_suspend` is what controls whether you get a real call, a conditional suspend, or a symmetric transfer:
 
 | Return type | Stack effect | Use case |
 | --- | --- | --- |
 | `void` | Frame stays on stack | Simple suspend |
 | `bool` | Frame stays if false | Conditional suspend |
-| `coroutine_handle<>` | **Tail-call** — frame popped | Symmetric transfer |
+| `coroutine_handle<>` | **Tail-call - frame popped** | Symmetric transfer |
 
 ---
 
@@ -49,42 +53,38 @@ main() calls A.resume()
 
 ### Q1: Explain how symmetric transfer avoids stack growth when a coroutine resumes another coroutine
 
+Here are the two patterns side by side - the difference is entirely in what `await_suspend` does. In the first version, it calls `resume()` directly, which pushes a new call frame. In the second, it just returns a handle and lets the compiler do a tail-call instead.
+
 **Without symmetric transfer (stack grows):**
 
 ```cpp
-
 void await_suspend(std::coroutine_handle<> h) {
-    other_handle.resume();  // NESTED CALL — h's frame stays on stack
+    other_handle.resume();  // NESTED CALL - h's frame stays on stack
     // When other_handle suspends, we return here
     // Stack: main -> A -> B -> C -> ...
 }
-
 ```
 
 **With symmetric transfer (stack stays flat):**
 
 ```cpp
-
 std::coroutine_handle<> await_suspend(std::coroutine_handle<> h) {
-    return other_handle;  // TAIL-CALL — h's frame is popped
+    return other_handle;  // TAIL-CALL - h's frame is popped
     // Compiler generates: "pop my frame, then jump to other_handle"
     // Stack: main -> current_coroutine (only one at a time)
 }
-
 ```
 
 **Stack comparison for 1000 chained coroutines:**
 
 ```cpp
-
 Without symmetric transfer:
-  Stack depth: O(N) — stack overflow at ~1000-10000 coroutines
-  [main][A][B][C][D]...[1000]  ← 💥 stack overflow
+  Stack depth: O(N) - stack overflow at ~1000-10000 coroutines
+  [main][A][B][C][D]...[1000]  // BAD: stack overflow
 
 With symmetric transfer:
-  Stack depth: O(1) — always constant
-  [main][current]  ← only one active frame at a time
-
+  Stack depth: O(1) - always constant
+  [main][current]  // only one active frame at a time
 ```
 
 The key insight: when `await_suspend` returns a `coroutine_handle<>`, the compiler:
@@ -95,8 +95,9 @@ The key insight: when `await_suspend` returns a `coroutine_handle<>`, the compil
 
 ### Q2: Implement a coroutine that uses symmetric transfer via `await_suspend` returning `coroutine_handle`
 
-```cpp
+This `SymTask` type wires up symmetric transfer in both directions - when you `co_await` a task it transfers into the inner task, and when the inner task finishes its `final_suspend` transfers back to the outer one. Watch how `TransferAwaiter` in `final_suspend` returns the continuation handle rather than calling `resume()` on it.
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <optional>
@@ -121,7 +122,7 @@ public:
 
                 bool await_ready() noexcept { return false; }
 
-                // Returns a handle → symmetric transfer (tail-call)
+                // Returns a handle -> symmetric transfer (tail-call)
                 std::coroutine_handle<> await_suspend(
                     std::coroutine_handle<>) noexcept {
                     return cont ? cont : std::noop_coroutine();
@@ -183,13 +184,15 @@ int main() {
 // Result: 25
 // (inner returns 10, middle returns 20, outer returns 25)
 // Stack never grew beyond 1 active coroutine frame
-
 ```
+
+The whole chain - three coroutines deep - completes with a constant stack depth. `sync_get()` does a single `resume()`, and from there the symmetric-transfer machinery takes over.
 
 ### Q3: Show that without symmetric transfer, deeply chained coroutines can cause stack overflow
 
-```cpp
+This example makes the contrast concrete. `UnsafeTask::await_suspend` calls `handle.resume()` directly - that is a real function call, so the caller's stack frame stays live while the inner coroutine runs. Nest that a few thousand times and you run out of stack space.
 
+```cpp
 #include <coroutine>
 #include <iostream>
 
@@ -211,9 +214,9 @@ struct UnsafeTask {
 
     bool await_ready() { return false; }
 
-    // NO symmetric transfer — resumes inline (stack grows!)
+    // NO symmetric transfer - resumes inline (stack grows!)
     void await_suspend(std::coroutine_handle<> caller) {
-        handle.resume();  // NESTED CALL — stack grows
+        handle.resume();  // NESTED CALL - stack grows
         caller.resume();  // return to caller after
     }
 
@@ -226,7 +229,7 @@ struct UnsafeTask {
 //     int v = co_await deep_chain(depth - 1);  // stack grows each level!
 //     co_return v + 1;
 // }
-// deep_chain(100000) → STACK OVERFLOW
+// deep_chain(100000) -> STACK OVERFLOW
 
 // With symmetric transfer (from Q2's SymTask), the same chain is safe:
 // SymTask<int> safe_chain(int depth) {
@@ -234,15 +237,16 @@ struct UnsafeTask {
 //     int v = co_await safe_chain(depth - 1);  // tail-call, O(1) stack
 //     co_return v + 1;
 // }
-// safe_chain(100000) → works fine!
+// safe_chain(100000) -> works fine!
 
 int main() {
     std::cout << "Symmetric transfer prevents stack overflow in deep chains.\n";
     std::cout << "Without it: each co_await adds a stack frame.\n";
     std::cout << "With it: await_suspend returns handle -> tail-call -> O(1) stack.\n";
 }
-
 ```
+
+The commented-out `deep_chain` examples are intentionally left as comments - they illustrate the exact scenario that crashes without symmetric transfer and works fine with it. The difference between the two versions is a single line: `void await_suspend` vs `coroutine_handle<> await_suspend`.
 
 **Summary:**
 
@@ -257,7 +261,7 @@ int main() {
 
 ## Notes
 
-- `std::noop_coroutine()` is the "do nothing" handle used when there's no continuation to transfer to.
-- Symmetric transfer is essential for production coroutine libraries (cppcoro, folly::coro, libunifex).
+- `std::noop_coroutine()` is the "do nothing" handle used when there's no continuation to transfer to. Returning it from `await_suspend` means "return control to whoever called `resume()`" - it is the safe exit ramp.
+- Symmetric transfer is essential for production coroutine libraries (cppcoro, folly::coro, libunifex). Any coroutine framework that does not use it will hit stack limits with moderately deep task chains.
 - All major compilers (GCC, Clang, MSVC) support symmetric transfer with `-O1` or higher.
 - Lewis Baker's blog posts and P0913R0 are the canonical references for this technique.

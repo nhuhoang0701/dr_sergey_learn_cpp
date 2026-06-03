@@ -9,30 +9,32 @@
 
 ## Topic Overview
 
-**Structured concurrency** ensures that child tasks cannot outlive their parent. When a parent coroutine completes or is cancelled, all child tasks are joined or cancelled first.
+**Structured concurrency** ensures that child tasks cannot outlive their parent. When a parent coroutine completes or is cancelled, all child tasks are joined or cancelled first. This is a design constraint, not a language feature - C++20 gives you the tools to enforce it, but it is up to the task type's implementation to make the guarantee hold.
+
+The reason this matters is that unstructured concurrency is a major source of use-after-free bugs and resource leaks in async code. If a child coroutine holds a reference to a local variable in the parent, and the parent exits while the child is still running, the child accesses freed stack memory. Structured concurrency eliminates this class of bug by construction.
 
 ### Unstructured vs Structured Concurrency
 
-```cpp
+The difference is stark. In the unstructured model, the parent simply fires off children and exits. In the structured model, the parent must join all children before it returns:
 
+```cpp
 UNSTRUCTURED:                    STRUCTURED:
   parent()                          parent()
     ├─ spawn(child_a)                  ├─ auto a = child_a()
     ├─ spawn(child_b)                  ├─ auto b = child_b()
-    ├─ return           ← parent     ├─ co_await a          ← joins
-    │                     exits!     ├─ co_await b          ← joins
-    │  child_a still running! ❌      └─ return              ← safe!
-    │  child_b still running! ❌
+    ├─ return           <- parent     ├─ co_await a          <- joins
+    │                     exits!     ├─ co_await b          <- joins
+    │  child_a still running!         └─ return              <- safe!
+    │  child_b still running!
     ├─ dangling references,           All children done before parent exits.
     │  leaked resources               No dangling references.
-
 ```
 
 ### Key Properties
 
 | Property | Description |
 | --- | --- |
-| **Lifetime guarantee** | Child coroutine lifetime ⊆ parent lifetime |
+| **Lifetime guarantee** | Child coroutine lifetime is contained within parent lifetime |
 | **Exception propagation** | Child exceptions propagate to parent on await |
 | **Cancellation** | Destroying parent destroys (cancels) children |
 | **No fire-and-forget** | Every task must be awaited or explicitly cancelled |
@@ -43,8 +45,9 @@ UNSTRUCTURED:                    STRUCTURED:
 
 ### Q1: Write a `Task<T>` coroutine that supports `co_await` and propagates exceptions to the awaiter
 
-```cpp
+The exception propagation mechanism is what makes this different from a basic `task<T>`. When a child coroutine throws, the exception is captured in the promise via `unhandled_exception()`. When the parent `co_await`s the child and calls `await_resume()`, that stored exception is rethrown in the parent's context. This means the parent can use a normal `try/catch` around `co_await` to handle child failures:
 
+```cpp
 #include <coroutine>
 #include <exception>
 #include <iostream>
@@ -134,19 +137,15 @@ int main() {
 }
 // Expected output:
 // Error: computation failed!
-
 ```
 
-**How this works:**
-
-- `unhandled_exception()` captures the exception in the promise via `std::current_exception()`.
-- `await_resume()` checks for the stored exception and rethrows it in the **caller's** context.
-- The caller can use `try/catch` around `co_await` to handle child failures.
+`unhandled_exception()` captures the exception in the promise via `std::current_exception()`. `await_resume()` checks for the stored exception and rethrows it in the **caller's** context. The caller can use `try/catch` around `co_await` to handle child failures just like a normal function call would.
 
 ### Q2: Implement cancellation: destroy the task's `coroutine_handle` before completion
 
-```cpp
+The beauty of the RAII-based task type is that cancellation is almost free - it falls out naturally from the destructor. If you never `co_await` a task and let it go out of scope, the destructor destroys the frame and it is as if the coroutine never ran. For tasks that have already started, cancellation is safe only at suspension points - never while the coroutine is actively executing:
 
+```cpp
 // Using Task<T> from Q1
 
 Task<int> long_computation() {
@@ -197,20 +196,20 @@ int main() {
 // Task cancelled (never ran)
 // Cancellation is safe when coroutine is suspended.
 // NEVER destroy a running coroutine!
-
 ```
 
-**Cancellation rules:**
+The cancellation rules are worth memorising because violating them is undefined behaviour:
 
 1. **Only destroy at suspension points.** A coroutine can be destroyed when it's suspended (at `initial_suspend`, `co_await`, or `final_suspend`).
 2. **Never destroy a running coroutine.** This is undefined behavior.
-3. **Lazy tasks are easy to cancel** — just destroy without ever resuming.
-4. **RAII handles cancellation naturally** — `~Task()` destroys the handle.
+3. **Lazy tasks are easy to cancel** - just destroy without ever resuming.
+4. **RAII handles cancellation naturally** - `~Task()` destroys the handle.
 
 ### Q3: Show how structured concurrency (all children joined before parent) prevents resource leaks
 
-```cpp
+This example shows the structured pattern in action: the parent creates three child tasks and awaits each one before returning. If the parent is cancelled or throws an exception before awaiting all children, the `~Task()` destructors fire in reverse order and destroy the unawaited children cleanly:
 
+```cpp
 // Using Task<T> from Q1
 #include <iostream>
 #include <string>
@@ -249,13 +248,11 @@ int main() {
 //   Child 3 running
 // Parent: all children done
 // Total: 60
-
 ```
 
-**How structured concurrency prevents leaks:**
+The structured concurrency guarantee works through the RAII ownership chain:
 
 ```cpp
-
 With structured concurrency:
   parent owns child tasks (RAII)
     │
@@ -263,22 +260,21 @@ With structured concurrency:
     ├─ If parent throws before awaiting: ~Task destroys unawaited children
     ├─ If parent is cancelled: ~Task destroys children first
     │
-    └─ Children CANNOT outlive parent → no dangling refs, no leaks
+    └─ Children CANNOT outlive parent -> no dangling refs, no leaks
 
 Without structured concurrency (fire-and-forget):
 
   - spawn(child) runs independently
   - Parent exits, child still runs
-  - Child may access destroyed parent's locals → UB
-  - Child may hold resources forever → leak
-
+  - Child may access destroyed parent's locals -> UB
+  - Child may hold resources forever -> leak
 ```
 
 ---
 
 ## Notes
 
-- Structured concurrency is **not built into C++20** — it's a design pattern enforced by the task type.
+- Structured concurrency is **not built into C++20** - it's a design pattern enforced by the task type.
 - The P2300 `std::execution` proposal formalizes structured concurrency for C++26.
 - Libraries implementing structured concurrency: cppcoro, libunifex, stdexec.
 - Key invariant: every `task<T>` must be either awaited or destroyed, never leaked.

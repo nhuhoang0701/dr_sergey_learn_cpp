@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-C++20 coroutines are **stackless** — they suspend by returning to the caller and resume later. The compiler transforms a coroutine function into a state machine.
+C++20 coroutines are **stackless** - they suspend by returning to the caller and resume later. The compiler transforms a coroutine function into a state machine. If you have used coroutines in Python or JavaScript, the concept of suspending and resuming will feel familiar; the difference in C++ is that you have explicit control over every piece of the machinery.
 
 ### Three Pillars
 
-```cpp
+Every coroutine in C++ is built from three collaborating pieces. You need to understand what each one is responsible for before the bigger picture makes sense:
 
+```cpp
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │  promise_type      │    │ coroutine_handle │    │  Awaitable       │
 │                    │    │                  │    │                  │
@@ -25,10 +26,13 @@ C++20 coroutines are **stackless** — they suspend by returning to the caller a
 │ • yield_value      │    │ • done()         │    │ • await_resume   │
 │ • unhandled_exc    │    │ • promise()      │    │                  │
 └──────────────────┘    └──────────────────┘    └──────────────────┘
-
 ```
 
+The `promise_type` is the coroutine's policy object - it decides how the coroutine starts, how it ends, and how values flow in and out. The `coroutine_handle` is a raw pointer-like token that lets you resume or destroy the coroutine from outside. The `Awaitable` is the protocol that any type must implement to be used with `co_await`.
+
 ### Coroutine Keywords
+
+Three keywords can turn an ordinary function into a coroutine. The presence of any one of them is enough:
 
 | Keyword | Triggers | Promise method called |
 | --- | --- | --- |
@@ -45,14 +49,15 @@ A function is a coroutine if it contains **any** of these keywords.
 
 ### Q1: Explain the lifecycle of a coroutine: initial_suspend, resumption, final_suspend, and destroy
 
-```cpp
+Understanding the lifecycle is the most important step. Everything else - generators, task types, symmetric transfer - is built on top of these five stages. Here is what happens in order, from the moment a caller invokes the coroutine function to the moment the frame is freed:
 
+```cpp
 Coroutine Lifecycle:
 
 [1] Caller calls coroutine function
     └── Compiler allocates coroutine frame (heap or HALO)
     └── Constructs promise_type
-    └── Calls promise.get_return_object() → return value
+    └── Calls promise.get_return_object() -> return value
 
 [2] co_await promise.initial_suspend()
     ├── suspend_always: coroutine suspends, caller gets return value (LAZY)
@@ -68,14 +73,12 @@ Coroutine Lifecycle:
     └── suspend_never:  coroutine auto-destroys (DANGEROUS: can't read result!)
 
 [5] Destruction
-    └── handle.destroy() → destroys locals, promise, frees frame
-
+    └── handle.destroy() -> destroys locals, promise, frees frame
 ```
 
-**Demonstration:**
+The demonstration below instruments each step so you can see exactly when each phase fires. Notice that `initial_suspend` returning `suspend_always` makes the coroutine lazy - the body does not run until the first explicit `resume()`:
 
 ```cpp
-
 #include <coroutine>
 #include <iostream>
 
@@ -132,13 +135,15 @@ int main() {
 // [4] final_suspend
 // --- Scope exit ---
 // [5] destroy
-
 ```
+
+Step `[5]` fires last because `final_suspend` returns `suspend_always`, so the coroutine is still "alive" (but done) when `main` returns. The destructor of `LifecycleDemo` calls `handle.destroy()` to clean up.
 
 ### Q2: Write a minimal generator coroutine that yields values one at a time
 
-```cpp
+A generator is one of the simplest and most useful coroutine patterns. The idea is that the coroutine body is like a function that can pause and hand back a value mid-execution, then pick up exactly where it left off when the caller asks for the next value. `co_yield` is the keyword that does both: it stores the value in the promise and suspends the coroutine.
 
+```cpp
 #include <coroutine>
 #include <iostream>
 
@@ -214,13 +219,15 @@ int main() {
 // Expected output:
 // Fibonacci: 0 1 1 2 3 5 8 13 21 34
 // Range 5..10: 5 6 7 8 9
-
 ```
+
+Each call to `next()` resumes the coroutine and runs it until the next `co_yield`. The value lands in `current_value` inside the promise, and the caller reads it back through `value()`. Because `final_suspend` returns `suspend_always`, the frame stays alive between calls and is only freed when the `Generator` destructor runs.
 
 ### Q3: Show how `co_await`, `co_yield`, and `co_return` differ in their semantics
 
-```cpp
+All three keywords relate to suspension, but they serve different purposes. The demo below uses all three in one coroutine so you can see exactly what each one does to control flow:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <string>
@@ -297,8 +304,9 @@ int main() {
 // Resumed after second co_yield
 // Final: 42
 // Done: 1
-
 ```
+
+The important distinction to take away is this: `co_await` waits for something outside the coroutine (whatever the awaitable says to do), `co_yield` produces a value to the caller and suspends, and `co_return` terminates the coroutine permanently with an optional final value. After `co_return`, `handle.done()` becomes `true` and calling `resume()` again would be undefined behaviour.
 
 **Comparison:**
 
@@ -317,4 +325,4 @@ int main() {
 - `co_yield x` is syntactic sugar for `co_await promise.yield_value(x)`.
 - The return type's `promise_type` nested type is found by the compiler automatically.
 - `coroutine_handle<promise_type>` is typed; `coroutine_handle<>` (= `coroutine_handle<void>`) is type-erased.
-- `handle.done()` returns `true` after `final_suspend`—never call `resume()` on a done handle.
+- `handle.done()` returns `true` after `final_suspend` - never call `resume()` on a done handle.

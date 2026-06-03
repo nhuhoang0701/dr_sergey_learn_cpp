@@ -8,11 +8,15 @@
 
 ## Topic Overview
 
-Every coroutine needs a **coroutine frame** — a compiler-generated object that holds the promise, local variables, suspension-point bookkeeping, and copies/moves of function parameters. By default the compiler allocates this frame with `::operator new`. You can override this by defining `promise_type::operator new` (and optionally `operator delete`), giving you full control over where coroutine frames live.
+Every coroutine needs a **coroutine frame** - a compiler-generated object that holds the promise, local variables, suspension-point bookkeeping, and copies/moves of function parameters. By default the compiler allocates this frame with `::operator new`. You can override this by defining `promise_type::operator new` (and optionally `operator delete`), giving you full control over where coroutine frames live.
+
+The reason this matters is that coroutines can be very short-lived and numerous - a high-performance network server might create thousands of them per second. Each default `::operator new` call hits the global heap allocator, which means lock contention, fragmentation, and cache misses. By routing allocations through a monotonic arena or a PMR resource, you can make coroutine creation essentially free.
 
 The compiler first attempts to call a `promise_type::operator new` overload that takes the **coroutine's parameters** as extra arguments (after the required `std::size_t`). If no such overload exists, it falls back to `promise_type::operator new(std::size_t)`, then to global `::operator new`. This parameter-forwarding mechanism enables **stateful allocators**: the coroutine function receives an allocator argument, and the promise's `operator new` uses it.
 
-**Heap Allocation eLision Optimization (HALO):** compilers may elide the dynamic allocation entirely when they can prove the coroutine's lifetime is enclosed in the caller's frame. This typically requires the coroutine to be **inlined** and the handle to never escape. When HALO fires, `operator new` is never called — even if you defined it. As of 2025, HALO is applied inconsistently across compilers; always measure.
+**Heap Allocation eLision Optimization (HALO):** compilers may elide the dynamic allocation entirely when they can prove the coroutine's lifetime is enclosed in the caller's frame. This typically requires the coroutine to be **inlined** and the handle to never escape. When HALO fires, `operator new` is never called - even if you defined it. As of 2025, HALO is applied inconsistently across compilers; always measure.
+
+Here is a summary of how the compiler resolves where to allocate the frame:
 
 | Allocation path | Resolves to |
 | --- | --- |
@@ -21,17 +25,17 @@ The compiler first attempts to call a `promise_type::operator new` overload that
 | Neither exists | `::operator new(size)` |
 | HALO applies | No allocation at all |
 
-```cpp
+The decision tree looks like this - read it top to bottom to understand which path the compiler takes:
 
+```cpp
 Coroutine call
     │
-    ├──[HALO possible?]── yes ──▶ frame on caller's stack (zero alloc)
+    ├──[HALO possible?]── yes ──> frame on caller's stack (zero alloc)
     │
-    └──[HALO not possible]──▶ promise_type::operator new(size, args...)
+    └──[HALO not possible]──> promise_type::operator new(size, args...)
                                   │
-                                  ├── found ──▶ custom allocator
-                                  └── not found ──▶ ::operator new(size)
-
+                                  ├── found ──> custom allocator
+                                  └── not found ──> ::operator new(size)
 ```
 
 ---
@@ -40,8 +44,9 @@ Coroutine call
 
 ### Q1: Implement `promise_type::operator new/delete` using a monotonic arena allocator. Show the allocation being routed through the arena
 
-```cpp
+A monotonic arena is the simplest and most cache-friendly allocator you can use for coroutines. It bumps a pointer forward on each allocation and reclaims everything at once with a single reset. Here is what that looks like wired into a promise type:
 
+```cpp
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
@@ -124,17 +129,17 @@ int main() {
 // === bigger_coro ===
 //   arena alloc: 592 bytes
 //   arena dealloc (no-op)
-
 ```
 
-**Insight:** The frame size includes compiler bookkeeping (suspension index, alignment padding) in addition to local variables. The exact size is implementation-defined and varies between compilers.
+Notice how `bigger_coro` uses far more frame space - the `char buf[256]` and `int arr[64]` both live in the frame, and the compiler adds its own bookkeeping on top. The exact size is implementation-defined and varies between compilers, but the point is you are seeing the real allocation size and routing it entirely away from the global heap.
 
 ---
 
 ### Q2: Use parameter-forwarding `operator new` to accept a stateful allocator passed as the first coroutine argument
 
-```cpp
+This is the more powerful version of the trick. Instead of using a global arena, the coroutine's caller passes in a memory resource directly, and the promise's `operator new` receives that same argument forwarded by the compiler. The key insight is that the compiler will pass every coroutine argument (after the mandatory `size_t`) through to your `operator new` overload - so if the first parameter is a `pmr::memory_resource*`, your `operator new` sees it too:
 
+```cpp
 #include <coroutine>
 #include <cstdio>
 #include <memory_resource>
@@ -201,10 +206,9 @@ int main() {
     auto t = compute(&pool, 10, 32);
     std::printf("result = %d\n", t.get());  // 42
 }
-
 ```
 
-**Parameter-forwarding lookup order:**
+The lookup order the compiler follows when choosing an `operator new` overload is:
 
 | Candidate | Signature |
 | --- | --- |
@@ -212,14 +216,15 @@ int main() {
 | 2nd | `operator new(size_t)` |
 | 3rd | `::operator new(size_t)` |
 
-The compiler tries the most-specific overload first, matching the full parameter list.
+The compiler tries the most-specific overload first, matching the full parameter list. If the specific one is not found, it falls back down the chain.
 
 ---
 
 ### Q3: When does HALO (Heap Allocation eLision Optimization) kick in, and how can you verify whether allocation was elided
 
-```cpp
+HALO is the coroutine equivalent of NRVO - the compiler can prove that the coroutine frame's lifetime fits entirely inside the caller's frame, so it stack-allocates the frame instead of heap-allocating it. The reason this trips people up is that you cannot rely on it; it is a quality-of-implementation optimization, not a guarantee. The right way to find out whether HALO fired is to instrument `operator new` with a counter and count calls at runtime under optimization:
 
+```cpp
 #include <coroutine>
 #include <cstdio>
 #include <utility>
@@ -278,27 +283,26 @@ int main() {
     // With HALO:  Total allocations: 1 (only outer)
     // Without HALO: Total allocations: 2 (inner + outer)
 }
-
 ```
 
-**HALO conditions (necessary but not sufficient):**
+The conditions that must hold for HALO to have a chance are:
 
 | Condition | Why |
 | --- | --- |
 | Coroutine handle does not escape the caller | Compiler must prove lifetime containment |
 | Caller is itself inlined or has visible frame | Frame can be stack-allocated |
 | `operator new` is not `noexcept(false)` with side effects | Elision changes observable behaviour |
-| Optimisation level ≥ `-O2` | HALO is an optimisation, not guaranteed |
+| Optimisation level >= `-O2` | HALO is an optimisation, not guaranteed |
 
-**Verification strategy:** Instrument `operator new` with a counter (as above) and compile at `-O2`. Compare allocation counts. Alternatively, inspect assembly for `operator new` calls.
+The verification strategy is exactly what the code above does: instrument `operator new` with a counter and compile at `-O2`. Compare allocation counts. Alternatively, inspect the assembly for `operator new` call sites.
 
 ---
 
 ## Notes
 
-- `promise_type::operator new` receives the **exact frame size** computed by the compiler — you cannot influence this size, only where it's allocated.
+- `promise_type::operator new` receives the **exact frame size** computed by the compiler - you cannot influence this size, only where it's allocated.
 - The sized `operator delete(void*, std::size_t)` variant is preferred when available, matching the frame size passed to `operator new`.
 - If `operator new` returns `nullptr` (for the `nothrow` overload `operator new(size_t, nothrow_t)`), the coroutine body is never entered and `get_return_object()` is never called. The caller receives a default-constructed return object.
 - Monotonic arenas are ideal for coroutine-heavy workloads (e.g., network servers) where all coroutines in a batch complete together. Reset the arena between batches.
-- HALO is **not** mandated by the standard — it is a quality-of-implementation optimisation. Do not design correctness around it; design *performance* around it.
+- HALO is **not** mandated by the standard - it is a quality-of-implementation optimisation. Do not design correctness around it; design *performance* around it.
 - To force stack allocation when HALO fails, consider using `alloca` (non-standard) or `std::pmr::monotonic_buffer_resource` backed by a stack array, as shown in Q2.

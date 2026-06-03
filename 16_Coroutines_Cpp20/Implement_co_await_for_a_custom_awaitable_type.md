@@ -9,35 +9,39 @@
 
 ## Topic Overview
 
-Any type can be made **awaitable** by implementing three methods: `await_ready()`, `await_suspend()`, and `await_resume()`. The compiler uses these to control suspension and resumption at each `co_await` expression.
+Any type can be made **awaitable** by implementing three methods: `await_ready()`, `await_suspend()`, and `await_resume()`. The compiler uses these to control suspension and resumption at each `co_await` expression. You don't need to inherit from any interface - just provide those three methods, and `co_await yourType` will work.
 
 ### Awaitable Protocol
 
-```cpp
+Here is the exact flow the compiler follows each time it hits a `co_await` expression. Step through this carefully the first time, because once it clicks it makes everything about custom awaitables obvious:
 
+```cpp
 co_await expr;
 
-1. await_ready()  ── true ─→ skip suspension, go to step 3
+1. await_ready()  -- true -> skip suspension, go to step 3
 
-       │
+       |
        false
-       │
+       |
 
 2. await_suspend(handle)
 
-       │
-       ├─ void: always suspend
-       ├─ bool: suspend if true, resume if false
-       └─ coroutine_handle<>: symmetric transfer to that handle
-       │
-       [SUSPENDED — wait for resume]
-       │
+       |
+       +- void: always suspend
+       +- bool: suspend if true, resume if false
+       +- coroutine_handle<>: symmetric transfer to that handle
+       |
+       [SUSPENDED -- wait for resume]
+       |
 
-3. await_resume()  ─→ result of co_await expression
-
+3. await_resume()  -> result of co_await expression
 ```
 
+Step 1 is a fast-path check - if the result is already available, skip the whole suspension machinery. Step 2 is where you hand off control to whatever async mechanism you're using (a thread pool, an I/O event loop, a timer, etc.). Step 3 is what the `co_await` expression evaluates to - the return value of `await_resume()` becomes the value assigned to the variable on the left of `=`.
+
 ### await_suspend Return Types
+
+The return type of `await_suspend` is more flexible than people expect. Here is what each option does:
 
 | Return type | Behavior |
 | --- | --- |
@@ -45,14 +49,17 @@ co_await expr;
 | `bool` | Suspends if `true`, resumes immediately if `false` |
 | `coroutine_handle<>` | Symmetric transfer to the returned handle |
 
+The `bool` form is handy for "try-and-maybe-suspend" patterns - think of a mutex that might be uncontested. The `coroutine_handle<>` form (symmetric transfer) is an advanced technique that avoids stack growth when chaining coroutines.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Write an awaitable with `await_ready`, `await_suspend`, and `await_resume`
 
-```cpp
+This is the simplest possible end-to-end example - a simulated network fetch. Every step of the awaitable protocol is printed so you can trace exactly when each method fires:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <string>
@@ -107,20 +114,15 @@ int main() {
 //   await_suspend: starting fetch for https://example.com
 //   await_resume: returning result
 // Got: Data from https://example.com
-
 ```
 
-**How this works:**
-
-- `await_ready()` returns `false` → coroutine will suspend.
-- `await_suspend(handle)` simulates the async work and calls `handle.resume()`.
-- `await_resume()` returns the result, which becomes the value of the `co_await` expression.
-- The three methods form the complete awaitable protocol.
+Notice how the flow matches the protocol diagram exactly: `await_ready` returns `false`, so `await_suspend` runs, which resumes the coroutine, which triggers `await_resume`, whose return value becomes the string assigned to `data`. The three methods form one complete, composable unit.
 
 ### Q2: Show how `await_ready` returning `true` avoids suspension entirely
 
-```cpp
+This example adds a cache layer. When the key is already cached, `await_ready` returns `true` and the entire suspension mechanism - `await_suspend`, the context switch, the resume - is skipped. You pay nothing for the fast path:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <optional>
@@ -152,10 +154,10 @@ struct CachedFetch {
         auto it = cache.find(key);
         if (it != cache.end()) {
             cached_result = it->second;
-            std::cout << "  [" << key << "] Cache HIT — no suspension\n";
+            std::cout << "  [" << key << "] Cache HIT - no suspension\n";
             return true;   // ready! skip await_suspend entirely
         }
-        std::cout << "  [" << key << "] Cache MISS — must suspend\n";
+        std::cout << "  [" << key << "] Cache MISS - must suspend\n";
         return false;      // not ready, will suspend
     }
 
@@ -171,10 +173,10 @@ struct CachedFetch {
 };
 
 Task demo() {
-    auto v1 = co_await CachedFetch{"key1"};  // cache hit — no suspension
+    auto v1 = co_await CachedFetch{"key1"};  // cache hit - no suspension
     std::cout << "v1 = " << v1 << '\n';
 
-    auto v2 = co_await CachedFetch{"key2"};  // cache miss — suspends
+    auto v2 = co_await CachedFetch{"key2"};  // cache miss - suspends
     std::cout << "v2 = " << v2 << '\n';
 
     auto v3 = co_await CachedFetch{"key3"};  // cache hit
@@ -185,26 +187,22 @@ int main() {
     demo();
 }
 // Expected output:
-//   [key1] Cache HIT — no suspension
+//   [key1] Cache HIT - no suspension
 // v1 = cached_value_1
-//   [key2] Cache MISS — must suspend
+//   [key2] Cache MISS - must suspend
 //   [key2] Fetching...
 // v2 = fetched_key2
-//   [key3] Cache HIT — no suspension
+//   [key3] Cache HIT - no suspension
 // v3 = cached_value_3
-
 ```
 
-**Why this matters:**
-
-- When `await_ready()` returns `true`, `await_suspend()` is **never called**.
-- The coroutine proceeds directly to `await_resume()` without suspension.
-- This pattern is essential for caching: avoid suspension overhead when the result is already available.
+When `await_ready()` returns `true`, `await_suspend()` is **never called**. The coroutine proceeds directly to `await_resume()` without suspending at all. This pattern is essential for caching: if the result is already there, don't pay the cost of suspension overhead.
 
 ### Q3: Implement a thread-hopping awaitable that resumes the coroutine on a different thread
 
-```cpp
+This is where awaitables start doing genuinely interesting work. The trick is that `await_suspend` receives the coroutine's handle, and whoever calls `handle.resume()` is whoever the coroutine continues on. Hand that handle to a new thread, and the coroutine "hops":
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <thread>
@@ -272,21 +270,15 @@ int main() {
 // Starting on thread: 1
 // Now on thread:     2
 // Now on thread:     3
-
 ```
 
-**How this works:**
-
-- `await_suspend` receives the coroutine handle and launches a new thread.
-- The new thread calls `handle.resume()`, so the coroutine continues on that thread.
-- Each `co_await ResumeOnNewThread{}` "hops" the coroutine to a different thread.
-- In production, use an executor or thread pool instead of raw `std::thread`.
+`await_suspend` receives the handle and launches a new thread. That thread calls `handle.resume()`, so the coroutine picks up exactly where it left off - but now it's running on a different thread. Each `co_await ResumeOnNewThread{}` hops the execution context. In production code you'd use an executor or thread pool rather than raw `std::thread`, but the underlying mechanism is identical.
 
 ---
 
 ## Notes
 
-- The compiler looks for `await_ready`/`await_suspend`/`await_resume` by name — no base class or interface needed.
-- You can also make a type awaitable by providing `operator co_await()` as a member or free function.
-- `await_suspend` returning `bool` is useful for "try to lock" patterns: suspend only if the lock isn't available.
-- **Thread safety:** be careful with `handle.resume()` — the coroutine must not be resumed concurrently.
+- The compiler looks for `await_ready`/`await_suspend`/`await_resume` by name - no base class or interface needed.
+- You can also make a type awaitable by providing `operator co_await()` as a member or free function, which is useful when you want to keep the awaitable protocol separate from the type itself.
+- `await_suspend` returning `bool` is useful for "try to lock" patterns: suspend only if the lock isn't available. This avoids unnecessary context switches when the resource is free.
+- **Thread safety:** be careful with `handle.resume()` - the coroutine must not be resumed concurrently from two places at once, as that is undefined behavior.
