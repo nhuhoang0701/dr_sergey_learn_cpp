@@ -9,20 +9,22 @@
 
 ## Topic Overview
 
-Before C++23, recursive lambdas required either `std::function` (with overhead) or passing the lambda to itself as an argument (awkward). C++23's **deducing-this** (`this auto& self`) gives lambdas a direct way to refer to themselves.
+Recursive lambdas have always been awkward in C++. The fundamental problem is that a lambda cannot refer to itself by name, because at the point where the lambda body is written, the variable holding the lambda does not exist yet. Before C++23, you had two workarounds: use `std::function` (which works but carries real runtime overhead), or use the "pass-self" trick (which works and is zero-overhead, but requires an ugly double-call syntax at the call site).
+
+C++23's **deducing-this** feature solves this cleanly. You add `this auto& self` as the first explicit parameter, and then use `self(...)` to recurse. The compiler deduces the type of the closure and wires everything up - no `std::function`, no weird calling conventions, and zero overhead.
 
 ```cpp
-
-// C++23: deducing-this — clean and zero-overhead!
+// C++23: deducing-this - clean and zero-overhead!
 auto fib = [](this auto& self, int n) -> int {
     return n <= 1 ? n : self(n - 1) + self(n - 2);
 };
 
 fib(10);  // 55
-
 ```
 
 ### Comparison
+
+The table below summarizes what you had before C++23 and why deducing-this is the preferred approach going forward.
 
 | Approach | Overhead | Syntax | Standard |
 | --- | --- | --- | --- |
@@ -37,10 +39,9 @@ fib(10);  // 55
 
 ### Q1: Write a recursive Fibonacci lambda using deducing-this without `std::function`
 
-**Solution:**
+The `this auto& self` parameter is the key. When you write it, you are telling the compiler: "give me a reference to the closure object itself as my first parameter, and deduce its type." From inside the lambda body, calling `self(n - 1)` is just a normal function call on the closure - the compiler handles all the type machinery behind the scenes.
 
 ```cpp
-
 #include <iostream>
 
 int main() {
@@ -96,29 +97,29 @@ int main() {
 //
 //   12! = 479001600
 //   Inorder: 4 2 5 1 3
-
 ```
+
+Notice that `fib(10)` at the call site looks exactly like a normal function call - you do not pass the lambda to itself or do anything special. The `this auto& self` parameter is the explicit object parameter and the compiler supplies it automatically when you invoke the lambda.
 
 ---
 
 ### Q2: Explain why `std::function` for recursion adds overhead compared to deducing-this
 
-**Solution:**
+This is worth understanding concretely, not just accepting as "std::function is slow." The overhead comes from **type erasure**: `std::function` stores any callable behind a uniform interface, which requires an indirection (a virtual-call-like dispatch) on every invocation. For a recursive function called millions of times, that indirection adds up. The deducing-this version is a direct call to a concrete closure type, which the optimizer can inline completely.
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <chrono>
 
 int main() {
-    // ─── Approach 1: std::function (C++11) ───
+    // Approach 1: std::function (C++11)
     std::function<long long(int)> fib_func;
     fib_func = [&fib_func](int n) -> long long {
         return n <= 1 ? n : fib_func(n - 1) + fib_func(n - 2);
     };
 
-    // ─── Approach 2: deducing-this (C++23) ───
+    // Approach 2: deducing-this (C++23)
     auto fib_self = [](this auto& self, int n) -> long long {
         return n <= 1 ? n : self(n - 1) + self(n - 2);
     };
@@ -155,24 +156,26 @@ int main() {
 // Expected output:
 //   std::function fib(30): 832040
 //   deducing-this fib(30): 832040
-//   std::function: 9227465 (~50000 us)   ← SLOW
-//   deducing-this: 9227465 (~20000 us)   ← ~2-3x FASTER
+//   std::function: 9227465 (~50000 us)   <- SLOW
+//   deducing-this: 9227465 (~20000 us)   <- ~2-3x FASTER
 //   sizeof(fib_func): 32 bytes (heap alloc)
 //   sizeof(fib_self): 1 bytes (stack only)
-
 ```
+
+The `sizeof` results tell the whole story. `fib_self` is 1 byte - the minimum size for any C++ object - because the closure has no data members and no captures. `fib_func` is 32 bytes just for the wrapper, and that is before any heap allocation for the captured reference to itself.
 
 ---
 
 ### Q3: Show the Y-combinator for recursive lambdas in C++14 and compare with C++23
 
-**Solution:**
+The Y-combinator is a classic computer science concept: a higher-order function that gives a function the ability to recurse without the function needing to know its own name. In C++14, it was the cleanest zero-overhead alternative to `std::function`. Understanding it is useful both as background and because you will see it in codebases written before C++23.
+
+The reason this trips people up is that it feels circular at first. The trick is that `YCombinator::operator()` passes `*this` as the first argument, so the inner function receives the combinator itself and can call it recursively.
 
 ```cpp
-
 #include <iostream>
 
-// ─── C++14: Y-combinator ───
+// C++14: Y-combinator
 // A fixed-point combinator that enables recursion without naming:
 template <typename F>
 struct YCombinator {
@@ -191,28 +194,28 @@ YCombinator<std::decay_t<F>> make_y(F&& f) {
 }
 
 int main() {
-    // ─── C++14: pass-self trick ───
+    // C++14: pass-self trick
     auto fib_14 = [](auto& self, int n) -> int {
         return n <= 1 ? n : self(self, n - 1) + self(self, n - 2);
     };                                  // ^^^^ must pass self twice!
     // Must call: fib_14(fib_14, 10)
     std::cout << "C++14 self-pass: fib(10) = " << fib_14(fib_14, 10) << "\n";
 
-    // ─── C++14: Y-combinator wraps the self-passing ───
+    // C++14: Y-combinator wraps the self-passing
     auto fib_y = make_y([](auto& self, int n) -> int {
         return n <= 1 ? n : self(n - 1) + self(n - 2);
     });                              // ^^^^ clean call syntax
     // Clean call: fib_y(10)
     std::cout << "C++14 Y-comb:    fib(10) = " << fib_y(10) << "\n";
 
-    // ─── C++23: deducing-this (cleanest!) ───
+    // C++23: deducing-this (cleanest!)
     auto fib_23 = [](this auto& self, int n) -> int {
         return n <= 1 ? n : self(n - 1) + self(n - 2);
     };
     // Clean call: fib_23(10)
     std::cout << "C++23 deducing:  fib(10) = " << fib_23(10) << "\n";
 
-    // ─── Comparison ───
+    // Comparison
     std::cout << "\n";
     std::cout << "Approach         | Syntax at call-site | Overhead\n";
     std::cout << "---------------- | ------------------- | --------\n";
@@ -226,8 +229,9 @@ int main() {
 //   C++14 Y-comb:    fib(10) = 55
 //   C++23 deducing:  fib(10) = 55
 // ...
-
 ```
+
+The Y-combinator and deducing-this achieve the same result with the same overhead, but deducing-this is built into the language so there is no boilerplate struct to maintain. If you are on C++23, use deducing-this. If you are stuck on C++14/17, the Y-combinator gives you the clean call syntax without the `std::function` penalty.
 
 ---
 

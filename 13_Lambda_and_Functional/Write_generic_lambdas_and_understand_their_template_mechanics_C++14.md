@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-C++14 **generic lambdas** use `auto` parameters, which make the compiler generate a **template `operator()`** inside the closure type. Each `auto` parameter becomes an independent template parameter.
+C++14 **generic lambdas** let you write a single lambda that works with any type, just by using `auto` as the parameter type. Under the hood, the compiler generates a closure type with a **templated `operator()`** - each `auto` parameter becomes its own independent template parameter.
+
+Here is the key mental model: when you write `[](auto x, auto y)`, you are not writing a regular function. You are writing a blueprint. Every time you call that lambda with different types, the compiler stamps out a new instantiation of `operator()` for that specific combination of types. It is exactly as if you had written a struct with a template call operator yourself:
 
 ```cpp
-
 // This generic lambda:
 auto add = [](auto x, auto y) { return x + y; };
 
@@ -21,7 +22,6 @@ struct __add_lambda {
     template <typename T, typename U>
     auto operator()(T x, U y) const { return x + y; }
 };
-
 ```
 
 Each `auto` is a **separate** template parameter, so `add(1, 2.5)` deduces `T=int, U=double`.
@@ -32,10 +32,9 @@ Each `auto` is a **separate** template parameter, so `add(1, 2.5)` deduces `T=in
 
 ### Q1: Write a generic lambda and explain the generated `operator()`
 
-**Solution:**
+The interesting thing to watch here is not just that the lambda works for multiple types - it is that each `auto` parameter is truly independent. Two `auto` parameters mean two separate template parameters, so you can mix and match types freely in a single call.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <type_traits>
@@ -79,17 +78,17 @@ int main() {
 //   T1=i T2=d   (MSVC: T1=int T2=double)
 //   T1=d T2=i
 //   1-2.500000
-
 ```
+
+Notice how `show_types(42, 3.14)` and `show_types(3.14, 42)` produce reversed type names - that is the independence at work. Each call site drives its own deduction completely from scratch.
 
 ---
 
 ### Q2: Show how a generic lambda differs from a function template in overload resolution
 
-**Solution:**
+This is one of the subtler distinctions in C++. A function template and a generic lambda both achieve type-generic behavior, but they behave very differently when you try to use them as values or pass them around. The reason this trips people up is that a function template is not an object - it is a recipe for generating functions. A lambda, even a generic one, is a concrete object you can store, copy, and pass directly.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -103,18 +102,18 @@ void process(T x) { std::cout << "template: " << x << "\n"; }
 void process(int x) { std::cout << "int overload: " << x << "\n"; }
 
 int main() {
-    // ─── Function template: participates in overload resolution ───
+    // Function template: participates in overload resolution
     process(42);          // calls int overload (exact match preferred)
     process(3.14);        // calls template<double>
     process("hello");     // calls template<const char*>
 
-    // ─── Generic lambda: NOT a template in the classic sense ───
+    // Generic lambda: NOT a template in the classic sense
     auto generic = [](auto x) { std::cout << "lambda: " << x << "\n"; };
     generic(42);          // instantiates operator()(int)
     generic(3.14);        // instantiates operator()(double)
 
     // Key differences:
-    // 1. Lambda has a SINGLE object — no overload set
+    // 1. Lambda has a SINGLE object - no overload set
     //    You can't add overloads to a lambda
     //    (but see overloaded pattern from earlier topic)
 
@@ -142,17 +141,17 @@ int main() {
 //   lambda: 3.14
 //   lambda: 42
 //   fp2(5): 10
-
 ```
+
+The bottom line is that a generic lambda gives you the type-flexibility of a template while still being a first-class object. That is exactly why you can pass `generic` directly to `apply`, but you cannot do the same with a bare function template name like `process`.
 
 ---
 
 ### Q3: Use a generic lambda as a comparator for `std::sort` with multiple element types
 
-**Solution:**
+One place where generic lambdas shine in everyday code is comparators. You write one lambda, and it just works for `int`, `double`, `std::string`, or anything else that supports the relevant operator. This example shows a single `descending` comparator reused across multiple container types:
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -208,15 +207,16 @@ int main() {
 //   strings: date cherry banana apple
 //   by length: cherry banana apple date
 //   by abs: 1 2 -3 -5 7 -8
-
 ```
+
+Notice that `const auto&` is the right choice when you want to avoid unnecessary copies - it becomes `template<class T> operator()(const T&, const T&) const`. The `by_abs` comparator uses plain `auto` (by value) since the elements are cheap to copy integers.
 
 ---
 
 ## Notes
 
 - **Each `auto`** = independent template parameter. `[](auto a, auto b)` has a **two-parameter** template `operator()`.
-- **`const auto&`** = `template<class T> operator()(const T&)` — avoids copies.
+- **`const auto&`** = `template<class T> operator()(const T&)` - avoids copies.
 - **C++20 upgrade:** For constraints, use `[](std::integral auto x)` or template lambdas `[]<typename T>(T x) requires ...`.
 - **Stateless generic lambdas** cannot convert to function pointers (because which instantiation?).
 - **`decltype(lambda)`** is a unique unnamed type for each lambda expression, even identical-looking ones.

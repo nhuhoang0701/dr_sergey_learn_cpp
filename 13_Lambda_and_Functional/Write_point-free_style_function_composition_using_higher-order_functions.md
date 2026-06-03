@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-**Point-free style** (also called tacit programming) defines functions without explicitly mentioning their arguments. Instead of `[](int x) { return f(g(x)); }`, you write `compose(f, g)`. This is natural in Haskell/F# but requires explicit combinators in C++.
+**Point-free style** (also called tacit programming) is a way of defining functions without ever explicitly naming their arguments. Instead of writing `[](int x) { return f(g(x)); }`, you write `compose(f, g)` and let the composition machinery handle passing the argument along. The name comes from mathematics, where a "point" means an argument value - so "point-free" means the definition never mentions a specific point.
+
+This style is natural and built-in in languages like Haskell and F#. In C++ you have to build the combinators yourself, but the result is equally expressive and the compiler inlines everything to zero overhead.
 
 ```cpp
-
 // Pointed style (mentions arguments):
 auto process = [](int x) { return to_string(negate(double_it(x))); };
 
@@ -20,7 +21,6 @@ auto process = [](int x) { return to_string(negate(double_it(x))); };
 auto process = compose(to_string, compose(negate, double_it));
 // or with pipeline:
 auto process = pipeline(double_it, negate, to_string);
-
 ```
 
 ---
@@ -29,15 +29,14 @@ auto process = pipeline(double_it, negate, to_string);
 
 ### Q1: Implement `compose(f, g)` that returns `[](auto x) { return f(g(x)); }`
 
-**Solution:**
+The `compose` function captures both callables and returns a new lambda that applies them in right-to-left order, matching the mathematical convention for function composition. The variadic `compose_all` extends this to any number of functions by recursing on the tail - it builds the composition chain at compile time, so there is no runtime overhead from the recursion.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <cmath>
 
-// compose(f, g)(x) = f(g(x))  — right-to-left (mathematical convention)
+// compose(f, g)(x) = f(g(x))  - right-to-left (mathematical convention)
 template <typename F, typename G>
 auto compose(F f, G g) {
     return [f, g](auto&&... args) -> decltype(auto) {
@@ -81,17 +80,17 @@ int main() {
 //   26
 //   Result: 10.000000
 //   49
-
 ```
+
+Notice that in the definition of `abs_squared`, no variable name like `x` appears on the left-hand side at all. You are describing the shape of the computation - "square after absolute value" - without saying what you are going to apply it to. That is the point-free style in practice.
 
 ---
 
 ### Q2: Use compose to build a string transformation pipeline without intermediate variables
 
-**Solution:**
+Here the point-free style pays off in readability. A `format_tag` function that trims, uppercases, truncates, and wraps in brackets would normally be a multi-line function with intermediate variables. Written as a pipeline, the definition of `format_tag` reads almost like a sentence: trim leading whitespace, then uppercase, then truncate to 10, then add brackets.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <algorithm>
@@ -148,17 +147,17 @@ int main() {
 //   [HELLO WORL]
 //   [SHORT]
 //   [THIS IS A ]
-
 ```
+
+Each step is a small, independently testable function. The `format_tag` pipeline is simply the composition of those steps. If requirements change - say you need to strip trailing whitespace too - you add one more step to the pipeline without touching the others.
 
 ---
 
 ### Q3: Explain why C++ lacks built-in composition and what `ranges::views` fills
 
-**Solution:**
+This question gets at a genuine limitation of C++ compared to functional languages, and it is worth understanding why the limitation exists rather than just accepting it. The short answer is that C++ functions are not first-class values in the same way objects are. The longer answer is in the comments.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <ranges>
@@ -224,8 +223,9 @@ int main() {
 //   F#          f >> g        x |> f |> g
 //   C++ ranges  N/A           r | f | g
 //   C++ manual  compose(f,g)  pipe(f,g)(x)
-
 ```
+
+The `rv::transform(&std::string::size)` line is a genuinely point-free expression: a member function pointer used as a projection, with no lambda argument in sight. The `|` operator for ranges is the closest thing C++ has to a built-in pipeline operator, and it only works because range adaptors were specifically designed as objects that overload `operator|`.
 
 ---
 
@@ -234,5 +234,5 @@ int main() {
 - **`operator|` for ranges** is the closest C++ gets to built-in pipeline composition.
 - **Boost.Hof** and **range-v3** provide `compose`, `partial`, and other combinators.
 - **C++23 `std::bind_back`** helps with partial application, moving toward more point-free style.
-- **Limitation:** C++ compose requires concrete callable types — you can't compose overload sets or function templates without wrapping them in lambdas first.
-- **Performance:** Composition via lambdas is zero-overhead — the compiler inlines everything.
+- **Limitation:** C++ compose requires concrete callable types - you can't compose overload sets or function templates without wrapping them in lambdas first.
+- **Performance:** Composition via lambdas is zero-overhead - the compiler inlines everything.

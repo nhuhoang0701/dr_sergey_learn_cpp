@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-In C++20, **member pointers** (both data members and member functions) can be used directly as callables with `views::transform`, `std::invoke`, and algorithm projections. This eliminates the need for trivial lambdas like `[](const auto& p) { return p.name; }`.
+In C++20, **member pointers** - both data members and member functions - can be used directly as callables with `views::transform`, `std::invoke`, and algorithm projections. This eliminates the need for trivial one-liner lambdas like `[](const auto& p) { return p.name; }` that exist for no other purpose than to extract a single field.
+
+The key insight is that `std::invoke(&Person::name, p)` returns `p.name`. Because ranges algorithms and views internally use `std::invoke`, they can accept a member pointer anywhere they accept a callable.
 
 ```cpp
-
 struct Person { std::string name; int age; };
 std::vector<Person> people = {{"Alice", 30}, {"Bob", 25}};
 
@@ -23,8 +24,9 @@ for (auto& n : people | views::transform([](auto& p) { return p.name; }))
 // Member pointer (clean!):
 for (auto& n : people | views::transform(&Person::name))
     std::cout << n;
-
 ```
+
+Both lines do the same thing. The member pointer version is shorter and signals the intent more directly - you're projecting onto `name`, not writing an anonymous function that happens to access `name`.
 
 ---
 
@@ -32,10 +34,9 @@ for (auto& n : people | views::transform(&Person::name))
 
 ### Q1: Project a range of structs to a member using `views::transform(&T::member)`
 
-**Solution:**
+Notice how the same `&Product::name` member pointer works with both a view pipeline and the projection parameter of `std::ranges::max` and `std::ranges::sort`. You write the projection once and it works everywhere.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -59,7 +60,7 @@ int main() {
         {"Monitor", 449.99, 10}
     };
 
-    // Project to names — NO lambda needed!
+    // Project to names - NO lambda needed!
     std::cout << "Products:\n";
     for (const auto& name : products | rv::transform(&Product::name)) {
         std::cout << "  " << name << "\n";
@@ -103,17 +104,15 @@ int main() {
 //     Monitor: 10
 //     Keyboard: 30
 //     Mouse: 50
-
 ```
 
 ---
 
 ### Q2: Show that member function pointers work as projections too
 
-**Solution:**
+This is the part that surprises people. You'd expect member data pointers to work as projections, since they just access a field. But member function pointers work the same way - `std::invoke(&Person::full_name, p)` calls `p.full_name()`, so you can pass `&Person::full_name` anywhere you'd pass a lambda that calls that method.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -137,7 +136,7 @@ int main() {
         {"Charlie", "Brown"}
     };
 
-    // Member FUNCTION pointer as projection — works with std::invoke!
+    // Member FUNCTION pointer as projection - works with std::invoke!
     std::cout << "Full names:\n";
     for (const auto& name : people | rv::transform(&Person::full_name)) {
         std::cout << "  " << name << "\n";
@@ -172,17 +171,15 @@ int main() {
 //
 //   Longest name: Bob Johnson
 //   a hi short medium-length
-
 ```
 
 ---
 
 ### Q3: Compose a filter and a projection in a single pipeline without intermediate containers
 
-**Solution:**
+One of the biggest practical wins from projections is that they compose cleanly in pipelines. You can filter by one member, then project to another member, all without allocating intermediate vectors. The range is lazy - elements flow through each stage on demand.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -207,7 +204,7 @@ int main() {
         {"Frank", "Sales", 75000}
     };
 
-    // Pipeline: filter by dept → project to name → NO intermediate vector!
+    // Pipeline: filter by dept -> project to name -> NO intermediate vector!
     std::cout << "Engineering team:\n";
     auto eng_names = employees
         | rv::filter([](const Employee& e) { return e.dept == "Engineering"; })
@@ -227,7 +224,7 @@ int main() {
     std::cout << "\nEngineering total salary: $" << eng_total << "\n";
 
     // Alternative: Use ranges algorithm with projection
-    // No pipeline needed — projection IS the "transform"
+    // No pipeline needed - projection IS the "transform"
     auto highest_paid = std::ranges::max(employees, {}, &Employee::salary);
     std::cout << "Highest paid: " << highest_paid.name
               << " ($" << highest_paid.salary << ")\n";
@@ -254,15 +251,14 @@ int main() {
 //     1. Alice
 //     2. Charlie
 //     3. Eve
-
 ```
 
 ---
 
 ## Notes
 
-- **Member pointer as projection** works because `std::invoke(&T::member, obj)` returns `obj.member` — both data members and member functions.
-- **Algorithm projections** (second-to-last parameter in most ranges algorithms) accept the same callables as `views::transform`.
+- **Member pointer as projection** works because `std::invoke(&T::member, obj)` returns `obj.member` - both data members and member functions follow this rule.
+- **Algorithm projections** (the second-to-last parameter in most ranges algorithms) accept the same callables as `views::transform`, so you can use member pointers there too.
 - **No copy overhead:** `views::transform(&T::member)` gives references to members, not copies.
-- **Combine projections:** Chain transforms: `transform(&Employee::name) | transform(&string::size)`.
-- **`std::identity`:** C++20's identity projection `{}` is the default — pass no projection to use elements as-is.
+- **Combine projections:** You can chain transforms: `transform(&Employee::name) | transform(&string::size)`.
+- **`std::identity`:** C++20's identity projection `{}` is the default - pass no projection to use elements as-is.

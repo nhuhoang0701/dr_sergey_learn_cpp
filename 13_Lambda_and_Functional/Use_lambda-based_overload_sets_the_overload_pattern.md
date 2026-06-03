@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-The **overload pattern** creates a single callable object from multiple lambdas, each handling a different type. It's the standard way to use `std::visit` with `std::variant` in idiomatic C++17.
+The **overload pattern** creates a single callable object from multiple lambdas, each handling a different type. It's the standard way to use `std::visit` with `std::variant` in idiomatic C++17, and it's one of those patterns that looks like magic until you see the mechanics behind it.
+
+The complete setup is just a few lines:
 
 ```cpp
-
 // The overload helper (C++17)
 template <class... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
@@ -25,24 +26,25 @@ std::visit(overloaded{
     [](double d)        { std::cout << "double: " << d; },
     [](const std::string& s) { std::cout << "string: " << s; }
 }, my_variant);
-
 ```
 
 ### Mechanism
 
+The key is that `overloaded` inherits from every lambda type and then brings all their `operator()` overloads into a single scope. Here's the inheritance picture:
+
 ```cpp
-
-overloaded<Lambda1, Lambda2, Lambda3>
-    │          │          │
-    ├──inherits Lambda1 (has operator()(int))
-    ├──inherits Lambda2 (has operator()(double))
-    └──inherits Lambda3 (has operator()(const string&))
-
-    using Lambda1::operator()...  ← brings ALL into scope
-    using Lambda2::operator()...
-    using Lambda3::operator()...
-
+// overloaded<Lambda1, Lambda2, Lambda3>
+//     |          |          |
+//     +--inherits Lambda1 (has operator()(int))
+//     +--inherits Lambda2 (has operator()(double))
+//     +--inherits Lambda3 (has operator()(const string&))
+//
+//     using Lambda1::operator()...  <- brings ALL into scope
+//     using Lambda2::operator()...
+//     using Lambda3::operator()...
 ```
+
+Without the `using` declarations, those inherited `operator()` overloads would hide each other - you'd get an ambiguity error whenever you tried to call the object. The `using Ts::operator()...` pack expansion is the crucial piece that makes it work.
 
 ---
 
@@ -50,10 +52,9 @@ overloaded<Lambda1, Lambda2, Lambda3>
 
 ### Q1: Write the overloaded struct and use it with `std::visit`
 
-**Solution:**
+This is the pattern in its most common form. The `std::visit` call dispatches to whichever lambda matches the type currently stored in the variant - at runtime, with no `if`/`else` chains or `std::get` needed:
 
 ```cpp
-
 #include <iostream>
 #include <variant>
 #include <string>
@@ -89,17 +90,17 @@ int main() {
 //   double: 3.14
 //   bool: true
 //   string: "hello"
-
 ```
+
+Each call to `std::visit` checks what's in `v` at runtime and routes to the right lambda. The `overloaded` object presents a single callable interface with an overload for every alternative.
 
 ---
 
 ### Q2: Show how the overload pattern creates a callable that handles multiple types with lambdas
 
-**Solution:**
+You're not limited to using `overloaded` only inside `std::visit`. You can construct an `overloaded` object and call it directly - it's a regular callable that just happens to accept multiple argument types. This is useful for building type-aware dispatch utilities:
 
 ```cpp
-
 #include <iostream>
 #include <variant>
 #include <string>
@@ -154,17 +155,19 @@ int main() {
 //   Variant:   25
 //   integer: 42
 //   unknown type
-
 ```
+
+The `auto` catch-all at the end is particularly useful. It lets you handle a specific set of types precisely and fall back gracefully for anything else.
 
 ---
 
 ### Q3: Explain the `using Ts::operator()...` expansion and why it's needed
 
-**Solution:**
+This is the part that makes the whole pattern work, and it's worth understanding deeply. The reason this trips people up is that C++ inheritance name lookup doesn't work the way you might expect when multiple bases define the same name.
+
+The example below starts broken, then fixes it step by step:
 
 ```cpp
-
 #include <iostream>
 
 // WITHOUT using-declaration: base class operator() is HIDDEN!
@@ -176,21 +179,21 @@ struct LambdaB {
     void operator()(double x) const { std::cout << "double: " << x << "\n"; }
 };
 
-// ─── BROKEN: no using-declaration ───
+// BROKEN: no using-declaration
 struct BrokenOverload : LambdaA, LambdaB {
     // Both bases have operator(), but they HIDE each other!
     // BrokenOverload{}(42);    // ERROR: ambiguous!
     // BrokenOverload{}(3.14);  // ERROR: ambiguous!
 };
 
-// ─── FIXED: using-declaration brings both into scope ───
+// FIXED: using-declaration brings both into scope
 struct FixedOverload : LambdaA, LambdaB {
     using LambdaA::operator();
     using LambdaB::operator();
-    // Now both are visible — overload resolution works normally!
+    // Now both are visible - overload resolution works normally!
 };
 
-// ─── The pattern generalizes with pack expansion ───
+// The pattern generalizes with pack expansion
 template <class... Ts>
 struct overloaded : Ts... {
     using Ts::operator()...;  // using-declaration for EACH base!
@@ -228,22 +231,23 @@ int main() {
 //   int: 42
 //   double: 3.14
 //   other: hello
-
 ```
 
 **Why `using Ts::operator()...` is required:**
 
-1. When a class inherits from multiple bases, name lookup finds a name in ONE base and **stops** — other bases are hidden
-2. Without `using`, calling `overloaded{}(42)` is ambiguous because the compiler finds `operator()` in multiple bases
-3. The `using`-declaration brings ALL `operator()` overloads into the derived class scope, enabling normal overload resolution
-4. The `...` expands the pack, generating one `using` for each lambda base
+1. When a class inherits from multiple bases, name lookup finds a name in one base and **stops** - other bases are hidden.
+2. Without `using`, calling `overloaded{}(42)` is ambiguous because the compiler finds `operator()` in multiple bases and can't choose.
+3. The `using`-declaration brings ALL `operator()` overloads into the derived class scope, enabling normal overload resolution to pick the best match.
+4. The `...` expands the pack, generating one `using` for each lambda base class.
+
+This is a rare case where the pack expansion syntax does something genuinely elegant: a one-liner that scales to any number of bases.
 
 ---
 
 ## Notes
 
 - **C++20 simplification:** The deduction guide `overloaded(Ts...) -> overloaded<Ts...>;` can be omitted in C++20 (automatic CTAD for aggregates).
-- **Order matters:** If multiple lambdas can match (e.g., `auto` catch-all), normal C++ overload resolution applies — more specific matches win.
-- **Performance:** Zero overhead — the overloaded struct is typically optimized away entirely.
-- **Alternative spelling:** Some codebases name it `overload`, `match`, or `visitor` instead of `overloaded`.
-- **Multi-variant visit:** `std::visit(overloaded{...}, v1, v2)` dispatches on both variants simultaneously.
+- **Order matters:** If multiple lambdas can match (e.g., `auto` catch-all), normal C++ overload resolution applies - more specific matches win over generic ones.
+- **Performance:** Zero overhead - the `overloaded` struct is typically optimized away entirely by the compiler.
+- **Alternative spelling:** Some codebases name it `overload`, `match`, or `visitor` instead of `overloaded` - the implementation is the same.
+- **Multi-variant visit:** `std::visit(overloaded{...}, v1, v2)` dispatches on both variants simultaneously, giving you a 2D type dispatch table.
