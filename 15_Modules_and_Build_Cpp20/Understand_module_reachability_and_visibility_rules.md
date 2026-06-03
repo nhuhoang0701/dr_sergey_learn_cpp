@@ -2,7 +2,7 @@
 
 **Category:** Modules & Build (C++20)  
 **Standard:** C++20  
-**Reference:** [cppreference — Modules](https://en.cppreference.com/w/cpp/language/modules)  
+**Reference:** [cppreference - Modules](https://en.cppreference.com/w/cpp/language/modules)  
 
 ---
 
@@ -11,6 +11,8 @@
 C++20 modules introduce two distinct concepts controlling how importers interact with declarations: **visibility** and **reachability**. These replace the header-era model where `#include` makes everything textually visible. Understanding the distinction is essential for designing clean module interfaces and avoiding surprising compilation errors.
 
 **Visibility** means a name can be found by name lookup. A declaration is visible to an importer only if it is **exported** from the module interface. **Reachability** means the semantic properties of a declaration (its type, members, base classes) are available to the compiler even if the name cannot be looked up. A declaration is reachable if it appears in any module interface unit that is transitively imported, regardless of whether it was exported.
+
+The reason this trips people up is that visibility and reachability can come apart: a type can be completely usable (you can create values of it, access its members, call its methods) while being completely unnamed (you cannot write its name in your source code). Think of it as the type existing and being understood by the compiler, but having no spell-able name from where you are.
 
 | Property | Condition | Effect |
 | --- | --- | --- |
@@ -21,27 +23,25 @@ C++20 modules introduce two distinct concepts controlling how importers interact
 Transitive imports add another layer. `export import M2;` inside module `M1` makes all of `M2`'s exported declarations **visible** (and reachable) to importers of `M1`. A non-exported `import M2;` inside `M1`'s interface unit makes `M2`'s exported declarations **reachable** (but not visible) to importers of `M1`. This is the mechanism by which types "leak" through return types, parameter types, and base classes without being directly nameable.
 
 ```cpp
-
-┌─────────────────────────────────────────────────────────┐
-│               Importer: main.cpp                        │
-│  import M1;                                             │
-│                                                         │
-│  ┌─────────────┐    ┌──────────────────────────────┐    │
-│  │  Visible     │    │  Reachable (not visible)     │    │
-│  │  M1 exports  │    │  M2 exports (via non-export  │    │
-│  │              │    │  import in M1 interface)      │    │
-│  └─────────────┘    └──────────────────────────────┘    │
-│                                                         │
-│  ┌──────────────────────────────────────────────────┐   │
-│  │  NOT reachable                                    │   │
-│  │  M1 implementation-unit declarations              │   │
-│  │  M2 non-exported declarations                     │   │
-│  └──────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-
++---------------------------------------------------------+
+|               Importer: main.cpp                        |
+|  import M1;                                             |
+|                                                         |
+|  +-------------+    +------------------------------+    |
+|  |  Visible     |    |  Reachable (not visible)     |    |
+|  |  M1 exports  |    |  M2 exports (via non-export  |    |
+|  |              |    |  import in M1 interface)      |    |
+|  +-------------+    +------------------------------+    |
+|                                                         |
+|  +--------------------------------------------------+   |
+|  |  NOT reachable                                    |   |
+|  |  M1 implementation-unit declarations              |   |
+|  |  M2 non-exported declarations                     |   |
+|  +--------------------------------------------------+   |
++---------------------------------------------------------+
 ```
 
-The practical consequence: you can return a non-exported type from an exported function, and the caller can use `auto` to capture and operate on it — but cannot spell its name. This is the "Voldemort type" pattern, now formalized through reachability.
+The practical consequence: you can return a non-exported type from an exported function, and the caller can use `auto` to capture and operate on it - but cannot spell its name. This is the "Voldemort type" pattern, now formalized through reachability.
 
 ---
 
@@ -49,8 +49,9 @@ The practical consequence: you can return a non-exported type from an exported f
 
 ### Q1: Which types can `main.cpp` name directly, and which can it only use via `auto`
 
-```cpp
+This example has three types to track. `Token` is exported. `SourceLoc` is in the interface unit but not exported. `AnnotatedToken` is exported and happens to contain a `SourceLoc` member. Watch what the consumer can and cannot do:
 
+```cpp
 // ---------- detail.cppm ----------
 export module detail;
 
@@ -84,17 +85,17 @@ int main() {
     // decltype(at.loc) loc2{};       // OK per standard (reachable), but some
                                       // compilers may warn
 }
-
 ```
 
-**Answer:** `Token` and `AnnotatedToken` are **visible** — exported, directly nameable. `SourceLoc` is **reachable** — its members and layout are known (you can access `.line`), but you cannot name the type `SourceLoc` in `main.cpp`. The `auto` keyword or `decltype` are required to work with it.
+`Token` and `AnnotatedToken` are **visible** - exported, directly nameable. `SourceLoc` is **reachable** - its members and layout are known (you can access `.line`), but you cannot name the type `SourceLoc` in `main.cpp`. The `auto` keyword or `decltype` are required to work with it.
 
 ---
 
 ### Q2: How do transitive imports affect visibility and reachability
 
-```cpp
+This is where the rules get subtle. Whether a type ends up visible or merely reachable in your code depends on how the chain of imports is set up - not just whether the type was exported in its home module. Here's an example with `Widget` flowing through two different import chains:
 
+```cpp
 // ---------- base.cppm ----------
 export module base;
 
@@ -144,23 +145,23 @@ int main() {
     // Widget* w2;                    // would be ERROR: Widget not visible
     // auto* w3 = app.root_widget(); // would be OK: still reachable
 }
-
 ```
 
-**Key table — transitive import effects:**
+The table makes the rule concrete - notice that when both imports are present, the strongest property wins:
 
 | In `toolkit.cppm` | In `app_framework.cppm` | `Widget` in `main.cpp` |
 | --- | --- | --- |
-| `export import base;` | — | Visible + reachable |
-| — | `import base;` | Reachable only |
+| `export import base;` | - | Visible + reachable |
+| - | `import base;` | Reachable only |
 | Both imported | Both imported | Visible (strongest wins) |
 
 ---
 
 ### Q3: What are the practical consequences of reachability for template instantiations and ADL
 
-```cpp
+This is the trickiest question in the set. When a non-exported type is reachable, ADL (Argument-Dependent Lookup) can still find friend functions associated with it. Without this rule, reachable-but-not-visible types returned from exported functions would be nearly impossible to use - you couldn't even compare two values for equality.
 
+```cpp
 // ---------- geo.cppm ----------
 export module geo;
 
@@ -202,21 +203,20 @@ int main() {
 
     // Point p3{0, 0};                  // ERROR: Point not visible (can't name it)
 }
-
 ```
 
-**Critical insight:** ADL (Argument-Dependent Lookup) considers the **owning module** of a type's associated entities. Even though `Point` is not exported, ADL can find `operator==` declared as a friend because the type is reachable and ADL searches the associated module. This is by-design — without this rule, non-exported types returned from exported functions would be largely unusable.
+The critical insight: ADL considers the **owning module** of a type's associated entities. Even though `Point` is not exported, ADL can find `operator==` declared as a friend because the type is reachable and ADL searches the associated module. This is by-design - without this rule, non-exported types returned from exported functions would be largely unusable.
 
 ---
 
 ## Notes
 
-- **Visibility ⊂ Reachability**: every visible declaration is reachable, but not vice versa.
+- **Visibility is a subset of Reachability**: every visible declaration is reachable, but not vice versa.
 - `export import M;` propagates both visibility and reachability. Plain `import M;` in an interface unit propagates only reachability.
 - `import M;` in an **implementation unit** propagates nothing to the module's importers.
-- The "Voldemort type" pattern (reachable-but-not-visible) is intentional — it enables encapsulation while allowing rich return types.
+- The "Voldemort type" pattern (reachable-but-not-visible) is intentional - it enables encapsulation while allowing rich return types.
 - ADL is module-aware: it searches the owning module of associated types, finding non-visible but reachable friend functions.
 - Reachability applies to class completeness: if a class is reachable, the compiler knows its full definition (size, members, bases), enabling `sizeof`, member access, and inheritance.
-- `decltype` on a reachable-but-not-visible type is valid — the type exists, it simply has no visible name in the importing TU.
+- `decltype` on a reachable-but-not-visible type is valid - the type exists, it simply has no visible name in the importing TU.
 - When designing module interfaces, deliberately control which types are exported; use reachability for implementation types that appear in signatures but should not be part of the public API surface.
-- Compilers encode reachability in the BMI (Binary Module Interface) — all declarations from interface units are included, not just exported ones.
+- Compilers encode reachability in the BMI (Binary Module Interface) - all declarations from interface units are included, not just exported ones.

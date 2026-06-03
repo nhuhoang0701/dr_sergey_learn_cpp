@@ -23,13 +23,13 @@ C++20 modules, module partitions, and their interaction with build systems.
 
 ## Notes
 
-- Modules (C++20) replace headers — they provide better encapsulation and faster compilation
-- export module declares a module interface; module declares an implementation unit
-- Module partitions split large modules into manageable parts with internal linkage control
-- Unlike headers, modules do not leak macros or pollute the global namespace
-- Build system support for modules is still evolving — CMake 3.28+ has experimental support
-- The import std; (C++23) imports the entire standard library as a module
-- Header units (import <header>;) bridge legacy headers into the module world
-- Module initialization order is well-defined — unlike the static initialization order fiasco with headers
-- Private module fragments hide implementation details within the interface file
-- Modules require a DAG (directed acyclic graph) build order — circular dependencies are forbidden
+- Modules (C++20) replace headers - they provide better encapsulation and faster compilation.
+- `export module` declares a module interface; `module` (without `export`) declares an implementation unit.
+- Module partitions split large modules into manageable parts with internal linkage control.
+- Unlike headers, modules do not leak macros or pollute the global namespace.
+- Build system support for modules is still evolving - CMake 3.28+ has stable support via `FILE_SET CXX_MODULES`.
+- `import std;` (C++23) imports the entire standard library as a single module.
+- Header units (`import <header>;`) bridge legacy headers into the module world without requiring source changes.
+- Module initialization order is well-defined - unlike the static initialization order fiasco with headers.
+- Private module fragments hide implementation details within the interface file itself.
+- Modules require a DAG (directed acyclic graph) build order - circular dependencies are forbidden by design.

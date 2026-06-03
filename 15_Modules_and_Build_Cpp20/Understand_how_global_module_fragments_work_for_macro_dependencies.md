@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-This topic focuses on **practical macro dependency scenarios** — wrapping C APIs, conditional compilation, and platform-specific includes that require macros inside module code.
+This topic focuses on **practical macro dependency scenarios** - wrapping C APIs, conditional compilation, and platform-specific includes that require macros inside module code.
+
+The core problem is simple: macros are a preprocessor-level concept, and the module system lives at the compiler level. You can't mix them freely. The **global module fragment** is the designated escape hatch that lets you `#include` legacy C headers (with all their macros) before the module declaration takes effect.
 
 ### Common Macro Dependencies That Require Global Module Fragments
 
@@ -24,33 +26,35 @@ This topic focuses on **practical macro dependency scenarios** — wrapping C AP
 
 ### Why Macros Can't Live After `export module`
 
-```cpp
+Here's the situation that catches people off guard. If you put a `#include` of a C header after your `export module` declaration, the macros that header defines may not behave as expected:
 
+```cpp
 export module wrapper;
 
 // This is implementation-defined and likely won't work as expected:
-#include <cerrno>       // ❌ macros may not be available after module declaration
+#include <cerrno>       // BAD: macros may not be available after module declaration
 
 export int get_errno() {
-    return errno;       // errno is a macro — may fail!
+    return errno;       // errno is a macro - may fail!
 }
-
 ```
 
-**Correct approach:**
+The reason this trips people up is that the module purview (everything after `export module`) is under the module system's control. Including headers there is technically allowed by some compilers, but macro availability is implementation-defined and not reliable.
+
+The correct approach is to use the global module fragment, which is the region before the module declaration. Start the file with a bare `module;` line, include your C headers there, then declare the module:
 
 ```cpp
+module;                 // <- global module fragment begins here
+#include <cerrno>       // GOOD: macros are guaranteed available
 
-module;                 // ← global module fragment
-#include <cerrno>       // ✅ macros are guaranteed available
-
-export module wrapper;
+export module wrapper;  // global module fragment ends here
 
 export int get_errno() {
-    return errno;       // ✅ works — macro was included in fragment
+    return errno;       // GOOD: macro was included in fragment
 }
-
 ```
+
+Everything between the bare `module;` and the `export module` declaration is the global module fragment. Preprocessor directives there work exactly as they always have.
 
 ---
 
@@ -58,9 +62,10 @@ export int get_errno() {
 
 ### Q1: Use `module; ... export module foo;` to include legacy headers whose macros are needed
 
-```cpp
+Here's a realistic example: a module that wraps POSIX file operations. All the C macros (`errno`, `ENOENT`, `EACCES`, platform path separator) go in the global fragment, while the exported interface exposes only clean, type-safe C++ abstractions:
 
-// file_wrapper.cppm — wraps POSIX file operations as a C++20 module
+```cpp
+// file_wrapper.cppm - wraps POSIX file operations as a C++20 module
 module;
 
 // Global module fragment: include C headers with macros
@@ -123,13 +128,11 @@ public:
 
     export char path_separator() { return PATH_SEP; } // uses platform macro
 };
-
 ```
 
-**Consumer:**
+Notice that `errno`, `ENOENT`, `EACCES`, and `PATH_SEP` are all used inside the module implementation but never make it out to importers. The consumer only sees the `FileReader`, `FileError`, and `FileResult` types:
 
 ```cpp
-
 import file_wrapper;
 #include <iostream>
 
@@ -155,21 +158,15 @@ int main() {
 }
 // Expected output (typical):
 // Error: File not found (errno=2)
-
 ```
 
-**How this works:**
-
-- C API macros (`errno`, `ENOENT`, `EACCES`) are included in the global module fragment.
-- The module wraps raw C macros into type-safe C++ abstractions (`FileError` enum).
-- Importers never see the raw macros — they use the clean exported interface.
+The global module fragment is doing exactly its job: C API macros go in, clean C++ types come out. Importers never deal with the raw macro world.
 
 ### Q2: Explain why macros defined after the module declaration are not exported
 
-Modules use a fundamentally different model from headers:
+This is one of the most important conceptual points about modules. Let's see it concretely:
 
 ```cpp
-
 module;
 #define BEFORE_DECL 1      // Available in the module unit
 export module example;
@@ -179,10 +176,9 @@ export module example;
 export int use_macros() {
     return BEFORE_DECL + AFTER_DECL;  // Both work inside the module: returns 3
 }
-
 ```
 
-**Why macros don't export:**
+Both macros work fine *inside* the module. The function compiles and returns 3. But the reason macros don't export - even when defined after the module declaration - comes down to how the module system works at a fundamental level:
 
 1. **Macros are preprocessor concepts.** Modules operate at the **compiler level**, after preprocessing. The compiler's module system doesn't know about macros.
 
@@ -190,29 +186,26 @@ export int use_macros() {
    - Function signature: `int use_macros()`
    - But NOT: `#define BEFORE_DECL 1` or `#define AFTER_DECL 2`
 
-3. **This is intentional.** The entire point of modules is to eliminate macro leakage:
+3. **This is intentional.** The entire point of modules is to eliminate macro leakage. Think about the processing model:
 
 ```cpp
-
-Header model:     source text ──preprocessor──> expanded text ──compiler──> object
-                       ↑
+Header model:     source text --preprocessor--> expanded text --compiler--> object
+                       ^
                   macros leak through #include
 
-Module model:     module source ──> BMI (declarations only) ──> importer
-                                     ↑
+Module model:     module source --> BMI (declarations only) --> importer
+                                     ^
                                 no macro state stored
-
 ```
 
-Consumer verification:
+You can verify this by importing the module and checking whether the macros are visible:
 
 ```cpp
-
 import example;
 #include <iostream>
 
 int main() {
-    std::cout << use_macros() << '\n';  // 3 — function works
+    std::cout << use_macros() << '\n';  // 3 - function works
 
     #ifdef BEFORE_DECL
         std::cout << "BEFORE_DECL visible\n";  // NOT printed
@@ -226,15 +219,15 @@ int main() {
 // Expected output:
 // 3
 // No macros leaked
-
 ```
+
+The function works perfectly, but the macros are invisible. This is the clean separation modules give you.
 
 ### Q3: Show a case where a global module fragment is required to make a C API usable from a module
 
-**Wrapping SQLite3 C API:**
+Wrapping SQLite3 is a perfect illustration because SQLite uses integer macros everywhere (`SQLITE_OK`, `SQLITE_ROW`, `SQLITE_DONE`) for its error-checking protocol. Without a global module fragment, those macros simply won't exist when you try to use them:
 
 ```cpp
-
 // sqlite_wrapper.cppm
 module;
 
@@ -279,10 +272,9 @@ public:
 
 // Without the global module fragment, SQLITE_OK, SQLITE_ROW etc.
 // would not be available, making the C API unusable.
-
 ```
 
-**Why it's required:**
+The difference in practice is stark:
 
 | Without global module fragment | With global module fragment |
 | --- | --- |
@@ -297,7 +289,7 @@ The pattern applies to **any C library** that relies on macros: OpenSSL, zlib, P
 
 ## Notes
 
-- The global module fragment can **only** contain preprocessor directives — no actual C++ code.
+- The global module fragment can **only** contain preprocessor directives - no actual C++ code.
 - Always prefer wrapping C macros in `constexpr` variables or `enum` values in the exported interface.
-- Multiple `#include` directives in the global fragment are fine — order matters as with normal `#include`.
+- Multiple `#include` directives in the global fragment are fine - order matters as with normal `#include`.
 - The global fragment is the recommended migration path for codebases heavily dependent on C libraries.

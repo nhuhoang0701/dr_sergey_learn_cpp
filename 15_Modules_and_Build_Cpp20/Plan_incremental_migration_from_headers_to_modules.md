@@ -8,36 +8,34 @@
 
 ## Topic Overview
 
-Migrating a large codebase from headers to C++20 modules is a multi-phase effort that cannot happen atomically. The standard provides **header units** and the **global module fragment** as bridging mechanisms, enabling gradual migration without a flag-day rewrite. A well-planned migration preserves build correctness at every step while progressively reaping module benefits (faster builds, stronger encapsulation, no macro leakage).
+Migrating a large codebase from headers to C++20 modules is a multi-phase effort that cannot happen atomically. You cannot flip a switch and have it all work. The standard provides **header units** and the **global module fragment** as bridging mechanisms, enabling gradual migration without a flag-day rewrite. A well-planned migration preserves build correctness at every step while progressively reaping module benefits (faster builds, stronger encapsulation, no macro leakage).
 
-The fundamental challenge is **dependency ordering**: modules impose a strict compilation DAG (importers must wait for the imported module's BMI), whereas headers are order-independent at the file level. Migration therefore must proceed **bottom-up** — leaf libraries first, high-level application code last. Attempting top-down migration forces every downstream consumer to change simultaneously.
+The fundamental challenge is **dependency ordering**: modules impose a strict compilation DAG (importers must wait for the imported module's BMI), whereas headers are order-independent at the file level. Migration therefore must proceed **bottom-up** - leaf libraries first, high-level application code last. Attempting top-down migration forces every downstream consumer to change simultaneously, which is usually impractical.
 
 **Migration phases overview:**
 
 | Phase | Action | Mechanism | Risk |
 | --- | --- | --- | --- |
-| 0 — Audit | Identify macro usage, include cycles, build graph | Static analysis tools | None (read-only) |
-| 1 — Header units | Import third-party and stable internal headers as header units | `import <header>;` | Build system must support header unit scanning |
-| 2 — Wrapper modules | Create thin module wrappers around existing headers | Global module fragment + `export` | Dual maintenance of wrapper + header |
-| 3 — Leaf module conversion | Convert leaf libraries to named modules | Replace `.h`/`.cpp` with `.cppm`/`.cpp` | Consumers must switch to `import` |
-| 4 — Propagate upward | Convert mid-level and high-level components | Same as phase 3 | Increasing coordination required |
-| 5 — Remove legacy headers | Delete header files, remove include guards | Cleanup | Downstream breakage if external consumers exist |
+| 0 - Audit | Identify macro usage, include cycles, build graph | Static analysis tools | None (read-only) |
+| 1 - Header units | Import third-party and stable internal headers as header units | `import <header>;` | Build system must support header unit scanning |
+| 2 - Wrapper modules | Create thin module wrappers around existing headers | Global module fragment + `export` | Dual maintenance of wrapper + header |
+| 3 - Leaf module conversion | Convert leaf libraries to named modules | Replace `.h`/`.cpp` with `.cppm`/`.cpp` | Consumers must switch to `import` |
+| 4 - Propagate upward | Convert mid-level and high-level components | Same as phase 3 | Increasing coordination required |
+| 5 - Remove legacy headers | Delete header files, remove include guards | Cleanup | Downstream breakage if external consumers exist |
 
-The **global module fragment** (`module;` ... `export module M;`) is the key migration tool — it lets a module interface include traditional headers before the module declaration, quarantining macro-dependent code outside the module's purview.
+The **global module fragment** (`module;` ... `export module M;`) is the key migration tool - it lets a module interface include traditional headers before the module declaration, quarantining macro-dependent code outside the module's purview. Think of it as a controlled airlock between the legacy world and the module world.
 
 ```cpp
-
-┌──────────────────────────────────────────────────┐
-│  Migration Direction (bottom-up)                 │
-│                                                  │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐     │
-│  │ App Code │──▶│ Mid-tier │──▶│  Leaf    │     │
-│  │ (last)   │   │ (middle) │   │ (first)  │     │
-│  └──────────┘   └──────────┘   └──────────┘     │
-│                                                  │
-│  Phase 5 ◀──── Phase 4 ◀──── Phase 3            │
-└──────────────────────────────────────────────────┘
-
+┌──────────────────────────────────────┐
+│  Migration Direction (bottom-up)     │
+│                                      │
+│  ┌──────────┐ ┌──────────┐ ┌──────┐  │
+│  │ App Code │->>│ Mid-tier │->>│ Leaf │  │
+│  │ (last)   │ │ (middle) │ │(1st) │  │
+│  └──────────┘ └──────────┘ └──────┘  │
+│                                      │
+│  Phase 5 <---- Phase 4 <---- Phase 3 │
+└──────────────────────────────────────┘
 ```
 
 ---
@@ -46,8 +44,9 @@ The **global module fragment** (`module;` ... `export module M;`) is the key mig
 
 ### Q1: How do you create a wrapper module around an existing header-based library without modifying the original headers
 
-```cpp
+The global module fragment is designed exactly for this. You put the `#include` inside the fragment so that all the macros and declarations are available to the module body, without any of it leaking to consumers.
 
+```cpp
 // ---------- Original header: legacy/math_utils.h ----------
 #pragma once
 #include <cmath>
@@ -66,7 +65,7 @@ namespace legacy {
 }
 
 // ---------- Wrapper module: math_utils_mod.cppm ----------
-module;                          // global module fragment — preprocessor land
+module;                          // global module fragment - preprocessor land
 
 #include "legacy/math_utils.h"   // include here: macros and all
 
@@ -92,17 +91,17 @@ int main() {
     // MATH_PI;                       // ERROR: macros don't travel through modules
     double circumference = 2.0 * pi * len;  // OK: use the constexpr
 }
-
 ```
 
-**Key takeaway:** The global module fragment absorbs all `#include` dependencies and macros. The `export module` declaration starts the module purview where you selectively re-export what consumers need. Macros must be replaced with `constexpr` or `consteval` alternatives.
+**Key takeaway:** The global module fragment absorbs all `#include` dependencies and macros. The `export module` declaration starts the module purview where you selectively re-export what consumers need. Macros must be replaced with `constexpr` or `consteval` alternatives - which forces a cleaner API anyway.
 
 ---
 
 ### Q2: How do you handle a library that relies heavily on macros during migration
 
-```cpp
+This is where migration gets genuinely tricky. The strategy is to provide a clean module interface for new code while keeping a compatibility header around for code that is not yet migrated. You run both in parallel during the transition period.
 
+```cpp
 // ---------- Problem: config.h uses macros consumed by user code ----------
 // config.h
 #pragma once
@@ -113,7 +112,7 @@ int main() {
 
 // ---------- Strategy: provide both macro header and module ----------
 
-// config_module.cppm — module for non-macro parts
+// config_module.cppm - module for non-macro parts
 export module config;
 
 export struct AppVersion {
@@ -125,7 +124,7 @@ export constexpr bool debug_mode = true;
 
 export void app_log(const char* msg);  // replace macro with function
 
-// config_module.cpp — implementation
+// config_module.cpp - implementation
 module config;
 #include <iostream>
 
@@ -136,7 +135,7 @@ void app_log(const char* msg) {
 }
 
 // ---------- Transition header: config_compat.h ----------
-// For code not yet migrated — include this header
+// For code not yet migrated - include this header
 #pragma once
 #include "config.h"              // legacy macros still available
 
@@ -149,8 +148,9 @@ void startup() {
         // new feature path
     }
 }
-
 ```
+
+The table below covers the most common macro patterns and their idiomatic module replacements. Each row is a concrete migration step.
 
 **Migration table for macro patterns:**
 
@@ -166,9 +166,10 @@ void startup() {
 
 ### Q3: What does a CMakeLists.txt look like for a mixed header/module project during migration
 
-```cmake
+A real migration project will have native modules, wrapper modules, and legacy header-only libraries all linked together. CMake 3.28 can handle this combination as long as each target is declared correctly.
 
-# CMakeLists.txt — mixed migration project
+```cmake
+# CMakeLists.txt - mixed migration project
 cmake_minimum_required(VERSION 3.28)  # CMake 3.28+ for C++ module support
 project(migration_example CXX)
 
@@ -203,12 +204,12 @@ target_sources(graphics_module
 # ---------- Application (mixed: some imports, some includes) ----------
 add_executable(app src/main.cpp)
 target_link_libraries(app PRIVATE math_module graphics_module legacy_math)
-
 ```
 
-```cpp
+The application source shows what a migration-era file looks like: some things are imported from modules, others are still included from headers that have not been migrated yet.
 
-// src/main.cpp — mixed consumer
+```cpp
+// src/main.cpp - mixed consumer
 #include "legacy/string_utils.h"  // not yet migrated
 import math_utils;                // wrapper module
 import graphics;                  // native module
@@ -221,7 +222,6 @@ int main() {
     // Use still-header-based code
     auto trimmed = legacy::trim("  hello  ");  // from string_utils.h
 }
-
 ```
 
 **Critical CMake notes:** `FILE_SET CXX_MODULES` tells CMake to perform dependency scanning on `.cppm` files. CMake 3.28+ generates the P1689 dependency info and orchestrates compilation order. Modules must be in `PUBLIC` or `INTERFACE` file sets to be importable by dependents.
@@ -231,11 +231,11 @@ int main() {
 ## Notes
 
 - **Always migrate bottom-up**: leaf dependencies first, application code last. Each step must leave the build green.
-- **Header units** (`import <vector>;`) are a zero-effort first step — they modularize standard library and third-party headers without source changes.
+- **Header units** (`import <vector>;`) are a zero-effort first step - they modularize standard library and third-party headers without source changes.
 - **Global module fragment** is the bridge: place `#include` directives before `export module M;` to use headers inside a module.
-- **Macros do not cross module boundaries** — this is by design. Replace them with `constexpr`, `consteval`, `inline` functions, or template aliases.
+- **Macros do not cross module boundaries** - this is by design. Replace them with `constexpr`, `consteval`, `inline` functions, or template aliases.
 - Keep a **compatibility header** during transition so unmigrated code can still `#include` the old interface.
 - Use **feature-test macros** (`__cpp_modules >= 201907L`) in headers that must work both as includes and behind module wrappers.
-- Monitor **build times** at each phase — wrapper modules add indirection, but named modules should show compile-time improvements once fully adopted.
+- Monitor **build times** at each phase - wrapper modules add indirection, but named modules should show compile-time improvements once fully adopted.
 - **Do not rush**: a partially migrated codebase with wrapper modules is stable and shippable. Full migration can span multiple release cycles.
-- Test with at least two compilers (MSVC, GCC, or Clang) — module support maturity varies and catching portability issues early saves pain.
+- Test with at least two compilers (MSVC, GCC, or Clang) - module support maturity varies and catching portability issues early saves pain.
