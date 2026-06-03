@@ -9,24 +9,24 @@
 
 ## Topic Overview
 
-A **TOCTOU (Time-of-Check to Time-of-Use)** race occurs when a thread checks a condition and then acts on it, but another thread modifies the state between the check and the use. The gap between "check" and "act" creates a window where the condition can be invalidated.
+A **TOCTOU (Time-of-Check to Time-of-Use)** race occurs when a thread checks a condition and then acts on it, but another thread modifies the state between the check and the use. The window between "check" and "act" is enough for the world to change underneath you.
+
+The reason this trips people up is that each individual operation can look perfectly correct in isolation. The load is atomic, the subtraction is atomic - but the *sequence* of two individually-atomic operations is not itself atomic. Another thread can slip in between them.
 
 ### The TOCTOU Pattern
 
 ```cpp
-
 Thread A                    Thread B
 ────────                    ────────
 CHECK: balance >= 100?
-  → yes                     
+  -> yes
                             CHECK: balance >= 100?
-                              → yes
-USE: balance -= 100         
-                            USE: balance -= 100   ← OVERDRAFT!
-                            
-Result: balance went negative — both threads passed the check
-        but one should have been rejected.
+                              -> yes
+USE: balance -= 100
+                            USE: balance -= 100   <- OVERDRAFT!
 
+Result: balance went negative - both threads passed the check
+        but one should have been rejected.
 ```
 
 ### Where TOCTOU Races Happen
@@ -41,7 +41,7 @@ Result: balance went negative — both threads passed the check
 ### Fix Strategies
 
 1. **Atomic CAS:** Make check+act a single atomic operation
-2. **Mutex scope:** Hold the lock across both check and act  
+2. **Mutex scope:** Hold the lock across both check and act
 3. **Design elimination:** Use APIs that combine check+act (e.g., `try_emplace`)
 
 ---
@@ -52,8 +52,9 @@ Result: balance went negative — both threads passed the check
 
 **Answer:**
 
-```cpp
+The `BuggyAccount::withdraw` below has a TOCTOU race. The `balance.load()` and `balance.fetch_sub()` are each individually atomic, but there is a gap between them. Look at the comment marking the window:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -66,7 +67,7 @@ struct BuggyAccount {
     bool withdraw(int amount) {
         // CHECK: is balance sufficient?
         if (balance.load() >= amount) {
-            // ← TOCTOU WINDOW: another thread can withdraw here
+            // <- TOCTOU WINDOW: another thread can withdraw here
             // USE: debit the account
             balance.fetch_sub(amount);
             return true;
@@ -96,7 +97,7 @@ int main() {
         t2.join();
 
         if (successes == 2) {
-            // BOTH succeeded → balance is now -200 (overdraft!)
+            // BOTH succeeded -> balance is now -200 (overdraft!)
             ++overdraft_count;
         }
     }
@@ -105,22 +106,22 @@ int main() {
               << overdraft_count << "\n";
     // Output (typical):
     // Overdrafts in 100000 trials: ~500-5000
-    // (varies by timing, but NOT zero — proves the bug)
+    // (varies by timing, but NOT zero - proves the bug)
 
     // The race: both threads load balance (1000), both see >= 600,
-    // both subtract 600 → final balance = -200.
+    // both subtract 600 -> final balance = -200.
 }
-
 ```
 
-**Explanation:** The gap between `balance.load()` (check) and `balance.fetch_sub()` (use) is the TOCTOU window. Even though each operation is individually atomic, the *sequence* is not atomic — another thread can interleave between them.
+**Explanation:** The gap between `balance.load()` (check) and `balance.fetch_sub()` (use) is the TOCTOU window. Even though each operation is individually atomic, the *sequence* is not atomic - another thread can interleave between them.
 
 ### Q2: Fix the TOCTOU by using a single atomic compare_exchange operation
 
 **Answer:**
 
-```cpp
+The fix is to collapse the check and the act into a single indivisible operation using a CAS loop. The `compare_exchange_weak` call atomically asks: "is the balance still the value I saw? If so, set it to value-minus-amount." If another thread got there first, `current` is updated with the new value and the loop re-evaluates:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -169,14 +170,14 @@ int main() {
 
     std::cout << "Overdrafts: " << overdraft_count << "\n";
     // Output: Overdrafts: 0
-    // ZERO overdrafts — the CAS loop guarantees atomicity
+    // ZERO overdrafts - the CAS loop guarantees atomicity
 
     // === How the CAS loop eliminates TOCTOU ===
-    // Thread A loads balance=1000, tries CAS(1000→400) — succeeds
-    // Thread B loads balance=1000, tries CAS(1000→400) — FAILS
+    // Thread A loads balance=1000, tries CAS(1000->400) - succeeds
+    // Thread B loads balance=1000, tries CAS(1000->400) - FAILS
     //   (because balance is now 400, not 1000)
     //   CAS updates 'current' to 400, retries loop
-    //   Now current(400) < amount(600) → return false ✓
+    //   Now current(400) < amount(600) -> return false (correct)
 
     // === Generalized pattern ===
     SafeAccount acc;
@@ -192,20 +193,20 @@ int main() {
     };
 
     std::cout << "Increment below 600: "
-              << increment_if_below(acc.balance, 600) << "\n"; // 1 (500→501)
+              << increment_if_below(acc.balance, 600) << "\n"; // 1 (500->501)
     std::cout << "Balance: " << acc.balance.load() << "\n";     // 501
 }
-
 ```
 
-**Explanation:** `compare_exchange_weak` atomically checks "is the value still what I expect?" and updates it only if yes. If another thread changed the value, CAS fails and returns the new value in `current`, so the loop re-evaluates the condition. The check and use are inseparable — no TOCTOU window.
+**Explanation:** `compare_exchange_weak` atomically checks "is the value still what I expect?" and updates it only if yes. If another thread changed the value, CAS fails and returns the new value in `current`, so the loop re-evaluates the condition. The check and use are inseparable - no TOCTOU window.
 
 ### Q3: Explain how mutex scope should cover the entire check-then-act sequence
 
 **Answer:**
 
-```cpp
+A very common mistake is acquiring a lock for the check, releasing it, then re-acquiring it for the act. This looks organized and "careful," but the gap between the two lock acquisitions is exactly the TOCTOU window. The lock must stay held across the entire check-and-act sequence:
 
+```cpp
 #include <mutex>
 #include <map>
 #include <string>
@@ -213,7 +214,7 @@ int main() {
 #include <vector>
 #include <iostream>
 
-// === BUGGY: narrow mutex scope creates TOCTOU ===
+// BUGGY: narrow mutex scope creates TOCTOU
 struct BuggyCache {
     std::map<std::string, int> data;
     std::mutex mtx;
@@ -223,7 +224,7 @@ struct BuggyCache {
         {
             std::lock_guard lock(mtx);
             exists = data.count(key); // CHECK (under lock)
-        } // ← lock released here!
+        } // <- lock released here!
 
         // TOCTOU WINDOW: another thread can insert 'key' here
 
@@ -234,7 +235,7 @@ struct BuggyCache {
     }
 };
 
-// === FIXED: mutex covers entire check-then-act ===
+// FIXED: mutex covers entire check-then-act
 struct SafeCache {
     std::map<std::string, int> data;
     std::mutex mtx;
@@ -272,7 +273,7 @@ int main() {
     }
     for (auto& t : threads) t.join();
     std::cout << "Buggy: data[key] = " << buggy.data["key"] << "\n";
-    // Multiple threads may overwrite the value — last writer wins
+    // Multiple threads may overwrite the value - last writer wins
 
     // === Fixed version ===
     SafeCache safe;
@@ -296,19 +297,18 @@ int main() {
 // lock()                           lock()
 //   check condition                  check condition
 // unlock()                           act on condition
-// ← TOCTOU window ←               unlock()
+// <- TOCTOU window               unlock()
 // lock()
 //   act on condition
 // unlock()
 //
 // The lock must be held from CHECK through USE without releasing.
 // If you release and re-acquire, the invariant may have changed.
-
 ```
 
 **Explanation:**
 
-The critical rule: **never release a mutex between checking a condition and acting on it**. When you release and re-acquire, you only know the condition *was* true — not that it *still is* true. The fix is simple: keep the lock held across the entire check-then-act sequence.
+The critical rule: **never release a mutex between checking a condition and acting on it**. When you release and re-acquire, you only know the condition *was* true - not that it *still is* true. The fix is simple: keep the lock held across the entire check-then-act sequence.
 
 Common TOCTOU patterns and their fixes:
 

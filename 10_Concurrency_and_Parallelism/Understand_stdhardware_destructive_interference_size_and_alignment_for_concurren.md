@@ -9,27 +9,30 @@
 
 ## Topic Overview
 
-C++17 provides two constants in `<new>` that expose cache-line information to portable C++ code:
+C++17 provides two constants in `<new>` that expose cache-line information to portable C++ code. Before these constants existed, developers had to hardcode `64` (which is wrong on some platforms) or resort to non-portable compiler extensions.
 
 | Constant | Meaning | Typical Value |
 | --- | --- | --- |
 | `hardware_destructive_interference_size` | Minimum offset to **avoid** false sharing | 64 bytes (x86), 128 bytes (Apple M1) |
 | `hardware_constructive_interference_size` | Maximum size to **promote** true sharing | 64 bytes (x86), 128 bytes (Apple M1) |
 
+The names tell you the use case: "destructive" interference is what you want to *avoid* (two threads fighting over the same cache line), and "constructive" interference is what you want to *encourage* (one thread accessing two things that live close together in the same line).
+
+**False sharing** is the performance problem these constants help you fix. It happens when two threads are writing to *different* variables that happen to land on the *same* cache line. Each write invalidates the line on the other core, forcing a cache coherence round-trip even though the threads are not logically sharing any data. The result can be 10-50x slower than expected.
+
 ### False Sharing Visual
 
 ```cpp
-
 WITHOUT alignment (false sharing):
 ┌─────────────────────────────────────────────────────────────────┐
 │ Cache Line (64 bytes)                                           │
 │ ┌──────────┐┌──────────┐                                        │
-│ │ counter_a ││ counter_b │  ← both on SAME cache line            │
+│ │ counter_a ││ counter_b │  <- both on SAME cache line           │
 │ └──────────┘└──────────┘                                        │
 └─────────────────────────────────────────────────────────────────┘
-Thread 1 writes counter_a → invalidates cache line for Thread 2
-Thread 2 writes counter_b → invalidates cache line for Thread 1
-→ Constant ping-pong, 10-50x slower!
+Thread 1 writes counter_a -> invalidates cache line for Thread 2
+Thread 2 writes counter_b -> invalidates cache line for Thread 1
+-> Constant ping-pong, 10-50x slower!
 
 WITH alignment (no false sharing):
 ┌────────────────────────────────┐ ┌────────────────────────────────┐
@@ -38,8 +41,7 @@ WITH alignment (no false sharing):
 │ │ counter_a │  (padded)        │ │ │ counter_b │  (padded)        │
 │ └──────────┘                   │ │ └──────────┘                   │
 └────────────────────────────────┘ └────────────────────────────────┘
-Each counter on its OWN cache line → no invalidation traffic
-
+Each counter on its OWN cache line -> no invalidation traffic
 ```
 
 ---
@@ -50,8 +52,9 @@ Each counter on its OWN cache line → no invalidation traffic
 
 **Answer:**
 
-```cpp
+The benchmark below makes the performance difference visible. Two threads each increment their own counter. When the counters share a cache line, every increment by thread 1 forces thread 2 to re-fetch the line, and vice versa. With proper alignment, each thread works in peace:
 
+```cpp
 #include <atomic>
 #include <new>      // hardware_destructive_interference_size
 #include <iostream>
@@ -62,7 +65,7 @@ Each counter on its OWN cache line → no invalidation traffic
 // WITHOUT alignment: both counters likely on the same cache line
 struct PackedCounters {
     std::atomic<long long> a{0};
-    std::atomic<long long> b{0}; // only 8 bytes after 'a' — same cache line
+    std::atomic<long long> b{0}; // only 8 bytes after 'a' - same cache line
 };
 
 // WITH alignment: each counter on its OWN cache line
@@ -123,7 +126,6 @@ int main() {
     // Packed (false sharing)  : 350 ms
     // Aligned (no sharing)   : 80 ms  (~4x faster)
 }
-
 ```
 
 **Explanation:** `alignas(hardware_destructive_interference_size)` forces each counter to start at a cache-line boundary and occupy at least one full cache line. This prevents the CPU cache coherence protocol from bouncing the line between cores when different threads write to different counters.
@@ -132,8 +134,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+With four threads each writing to their own slot in an array, the false-sharing scenario is even more pronounced. All four 8-byte atomics fit in a single 64-byte cache line, meaning every write by any thread invalidates the line for all three other threads:
 
+```cpp
 #include <atomic>
 #include <new>
 #include <thread>
@@ -142,16 +145,16 @@ int main() {
 #include <iostream>
 #include <iomanip>
 
-// Four threads, four counters — worst case for false sharing
+// Four threads, four counters - worst case for false sharing
 struct FalseSharing {
-    std::atomic<long long> c[4]; // 4 × 8 = 32 bytes, all in ONE cache line
+    std::atomic<long long> c[4]; // 4 x 8 = 32 bytes, all in ONE cache line
 };
 
 struct NoFalseSharing {
     struct alignas(std::hardware_destructive_interference_size) PaddedCounter {
         std::atomic<long long> value{0};
     };
-    PaddedCounter c[4]; // 4 × 64 = 256 bytes, each in its OWN cache line
+    PaddedCounter c[4]; // 4 x 64 = 256 bytes, each in its OWN cache line
 };
 
 template<typename Counters>
@@ -199,17 +202,17 @@ int main() {
     // The 6-7x speedup comes from eliminating cache-line bouncing.
     // Each core's L1 cache can keep its counter without invalidation.
 }
-
 ```
 
-**Explanation:** With 4 threads writing to adjacent 8-byte atomics, all four fit in one 64-byte cache line. Every write by any thread forces all other cores to invalidate and re-fetch the line. With `alignas` padding, each counter gets its own cache line — cores never interfere with each other.
+**Explanation:** With 4 threads writing to adjacent 8-byte atomics, all four fit in one 64-byte cache line. Every write by any thread forces all other cores to invalidate and re-fetch the line. With `alignas` padding, each counter gets its own cache line - cores never interfere with each other.
 
 ### Q3: Explain that the value is implementation-defined and must not be assumed to be 64
 
 **Answer:**
 
-```cpp
+This is an easy mistake to make. `64` is correct for x86 Intel and AMD chips, but Apple M1/M2 and IBM POWER9 use 128-byte cache lines. Hardcoding 64 means you still get false sharing on those platforms. The constant exists precisely to avoid this:
 
+```cpp
 The value of hardware_destructive_interference_size is:
 
 - Implementation-defined (set by the compiler, not the hardware)
@@ -226,13 +229,11 @@ Known values across platforms:
 │ POWER9             │ 128                   │ 128    │
 │ RISC-V             │ typically 64          │ 64     │
 └────────────────────┴───────────────────────┴────────┘
-
 ```
 
-**Why it matters:**
+Here is the correct way to handle this portably, including a fallback for compilers that do not yet support the constant:
 
 ```cpp
-
 #include <new>
 #include <iostream>
 
@@ -265,7 +266,7 @@ int main() {
     std::cout << "hardware_constructive_interference_size = "
               << std::hardware_constructive_interference_size << "\n";
 
-    // These are COMPILE-TIME constants — the compiler bakes them in.
+    // These are COMPILE-TIME constants - the compiler bakes them in.
     // If you cross-compile for ARM on x86, the VALUE MUST MATCH THE TARGET.
     // The compiler picks the value for the target architecture.
 
@@ -276,10 +277,9 @@ int main() {
     // of objects that you WANT on the SAME cache line (for true sharing).
     // Example: a mutex and the data it protects should fit within this size.
 }
-
 ```
 
-**Key takeaway:** Always use `std::hardware_destructive_interference_size` instead of hardcoding 64. The value varies across architectures, and the constant ensures portability. When the constant isn't available, use a `#ifdef` fallback.
+**Key takeaway:** Always use `std::hardware_destructive_interference_size` instead of hardcoding 64. The value varies across architectures, and the constant ensures portability. When the constant is not available, use a `#ifdef` fallback.
 
 ---
 
@@ -288,6 +288,6 @@ int main() {
 - **Destructive interference** (avoid sharing): pad objects accessed by *different* threads to separate cache lines.
 - **Constructive interference** (promote sharing): keep objects accessed by the *same* thread together within one cache line.
 - **Clang warning:** Clang may emit `-Winterference-size` because the value affects ABI and could differ between translation units compiled with different flags.
-- **Apple M1/M2:** 128-byte cache lines mean naive `alignas(64)` is insufficient — you'll still get false sharing.
-- **Memory cost:** Padding increases structure size (e.g., 16 bytes → 128 bytes). Only pad objects that are *actually* accessed by different threads concurrently.
+- **Apple M1/M2:** 128-byte cache lines mean naive `alignas(64)` is insufficient - you will still get false sharing.
+- **Memory cost:** Padding increases structure size (e.g., 16 bytes -> 128 bytes). Only pad objects that are *actually* accessed by different threads concurrently.
 - Compile with `-std=c++17 -O2 -pthread`.

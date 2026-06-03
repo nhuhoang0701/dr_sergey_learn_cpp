@@ -9,14 +9,12 @@
 
 ## Topic Overview
 
-`std::latch` and `std::barrier` are thread coordination primitives for synchronizing groups of threads at a specific point.
+`std::latch` and `std::barrier` are thread coordination primitives for synchronizing groups of threads at a specific point. The key mental model: a latch is a one-time countdown that fires when it reaches zero; a barrier is a reusable meeting point where all threads must arrive before any of them can continue.
 
 ### Comparison
 
 ```cpp
-
                   std::latch              std::barrier
-─────────────────────────────────────────────────────────────
 Uses:             Single-use              Reusable (multi-phase)
 Counter:          Counts DOWN to 0        Resets after each phase
 Threads:          Can count_down(n)       Each thread arrives once
@@ -25,7 +23,6 @@ Wait:             arrive_and_wait()       arrive_and_wait()
 Completion:       latch destroyed         Can run completion
                   after wait              function between phases
 Use case:         "Wait for N inits"      "N threads, sync each step"
-
 ```
 
 ### API
@@ -54,8 +51,9 @@ Use case:         "Wait for N inits"      "N threads, sync each step"
 
 **Answer:**
 
-```cpp
+The latch here acts as a "ready gate" for the main thread. Each worker counts down the latch when its initialization is finished, and the main thread simply calls `wait()` until all N workers have checked in. This is cleaner than using an atomic counter and a condition variable, which would require more code to accomplish the same thing.
 
+```cpp
 #include <latch>
 #include <thread>
 #include <vector>
@@ -89,7 +87,7 @@ int main() {
             services[i].initialize();
             std::cout << services[i].name << " initialized\n";
             init_latch.count_down(); // signal "I'm done"
-            // Note: count_down does NOT block — thread continues
+            // Note: count_down does NOT block - thread continues
         });
     }
 
@@ -130,15 +128,15 @@ int main() {
     std::cout << "GO!\n";
     start_gate.count_down(); // release all racers at once
 }
-
 ```
 
 ### Q2: Implement a pipeline with std::barrier where threads synchronize at each stage
 
 **Answer:**
 
-```cpp
+The barrier here ensures that no thread starts phase 2 until every thread has finished phase 1. This kind of "everyone must arrive before anyone can leave" coordination is exactly what iterative parallel algorithms need. Notice the completion function - it runs exactly once between phases, executed by whichever thread happens to arrive last.
 
+```cpp
 #include <barrier>
 #include <thread>
 #include <vector>
@@ -204,42 +202,39 @@ int main() {
     // Final: 8 16 24 32 40 48 56 64 72 80 88 96 104 112 120 128
     // (each element multiplied by 2^3 = 8)
 }
-
 ```
 
-**Explanation:** The barrier syncs all threads at each phase boundary. The completion function runs atomically between phases — perfect for reduction, logging, or swapping buffers. After the completion function returns, all threads are released for the next phase.
+The barrier syncs all threads at each phase boundary. The completion function runs atomically between phases - perfect for reduction, logging, or swapping buffers. After the completion function returns, all threads are released for the next phase.
 
 ### Q3: Explain why std::latch is a single-use synchronization primitive while std::barrier is reusable
 
 **Answer:**
 
-```cpp
+The single-use versus reusable distinction is not arbitrary - it reflects the different use cases each primitive is designed for. A latch models an event that happens once ("initialization complete"). A barrier models a recurring synchronization point in a loop ("all threads are done with this iteration").
 
+```cpp
 LATCH vs BARRIER: Lifecycle
-════════════════════════════
 
 std::latch(3):
-  count:  3 → 2 → 1 → 0  (done forever)
-           ↓   ↓   ↓
+  count:  3 -> 2 -> 1 -> 0  (done forever)
+               |    |    |
           Thread arrivals
-  
+
   After reaching 0: cannot be reset.
   Any thread calling wait() returns immediately (already at 0).
   Destroyed after use.
 
 std::barrier(3):
-  Phase 1: count 3 → 2 → 1 → 0 → [completion] → RESET to 3
-  Phase 2: count 3 → 2 → 1 → 0 → [completion] → RESET to 3
-  Phase 3: count 3 → 2 → 1 → 0 → [completion] → RESET to 3
+  Phase 1: count 3 -> 2 -> 1 -> 0 -> [completion] -> RESET to 3
+  Phase 2: count 3 -> 2 -> 1 -> 0 -> [completion] -> RESET to 3
+  Phase 3: count 3 -> 2 -> 1 -> 0 -> [completion] -> RESET to 3
   ... repeats indefinitely
 
   The barrier AUTOMATICALLY resets after each phase.
   The completion function runs between reset and release.
-
 ```
 
 ```cpp
-
 #include <latch>
 #include <barrier>
 #include <thread>
@@ -247,7 +242,7 @@ std::barrier(3):
 #include <vector>
 
 int main() {
-    // === LATCH: Single-use — fire once, done ===
+    // === LATCH: Single-use - fire once, done ===
     {
         std::latch l(3);
 
@@ -267,7 +262,7 @@ int main() {
         std::cout << "Latch: triggered once, done.\n";
     }
 
-    // === BARRIER: Multi-phase — automatically resets ===
+    // === BARRIER: Multi-phase - automatically resets ===
     {
         int phase = 0;
         std::barrier b(3, [&]() noexcept {
@@ -279,7 +274,7 @@ int main() {
         for (int i = 0; i < 3; ++i) {
             threads.emplace_back([&b] {
                 b.arrive_and_wait(); // Phase 1
-                b.arrive_and_wait(); // Phase 2 — barrier auto-reset!
+                b.arrive_and_wait(); // Phase 2 - barrier auto-reset!
                 b.arrive_and_wait(); // Phase 3
             });
         }
@@ -320,13 +315,9 @@ int main() {
     // Phase complete
     // Phase complete
 }
-
 ```
 
-**Why the difference?**
-
-- `latch` is designed for "wait until N things happen" — initialization gates, fan-in collection. Simple, lightweight, disposable.
-- `barrier` is designed for iterative algorithms where threads must synchronize between steps — physics simulations, parallel sort passes, iterative solvers.
+`latch` is designed for "wait until N things happen" - initialization gates, fan-in collection. Simple, lightweight, disposable. `barrier` is designed for iterative algorithms where threads must synchronize between steps - physics simulations, parallel sort passes, iterative solvers. Choosing the wrong one for the job usually means you either cannot reuse it when you need to, or you carry unnecessary complexity when a simple countdown would do.
 
 ---
 
@@ -335,6 +326,6 @@ int main() {
 - **Completion function requirements:** The barrier's completion function must be `noexcept` and must complete quickly (all threads are blocked waiting for it).
 - **`count_down(n)` where n > 1:** A single thread can count down multiple times. Useful when one thread represents multiple logical events.
 - **`arrive_and_drop()`:** Permanently reduces the barrier's expected count. The departing thread must not call `arrive_and_wait()` again.
-- **Performance:** Both `latch` and `barrier` are typically built on `futex`/atomics — very efficient compared to manual `condition_variable` + counter implementations.
+- **Performance:** Both `latch` and `barrier` are typically built on `futex`/atomics - very efficient compared to manual `condition_variable` + counter implementations.
 - **Latch vs counting semaphore:** A latch waits for the count to reach 0. A semaphore blocks when the count IS 0. Different semantics!
 - Compile with `-std=c++20 -O2 -pthread`.

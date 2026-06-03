@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`std::atomic_flag` is the **only** type the C++ standard guarantees to be lock-free. It holds a single boolean state (set/clear) and provides test-and-set as its core operation.
+`std::atomic_flag` is the **only** type the C++ standard guarantees to be lock-free. It holds a single boolean state (set/clear) and provides test-and-set as its core operation. Every other atomic type, including `std::atomic<bool>`, has a *probably* lock-free implementation on modern hardware - but the standard only makes the absolute guarantee for `atomic_flag`.
 
 ### API Summary
 
@@ -26,21 +26,21 @@
 
 ### Key Properties
 
-```cpp
+The reason `atomic_flag` is always lock-free while `atomic<bool>` is not guaranteed is that `atomic_flag` exposes the absolute minimum interface - just test-and-set and clear, which map directly to single hardware instructions that every CPU supports natively:
 
+```cpp
 atomic_flag vs atomic<bool>:
-────────────────────────────
+----------------------------
 atomic_flag:
-  ✓ ALWAYS lock-free (guaranteed by the standard)
-  ✓ Minimal interface → minimal misuse
-  ✗ No load/store (until C++20 test())
-  ✗ No compare_exchange
+  Always lock-free (guaranteed by the standard)
+  Minimal interface -> minimal misuse
+  No load/store (until C++20 test())
+  No compare_exchange
 
 atomic<bool>:
-  ✗ MAY use a mutex internally (is_lock_free() can be false)
-  ✓ Full atomic interface: load, store, compare_exchange
-  ✓ More flexible for general boolean flags
-
+  MAY use a mutex internally (is_lock_free() can be false)
+  Full atomic interface: load, store, compare_exchange
+  More flexible for general boolean flags
 ```
 
 ---
@@ -51,8 +51,9 @@ atomic<bool>:
 
 **Answer:**
 
-```cpp
+The acquire/release pairing here is not optional. The acquire on `lock()` ensures that the protected code sees all memory written before the previous `unlock()`. The release on `unlock()` ensures that what you wrote inside the critical section is visible to the next thread that acquires the lock:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -65,18 +66,18 @@ class SpinLock {
 public:
     void lock() {
         // test_and_set returns the PREVIOUS value:
-        //   false → wasn't locked, now IS locked (we acquired it)
-        //   true  → was already locked, spin again
+        //   false -> wasn't locked, now IS locked (we acquired it)
+        //   true  -> was already locked, spin again
         while (flag_.test_and_set(std::memory_order_acquire)) {
             // === Spin strategies (from worst to best) ===
             // 1. Bare spin: while (flag_.test_and_set(acquire)) {}
-            //    → Burns CPU, causes cache-line bouncing
+            //    -> Burns CPU, causes cache-line bouncing
             //
             // 2. PAUSE hint: __builtin_ia32_pause() / _mm_pause()
-            //    → Reduces pipeline flush penalty on x86
+            //    -> Reduces pipeline flush penalty on x86
             //
             // 3. Test-then-TAS (TTAS):
-            //    → Read-only test first to avoid cache-line invalidation
+            //    -> Read-only test first to avoid cache-line invalidation
             #if defined(__cpp_lib_atomic_flag_test) // C++20
             while (flag_.test(std::memory_order_relaxed)) {
                 // Spin on read-only test (shared cache line)
@@ -118,21 +119,21 @@ int main() {
     // Output:
     // Counter: 400000 (expected 400000)
 }
-
 ```
 
 **Why acquire/release?**
 
 - `lock()` uses `acquire`: ensures all reads/writes after lock() see data written before the previous `unlock()`.
 - `unlock()` uses `release`: ensures all writes before unlock() are flushed before the lock becomes available.
-- Together they form a **happens-before** chain: `unlock()` → `lock()` guarantees visibility.
+- Together they form a **happens-before** chain: `unlock()` -> `lock()` guarantees visibility.
 
-### Q2: Show why std::atomic_flag is always lock-free while std::atomic<bool> may not be
+### Q2: Show why std::atomic_flag is always lock-free while std::atomic\<bool\> may not be
 
 **Answer:**
 
-```cpp
+The short explanation is that `atomic_flag`'s interface was deliberately designed to match what hardware provides unconditionally. Here's the full reasoning:
 
+```cpp
 #include <atomic>
 #include <iostream>
 
@@ -143,7 +144,7 @@ int main() {
     //    It has two states, set and clear.
     //    Operations on an object of type atomic_flag shall be lock-free."
     //
-    // This is a NORMATIVE REQUIREMENT — not optional.
+    // This is a NORMATIVE REQUIREMENT - not optional.
 
     std::atomic_flag flag{};
     std::cout << "atomic_flag is always lock-free: "
@@ -166,8 +167,8 @@ int main() {
     // === WHY the difference? ===
     //
     // atomic_flag has an intentionally MINIMAL interface:
-    //   - test_and_set() → hardware TAS/XCHG instruction
-    //   - clear()        → hardware store instruction
+    //   - test_and_set() -> hardware TAS/XCHG instruction
+    //   - clear()        -> hardware store instruction
     //
     // Every CPU ever made supports these two operations natively.
     // There is NO platform where test-and-set requires a mutex.
@@ -179,8 +180,8 @@ int main() {
     //
     // Example architecture where atomic<bool> might not be lock-free:
     //   - A hypothetical 16-bit microcontroller without CAS instruction
-    //   - atomic<bool> compare_exchange needs CAS → falls back to mutex
-    //   - atomic_flag test_and_set only needs TAS → always native
+    //   - atomic<bool> compare_exchange needs CAS -> falls back to mutex
+    //   - atomic_flag test_and_set only needs TAS -> always native
 
     // === Size comparison ===
     std::cout << "\nsizeof(atomic_flag):  " << sizeof(std::atomic_flag) << "\n";
@@ -194,15 +195,15 @@ int main() {
     // sizeof(atomic_flag):  1   (or 4 with padding)
     // sizeof(atomic<bool>): 1
 }
-
 ```
 
 ### Q3: Use atomic_flag for a one-shot 'signal has fired' notification between threads
 
 **Answer:**
 
-```cpp
+`test_and_set()` has perfect "exactly once" semantics: it atomically reads the old value and sets the flag, so only one thread can ever observe the transition from clear to set. That makes it a natural primitive for one-shot events and once-flags. The C++20 `wait()`/`notify()` API adds efficient blocking on top of this:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -216,7 +217,7 @@ void one_shot_signal_cpp11() {
     std::thread producer([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         std::cout << "Producer: firing signal\n";
-        signal.test_and_set(std::memory_order_release); // CLEAR → SET
+        signal.test_and_set(std::memory_order_release); // CLEAR -> SET
     });
 
     // C++11: must poll (no test() or wait())
@@ -224,12 +225,12 @@ void one_shot_signal_cpp11() {
         signal.clear(std::memory_order_relaxed); // wasn't set yet, clear our TAS
         std::this_thread::yield();
     }
-    // Now signal is SET → producer has fired
+    // Now signal is SET -> producer has fired
     std::cout << "Consumer: signal received!\n";
     producer.join();
 }
 
-// === Pattern 2: One-shot signal (C++20 — efficient) ===
+// === Pattern 2: One-shot signal (C++20 - efficient) ===
 void one_shot_signal_cpp20() {
     std::atomic_flag signal{}; // starts clear
 
@@ -246,15 +247,15 @@ void one_shot_signal_cpp20() {
     producer.join();
 }
 
-// === Pattern 3: Once-flag — ensure work runs exactly once ===
+// === Pattern 3: Once-flag - ensure work runs exactly once ===
 class OnceFlag {
     std::atomic_flag done_ = ATOMIC_FLAG_INIT;
 public:
     // Returns true for exactly ONE caller, false for all others
     bool try_claim() {
         return !done_.test_and_set(std::memory_order_acq_rel);
-        // First caller: test_and_set returns false (wasn't set) → !false = true
-        // All others:   test_and_set returns true (was set)     → !true  = false
+        // First caller: test_and_set returns false (wasn't set) -> !false = true
+        // All others:   test_and_set returns true (was set)     -> !true  = false
     }
 };
 
@@ -299,10 +300,9 @@ int main() {
     // Thread 3 performed initialization
     // Init ran 1 time(s)
 }
-
 ```
 
-**Key insight:** `test_and_set()` is the perfect primitive for "exactly once" semantics — it atomically reads the old value and sets the new value, so only one thread can ever see the transition from clear to set.
+**Key insight:** `test_and_set()` is the perfect primitive for "exactly once" semantics - it atomically reads the old value and sets the new value, so only one thread can ever see the transition from clear to set.
 
 ---
 
@@ -312,5 +312,5 @@ int main() {
 - **No `operator=`:** You cannot assign to an `atomic_flag`. Use `test_and_set()` and `clear()` only.
 - **Spinlock vs std::mutex:** Spinlocks are appropriate when contention is very low and critical sections are tiny (< 100ns). For anything else, `std::mutex` is better because it yields the CPU to the OS scheduler.
 - **TTAS optimization:** The "test-then-test-and-set" pattern (C++20 `test()`) avoids cache-line invalidation during spinning. Read-only `test()` keeps the line in shared state; only `test_and_set()` forces exclusive ownership.
-- **C++20 `wait()`/`notify()`** on `atomic_flag` makes it a lightweight event primitive — more efficient than `condition_variable` for simple signals.
+- **C++20 `wait()`/`notify()`** on `atomic_flag` makes it a lightweight event primitive - more efficient than `condition_variable` for simple signals.
 - Compile with `-std=c++20 -O2 -pthread`.

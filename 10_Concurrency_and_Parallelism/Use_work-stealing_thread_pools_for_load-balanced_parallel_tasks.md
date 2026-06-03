@@ -9,30 +9,31 @@
 
 ## Topic Overview
 
-A **work-stealing thread pool** is a concurrency pattern where each worker thread has its own local task queue. When a worker finishes its tasks, it **steals** tasks from another worker's queue. This achieves excellent load balancing for irregular/uneven workloads without a single shared queue bottleneck.
+A **work-stealing thread pool** is a concurrency pattern where each worker thread has its own local task queue. When a worker finishes its tasks, it **steals** tasks from another worker's queue. This achieves excellent load balancing for irregular or uneven workloads without a single shared queue bottleneck.
 
 ### Why Shared Queues Are Slow
 
-```cpp
+A naive thread pool uses one global queue protected by a mutex. Every task submission and every task pickup touches that one lock. At high core counts (16+), the queue itself becomes the bottleneck - you end up with a system that nominally has many cores but where they all spend most of their time fighting over a single data structure.
 
+```cpp
 Single shared queue (naive thread pool):
 ┌──────────────────────────────────────┐
-│   T1 T2 T3 T4 T5 T6 T7 T8 T9 T10   │  ← global queue, mutex-protected
+│   T1 T2 T3 T4 T5 T6 T7 T8 T9 T10   │  <- global queue, mutex-protected
 └────────────────┬─────────────────────┘
      ┌───────────┼───────────┐
      ▼           ▼           ▼
   Worker A    Worker B    Worker C         All contend on ONE lock
    (busy)     (idle)      (busy)
 
-Problem: every dequeue → lock → contention → cache-line bouncing.
+Problem: every dequeue -> lock -> contention -> cache-line bouncing.
 At high core counts (16+), the queue becomes the bottleneck.
-
 ```
 
 ### Work-Stealing Algorithm
 
-```cpp
+Work-stealing solves this by giving each worker its own deque. Workers push and pop from their own queue with no locking. Only when a worker's queue is empty does it reach into another worker's queue to steal a task from the far end.
 
+```cpp
 Work-stealing thread pool:
 ┌────────────┐  ┌────────────┐  ┌────────────┐
 │ Worker A   │  │ Worker B   │  │ Worker C   │
@@ -45,15 +46,14 @@ Work-stealing thread pool:
                       ▼
                ┌────────────┐
                │ Worker A   │
-               │ [T1,T4]    │  ← T7 was stolen by B
+               │ [T1,T4]    │  <- T7 was stolen by B
                └────────────┘
 
 Each worker:
 
-  1. Pop task from OWN deque (LIFO — cache-friendly)
+  1. Pop task from OWN deque (LIFO - cache-friendly)
   2. If empty, STEAL from a random other worker's deque (FIFO end)
   3. If all empty, back off (yield/sleep)
-
 ```
 
 ### Why Work-Stealing Wins for Uneven Tasks
@@ -61,36 +61,35 @@ Each worker:
 | Task Pattern | Shared Queue | Work-Stealing |
 | --- | --- | --- |
 | All tasks equal time | Good | Good (slight overhead for per-worker deques) |
-| Tasks vary 10x-100x | Bad — fast workers idle while slow worker finishes | Good — idle workers steal remaining tasks |
-| Recursive decomposition (fork-join) | Bad — all subtasks funnel through global queue | Excellent — subtasks stay local, stolen when needed |
-| Many small tasks | Bad — lock contention dominates | Good — mostly lock-free local pops |
+| Tasks vary 10x-100x | Bad - fast workers idle while slow worker finishes | Good - idle workers steal remaining tasks |
+| Recursive decomposition (fork-join) | Bad - all subtasks funnel through global queue | Excellent - subtasks stay local, stolen when needed |
+| Many small tasks | Bad - lock contention dominates | Good - mostly lock-free local pops |
 
 ### The Chase-Lev Deque
 
-The classic data structure for work-stealing is the **Chase-Lev work-stealing deque**:
+The classic data structure behind work-stealing is the **Chase-Lev work-stealing deque**. The clever part is that the owner and thieves access opposite ends of the deque, so they almost never collide. The owner pushes and pops from the bottom without any locking; thieves steal from the top using a single compare-and-swap. Contention only occurs when the deque is nearly empty.
 
 ```cpp
-
 Chase-Lev Deque (per worker):
-       BOTTOM (owner pushes/pops here — LIFO)
+       BOTTOM (owner pushes/pops here - LIFO)
          ↓
 ┌───┬───┬───┬───┬───┬───┬───┐
 │   │   │ T5│ T4│ T3│ T2│ T1│
 └───┴───┴───┴───┴───┴───┴───┘
                            ↑
-                    TOP (thieves steal from here — FIFO)
+                    TOP (thieves steal from here - FIFO)
 
-- Owner: push/pop at bottom (no lock — atomic bottom index)
+- Owner: push/pop at bottom (no lock - atomic bottom index)
 - Thief: steal from top (CAS on top index)
-- Only contention: when deque has ≤1 element (owner and thief race)
+- Only contention: when deque has <=1 element (owner and thief race)
 - Result: ~0 contention in the common case
-
 ```
 
 ### Using Taskflow (Production-Ready Work-Stealing Pool)
 
-```cpp
+Rather than writing your own work-stealing pool, use an established library. Taskflow is header-only and provides a clean API for both simple parallel execution and complex task dependency graphs.
 
+```cpp
 // CMakeLists.txt:
 // find_package(Taskflow REQUIRED)
 // target_link_libraries(myapp PRIVATE Taskflow::Taskflow)
@@ -111,7 +110,7 @@ int main() {
         [] { std::cout << "Task D\n"; }
     );
 
-    // Define dependencies: A → B, A → C, B → D, C → D
+    // Define dependencies: A -> B, A -> C, B -> D, C -> D
     A.precede(B, C);
     B.precede(D);
     C.precede(D);
@@ -120,15 +119,14 @@ int main() {
     // Tasks A, B, C, D execute respecting dependencies.
     // B and C can run in parallel after A finishes.
 }
-
 ```
 
 ### Important Notes
 
-- Work-stealing pools shine for **irregular parallelism** — recursive algorithms, graph traversal, unbalanced trees.
+- Work-stealing pools shine for **irregular parallelism** - recursive algorithms, graph traversal, unbalanced trees.
 - For **regular parallelism** (same-size chunks), `std::for_each(std::execution::par, ...)` or OpenMP may be simpler.
 - Popular C++ libraries: **Taskflow**, **Intel TBB**, **HPX**, **Folly**.
-- The C++ standard doesn't include a work-stealing pool (yet), but `std::execution` (C++26) aims to standardize executors.
+- The C++ standard doesn't include a work-stealing pool yet, but `std::execution` (C++26) aims to standardize executors.
 
 ---
 
@@ -136,14 +134,9 @@ int main() {
 
 ### Q1: Explain the work-stealing algorithm and why it outperforms a shared queue for uneven tasks
 
-**Complete Explanation:**
-
-The work-stealing algorithm distributes tasks across per-worker local deques instead of a single shared queue:
-
-**Algorithm Steps (per worker):**
+The work-stealing algorithm distributes tasks across per-worker local deques instead of a single shared queue. Here is the per-worker loop in pseudocode:
 
 ```cpp
-
 while (pool is active) {
     task = own_deque.pop_bottom();        // Step 1: try local deque (fast, no contention)
     if (task == null) {
@@ -156,7 +149,6 @@ while (pool is active) {
     }
     execute(task);
 }
-
 ```
 
 **Why It Outperforms a Shared Queue:**
@@ -165,13 +157,14 @@ while (pool is active) {
 | --- | --- | --- |
 | **Contention** | Every worker contends on 1 lock | Workers mostly access own deque (no lock) |
 | **Cache behavior** | Cache-line bouncing on shared queue head | Local deque stays in L1/L2 cache |
-| **Load balancing** | Static distribution or dynamic (but contended) | Dynamic — idle workers steal work |
+| **Load balancing** | Static distribution or dynamic (but contended) | Dynamic - idle workers steal work |
 | **Scalability** | Degrades with core count (Amdahl's law on lock) | Near-linear scaling (stealing is rare) |
 
-**Concrete Example — Recursive Tree Traversal:**
+**Concrete Example - Recursive Tree Traversal:**
+
+Recursive algorithms are where work-stealing shines most. With a shared queue, every recursive subtask call contends on one lock. With work-stealing, subtasks are pushed to the local deque of the worker that spawned them, and other workers only steal when they have nothing left to do.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <future>
@@ -182,7 +175,7 @@ struct Node {
     std::vector<Node> children;
 };
 
-// Recursive sum — creates subtasks for each child
+// Recursive sum - creates subtasks for each child
 // With shared queue: ALL recursive calls contend on one queue
 // With work-stealing: subtasks stay on local deque, only stolen if a worker is idle
 long long sum_tree(const Node& node) {
@@ -213,40 +206,36 @@ int main() {
     std::cout << "Sum: " << sum_tree(root) << "\n";
     // Expected: 1+2+3+4+5+6+7+8+9+10+11 = 66
 }
-
 ```
 
-**Key Insight:** In the unbalanced tree, one subtree has depth 3 while another is a leaf. A shared queue distributes evenly but the "deep" worker takes 10x longer. With work-stealing, idle workers steal sub-problems from the busy worker, keeping all cores active.
+In the unbalanced tree, one subtree has depth 3 while another is a leaf. A shared queue distributes evenly on paper, but the "deep" worker takes much longer and others go idle. With work-stealing, idle workers steal sub-problems from the busy worker, keeping all cores active throughout.
 
 ---
 
 ### Q2: Integrate an open-source work-stealing pool (e.g., Taskflow) into a CMake project
 
-**Solution — Complete CMake Integration:**
+Taskflow's `FetchContent` integration is simple and requires no system-level installation. The `CMakeLists.txt` below downloads it automatically at configure time.
 
 **Directory structure:**
 
 ```cpp
-
 project/
 ├── CMakeLists.txt
 ├── src/
 │   └── main.cpp
 └── build/
-
 ```
 
 **CMakeLists.txt:**
 
 ```cmake
-
 cmake_minimum_required(VERSION 3.14)
 project(WorkStealingDemo LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Option A: FetchContent (simplest — downloads automatically)
+# Option A: FetchContent (simplest - downloads automatically)
 include(FetchContent)
 FetchContent_Declare(
     taskflow
@@ -264,13 +253,13 @@ target_link_libraries(demo PRIVATE Taskflow::Taskflow)
 # Enable threading support
 find_package(Threads REQUIRED)
 target_link_libraries(demo PRIVATE Threads::Threads)
-
 ```
 
-**src/main.cpp — Parallel Matrix Multiply with Taskflow:**
+**src/main.cpp - Parallel Matrix Multiply with Taskflow:**
+
+Each row of the output matrix is an independent task. Taskflow's work-stealing executor distributes these rows across available cores automatically.
 
 ```cpp
-
 #include <taskflow/taskflow.hpp>
 #include <iostream>
 #include <vector>
@@ -287,7 +276,7 @@ void parallel_multiply(const Matrix& A, const Matrix& B, Matrix& C, int n) {
     tf::Executor executor;  // uses hardware_concurrency() workers
     tf::Taskflow taskflow;
 
-    // Each row is an independent task — work-stealing balances them
+    // Each row is an independent task - work-stealing balances them
     for (int i = 0; i < n; ++i) {
         taskflow.emplace([&A, &B, &C, n, i] {
             for (int j = 0; j < n; ++j) {
@@ -317,28 +306,24 @@ int main() {
     std::cout << "Parallel multiply " << N << "x" << N << ": " << ms << " ms\n";
     std::cout << "C[0][0] = " << C[0][0] << "\n";  // N * 1.0 * 2.0 = 1024.0
 }
-
 ```
 
 **Build commands:**
 
 ```bash
-
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
 ./demo
-
 ```
 
 ---
 
 ### Q3: Compare a work-stealing pool with `std::async` for a recursive divide-and-conquer algorithm
 
-**Solution — Parallel Merge Sort: `std::async` vs Taskflow:**
+`std::async` is convenient but has a serious problem with recursive parallelism: it may spawn a new OS thread for every recursive call. That quickly leads to hundreds or thousands of threads, each with ~1-8 MB of stack, and the overhead of thread creation (~20-50 µs each) dominates the actual work. A work-stealing pool uses a fixed number of workers and queues tasks locally instead.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -416,26 +401,26 @@ int main() {
 //   Sequential:    2800 ms
 //   std::async:     900 ms   (~3.1x speedup, limited by depth cap)
 //   Work-stealing:  600 ms   (~4.7x speedup with Taskflow)
-
 ```
+
+The `depth < 4` cap in `async_mergesort` is not an optimization - it is a safety valve to prevent the program from spawning exponentially many threads. A work-stealing pool has no such constraint because tasks are just queue entries, not OS threads.
 
 **Detailed Comparison:**
 
 | Aspect | `std::async` | Work-Stealing Pool (Taskflow/TBB) |
 | --- | --- | --- |
-| **Thread creation** | May create new thread per call (expensive ~20-50 μs) | Fixed pool of workers (zero creation overhead) |
-| **Thread count** | Hard to control — may spawn hundreds | Fixed at `hardware_concurrency()` |
-| **Load balancing** | None — if one subtree is deeper, that thread is overloaded | Automatic — idle workers steal tasks |
-| **Overhead per task** | ~20-50 μs (thread creation) | ~0.1-1 μs (push to local deque) |
-| **Recursive patterns** | Must manually limit depth to avoid thread explosion | Handles naturally — tasks queue locally |
-| **Memory usage** | ~1-8 MB stack per thread | Fixed (N workers × stack) |
+| **Thread creation** | May create new thread per call (expensive ~20-50 us) | Fixed pool of workers (zero creation overhead) |
+| **Thread count** | Hard to control - may spawn hundreds | Fixed at `hardware_concurrency()` |
+| **Load balancing** | None - if one subtree is deeper, that thread is overloaded | Automatic - idle workers steal tasks |
+| **Overhead per task** | ~20-50 us (thread creation) | ~0.1-1 us (push to local deque) |
+| **Recursive patterns** | Must manually limit depth to avoid thread explosion | Handles naturally - tasks queue locally |
+| **Memory usage** | ~1-8 MB stack per thread | Fixed (N workers x stack) |
 | **Portability** | Standard C++ (but behavior varies by implementation) | Library dependency |
 | **Simplicity** | Simple API | Slightly more setup |
 
 **When to Use Each:**
 
 ```cpp
-
 Simple parallelism (< 16 tasks)?
   └─ std::async is fine
 
@@ -450,7 +435,6 @@ Need to control exact thread count?
 
 Minimal dependencies required?
   └─ std::async (standard library only)
-
 ```
 
 ---
@@ -459,7 +443,7 @@ Minimal dependencies required?
 
 - **Intel TBB** `tbb::task_group` and `tbb::parallel_for` use work-stealing internally. Widely used in production.
 - **C++26 `std::execution`** aims to standardize sender/receiver-based executors that subsume thread pools.
-- **False sharing:** Pad per-worker deques to separate cache lines (`alignas(64)`) to avoid cache-line bouncing between workers.
-- **Back-off strategy matters:** Aggressive spinning wastes power; yielding/sleeping too eagerly increases latency. Good pools use exponential back-off.
-- **Compile with `-O2`** at minimum for benchmarking — debug builds serialize too much.
-- **Thread Sanitizer:** Use `-fsanitize=thread` to validate your lock-free deque implementation if writing your own.
+- **False sharing:** pad per-worker deques to separate cache lines (`alignas(64)`) to avoid cache-line bouncing between workers.
+- **Back-off strategy matters:** aggressive spinning wastes power; yielding/sleeping too eagerly increases latency. Good pools use exponential back-off.
+- Compile with `-O2` at minimum for benchmarking - debug builds serialize too much.
+- Thread Sanitizer: use `-fsanitize=thread` to validate your lock-free deque implementation if writing your own.

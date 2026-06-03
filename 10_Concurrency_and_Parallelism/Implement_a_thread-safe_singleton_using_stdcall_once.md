@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-The **singleton pattern** ensures only one instance of a class exists. In multithreaded code, the initialization must be thread-safe — multiple threads calling `getInstance()` simultaneously must all get the same instance, and construction must happen exactly once. C++11 provides two clean solutions: `std::call_once` and function-local statics (Meyer's Singleton).
+The **singleton pattern** ensures only one instance of a class ever exists. In single-threaded code that is trivial to implement. In multithreaded code, it requires care: if ten threads all call `getInstance()` simultaneously before the instance exists, you need to guarantee that exactly one of them creates it, the others wait, and all of them get the same object. C++11 provides two clean solutions for this: `std::call_once` and function-local statics (Meyer's Singleton). Both are correct and both are safe.
+
+Before C++11, people tried to solve this with "double-checked locking," which turned out to be broken in subtle ways. Understanding why it was broken helps explain why the C++11 solutions work.
 
 ### Three Approaches
 
@@ -21,8 +23,9 @@ The **singleton pattern** ensures only one instance of a class exists. In multit
 
 ### Core Example with call_once
 
-```cpp
+Here is the fundamental pattern. The `once_flag` tracks whether initialization has happened, and `call_once` ensures the lambda runs exactly once even when called from many threads simultaneously:
 
+```cpp
 #include <mutex>
 #include <memory>
 #include <iostream>
@@ -48,12 +51,13 @@ int main() {
     Database::getInstance().query("SELECT 1");
     Database::getInstance().query("SELECT 2");
     // Output:
-    // Database initialized   ← only once!
+    // Database initialized   <- only once!
     // Query: SELECT 1
     // Query: SELECT 2
 }
-
 ```
+
+No matter how many threads call `getInstance()` at the same time, "Database initialized" prints exactly once.
 
 ---
 
@@ -63,8 +67,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The pattern scales naturally to any number of threads. The 10-thread test below puts the initialization under pressure - every thread races to be the first one in:
 
+```cpp
 #include <mutex>
 #include <thread>
 #include <iostream>
@@ -107,7 +112,7 @@ int main() {
 
     for (auto& t : threads) t.join();
     // Output:
-    // Logger created: app.log    ← ONCE, regardless of thread count
+    // Logger created: app.log    <- ONCE, regardless of thread count
     // [app.log] Thread 0
     // [app.log] Thread 3
     // ... (order varies)
@@ -115,25 +120,27 @@ int main() {
     // HOW call_once works:
     // 1. First thread to call call_once runs the callable
     // 2. Other threads block until the callable completes
-    // 3. If callable throws, the flag is NOT set — next thread retries
+    // 3. If callable throws, the flag is NOT set - next thread retries
     // 4. After successful completion, all subsequent calls are no-ops (fast path)
 }
-
 ```
 
-**Explanation:** `std::once_flag` tracks whether initialization has occurred. `std::call_once` checks the flag — if not set, it runs the callable and sets the flag atomically. All concurrent callers block until the first one finishes. The fast path (flag already set) is extremely cheap — just an atomic load.
+`std::once_flag` tracks whether initialization has occurred. `std::call_once` checks the flag - if not set, it runs the callable and sets the flag atomically. All concurrent callers block until the first one finishes. The fast path (flag already set) is extremely cheap - just an atomic load.
 
 ### Q2: Explain why double-checked locking without call_once was broken before C++11
 
 **Answer:**
 
-```cpp
+This is worth understanding deeply, because the brokenness is not obvious at first glance. The double-checked locking pattern looks reasonable: check the pointer without a lock (cheap), only lock if it is null (rare), check again inside the lock (necessary). What could go wrong?
 
+The problem is that `instance = new BrokenSingleton()` is not one step. It is three steps: allocate memory, construct the object, assign the pointer. The compiler and CPU are both allowed to reorder those steps as long as the observable result in a single thread is the same. In a multi-threaded context without memory ordering guarantees, another thread can see the pointer assigned (non-null) before the object is fully constructed. Before C++11, there was no language-level memory model at all, so there was no way to prevent this:
+
+```cpp
 #include <mutex>
 #include <iostream>
 
 // === BROKEN pre-C++11 double-checked locking ===
-// (DO NOT USE — shown for educational purposes only)
+// (DO NOT USE - shown for educational purposes only)
 
 class BrokenSingleton {
     static BrokenSingleton* instance; // raw pointer
@@ -158,16 +165,16 @@ public:
 //   b. Construct the object in that memory
 //   c. Assign the pointer to `instance`
 //
-// The compiler/CPU can REORDER these to: a → c → b
+// The compiler/CPU can REORDER these to: a -> c -> b
 // (assign pointer BEFORE construction completes)
 //
 // Thread 1:                    Thread 2:
 //   allocate memory (a)
-//   assign pointer (c)         check: instance != nullptr ← sees non-null!
-//   [not yet constructed!]     return instance ← USES UNCONSTRUCTED OBJECT = UB!
+//   assign pointer (c)         check: instance != nullptr <- sees non-null!
+//   [not yet constructed!]     return instance <- USES UNCONSTRUCTED OBJECT = UB!
 //   construct object (b)
 //
-// Pre-C++11, there was NO memory model — no way to prevent this reordering.
+// Pre-C++11, there was NO memory model - no way to prevent this reordering.
 //
 // With C++11, this could be fixed with:
 //   std::atomic<Singleton*> instance;
@@ -195,17 +202,17 @@ int main() {
     (void)s;
     std::cout << "Use Meyer's Singleton or std::call_once\n";
 }
-
 ```
 
-**Explanation:** Before C++11, C++ had no memory model. The compiler and CPU were free to reorder the pointer assignment before construction completed — other threads could see a non-null pointer to an unconstructed object (undefined behavior). C++11's memory model and `std::call_once` / function-local static guarantees eliminated this problem.
+C++11's memory model and `std::call_once` / function-local static guarantees eliminate this class of problem entirely. You do not need to think about memory ordering yourself - the language guarantees it for you.
 
 ### Q3: Compare call_once with a function-local static singleton for performance and correctness
 
 **Answer:**
 
-```cpp
+Both approaches are equally correct in C++11. The performance is nearly identical on the fast path (already initialized). The differences are about flexibility and lifetime management:
 
+```cpp
 #include <mutex>
 #include <iostream>
 #include <chrono>
@@ -261,21 +268,21 @@ int main() {
 
     std::cout << "call_once: " << co_ms << " ms\n";
     std::cout << "Meyer's:   " << ms_ms << " ms\n";
-    // Both are very fast — the "already initialized" path is just an atomic load.
+    // Both are very fast - the "already initialized" path is just an atomic load.
     // Typically within ~5% of each other.
 
     // COMPARISON:
-    // ┌────────────────┬──────────────────┬────────────────────┐
-    // │                │ std::call_once   │ Meyer's Singleton  │
-    // ├────────────────┼──────────────────┼────────────────────┤
-    // │ Lines of code  │ More (flag+ptr)  │ 1 line             │
-    // │ Thread safety  │ Yes              │ Yes (C++11)        │
-    // │ Exception      │ Retries on throw │ Retries on throw   │
-    // │ Destruction    │ Manual (leak/at) │ Automatic (atexit) │
-    // │ Init args      │ Flexible         │ Fixed at call site │
-    // │ Non-local init │ Yes              │ No (must be local) │
-    // │ Performance    │ ~Equal           │ ~Equal             │
-    // └────────────────┴──────────────────┴────────────────────┘
+    // +----------------+------------------+--------------------+
+    // |                | std::call_once   | Meyer's Singleton  |
+    // +----------------+------------------+--------------------+
+    // | Lines of code  | More (flag+ptr)  | 1 line             |
+    // | Thread safety  | Yes              | Yes (C++11)        |
+    // | Exception      | Retries on throw | Retries on throw   |
+    // | Destruction    | Manual (leak/at) | Automatic (atexit) |
+    // | Init args      | Flexible         | Fixed at call site |
+    // | Non-local init | Yes              | No (must be local) |
+    // | Performance    | ~Equal           | ~Equal             |
+    // +----------------+------------------+--------------------+
 
     // RECOMMENDATION:
     // Use Meyer's Singleton (function-local static) by default.
@@ -284,17 +291,16 @@ int main() {
     //   - You need to initialize non-local resources (global arrays, etc.)
     //   - The singleton must NOT be destroyed at program exit
 }
-
 ```
 
-**Explanation:** Both approaches are equally correct and thread-safe in C++11. Meyer's Singleton is simpler (one line) and handles destruction automatically. `call_once` offers more flexibility — runtime arguments, non-local initialization, and control over lifetime. For most cases, prefer Meyer's Singleton.
+Both approaches compile to an atomic load plus branch on the fast path. The difference is negligible in practice. Prefer Meyer's Singleton for simplicity - it is literally one line. Use `call_once` when you need runtime arguments or non-local initialization.
 
 ---
 
 ## Notes
 
-- **Exception behavior:** If the callable passed to `call_once` throws, the flag remains unset. The next thread calling `call_once` will retry — providing automatic retry semantics.
-- **`once_flag` is not copyable or movable.** It must be a static/global variable.
-- **Destruction order:** Meyer's Singleton is destroyed in reverse construction order during `atexit`. `call_once` with `new` has no automatic destruction (intentional for singletons that must outlive `main`).
-- **Performance:** Both paths compile to an atomic load + branch on the fast path. The difference is negligible.
+- Exception behavior: If the callable passed to `call_once` throws, the flag remains unset. The next thread calling `call_once` will retry - giving you automatic retry semantics for transient failures without any extra machinery.
+- `once_flag` is not copyable or movable. It must be a static or global variable.
+- Destruction order: Meyer's Singleton is destroyed in reverse construction order during program exit via `atexit`. `call_once` with `new` has no automatic destruction - this is intentional for singletons that must outlive `main`.
+- Performance: Both paths compile to an atomic load plus branch on the fast path. The difference is negligible.
 - Compile with `-std=c++11 -pthread`.

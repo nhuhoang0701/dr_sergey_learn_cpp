@@ -8,48 +8,54 @@
 
 ## Topic Overview
 
-The **ABA problem** is a subtle bug in lock-free algorithms that use compare-and-swap (CAS). CAS succeeds when the pointer value matches the expected value — but it can't detect if the value was changed to something else and then changed *back*.
+The **ABA problem** is a subtle bug in lock-free algorithms that use compare-and-swap (CAS). CAS succeeds when the pointer value matches the expected value - but it can't detect if the value was changed to something else and then changed *back*. The reason this trips people up is that CAS only checks bits in memory. It has absolutely no knowledge of history - it can't tell the difference between "this address was never touched" and "this address was freed, reallocated, and reused at the exact same location."
 
 ### The ABA Scenario (Lock-Free Stack)
 
-```cpp
+Walk through this scenario carefully - the timeline is the key to understanding why CAS fails here:
 
-Initial state:  head → [A] → [B] → [C] → null
+```cpp
+Initial state:  head -> [A] -> [B] -> [C] -> null
 
 Thread 1:  pop() begins
            reads head=A, reads A.next=B
            (wants to CAS head from A to B)
            ... gets preempted ...
 
-Thread 2:  pop() → removes A (head=B)
-           pop() → removes B (head=C)
-           push(A) → reuses A's memory, head=[A]→[C]→null
+Thread 2:  pop() -> removes A (head=B)
+           pop() -> removes B (head=C)
+           push(A) -> reuses A's memory, head=[A]->[C]->null
 
 Thread 1:  resumes
-           CAS(head, A, B) → SUCCEEDS! (head still points to A)
+           CAS(head, A, B) -> SUCCEEDS! (head still points to A)
            But B was already freed!
-           head → [B(freed)] → 💥 undefined behavior
-
+           head -> [B(freed)] -> undefined behavior
 ```
+
+Thread 1 saw `A` when it started and still sees `A` when it resumes - but the world has changed completely in between. `B` is gone, yet Thread 1 happily sets `head` to point at it. The stack is now corrupted.
 
 ### Why CAS Can't Detect ABA
 
-```cpp
+The fundamental limitation is that CAS is a bitwise comparison. It knows nothing about the history of a memory location:
 
+```cpp
 CAS only checks: "is the bits at this address still the same?"
 CAS does NOT check: "has this address been freed and reused?"
 
 Value at &head:
-  Time 0: 0x1000 (A)  ← Thread 1 reads this
-  Time 1: 0x2000 (B)  ← Thread 2 pops A
-  Time 2: 0x3000 (C)  ← Thread 2 pops B
-  Time 3: 0x1000 (A') ← Thread 2 pushes new A at SAME address
-  Time 4: CAS(&head, 0x1000, 0x2000) → SUCCESS (A'==A)
+  Time 0: 0x1000 (A)  <- Thread 1 reads this
+  Time 1: 0x2000 (B)  <- Thread 2 pops A
+  Time 2: 0x3000 (C)  <- Thread 2 pops B
+  Time 3: 0x1000 (A') <- Thread 2 pushes new A at SAME address
+  Time 4: CAS(&head, 0x1000, 0x2000) -> SUCCESS (A'==A)
            But the stack is now corrupted
-
 ```
 
+The address `0x1000` came back, and CAS has no way to know it was ever gone.
+
 ### Solutions Overview
+
+Each solution attacks the problem from a different angle. The table below gives you a quick comparison:
 
 | Solution | Mechanism | Overhead | Availability |
 | --- | --- | --- | --- |
@@ -67,8 +73,9 @@ Value at &head:
 
 **Answer:**
 
-```cpp
+This code demonstrates the vulnerable stack and then manually walks through the ABA timeline so you can see exactly how the corruption happens:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -100,7 +107,7 @@ public:
         while (old_head) {
             // DANGER: between loading old_head and CAS,
             // old_head might be freed and its memory reused!
-            Node<T>* next = old_head->next; // ← may read freed memory
+            Node<T>* next = old_head->next; // <- may read freed memory
             if (head_.compare_exchange_weak(
                 old_head, next,
                 std::memory_order_release, std::memory_order_relaxed))
@@ -120,11 +127,11 @@ int main() {
     auto* B = new Node<int>{2, nullptr};
     auto* C = new Node<int>{3, nullptr};
 
-    // Build stack: head → A → B → C
+    // Build stack: head -> A -> B -> C
     stack.push(C);
     stack.push(B);
     stack.push(A);
-    // State: head → A → B → C → null
+    // State: head -> A -> B -> C -> null
 
     std::cout << "Initial: A=" << A << " B=" << B << " C=" << C << "\n";
 
@@ -137,32 +144,31 @@ int main() {
     // Thread 2 simulation: pop A, pop B, push new node at A's old address
     auto* popped_A = stack.pop(); // removes A
     auto* popped_B = stack.pop(); // removes B
-    // State: head → C → null
+    // State: head -> C -> null
 
     // Simulate memory reuse: reuse A's memory for a new node
     popped_A->data = 999;
     popped_A->next = nullptr;
     stack.push(popped_A); // push "new" A back
-    // State: head → A(999) → C → null
+    // State: head -> A(999) -> C -> null
 
     std::cout << "After Thread2: head points to same address as A: "
               << (popped_A == t1_head ? "YES (ABA!)" : "no") << "\n";
 
-    // Thread 1 resumes: CAS(head, A, B) — would succeed!
+    // Thread 1 resumes: CAS(head, A, B) - would succeed!
     // Because head still == A (same address), but:
     // - B is no longer in the stack (it was popped and freed)
     // - A.next is now C, not B
     // - Setting head=B would point to freed memory
 
     std::cout << "Thread1 would set head=B=" << t1_next
-              << " (already popped!) → CORRUPTION\n";
+              << " (already popped!) -> CORRUPTION\n";
 
     // Cleanup
     delete C;
     while (auto* n = stack.pop()) delete n;
     delete popped_B;
 }
-
 ```
 
 **Explanation:** The CAS in Thread 1's pop() would succeed because `head` still points to the same address as `A`. But `A.next` (which is `B`) was already removed and freed. Setting `head = B` corrupts the stack, pointing to freed memory.
@@ -171,8 +177,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+The insight here is simple: instead of storing just a pointer, store a pointer paired with a monotonically increasing version counter. Now every modification to `head` increments the counter. Even if the address returns to `A`, the tag will be different - so CAS correctly rejects the stale snapshot.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -235,15 +242,15 @@ int main() {
     //
     // Standard CAS:
     //   CAS(head, A, B) succeeds if head == A (address only)
-    //   ABA: head goes A → B → A, CAS sees A → succeeds (BAD!)
+    //   ABA: head goes A -> B -> A, CAS sees A -> succeeds (BAD!)
     //
     // Tagged CAS:
     //   CAS(head, {A,5}, {B,6}) succeeds if head == {A,5}
-    //   ABA: head goes {A,5} → {B,6} → {A,7}
-    //   CAS sees {A,7} ≠ {A,5} → FAILS (tag mismatch!) ✓
+    //   ABA: head goes {A,5} -> {B,6} -> {A,7}
+    //   CAS sees {A,7} != {A,5} -> FAILS (tag mismatch!)
     //
     //   Even though the pointer is the same (A), the version
-    //   counter has changed (5→7), so CAS correctly fails.
+    //   counter has changed (5->7), so CAS correctly fails.
 
     ABASafeStack<int> stack;
 
@@ -269,7 +276,6 @@ int main() {
     //
     // This allows using regular 64-bit CAS instead of 128-bit.
 }
-
 ```
 
 **Explanation:** A tagged pointer pairs the pointer with a monotonically increasing version counter. Even if the same pointer value reappears (ABA), the tag will have changed. CAS compares *both* the pointer and the tag, so it correctly detects the intermediate modification and fails.
@@ -278,8 +284,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+Hazard pointers take a completely different approach. Instead of detecting that a pointer was reused, they *prevent* reuse from happening in the first place. Before a thread reads a pointer and dereferences it, it publishes that pointer in a globally-visible "hazard pointer" slot. No other thread is allowed to free a node while it appears in any hazard pointer slot. So the address can never be recycled while anyone might still be using it - and without address recycling, ABA can't happen.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -297,7 +304,7 @@ class HazardPtrSystem {
     static std::atomic<int> tid_counter_;
 
     struct Retired { T* ptr; };
-    // Per-thread retired lists (simplified — not thread_local for demo)
+    // Per-thread retired lists (simplified - not thread_local for demo)
     std::vector<Retired> retired_[MAX_THREADS];
 
     static int get_tid() {
@@ -372,7 +379,7 @@ void safe_push(int val) {
 int safe_pop() {
     Node* old_head;
     while (true) {
-        old_head = hp.protect(stack_head);  // ← PROTECT before reading
+        old_head = hp.protect(stack_head);  // <- PROTECT before reading
         if (!old_head) { hp.unprotect(); return -1; }
 
         Node* next = old_head->next;  // safe: old_head can't be freed
@@ -380,12 +387,12 @@ int safe_pop() {
             old_head, next,
             std::memory_order_release, std::memory_order_relaxed)) {
             int val = old_head->data;
-            hp.unprotect();         // ← done reading
-            hp.retire(old_head);    // ← defer deletion (NOT immediate delete!)
+            hp.unprotect();         // <- done reading
+            hp.retire(old_head);    // <- defer deletion (NOT immediate delete!)
             return val;
             // old_head won't be freed until no thread's HP points to it
-            // → it can NEVER be reallocated while another thread reads it
-            // → ABA is IMPOSSIBLE
+            // -> it can NEVER be reallocated while another thread reads it
+            // -> ABA is IMPOSSIBLE
         }
     }
 }
@@ -411,7 +418,6 @@ int main() {
     // The hazard pointer ensures nodes are never freed while
     // any thread might still be dereferencing them.
 }
-
 ```
 
 **Explanation:** Hazard pointers solve ABA by a fundamentally different mechanism than tagged pointers: instead of detecting that a pointer was reused, they *prevent* reuse entirely. A retired node stays allocated until no thread is reading it. Since the address is never recycled, the ABA scenario (same address, different node) cannot occur.
@@ -421,8 +427,8 @@ int main() {
 ## Notes
 
 - **ABA only matters with CAS + manual memory management.** Languages with garbage collection (Java, Go) never have ABA because freed objects aren't reused at the same address.
-- **Tagged pointers** are the simplest fix and work well when the tag counter doesn't wrap around. A 16-bit counter wraps after 65,536 operations — enough for most practical scenarios.
+- **Tagged pointers** are the simplest fix and work well when the tag counter doesn't wrap around. A 16-bit counter wraps after 65,536 operations - enough for most practical scenarios.
 - **Double-width CAS (`cmpxchg16b`)** is available on x86-64 but requires 16-byte alignment. Check with `std::atomic<TaggedPtr>::is_lock_free()`.
-- **ABA in practice:** Surprisingly rare with modern allocators (jemalloc, tcmalloc) because freed memory isn't immediately reused. But it's still a *correctness* bug — it will happen eventually under stress.
-- **TSan cannot detect ABA** — it's a logical bug, not a data race.
+- **ABA in practice:** Surprisingly rare with modern allocators (jemalloc, tcmalloc) because freed memory isn't immediately reused. But it's still a *correctness* bug - it will happen eventually under stress.
+- **TSan cannot detect ABA** - it's a logical bug, not a data race.
 - Compile with `-std=c++17 -O2 -pthread -mcx16` (for 128-bit CAS on x86).

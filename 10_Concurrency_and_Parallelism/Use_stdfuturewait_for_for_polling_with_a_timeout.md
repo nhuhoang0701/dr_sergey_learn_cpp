@@ -8,33 +8,31 @@
 
 ## Topic Overview
 
-`std::future::wait_for()` checks whether a future's result is ready, waiting for at most a specified duration. It returns a `std::future_status` enum:
+`std::future::wait_for()` checks whether a future's result is ready, waiting for at most a specified duration. It returns a `std::future_status` enum, which tells you one of three things: the result is ready, the timeout elapsed without a result, or the task was deferred and will never become ready until you call `get()`.
 
 | Status | Meaning |
 | --- | --- |
-| `future_status::ready` | Result or exception is available — `get()` won't block |
+| `future_status::ready` | Result or exception is available - `get()` won't block |
 | `future_status::timeout` | Duration elapsed, result not yet ready |
 | `future_status::deferred` | Task was deferred (won't run until `get()` is called) |
 
 ### Signature
 
 ```cpp
-
 template<class Rep, class Period>
 std::future_status wait_for(const std::chrono::duration<Rep,Period>& timeout);
-
 ```
 
 ### Key Pattern
 
-```cpp
+The non-blocking poll pattern is straightforward: keep calling `wait_for` with a zero or short duration until the status is `ready`, then call `get()` knowing it will return immediately.
 
+```cpp
 // Non-blocking poll loop:
 while (fut.wait_for(0ms) != std::future_status::ready) {
     // do other work...
 }
 auto result = fut.get(); // guaranteed immediate
-
 ```
 
 ---
@@ -45,8 +43,9 @@ auto result = fut.get(); // guaranteed immediate
 
 **Answer:**
 
-```cpp
+Watch the status values change as we poll a task that takes about 350ms to complete. This illustrates all three possible return values in a realistic scenario.
 
+```cpp
 #include <future>
 #include <thread>
 #include <iostream>
@@ -87,7 +86,7 @@ int main() {
         }
     }
 
-    int result = fut.get(); // immediate — already ready
+    int result = fut.get(); // immediate - already ready
     std::cout << "Result: " << result << "\n";
 
     // Output:
@@ -97,7 +96,7 @@ int main() {
     // Poll 4: READY
     // Result: 42
     //
-    // (3 timeouts × 100ms ≈ 300ms, then ready at ~350ms)
+    // (3 timeouts * 100ms = 300ms, then ready at ~350ms)
 
     // === GOTCHA: wait_for on deferred future ===
     auto deferred = std::async(std::launch::deferred, [] { return 99; });
@@ -112,15 +111,15 @@ int main() {
     // Deferred future status: deferred
     // Deferred result: 99
 }
-
 ```
 
 ### Q2: Use wait_for in a UI event loop to remain responsive while waiting for a background task
 
 **Answer:**
 
-```cpp
+The key insight here is that a UI cannot afford to block. By polling with a short timeout equal to one frame's worth of time, the UI loop stays alive and responsive while the background task runs independently.
 
+```cpp
 #include <future>
 #include <thread>
 #include <iostream>
@@ -167,12 +166,12 @@ int main() {
     // Launch background task
     auto fut = std::async(std::launch::async, fetch_data);
 
-    // UI event loop — remains responsive
+    // UI event loop - remains responsive
     while (true) {
         ui.process_events();
         ui.render();
 
-        // Poll future with short timeout (16ms ≈ 60fps)
+        // Poll future with short timeout (16ms ~= 60fps)
         auto status = fut.wait_for(16ms);
 
         if (status == std::future_status::ready) {
@@ -184,7 +183,7 @@ int main() {
             }
             break;
         }
-        // status == timeout → continue event loop
+        // status == timeout -> continue event loop
     }
 
     // Output (animated):
@@ -194,17 +193,17 @@ int main() {
     //   ... (~50 frames at 16ms each)
     //   Result: Data loaded (42 records)
 }
-
 ```
 
-**Explanation:** The UI loop polls with `wait_for(16ms)`, keeping the frame rate at ~60fps. When the background task finishes, the next poll returns `ready` and we retrieve the result. The UI never freezes because `wait_for` never blocks longer than 16ms.
+The UI loop polls with `wait_for(16ms)`, keeping the frame rate at ~60fps. When the background task finishes, the next poll returns `ready` and we retrieve the result. The UI never freezes because `wait_for` never blocks longer than 16ms.
 
 ### Q3: Show a timeout-based retry pattern using wait_for and promise/future pairs
 
 **Answer:**
 
-```cpp
+`wait_for` shines in retry logic because it lets you abandon a slow attempt and move on without blocking indefinitely. The promise-based variant shows a more flexible design where each attempt runs on a fully independent detached thread.
 
+```cpp
 #include <future>
 #include <thread>
 #include <iostream>
@@ -316,18 +315,17 @@ int main() {
     //   Attempt 2: failed (Connection timeout)
     //   Attempt 3: got 200
 }
-
 ```
 
-**Key insight:** `wait_for` returns `timeout` without consuming the result, so you can abandon slow attempts and retry. Using `promise/future` pairs with detached threads allows each attempt to be independent — if an attempt times out, the detached thread eventually completes and the promise is destroyed harmlessly.
+`wait_for` returns `timeout` without consuming the result, so you can abandon slow attempts and retry. Using `promise/future` pairs with detached threads allows each attempt to be independent - if an attempt times out, the detached thread eventually completes and the promise is destroyed harmlessly.
 
 ---
 
 ## Notes
 
 - **`wait_for(0ms)`:** Instant, non-blocking check. Returns `ready` if available, `timeout` otherwise. Perfect for tight polling loops.
-- **Deferred trap:** `wait_for` on a deferred future ALWAYS returns `deferred` — it will never become `ready` until `get()` is called. Always use `std::launch::async` if you want real parallelism.
+- **Deferred trap:** `wait_for` on a deferred future ALWAYS returns `deferred` - it will never become `ready` until `get()` is called. Always use `std::launch::async` if you want real parallelism.
 - **`wait_for` vs `wait_until`:** `wait_for` takes a duration (relative), `wait_until` takes a time_point (absolute). Use `wait_until` for deadline-based timeouts.
-- **Exception propagation:** If the async task throws, `get()` re-throws the exception in the calling thread. `wait_for` does NOT throw — it just reports status.
+- **Exception propagation:** If the async task throws, `get()` re-throws the exception in the calling thread. `wait_for` does NOT throw - it just reports status.
 - **Single-use:** `get()` can only be called once. Second call is UB. Use `shared_future` if multiple threads need the result.
 - Compile with `-std=c++17 -O2 -pthread`.

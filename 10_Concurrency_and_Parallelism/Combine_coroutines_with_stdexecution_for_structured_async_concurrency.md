@@ -1,26 +1,28 @@
 # Combine Coroutines with `std::execution` for Structured Async Concurrency
 
 **Category:** Concurrency & Parallelism  
-**Standard:** C++20 (Coroutines), C++26 (`std::execution` – P2300)  
-**Reference:** [P2300 – std::execution](https://wg21.link/P2300), [cppreference – Coroutines](https://en.cppreference.com/w/cpp/language/coroutines)  
+**Standard:** C++20 (Coroutines), C++26 (`std::execution` - P2300)  
+**Reference:** [P2300 - std::execution](https://wg21.link/P2300), [cppreference - Coroutines](https://en.cppreference.com/w/cpp/language/coroutines)  
 
 ---
 
 ## Topic Overview
 
-C++20 coroutines and the `std::execution` sender/receiver framework (P2300, targeting C++26) represent two complementary approaches to asynchronous programming. Coroutines provide a **sequential-looking syntax** for async control flow. Senders/receivers provide a **compositional, value-oriented graph** of async operations with structured concurrency guarantees. Combining them yields code that is both readable and architecturally sound.
+C++20 coroutines and the `std::execution` sender/receiver framework (P2300, targeting C++26) are two complementary approaches to asynchronous programming. They solve different parts of the problem, and they work beautifully together.
 
-The core insight is that a **sender** represents a description of work that *will* produce a value, while a **coroutine** provides a natural syntax to *await* that value. The bridge is an `operator co_await` for senders: when a coroutine `co_await`s a sender, it suspends until the sender completes, then resumes with the result. This lets you write:
+Coroutines give you a **sequential-looking syntax** for async control flow - you write code that reads top-to-bottom even when the actual execution jumps between threads and suspends at arbitrary points. Senders/receivers give you a **compositional, value-oriented graph** of async operations with structured concurrency guarantees baked in. Combining them yields code that is both readable and architecturally sound.
+
+The core insight is that a **sender** represents a description of work that *will* produce a value - it is lazy, it has not started yet. A **coroutine** provides a natural syntax to *await* that value. The bridge is an `operator co_await` for senders: when a coroutine `co_await`s a sender, it suspends until the sender completes, then resumes with the result. This lets you write code like this:
 
 ```cpp
-
 task<int> compute() {
     int a = co_await on(thread_pool, just(42) | then([](int x) { return x * 2; }));
     int b = co_await on(thread_pool, just(10) | then([](int x) { return x + 5; }));
     co_return a + b;
 }
-
 ```
+
+The coroutine reads sequentially, but each `co_await` hands off to the sender framework, which may run the work on a thread pool and resume the coroutine when the result is ready.
 
 | Aspect | Coroutines (C++20) | Senders/Receivers (P2300) | Combined |
 | --- | --- | --- | --- |
@@ -31,36 +33,36 @@ task<int> compute() {
 | **Scheduling** | Manual (post to executor) | `on`, `transfer`, `schedule` | Coroutine resumes on sender's scheduler |
 | **Structured concurrency** | Not inherent | Built-in (`when_all` scoping) | Enforced through sender lifetime |
 
+The diagram below shows what happens when a coroutine `co_await`s a sender. The coroutine suspends, the sender gets connected to a receiver embedded in the coroutine's promise, the async work runs, and then the coroutine resumes with the result:
+
 ```cpp
-
-┌──────────────────── Coroutine Frame ─────────────────────┐
-│                                                           │
-│  task<int> work() {                                       │
-│      auto sender = just(42) | then([](int x){ return x; });│
-│                    ▲                                      │
-│                    │ sender describes work                │
-│                    │                                      │
-│      int val = co_await sender;                           │
-│                    │                                      │
-│           ┌───────┴────────┐                              │
-│           │  Suspend       │  ← coroutine suspends        │
-│           │  Connect       │  ← sender connected to       │
-│           │  + Start       │    receiver in promise        │
-│           └───────┬────────┘                              │
-│                   │ async work executes...                │
-│                   │                                       │
-│           ┌───────┴────────┐                              │
-│           │  set_value(42) │  ← sender completes          │
-│           │  Resume        │  ← coroutine resumes         │
-│           └───────┬────────┘                              │
-│                   ▼                                       │
-│      co_return val;                                       │
-│  }                                                        │
-└───────────────────────────────────────────────────────────┘
-
++------------------ Coroutine Frame -----------------------+
+|                                                           |
+|  task<int> work() {                                       |
+|      auto sender = just(42) | then([](int x){ return x; });|
+|                    ^                                      |
+|                    | sender describes work                |
+|                    |                                      |
+|      int val = co_await sender;                           |
+|                    |                                      |
+|           +-------+--------+                              |
+|           |  Suspend       |  <- coroutine suspends        |
+|           |  Connect       |  <- sender connected to       |
+|           |  + Start       |    receiver in promise        |
+|           +-------+--------+                              |
+|                   | async work executes...                |
+|                   |                                       |
+|           +-------+--------+                              |
+|           |  set_value(42) |  <- sender completes          |
+|           |  Resume        |  <- coroutine resumes         |
+|           +-------+--------+                              |
+|                   v                                       |
+|      co_return val;                                       |
+|  }                                                        |
++-----------------------------------------------------------+
 ```
 
-The benefit of this combination over raw coroutines: **structured concurrency**. The sender/receiver model guarantees that all child operations complete before the parent scope exits—even under cancellation. This eliminates dangling references and use-after-free bugs that plague `fire-and-forget` coroutine designs. The benefit over raw senders: **readability**. Sequential async logic reads like synchronous code instead of deeply nested algorithm trees.
+The benefit of this combination over raw coroutines is **structured concurrency**. The sender/receiver model guarantees that all child operations complete before the parent scope exits - even under cancellation. This eliminates dangling references and use-after-free bugs that plague "fire-and-forget" coroutine designs. The benefit over raw senders is **readability**: sequential async logic reads like synchronous code instead of deeply nested algorithm trees.
 
 ---
 
@@ -68,8 +70,9 @@ The benefit of this combination over raw coroutines: **structured concurrency**.
 
 ### Q1: Implement a basic `task<T>` coroutine type that can `co_await` a simple sender-like object
 
-```cpp
+This is a lot of boilerplate, but reading through it is worth the investment. The `async_value` type acts as a minimal stand-in for a real P2300 sender. Pay attention to how `await_suspend` is the seam where the coroutine hands control to the async world, and `await_resume` is where it picks up the result on the way back:
 
+```cpp
 // Compile: g++ -std=c++20 -pthread -fcoroutines q1_task_sender.cpp -o q1
 #include <coroutine>
 #include <functional>
@@ -83,7 +86,7 @@ struct async_value {
     T value_;
     explicit async_value(T v) : value_(std::move(v)) {}
 
-    // Awaiter interface—bridges sender concept to co_await
+    // Awaiter interface - bridges sender concept to co_await
     bool await_ready() const noexcept { return false; }
 
     void await_suspend(std::coroutine_handle<> h) const {
@@ -161,17 +164,17 @@ int main() {
     std::cout << "Result: " << result << "\n";  // 100
     return 0;
 }
-
 ```
 
-**Key insight:** The `async_value` acts as a minimal sender proxy. Its `await_suspend` replaces the connect+start phase of a real sender, and `await_resume` delivers the value. In production senders (P2300), the `operator co_await` on a sender automatically builds a receiver that resumes the coroutine on `set_value`.
+The `async_value` acts as a minimal sender proxy. Its `await_suspend` replaces the connect+start phase of a real sender, and `await_resume` delivers the value. In production senders (P2300), the `operator co_await` on a sender automatically builds a receiver that resumes the coroutine on `set_value`.
 
 ---
 
 ### Q2: Show structured concurrency by running multiple senders in parallel within a coroutine using a `when_all`-like primitive
 
-```cpp
+The goal here is to fan out two tasks in parallel and then rejoin before the parent coroutine continues. The `when_all_awaitable` type is the key - notice how it uses an atomic counter to detect when both children have finished, and only then resumes the parent:
 
+```cpp
 // Compile: g++ -std=c++20 -pthread -fcoroutines q2_when_all.cpp -o q2
 #include <coroutine>
 #include <iostream>
@@ -288,17 +291,17 @@ int main() {
     std::cout << "Combined: " << result << "\n";  // "hello 42"
     return 0;
 }
-
 ```
 
-**Key insight:** `when_all` is the structured concurrency primitive. It guarantees both child tasks complete before the parent coroutine resumes. In P2300, `execution::when_all(sender1, sender2)` returns a sender that completes with a tuple of results. If either child fails or is cancelled, the other is cancelled too—preventing resource leaks. Our simplified version omits cancellation but demonstrates the pattern.
+`when_all` is the structured concurrency primitive. It guarantees both child tasks complete before the parent coroutine resumes. In P2300, `execution::when_all(sender1, sender2)` returns a sender that completes with a tuple of results. If either child fails or is cancelled, the other is cancelled too - preventing resource leaks. The simplified version above omits cancellation but demonstrates the core pattern.
 
 ---
 
 ### Q3: Show when you should prefer pure senders over coroutines, and vice versa
 
-```cpp
+The two models have genuinely different strengths, and the real skill is knowing which to reach for. Think of it this way: senders are for building infrastructure, coroutines are for writing business logic that uses that infrastructure.
 
+```cpp
 // Compile: g++ -std=c++20 -pthread -fcoroutines q3_sender_vs_coro.cpp -o q3
 #include <concepts>
 #include <functional>
@@ -383,18 +386,17 @@ int main() {
               << "Bridge them with operator co_await on senders.\n";
     return 0;
 }
-
 ```
 
-**Key insight:** The two models have different strengths. **Senders** are optimal for building reusable, composable async infrastructure—schedulers, retry policies, timeout wrappers—because they compose at the type level without coroutine frame allocations. **Coroutines** are optimal for consuming that infrastructure in application code, providing sequential syntax for inherently sequential logic. The bridge (`co_await sender`) combines both: the infrastructure is a sender graph, and the business logic reads like synchronous code.
+Senders are optimal for building reusable, composable async infrastructure - schedulers, retry policies, timeout wrappers - because they compose at the type level without coroutine frame allocations. Coroutines are optimal for consuming that infrastructure in application code, providing sequential syntax for inherently sequential logic. The bridge (`co_await sender`) combines both: the infrastructure is a sender graph, and the business logic reads like synchronous code.
 
 ---
 
 ## Notes
 
-- **P2300 status:** `std::execution` is targeting C++26. Implementations exist in stdexec (NVIDIA) and libunifex (Meta). Use these to experiment today.
-- **`operator co_await` for senders:** P2300 defines `as_awaitable()` to adapt a sender into an awaiter. This is how `co_await some_sender` works—the sender is connected to a receiver embedded in the coroutine's promise type.
-- **Coroutine frame allocation:** Each `co_await` in a coroutine doesn't allocate—the frame is allocated once. However, nested coroutines each get their own frame. Senders avoid this by composing at compile time.
-- **Cancellation propagation:** In P2300, stop tokens flow through the sender tree. When a parent is cancelled, `set_stopped()` propagates to children. Coroutines receive cancellation via `stop_token` in their promise type. The combined model makes this transparent.
-- **Error channels:** Senders have `set_error(E)` alongside `set_value(T)` and `set_stopped()`. When a coroutine `co_await`s a sender that errors, the error is typically thrown as an exception in the coroutine. Use `let_error` to handle errors within the sender graph without exceptions.
-- **Don't mix and match blindly.** Pure sender pipelines should own their lifetimes. Coroutines should `co_await` senders, not store sender handles across suspension points—that risks dangling references if the sender completes after the coroutine frame is destroyed.
+- P2300 status: `std::execution` is targeting C++26. Implementations exist in stdexec (NVIDIA) and libunifex (Meta). Use these to experiment today.
+- `operator co_await` for senders: P2300 defines `as_awaitable()` to adapt a sender into an awaiter. This is how `co_await some_sender` works - the sender is connected to a receiver embedded in the coroutine's promise type.
+- Coroutine frame allocation: Each `co_await` in a coroutine does not allocate a new frame - the frame is allocated once at coroutine creation. However, nested coroutines each get their own frame. Senders avoid this by composing at compile time.
+- Cancellation propagation: In P2300, stop tokens flow through the sender tree. When a parent is cancelled, `set_stopped()` propagates to children. Coroutines receive cancellation via `stop_token` in their promise type. The combined model makes this transparent.
+- Error channels: Senders have `set_error(E)` alongside `set_value(T)` and `set_stopped()`. When a coroutine `co_await`s a sender that errors, the error is typically thrown as an exception in the coroutine. Use `let_error` to handle errors within the sender graph without exceptions.
+- Do not mix and match blindly. Pure sender pipelines should own their lifetimes. Coroutines should `co_await` senders, not store sender handles across suspension points - that risks dangling references if the sender completes after the coroutine frame is destroyed.

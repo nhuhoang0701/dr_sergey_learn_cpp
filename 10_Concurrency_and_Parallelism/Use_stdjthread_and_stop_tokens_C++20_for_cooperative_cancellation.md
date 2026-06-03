@@ -11,15 +11,15 @@
 
 `std::jthread` ("joining thread") is a drop-in replacement for `std::thread` with two improvements:
 
-1. **Auto-join on destruction** — no more `std::terminate()` from forgetting to join
-2. **Built-in stop token** — cooperative cancellation without manual flags
+1. **Auto-join on destruction** - no more `std::terminate()` from forgetting to join
+2. **Built-in stop token** - cooperative cancellation without manual flags
+
+These two features together eliminate most of the boilerplate and footguns that come with raw `std::thread`.
 
 ### Comparison
 
 ```cpp
-
 std::thread:                        std::jthread:
-─────────────                        ──────────────
 std::thread t(work);                 std::jthread jt(work);
 // MUST call t.join() or             // auto-joins in destructor
 // t.detach() before destruction     // auto-requests stop
@@ -32,7 +32,6 @@ t = std::thread([&]{                 jt = std::jthread([](std::stop_token st){
 });                                  });
 stop = true;                         // jt.request_stop() called automatically
 t.join();                            // on destruction (or manually)
-
 ```
 
 ---
@@ -43,8 +42,9 @@ t.join();                            // on destruction (or manually)
 
 **Answer:**
 
-```cpp
+The reason `std::thread` requires you to call `join()` or `detach()` before destruction is that the destructor cannot safely make that choice for you - it does not know whether you intended for the thread to keep running. `jthread` solves this by always joining on destruction, which is the right answer in the vast majority of cases.
 
+```cpp
 #include <thread>
 #include <iostream>
 #include <chrono>
@@ -56,7 +56,7 @@ void demo_thread_danger() {
     // DANGER 1: Forgetting to join
     // {
     //     std::thread t([]{ std::cout << "work\n"; });
-    //     // destructor called without join/detach → std::terminate()!
+    //     // destructor called without join/detach -> std::terminate()!
     // }
 
     // DANGER 2: Exception skips join
@@ -65,11 +65,11 @@ void demo_thread_danger() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             std::cout << "  thread done\n";
         });
-        // If this throws, t.join() is skipped → std::terminate()!
+        // If this throws, t.join() is skipped -> std::terminate()!
         // throw std::runtime_error("oops");
         t.join(); // MUST remember this
     } catch (...) {
-        // t is already destroyed → terminate() was called
+        // t is already destroyed -> terminate() was called
     }
 }
 
@@ -82,9 +82,9 @@ void demo_jthread_safety() {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             std::cout << "  jthread done\n";
         });
-        // jt goes out of scope here → auto-joins. No terminate()!
+        // jt goes out of scope here -> auto-joins. No terminate()!
     }
-    std::cout << "  (after scope — jthread already joined)\n";
+    std::cout << "  (after scope - jthread already joined)\n";
 
     // Safe even with exceptions
     try {
@@ -93,12 +93,12 @@ void demo_jthread_safety() {
             std::cout << "  jthread in try block\n";
         });
         throw std::runtime_error("oops");
-        // jt destructor runs during stack unwinding → auto-joins safely
+        // jt destructor runs during stack unwinding -> auto-joins safely
     } catch (const std::exception& e) {
         std::cout << "  Caught: " << e.what() << " (jthread was auto-joined)\n";
     }
 
-    // Multiple jthreads — all auto-join in reverse order
+    // Multiple jthreads - all auto-join in reverse order
     {
         std::jthread j1([]{std::cout << "  j1 done\n";});
         std::jthread j2([]{std::cout << "  j2 done\n";});
@@ -117,22 +117,22 @@ int main() {
     //
     // === std::jthread safety ===
     //   jthread done
-    //   (after scope — jthread already joined)
+    //   (after scope - jthread already joined)
     //   jthread in try block
     //   Caught: oops (jthread was auto-joined)
     //   j3 done
     //   j2 done
     //   j1 done
 }
-
 ```
 
 ### Q2: Implement a cancellable worker loop using std::stop_token::stop_requested
 
 **Answer:**
 
-```cpp
+The stop token model is cooperative: the thread checks whether a stop has been requested and exits when it sees one. Nobody forcibly kills the thread - it finishes its current unit of work cleanly and then exits. This is almost always what you actually want, because forcible termination leaves shared state in an unknown condition.
 
+```cpp
 #include <thread>
 #include <stop_token>
 #include <iostream>
@@ -214,15 +214,15 @@ int main() {
     // Sensor 1: stopped after 3 readings
     // ...
 }
-
 ```
 
 ### Q3: Show how std::stop_callback can clean up resources when a stop is requested
 
 **Answer:**
 
-```cpp
+Here is where the stop token system becomes really powerful. The `stop_callback` lets you register cleanup logic that fires automatically when a stop is requested - even if the thread is currently blocked inside `cv.wait()` or a similar call. Without this mechanism, cancellation and blocking waits do not mix cleanly.
 
+```cpp
 #include <thread>
 #include <stop_token>
 #include <iostream>
@@ -273,10 +273,10 @@ public:
         queue_.pop();
         return val;
     }
-    // stop_callback is destroyed when pop() returns — automatically deregistered
+    // stop_callback is destroyed when pop() returns - automatically deregistered
 };
 
-// === Example 2: Chain cancellation (parent → child) ===
+// === Example 2: Chain cancellation (parent -> child) ===
 void child_task(std::stop_token stoken) {
     while (!stoken.stop_requested()) {
         std::cout << "  Child working...\n";
@@ -296,10 +296,10 @@ void parent_task(std::stop_token parent_token) {
 
     std::jthread child(child_task);
     // Connect child to child_source (not parent)
-    // But via stop_callback, parent stop → child stop
+    // But via stop_callback, parent stop -> child stop
 
     std::this_thread::sleep_for(std::chrono::milliseconds(350));
-    // If parent is stopped, propagate callback fires → child stops
+    // If parent is stopped, propagate callback fires -> child stops
 }
 
 int main() {
@@ -319,7 +319,7 @@ int main() {
         q.push(2);
         q.push(3);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        // consumer destructor: request_stop() → callback fires → cv wakes → pop returns nullopt
+        // consumer destructor: request_stop() -> callback fires -> cv wakes -> pop returns nullopt
     }
 
     // === Chained cancellation ===
@@ -327,7 +327,7 @@ int main() {
     {
         std::jthread parent(parent_task);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        parent.request_stop(); // parent stop → callback → child stop
+        parent.request_stop(); // parent stop -> callback -> child stop
     }
 
     // Output:
@@ -343,10 +343,9 @@ int main() {
     //   Propagating stop to child...
     //   Child cancelled
 }
-
 ```
 
-**Key insight:** `stop_callback` bridges the gap between stop tokens and other blocking primitives. Without it, a thread blocked on `cv.wait()` would never wake up to check `stop_requested()`. The callback calls `cv.notify_all()`, waking the thread so it can observe the stop request.
+`stop_callback` bridges the gap between stop tokens and other blocking primitives. Without it, a thread blocked on `cv.wait()` would never wake up to check `stop_requested()`. The callback calls `cv.notify_all()`, waking the thread so it can observe the stop request. This pattern - register a wake-up callback, then wait with a stop check in the predicate - is the standard recipe for making any blocking wait cancellable.
 
 ---
 
@@ -354,7 +353,7 @@ int main() {
 
 - **`stop_callback` lifetime:** The callback is registered in the constructor and deregistered in the destructor. If stop was already requested, the callback runs **immediately in the constructor**.
 - **Thread safety:** `stop_callback` is safe to construct and destroy from any thread. Multiple callbacks on the same token are all called when stop is requested.
-- **`jthread` destructor sequence:** 1) `request_stop()` → 2) callable checks `stop_requested()` → 3) `join()`.
+- **`jthread` destructor sequence:** 1) `request_stop()` -> 2) callable checks `stop_requested()` -> 3) `join()`.
 - **Migrating from `std::thread`:** Replace `std::thread` with `std::jthread`, replace `std::atomic<bool> stop` with `std::stop_token` parameter, replace `stop = true; t.join()` with nothing (destructor handles it).
-- **`stop_source`/`stop_token`/`stop_callback`** can be used independently of `jthread` — they're general-purpose cancellation primitives.
+- **`stop_source`/`stop_token`/`stop_callback`** can be used independently of `jthread` - they're general-purpose cancellation primitives.
 - Compile with `-std=c++20 -O2 -pthread`.

@@ -9,27 +9,27 @@
 
 ## Topic Overview
 
-`memory_order_relaxed` provides **atomicity** (no torn reads/writes) but **no ordering guarantees** relative to other memory operations. This makes it the cheapest memory order — ideal for counters and statistics where you only need the final aggregate value, not real-time consistency with other data.
+`memory_order_relaxed` provides **atomicity** (no torn reads/writes) but **no ordering guarantees** relative to other memory operations. This makes it the cheapest memory order - ideal for counters and statistics where you only need the final aggregate value, not real-time consistency with other data. The mental model is: relaxed says "this operation itself won't be torn," but says nothing about whether other memory operations before or after it are visible to other threads.
 
 ### When Relaxed Is Safe
 
+If the table feels dense, the rule boils down to this: relaxed is safe when the atomic variable stands alone - when no other data's correctness depends on seeing the atomic value at a particular moment. Counters are perfect for this. A flag that signals "my data is ready for you to read" is not.
+
 ```cpp
-
 SAFE (only need atomicity):                UNSAFE (need ordering):
-─────────────────────────                  ────────────────────────
-✓ Hit counters / statistics                ✗ Flag to signal "data ready"
-✓ Unique ID generation (fetch_add)         ✗ Reference counts (last decrement)
-✓ Progress indicators                      ✗ Publishing a pointer to new data
-✓ Approximate size queries                 ✗ Lock/unlock implementations
-
+-----------------------------------------  --------------------------
+Hit counters / statistics                  Flag to signal "data ready"
+Unique ID generation (fetch_add)           Reference counts (last decrement)
+Progress indicators                        Publishing a pointer to new data
+Approximate size queries                   Lock/unlock implementations
 ```
 
 ### Relaxed vs Stronger Orders
 
 | Operation | relaxed | acquire/release | seq_cst |
 | --- | --- | --- | --- |
-| Atomicity | ✓ | ✓ | ✓ |
-| Ordering with other ops | ✗ | Paired ops only | Total order |
+| Atomicity | Yes | Yes | Yes |
+| Ordering with other ops | No | Paired ops only | Total order |
 | Cost on x86 | Free | Free | `MFENCE` |
 | Cost on ARM | Free | `ldar`/`stlr` | `DMB ISH` |
 | Use case | Counters | Producer-consumer | Global coordination |
@@ -42,8 +42,9 @@ SAFE (only need atomicity):                UNSAFE (need ordering):
 
 **Answer:**
 
-```cpp
+Notice that every `fetch_add` here uses relaxed. Each individual increment is atomic, so no update is ever lost. But reading all the counters at once isn't a consistent snapshot - `page_views` might be from time T and `api_calls` from time T+1. For statistics dashboards, that approximation is perfectly fine:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -57,7 +58,7 @@ class StatsCollector {
     std::atomic<long long> bytes_sent_{0};
 
 public:
-    // All increments use relaxed — we don't need ordering with other data
+    // All increments use relaxed - we don't need ordering with other data
     void record_page_view() {
         page_views_.fetch_add(1, std::memory_order_relaxed);
     }
@@ -71,7 +72,7 @@ public:
         bytes_sent_.fetch_add(n, std::memory_order_relaxed);
     }
 
-    // Read with relaxed — values are approximate but eventually consistent
+    // Read with relaxed - values are approximate but eventually consistent
     void print_stats() const {
         std::cout << "Page views: " << page_views_.load(std::memory_order_relaxed)
                   << "\nAPI calls:  " << api_calls_.load(std::memory_order_relaxed)
@@ -111,18 +112,17 @@ int main() {
     stats.print_stats();
     std::cout << "Time: " << ms << " ms\n";
     // Output:
-    // Page views: 8000000    (exact — fetch_add is atomic)
+    // Page views: 8000000    (exact - fetch_add is atomic)
     // API calls:  800000
     // Errors:     80000
     // Bytes sent: 2048000000
     // Time: ~50 ms
 
     // Note: each INDIVIDUAL counter is exact (atomic increment).
-    // But reading ALL counters is NOT a consistent snapshot —
+    // But reading ALL counters is NOT a consistent snapshot -
     // page_views might be from time T and api_calls from time T+1.
     // For statistics, this "approximate" snapshot is perfectly fine.
 }
-
 ```
 
 **Explanation:** Relaxed atomics are perfect for counters because: (1) each increment is individually atomic (no lost updates), (2) the final value after joining all threads is exact, (3) mid-run reads give an approximate-but-useful snapshot, (4) zero synchronization overhead on all architectures.
@@ -131,25 +131,25 @@ int main() {
 
 **Answer:**
 
-```text
+There are a few guarantees that make relaxed safe for counters, and it's worth being explicit about each one:
 
+```text
 WHY RELAXED IS SAFE FOR COUNTERS:
-═════════════════════════════════
+==================================
 
 1. ATOMICITY guarantees:
-   - fetch_add is indivisible — no thread sees a partial update
+   - fetch_add is indivisible - no thread sees a partial update
    - Two concurrent fetch_add(1) always produce count+2, never count+1
-   
+
 2. NO ordering needed because:
    - The counter value doesn't "protect" other data
    - Reading counter=5000 doesn't mean anything about what other
+     variables look like - and we don't need it to
 
-     variables look like — and we don't need it to
-   
 3. For monotonically increasing counters:
-   - Thread A: counter.fetch_add(1, relaxed) → returns 0
-   - Thread A: counter.fetch_add(1, relaxed) → returns 1 or higher
-   
+   - Thread A: counter.fetch_add(1, relaxed) -> returns 0
+   - Thread A: counter.fetch_add(1, relaxed) -> returns 1 or higher
+
    Within a SINGLE thread, relaxed operations on the SAME atomic
    are guaranteed to be consistent (modification order coherence).
    A thread never sees an "older" value after seeing a "newer" one
@@ -158,20 +158,20 @@ WHY RELAXED IS SAFE FOR COUNTERS:
 4. After thread::join():
    - join() provides a happens-before relationship
    - All relaxed increments are guaranteed visible to the joining thread
-   
+
    Thread 1: counter += 1M (relaxed)
-   Thread 1 completes → join() in main
-   Main: counter.load(relaxed) → exactly 1M  ✓
+   Thread 1 completes -> join() in main
+   Main: counter.load(relaxed) -> exactly 1M
 
 WHAT RELAXED DOES NOT GUARANTEE (between threads, mid-execution):
    Thread A: counter.store(42, relaxed)
-   Thread B: counter.load(relaxed) → might still see 0!
-   (But eventually will see 42 — hardware caches propagate)
-
+   Thread B: counter.load(relaxed) -> might still see 0!
+   (But eventually will see 42 - hardware caches propagate)
 ```
 
-```cpp
+Here's a short code example that exercises these properties:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -182,9 +182,9 @@ int main() {
 
     // Within ONE thread: relaxed modifications are always consistent
     std::thread t([&] {
-        counter.fetch_add(1, std::memory_order_relaxed); // 0→1
-        counter.fetch_add(1, std::memory_order_relaxed); // 1→2
-        counter.fetch_add(1, std::memory_order_relaxed); // 2→3
+        counter.fetch_add(1, std::memory_order_relaxed); // 0->1
+        counter.fetch_add(1, std::memory_order_relaxed); // 1->2
+        counter.fetch_add(1, std::memory_order_relaxed); // 2->3
 
         // A single thread always sees its own relaxed writes in order
         int val = counter.load(std::memory_order_relaxed);
@@ -196,15 +196,15 @@ int main() {
     assert(counter.load(std::memory_order_relaxed) >= 3); // guaranteed
     std::cout << "Counter: " << counter.load() << "\n";
 }
-
 ```
 
 ### Q3: Show a case where relaxed ordering is insufficient and acquire/release is required
 
 **Answer:**
 
-```cpp
+Here's the classic mistake: using relaxed on a flag that signals "my data is ready." The flag increment is atomic, but there's no ordering - the consumer might observe the flag as set before seeing the data that was supposed to precede it:
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <cassert>
@@ -216,7 +216,7 @@ int data = 0; // non-atomic
 
 void broken_producer() {
     data = 42;
-    ready.store(true, std::memory_order_relaxed); // ← BUG!
+    ready.store(true, std::memory_order_relaxed); // <- BUG!
 }
 
 void broken_consumer() {
@@ -233,13 +233,13 @@ int data2 = 0;
 
 void fixed_producer() {
     data2 = 42;
-    ready2.store(true, std::memory_order_release); // ← RELEASE
+    ready2.store(true, std::memory_order_release); // <- RELEASE
     // release: all writes before this store (data2=42) are
     // guaranteed visible after a paired acquire load
 }
 
 void fixed_consumer() {
-    while (!ready2.load(std::memory_order_acquire)) // ← ACQUIRE
+    while (!ready2.load(std::memory_order_acquire)) // <- ACQUIRE
         ;
     // acquire: all writes before the paired release store
     // are guaranteed visible here
@@ -266,17 +266,14 @@ int main() {
     //       Use acquire/release when the atomic coordinates access
     //       to other (non-atomic) data.
     //
-    // ┌───────────────────────────────────────────────────┐
-    // │ If atomic SIGNALS something about other data:     │
-    // │   → acquire/release (or seq_cst)                  │
-    // │ If atomic is STANDALONE (counter, ID, stat):      │
-    // │   → relaxed is fine                               │
-    // └───────────────────────────────────────────────────┘
+    // If atomic SIGNALS something about other data:
+    //   -> acquire/release (or seq_cst)
+    // If atomic is STANDALONE (counter, ID, stat):
+    //   -> relaxed is fine
 }
-
 ```
 
-**Explanation:** When an atomic variable acts as a *signal* that non-atomic data is ready, you need ordering: release ensures the data is committed before the signal, and acquire ensures the reader sees the data after seeing the signal. Relaxed only provides atomicity on the flag itself — it says nothing about when other memory operations become visible.
+**Explanation:** When an atomic variable acts as a *signal* that non-atomic data is ready, you need ordering: release ensures the data is committed before the signal, and acquire ensures the reader sees the data after seeing the signal. Relaxed only provides atomicity on the flag itself - it says nothing about when other memory operations become visible.
 
 ---
 

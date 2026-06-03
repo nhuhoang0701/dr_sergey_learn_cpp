@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-C++20 adds `wait()`, `notify_one()`, and `notify_all()` to `std::atomic`. These provide efficient blocking similar to `condition_variable` but directly on atomic variables — no mutex required.
+C++20 adds `wait()`, `notify_one()`, and `notify_all()` to `std::atomic`. These provide efficient blocking similar to `condition_variable` but directly on atomic variables - no mutex required. The idea is simple: you tell the atomic what value you expect, and it puts your thread to sleep until the value changes.
 
 ### API
 
-```cpp
+Here is the basic shape of the API. The key insight is that `wait` takes the value you are currently seeing, not a predicate - it wakes you when the stored value is no longer equal to that argument.
 
+```cpp
 std::atomic<int> flag{0};
 
 // WAITER: blocks until flag != old_value
@@ -25,21 +26,20 @@ flag.wait(old_value);   // blocks if flag == old_value
 flag.store(1);
 flag.notify_one();       // wake one waiter
 flag.notify_all();       // wake all waiters
-
 ```
 
 ### Comparison: Spin vs Wait vs Condition Variable
 
-```cpp
+It helps to see all three approaches side by side. They solve the same problem but with very different tradeoffs:
 
+```cpp
 Spin loop:               atomic::wait:            condition_variable:
 while(flag == 0) {}      flag.wait(0);            cv.wait(lock, pred);
-                         
+
 CPU: 100% burn           CPU: sleeps              CPU: sleeps
-Latency: ~ns             Latency: ~μs             Latency: ~μs
+Latency: ~ns             Latency: ~us             Latency: ~us
 Power: maximum            Power: minimal           Power: minimal
 Needs: nothing           Needs: nothing           Needs: mutex + cv
-
 ```
 
 ---
@@ -50,8 +50,9 @@ Needs: nothing           Needs: nothing           Needs: mutex + cv
 
 **Answer:**
 
-```cpp
+Both versions produce the same result, but they differ dramatically in what the CPU is doing while waiting. The spin version keeps the core fully busy; the wait version lets the OS suspend the thread entirely.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -64,7 +65,7 @@ void demo_spin_wait() {
     std::thread worker([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         ready.store(true, std::memory_order_release);
-        // No notification needed — spin loop polls continuously
+        // No notification needed - spin loop polls continuously
     });
 
     // Burns CPU cycles checking ready in a tight loop
@@ -85,7 +86,7 @@ void demo_atomic_wait() {
         ready.notify_one(); // MUST notify after store!
     });
 
-    // Blocks efficiently — OS puts thread to sleep
+    // Blocks efficiently - OS puts thread to sleep
     ready.wait(false); // blocks while ready == false
     //         ^^^^^
     // "wait while the value equals 'false'"
@@ -111,17 +112,17 @@ int main() {
     //   Windows: WaitOnAddress() / WakeByAddressSingle()
     //   macOS: __ulock_wait() / __ulock_wake()
 }
-
 ```
 
-**Explanation:** `atomic::wait(old_value)` blocks the thread if the atomic's current value equals `old_value`. The OS wakes the thread when `notify_one()`/`notify_all()` is called. Unlike a spin loop, the waiting thread consumes zero CPU cycles. Unlike `condition_variable`, no mutex is needed.
+`atomic::wait(old_value)` blocks the thread if the atomic's current value equals `old_value`. The OS wakes the thread when `notify_one()`/`notify_all()` is called. Unlike a spin loop, the waiting thread consumes zero CPU cycles. Unlike `condition_variable`, no mutex is needed.
 
 ### Q2: Show that notify_one wakes one waiter and notify_all wakes all waiters
 
 **Answer:**
 
-```cpp
+Watch what happens when we have four threads all blocked on the same atomic and then fire one notification versus all notifications.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
@@ -198,59 +199,51 @@ int main() {
     //   Waiter 2 woke up
     // Total woken: 4
 }
-
 ```
 
-**Explanation:** `notify_one()` wakes exactly one waiting thread (the kernel chooses which). `notify_all()` wakes all threads blocked on `wait()` for that atomic. After waking, each thread re-checks the value — if it still matches `old_value`, it goes back to sleep (spurious wakeup protection is built in).
+`notify_one()` wakes exactly one waiting thread (the kernel chooses which). `notify_all()` wakes all threads blocked on `wait()` for that atomic. After waking, each thread re-checks the value - if it still matches `old_value`, it goes back to sleep. This built-in re-check means spurious wakeup protection is handled for you automatically.
 
 ### Q3: Compare atomic wait vs condition_variable for latency and power consumption
 
 **Answer:**
 
+The table below captures the main tradeoffs. After that, a benchmark puts concrete numbers on the latency difference.
+
 ```cpp
-
-═══════════════════════════════════════════════════════════
 COMPARISON: atomic::wait vs condition_variable vs spin
-═══════════════════════════════════════════════════════════
 
-┌───────────────────┬──────────────┬──────────────────┬──────────────┐
-│                   │ Spin loop    │ atomic::wait     │ cond_variable│
-├───────────────────┼──────────────┼──────────────────┼──────────────┤
-│ CPU usage (wait)  │ 100% one core│ ~0%              │ ~0%          │
-│ Wake latency      │ ~10-50 ns    │ ~1-5 μs          │ ~2-10 μs     │
-│ Requires mutex    │ No           │ No               │ Yes          │
-│ Spurious wakeups  │ N/A          │ Handled internally│ Must handle  │
-│ Predicate check   │ Manual       │ Built-in (value) │ Lambda       │
-│ Complex condition │ Yes          │ No (value only)  │ Yes          │
-│ Multiple waiters  │ Trivial      │ notify_one/all   │ notify_one/all│
-│ Mutex scope data  │ No           │ No               │ Yes          │
-│ Standard          │ C++11        │ C++20            │ C++11        │
-└───────────────────┴──────────────┴──────────────────┴──────────────┘
+                   | Spin loop     | atomic::wait      | cond_variable
+CPU usage (wait)   | 100% one core | ~0%               | ~0%
+Wake latency       | ~10-50 ns     | ~1-5 us           | ~2-10 us
+Requires mutex     | No            | No                | Yes
+Spurious wakeups   | N/A           | Handled internally| Must handle
+Predicate check    | Manual        | Built-in (value)  | Lambda
+Complex condition  | Yes           | No (value only)   | Yes
+Multiple waiters   | Trivial       | notify_one/all    | notify_one/all
+Mutex scope data   | No            | No                | Yes
+Standard           | C++11         | C++20             | C++11
 
 WHEN TO USE WHICH:
-──────────────────
 atomic::wait:
-  ✓ Simple flag/counter-based synchronization
-  ✓ No additional data to protect with a mutex
-  ✓ Low power consumption with moderate latency
-  ✓ Simpler code than condition_variable
-  
+  - Simple flag/counter-based synchronization
+  - No additional data to protect with a mutex
+  - Low power consumption with moderate latency
+  - Simpler code than condition_variable
+
 condition_variable:
-  ✓ Complex predicates ("queue not empty AND not paused")
-  ✓ Need to protect shared state with the same lock
-  ✓ Already using mutex for data access
-  ✓ condition_variable_any + stop_token (C++20)
+  - Complex predicates ("queue not empty AND not paused")
+  - Need to protect shared state with the same lock
+  - Already using mutex for data access
+  - condition_variable_any + stop_token (C++20)
 
 Spin loop:
-  ✓ Ultra-low latency required (< μs)
-  ✓ Wait time is very short (< 100 ns expected)
-  ✓ Dedicated CPU core available (real-time systems)
-  ✗ NEVER use for general-purpose waiting
-
+  - Ultra-low latency required (< us)
+  - Wait time is very short (< 100 ns expected)
+  - Dedicated CPU core available (real-time systems)
+  - NEVER use for general-purpose waiting
 ```
 
 ```cpp
-
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -324,16 +317,17 @@ int main() {
     // cond_var round-trip:     3000 ns
     // atomic::wait is ~2x faster (no mutex overhead)
 }
-
 ```
+
+The roughly 2x latency advantage of `atomic::wait` comes from not needing to lock and unlock a mutex on every round trip. Both paths ultimately use the same OS primitive (`futex` on Linux), but the mutex path adds extra atomic operations for the lock itself.
 
 ---
 
 ## Notes
 
-- **Platform implementation:** `atomic::wait` uses the most efficient OS primitive — `futex` on Linux, `WaitOnAddress` on Windows. These are the same primitives that `condition_variable` uses internally.
+- **Platform implementation:** `atomic::wait` uses the most efficient OS primitive - `futex` on Linux, `WaitOnAddress` on Windows. These are the same primitives that `condition_variable` uses internally.
 - **Value comparison:** `wait(old)` compares using `memcmp` of the atomic's representation, not `operator==`. For most types, this is equivalent.
 - **Spurious wakeups:** The C++ standard allows `wait()` to wake spuriously (without `notify`). The implementation handles this internally by re-checking the value.
-- **`atomic_flag::wait()` (C++20):** Even simpler — `flag.wait(false)` blocks until the flag is set.
+- **`atomic_flag::wait()` (C++20):** Even simpler - `flag.wait(false)` blocks until the flag is set.
 - **Use atomic::wait over sleep loops:** `while (!flag) sleep(1ms)` wastes up to 1ms of latency. `flag.wait(false)` wakes immediately when notified.
 - Compile with `-std=c++20 -O2 -pthread`.

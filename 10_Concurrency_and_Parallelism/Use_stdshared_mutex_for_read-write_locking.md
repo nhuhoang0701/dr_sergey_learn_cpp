@@ -9,27 +9,27 @@
 
 ## Topic Overview
 
-`std::shared_mutex` allows **multiple concurrent readers** OR **one exclusive writer**. This is the classic reader-writer lock pattern.
+`std::shared_mutex` allows multiple concurrent readers OR one exclusive writer. This is the classic reader-writer lock pattern, and it exists because a plain `std::mutex` is unnecessarily restrictive when most of your threads are only reading.
 
 ### Lock Modes
 
-```cpp
+The two lock modes map directly onto two RAII wrappers. Use `std::shared_lock` for reads and `std::unique_lock` for writes - the naming makes the intent clear at every call site.
 
+```cpp
 Shared (read) lock:        Exclusive (write) lock:
 ──────────────────          ─────────────────────
 std::shared_lock lk(mtx);  std::unique_lock lk(mtx);
 // Multiple threads can     // Only ONE thread at a time
 // hold shared locks        // Blocks all readers AND writers
-// simultaneously           
+// simultaneously
 
 Compatibility matrix:
 ┌──────────┬──────────┬───────────┐
 │          │ Shared   │ Exclusive │
 ├──────────┼──────────┼───────────┤
-│ Shared   │ ✓ OK     │ ✗ blocks  │
-│ Exclusive│ ✗ blocks │ ✗ blocks  │
+│ Shared   │ Yes      │ blocks    │
+│ Exclusive│ blocks   │ blocks    │
 └──────────┴──────────┴───────────┘
-
 ```
 
 ---
@@ -38,10 +38,9 @@ Compatibility matrix:
 
 ### Q1: Implement a thread-safe cache using shared_mutex where multiple readers can proceed concurrently
 
-**Answer:**
+The key pattern here is `mutable std::shared_mutex` on the class - `mutable` is needed because `const` member functions like `get()` still need to acquire the lock. Notice how clearly the RAII wrappers communicate intent: `shared_lock` means "read-only, others may join," `unique_lock` means "exclusive, everyone else waits."
 
 ```cpp
-
 #include <shared_mutex>
 #include <mutex>
 #include <unordered_map>
@@ -56,7 +55,7 @@ class ThreadSafeCache {
     std::unordered_map<std::string, std::string> cache_;
 
 public:
-    // READ: shared lock — multiple readers simultaneously
+    // READ: shared lock - multiple readers simultaneously
     std::optional<std::string> get(const std::string& key) const {
         std::shared_lock lock(mtx_); // shared (read) lock
         auto it = cache_.find(key);
@@ -65,7 +64,7 @@ public:
         return std::nullopt;
     }
 
-    // WRITE: exclusive lock — blocks all readers and writers
+    // WRITE: exclusive lock - blocks all readers and writers
     void put(const std::string& key, const std::string& value) {
         std::unique_lock lock(mtx_); // exclusive (write) lock
         cache_[key] = value;
@@ -130,15 +129,15 @@ int main() {
     // Writes: 2000
     // Cache size: 100
 }
-
 ```
+
+The 8 reader threads can all hold their `shared_lock` simultaneously. Only when a writer arrives does anyone have to wait. This is the whole benefit: reads are free to parallelize as long as no write is in progress.
 
 ### Q2: Show the upgrade pattern: acquire shared lock, detect stale data, re-acquire as exclusive
 
-**Answer:**
+This pattern comes up in lazy caching: you want to check first (cheap, shared lock) and only write if the value is missing (expensive, exclusive lock). The critical thing to understand is that `shared_mutex` does NOT support upgrading a lock in place - you must release the shared lock before acquiring the exclusive one, which creates a small window where another thread could beat you to the write.
 
 ```cpp
-
 #include <shared_mutex>
 #include <unordered_map>
 #include <string>
@@ -164,12 +163,12 @@ public:
             std::shared_lock read_lock(mtx_);
             auto it = cache_.find(key);
             if (it != cache_.end()) {
-                return it->second; // cache hit — fast path
+                return it->second; // cache hit - fast path
             }
         }
         // read_lock released here!
 
-        // Step 2: Cache miss — need exclusive (write) lock
+        // Step 2: Cache miss - need exclusive (write) lock
         // NOTE: We CANNOT "upgrade" a shared_lock to unique_lock!
         // We must release the shared lock and acquire exclusive.
         {
@@ -190,7 +189,7 @@ public:
     }
 
     // === WHY CAN'T WE UPGRADE IN-PLACE? ===
-    // std::shared_mutex does NOT support atomic upgrade from shared → exclusive.
+    // std::shared_mutex does NOT support atomic upgrade from shared -> exclusive.
     // If two threads both hold shared locks and both try to upgrade,
     // they would deadlock (each waiting for the other to release shared).
     //
@@ -208,7 +207,7 @@ int main() {
 
     for (int t = 0; t < 8; ++t) {
         threads.emplace_back([&cache, t] {
-            // All threads ask for the same keys — only first computes
+            // All threads ask for the same keys - only first computes
             for (int i = 0; i < 5; ++i) {
                 std::string key = "item" + std::to_string(i);
                 auto val = cache.get_or_compute(key);
@@ -224,15 +223,15 @@ int main() {
     // Thread 1: item1 = computed_item1
     // ...
 }
-
 ```
+
+The double-check after acquiring the exclusive lock is not optional - it's the TOCTOU guard. Between releasing the shared lock and acquiring the exclusive one, another thread may have computed and inserted the value. The re-check ensures you don't redo the work unnecessarily.
 
 ### Q3: Benchmark shared_mutex vs plain mutex for a read-heavy workload
 
-**Answer:**
+The benchmark below is illuminating because it reveals a trap: `shared_mutex` is not unconditionally faster than plain `mutex`. It only wins when reads substantially outnumber writes and there is actual contention to relieve.
 
 ```cpp
-
 #include <shared_mutex>
 #include <mutex>
 #include <thread>
@@ -313,26 +312,27 @@ int main() {
     // Write-heavy workload (2 readers, 6 writers):
     //   std::mutex:        180 ms
     //   std::shared_mutex: 210 ms
-    //   Speedup: 0.86x    ← shared_mutex is SLOWER when write-heavy!
+    //   Speedup: 0.86x    <- shared_mutex is SLOWER when write-heavy!
     //
     // KEY INSIGHT:
     //   shared_mutex has HIGHER per-operation overhead than plain mutex
     //   (it must maintain reader count atomically).
     //   It only wins when reads outnumber writes AND there's contention.
 }
-
 ```
 
-**When shared_mutex wins:** Many readers, few writers, readers hold the lock for significant time. **When it loses:** Write-heavy workloads, very short critical sections, or low contention (plain mutex is simpler and faster).
+The write-heavy result is the important lesson. `shared_mutex` has to maintain an atomic reader count, which means it is intrinsically more expensive per operation than a plain mutex. That overhead only pays off when concurrent readers would otherwise be serialized unnecessarily. When writes are frequent, the extra overhead makes `shared_mutex` a net loss.
+
+**When shared_mutex wins:** many readers, few writers, readers hold the lock for significant time. **When it loses:** write-heavy workloads, very short critical sections, or low contention (plain mutex is simpler and faster).
 
 ---
 
 ## Notes
 
-- **`std::shared_lock`** (C++14): RAII wrapper for shared (read) locks. Use with `shared_mutex`.
-- **`std::unique_lock`**: RAII wrapper for exclusive (write) locks.
-- **Writer starvation:** Some implementations may starve writers if readers keep arriving. The standard doesn't specify scheduling policy.
-- **`shared_timed_mutex`** (C++14): Adds `try_lock_for`/`try_lock_shared_for` for timed operations.
-- **No upgrade:** `shared_mutex` does not support upgrading from shared to exclusive. Always release shared, then acquire exclusive (with double-check).
-- **Rule of thumb:** If read/write ratio is < 10:1, benchmark before using `shared_mutex`. Plain `mutex` might be faster due to lower overhead.
+- `std::shared_lock` (C++14) is the RAII wrapper for shared (read) locks. Use it with `shared_mutex`.
+- `std::unique_lock` is the RAII wrapper for exclusive (write) locks.
+- Writer starvation: some implementations may starve writers if readers keep arriving. The standard doesn't specify scheduling policy.
+- `shared_timed_mutex` (C++14) adds `try_lock_for`/`try_lock_shared_for` for timed operations.
+- No upgrade: `shared_mutex` does not support upgrading from shared to exclusive. Always release shared, then acquire exclusive (with double-check).
+- Rule of thumb: if the read/write ratio is less than 10:1, benchmark before using `shared_mutex`. Plain `mutex` might be faster due to lower overhead.
 - Compile with `-std=c++17 -O2 -pthread`.

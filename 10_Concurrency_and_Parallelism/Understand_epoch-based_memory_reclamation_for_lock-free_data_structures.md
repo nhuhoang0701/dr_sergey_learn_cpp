@@ -2,51 +2,55 @@
 
 **Category:** Concurrency & Parallelism  
 **Standard:** C++11 and later (uses `std::atomic`, no dedicated standard library component)  
-**Reference:** [Keir Fraser – Epoch-Based Reclamation (2004)](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.pdf)  
+**Reference:** [Keir Fraser - Epoch-Based Reclamation (2004)](https://www.cl.cam.ac.uk/techreports/UCAM-CL-TR-579.pdf)  
 
 ---
 
 ## Topic Overview
 
-Lock-free data structures face a fundamental problem: when a thread removes a node, another thread may still be reading it. You cannot call `delete` immediately—that would be a use-after-free. You need a **safe memory reclamation (SMR)** scheme that defers destruction until no thread can possibly hold a reference to the retired node. Epoch-Based Reclamation (EBR) is one of the simplest and most efficient solutions.
+Lock-free data structures face a fundamental problem: when a thread removes a node, another thread may still be reading it. You cannot call `delete` immediately - that would be a use-after-free. You need a **safe memory reclamation (SMR)** scheme that defers destruction until no thread can possibly hold a reference to the retired node. Epoch-Based Reclamation (EBR) is one of the simplest and most efficient solutions.
 
-EBR maintains a **global epoch counter** and per-thread **local epoch** values. Each thread, before accessing the shared data structure, announces that it has entered the current epoch. When a thread retires a node, it stamps the node with the current epoch and appends it to a thread-local retire list. A node can be freed only when **all threads have advanced past the epoch in which the node was retired**—meaning no thread could still be mid-traversal holding a pointer to it.
+EBR maintains a **global epoch counter** and per-thread **local epoch** values. Each thread, before accessing the shared data structure, announces that it has entered the current epoch. When a thread retires a node, it stamps the node with the current epoch and appends it to a thread-local retire list. A node can be freed only when **all threads have advanced past the epoch in which the node was retired** - meaning no thread could still be mid-traversal holding a pointer to it.
+
+The reason this works is a simple invariant: if you are in epoch `E`, you announced that on entry, and the global epoch cannot advance past `E` until you leave. Two full epoch advancements after you retired a node guarantee no one could still be holding it.
+
+Here is how the different SMR schemes compare at a glance:
 
 | SMR Scheme | Overhead per Access | Space Bound | Complexity | Robustness to Stalled Threads |
 | --- | --- | --- | --- | --- |
-| **Epoch-Based (EBR)** | Very low (one atomic load/store) | Unbounded if thread stalls | Simple | Poor—stalled thread blocks all reclamation |
-| **Hazard Pointers** | Moderate (one atomic store per pointer) | O(threads × hazards) | Moderate | Excellent—only stalled thread's pointers are blocked |
+| **Epoch-Based (EBR)** | Very low (one atomic load/store) | Unbounded if thread stalls | Simple | Poor - stalled thread blocks all reclamation |
+| **Hazard Pointers** | Moderate (one atomic store per pointer) | O(threads x hazards) | Moderate | Excellent - only stalled thread's pointers are blocked |
 | **RCU (Read-Copy-Update)** | Near zero (compiler barrier) | Unbounded until grace period | Moderate | Varies by implementation |
 | **Reference Counting** | High (atomic increment/decrement) | Bounded | Simple | Excellent |
 
 ### The Three-Epoch Protocol
 
+Here is a timeline diagram of how epochs and retirements interact. The key insight is the two-epoch gap: a node retired in epoch E cannot be freed until after epoch E+2 has started, because that is the earliest point where every thread is guaranteed to have moved past E.
+
 ```cpp
+Global epoch:  E  (values cycle: 0 -> 1 -> 2 -> 0 -> ...)
 
-Global epoch:  E  (values cycle: 0 → 1 → 2 → 0 → ...)
-
-Thread enters critical section → announces local_epoch = global_epoch
-Thread exits critical section  → marks itself as inactive
+Thread enters critical section -> announces local_epoch = global_epoch
+Thread exits critical section  -> marks itself as inactive
 
 Retire(node):
 
   1. Stamp node with current global epoch E
   2. Append to thread-local retire list for epoch E
 
-Try to advance global epoch E → E+1:
+Try to advance global epoch E -> E+1:
 
-  1. Check: every active thread has local_epoch ≥ E
-  2. If yes: advance E → E+1
+  1. Check: every active thread has local_epoch >= E
+  2. If yes: advance E -> E+1
   3. Free all nodes retired in epoch (E - 2)
 
-     (Two full epochs have passed → no thread can reference them)
+     (Two full epochs have passed -> no thread can reference them)
 
 Timeline:
   Epoch 0        Epoch 1        Epoch 2        Epoch 0 (wrap)
   ──────────────┼──────────────┼──────────────┼──────────────
-  retire(A)     │              │ free(A) ✓    │
-                │ retire(B)    │              │ free(B) ✓
-
+  retire(A)     │              │ free(A)       │
+                │ retire(B)    │              │ free(B)
 ```
 
 The key invariant: a node retired in epoch `E` is freed only after the global epoch has advanced **twice** past `E`. Since a thread that entered at epoch `E` must exit its critical section before the epoch can advance past `E`, and it re-announces on re-entry, two epoch advancements guarantee no thread holds a stale reference.
@@ -57,8 +61,9 @@ The key invariant: a node retired in epoch `E` is freed only after the global ep
 
 ### Q1: Implement a minimal epoch-based reclamation system and demonstrate its use with a lock-free stack
 
-```cpp
+The implementation below has two parts: the `EpochBasedReclamation` class that manages epochs and retire lists, and a `LockFreeStack` that uses it. Pay attention to how `enter()` and `leave()` bracket every data structure access:
 
+```cpp
 // Compile: g++ -std=c++20 -pthread q1_ebr.cpp -o q1
 #include <atomic>
 #include <array>
@@ -187,17 +192,17 @@ int main() {
               << " push/pop pairs without use-after-free.\n";
     return 0;
 }
-
 ```
 
-**Key insight:** `enter()` and `leave()` bracket the critical section. Between them, the thread may hold raw pointers into the data structure. `retire()` defers deletion until two epoch advancements guarantee safety. The overhead is minimal—one atomic store on enter, one on leave.
+**Key insight:** `enter()` and `leave()` bracket the critical section. Between them, the thread may hold raw pointers into the data structure. `retire()` defers deletion until two epoch advancements guarantee safety. The overhead is minimal - one atomic store on enter, one on leave.
 
 ---
 
 ### Q2: What happens when a thread stalls inside a critical section, and how can you detect or mitigate it
 
-```cpp
+This is EBR's Achilles' heel, and it is worth understanding deeply. If a thread calls `enter()` and then gets preempted, blocks on I/O, or just takes a very long time, the global epoch cannot advance past the epoch that thread announced. Every node retired since then accumulates in the retire list with no way to free it. The detector below adds timestamps so you can at least see when this is happening:
 
+```cpp
 // Compile: g++ -std=c++20 -pthread q2_stall_detection.cpp -o q2
 #include <atomic>
 #include <chrono>
@@ -283,17 +288,17 @@ int main() {
     ebr.leave(tid_stall);  // cleanup
     return 0;
 }
-
 ```
 
 **Key insight:** EBR's Achilles' heel is that a single stalled thread (blocked on I/O, descheduled, page fault) prevents the global epoch from advancing, causing **unbounded memory accumulation**. Production systems mitigate this by: (1) adding stall detection with timestamps, (2) keeping critical sections extremely short, (3) falling back to hazard pointers for robustness, or (4) using hybrid schemes like **DEBRA+** that can neutralize stalled threads.
 
 ---
 
-### Q3: Compare EBR, hazard pointers, and RCU in a concrete scenario—reading from a lock-free linked list
+### Q3: Compare EBR, hazard pointers, and RCU in a concrete scenario - reading from a lock-free linked list
+
+Each SMR scheme has a different API and a different performance profile. Here is a side-by-side sketch of how you would read from a linked list using each approach:
 
 ```cpp
-
 // Compile: g++ -std=c++20 -pthread q3_smr_comparison.cpp -o q3
 // This file shows three approaches to safe reading from a concurrent list.
 // Each approach is sketched to highlight the API differences.
@@ -381,18 +386,17 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Key insight:** EBR excels when critical sections are short and threads are never preempted for long—common in user-space server applications. Hazard pointers (coming to the standard in C++26 via P2530) are better when threads may stall. RCU dominates in read-heavy kernel workloads but is complex to implement in user-space C++. Choose based on your read/write ratio, stall tolerance requirements, and memory budget.
+**Key insight:** EBR excels when critical sections are short and threads are never preempted for long - common in user-space server applications. Hazard pointers (coming to the standard in C++26 via P2530) are better when threads may stall. RCU dominates in read-heavy kernel workloads but is complex to implement in user-space C++. Choose based on your read/write ratio, stall tolerance requirements, and memory budget.
 
 ---
 
 ## Notes
 
 - **EBR is not in the C++ standard.** You must implement it yourself or use a library (e.g., `libcds`, `folly::rcu`, `crossbeam-epoch` ports). Hazard pointers are proposed for C++26 (P2530).
-- **Critical section length matters.** Keep `enter()`→`leave()` spans as short as possible. Never block (I/O, sleep, mutex) inside an EBR critical section.
-- **Amortize reclamation.** Don't call `try_advance()` on every retire. batch it—e.g., every 100 retires or every millisecond. This reduces contention on the global epoch.
-- **Epoch overflow.** Use modular arithmetic (3 epochs cycling 0→1→2→0). Two epoch gaps suffice because a thread in epoch E must leave before E+2 can begin.
+- **Critical section length matters.** Keep `enter()`->`leave()` spans as short as possible. Never block (I/O, sleep, mutex) inside an EBR critical section.
+- **Amortize reclamation.** Don't call `try_advance()` on every retire. Batch it - e.g., every 100 retires or every millisecond. This reduces contention on the global epoch.
+- **Epoch overflow.** Use modular arithmetic (3 epochs cycling 0->1->2->0). Two epoch gaps suffice because a thread in epoch E must leave before E+2 can begin.
 - **DEBRA (Distributed Epoch-Based Reclamation)** is a production-grade variant that handles thread blocking by adding per-thread announcement arrays and a quiescent-state mechanism.
 - **Testing.** Always run lock-free code under ThreadSanitizer and AddressSanitizer. EBR bugs (premature reclamation) manifest as use-after-free, which ASan catches reliably.

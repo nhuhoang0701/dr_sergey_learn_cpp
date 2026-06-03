@@ -9,21 +9,25 @@
 
 ## Topic Overview
 
-`std::promise<void>` + `std::future<void>` creates a **one-shot signal** — no data is transferred, just a "go" notification from one thread to another. It's the simplest cross-thread synchronization that doesn't require a condition variable.
+`std::promise<void>` paired with `std::future<void>` creates a one-shot signal - no data is transferred, just a "go" or "done" notification from one thread to another. It's the simplest cross-thread synchronization primitive that doesn't require a condition variable, a mutex, or any shared flag.
 
 ### Core Idea
 
-```cpp
+The pattern is straightforward. Thread A holds the `promise` and calls `set_value()` when it has finished some initialization or reached a checkpoint. Thread B holds the `future` and calls `get()`, which blocks until `set_value()` is called. Here is what that looks like side by side:
 
+```cpp
 Thread A:                          Thread B:
 ─────────                          ─────────
 std::promise<void> ready;          auto fut = ready.get_future();
 // ... initialize ...              fut.get(); // blocks until set_value()
 ready.set_value();                 // guaranteed: init is complete
-
 ```
 
+The reason this is so useful is the memory ordering guarantee: everything Thread A did before calling `set_value()` is visible to Thread B after `get()` returns. You don't need an explicit memory fence or extra synchronization.
+
 ### When to Use
+
+Each of the mechanisms in the table below has a different sweet spot. If you just need a one-shot "we're ready" signal in C++11 code, `promise<void>` is the cleanest option.
 
 | Mechanism | Use case |
 | --- | --- |
@@ -39,10 +43,9 @@ ready.set_value();                 // guaranteed: init is complete
 
 ### Q1: Use promise<void> and its future to signal a thread that initialization is complete
 
-**Answer:**
+This is the classic use case. A server starts up in a background thread, does some initialization, and then signals the main thread that it is ready to accept connections. The main thread can't proceed safely until that signal arrives.
 
 ```cpp
-
 #include <future>
 #include <thread>
 #include <iostream>
@@ -92,15 +95,15 @@ int main() {
     // Waiting for server to initialize...
     // Server ready on port 8080
 }
-
 ```
+
+Notice that `port_` is accessed safely after `init_future.get()` returns, even though it's not atomic and no mutex is involved. The promise-future pair provides the necessary happens-before relationship.
 
 ### Q2: Show the difference between promise<void>::set_value() and notify_one/notify_all
 
-**Answer:**
+The fundamental difference between `promise<void>` and `condition_variable` is that the promise remembers its signal. If you call `set_value()` before anyone calls `get()`, the signal is not lost - the next `get()` returns immediately. A raw `notify_one()` with no flag is lost if nobody is waiting yet.
 
 ```cpp
-
 #include <future>
 #include <thread>
 #include <mutex>
@@ -115,10 +118,10 @@ int main() {
         std::promise<void> prom;
         auto fut = prom.get_future();
 
-        // Signal BEFORE anyone waits — NOT lost!
+        // Signal BEFORE anyone waits - NOT lost!
         prom.set_value();
 
-        // Wait AFTER signal — returns immediately
+        // Wait AFTER signal - returns immediately
         fut.get();
         std::cout << "Signal was remembered (not lost)\n";
 
@@ -137,7 +140,7 @@ int main() {
         bool ready = false;
 
         // Without the flag, signal can be LOST:
-        // cv.notify_one(); // if no one is waiting → notification gone!
+        // cv.notify_one(); // if no one is waiting -> notification gone!
 
         // With the flag (correct pattern):
         {
@@ -164,16 +167,16 @@ int main() {
 
     // === Key differences ===
     // promise<void>:
-    //   ✓ Signal is STORED — never lost
-    //   ✓ No mutex needed
-    //   ✗ ONE TIME only (set_value once, get once)
-    //   ✗ Cannot signal multiple waiters (unless shared_future)
+    //   Signal is STORED - never lost
+    //   No mutex needed
+    //   ONE TIME only (set_value once, get once)
+    //   Cannot signal multiple waiters (unless shared_future)
     //
     // condition_variable:
-    //   ✗ Signal can be lost (need a flag)
-    //   ✗ Needs a mutex
-    //   ✓ Reusable (can notify many times)
-    //   ✓ notify_all wakes all waiters
+    //   Signal can be lost (need a flag)
+    //   Needs a mutex
+    //   Reusable (can notify many times)
+    //   notify_all wakes all waiters
 
     // === Multiple waiters with shared_future ===
     {
@@ -209,22 +212,22 @@ int main() {
     // Waiter 1 released
     // Waiter 3 released
 }
-
 ```
+
+The `shared_future` section at the bottom shows how to broadcast to multiple threads. A regular `future` can only be `get()`-ted once. Calling `.share()` upgrades it to a `shared_future<void>` that any number of threads can wait on - all of them wake up when `set_value()` is called.
 
 ### Q3: Demonstrate using promise<void> to implement a one-time event without a condition variable
 
-**Answer:**
+Three practical patterns in one example: a start gate, error propagation, and a simple pipeline. These come up regularly in real concurrent code.
 
 ```cpp
-
 #include <future>
 #include <thread>
 #include <iostream>
 #include <chrono>
 #include <vector>
 
-// === Pattern 1: Start gate — all threads start simultaneously ===
+// === Pattern 1: Start gate - all threads start simultaneously ===
 void start_gate_pattern() {
     std::cout << "--- Start gate ---\n";
     std::promise<void> go_signal;
@@ -238,7 +241,7 @@ void start_gate_pattern() {
             std::cout << "Racer " << i << " started at "
                       << std::chrono::duration_cast<std::chrono::microseconds>(
                              now.time_since_epoch()).count() % 1'000'000
-                      << " μs\n";
+                      << " us\n";
         });
     }
 
@@ -313,10 +316,10 @@ int main() {
     // Output:
     // --- Start gate ---
     // GO!
-    // Racer 0 started at 123456 μs
-    // Racer 2 started at 123458 μs
-    // Racer 1 started at 123460 μs
-    // Racer 3 started at 123462 μs
+    // Racer 0 started at 123456 us
+    // Racer 2 started at 123458 us
+    // Racer 1 started at 123460 us
+    // Racer 3 started at 123462 us
     //
     // --- Error signal ---
     // Caught from worker: disk full
@@ -326,17 +329,18 @@ int main() {
     // Stage 2: data = 20
     // Stage 3: data = 25
 }
-
 ```
+
+The error propagation pattern is particularly elegant: `set_exception(std::current_exception())` stores the exception in the shared state, and calling `get()` on the future rethrows it in the waiting thread. You get exception propagation across thread boundaries for free.
 
 ---
 
 ## Notes
 
-- **`promise<void>` vs boolean:** `set_value()` takes no argument. It purely signals "done." The future doesn't carry data — just the event.
-- **No lost signals:** Unlike `condition_variable`, `set_value` is remembered. If `get()` is called after `set_value`, it returns immediately.
-- **One-shot only:** `set_value` can be called exactly once. Second call throws `future_error(promise_already_satisfied)`.
-- **`shared_future`:** Call `fut.share()` to get a `shared_future<void>` that multiple threads can `get()` from. Essential for broadcast patterns.
-- **Broken promise:** If a `promise` is destroyed without calling `set_value` or `set_exception`, `fut.get()` throws `future_error(broken_promise)`.
-- **C++20 alternatives:** For one-shot signals, `std::latch(1)` and `std::binary_semaphore(0)` are more ergonomic.
+- `promise<void>` vs boolean: `set_value()` takes no argument. It purely signals "done." The future doesn't carry data - just the event.
+- No lost signals: unlike `condition_variable`, `set_value` is remembered. If `get()` is called after `set_value`, it returns immediately.
+- One-shot only: `set_value` can be called exactly once. A second call throws `future_error(promise_already_satisfied)`.
+- `shared_future`: call `fut.share()` to get a `shared_future<void>` that multiple threads can `get()` from. Essential for broadcast patterns.
+- Broken promise: if a `promise` is destroyed without calling `set_value` or `set_exception`, `fut.get()` throws `future_error(broken_promise)`.
+- C++20 alternatives: for one-shot signals, `std::latch(1)` and `std::binary_semaphore(0)` are more ergonomic.
 - Compile with `-std=c++11 -O2 -pthread`.

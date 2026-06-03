@@ -9,36 +9,33 @@
 
 ## Topic Overview
 
-This file focuses on **practical flag-signaling patterns** using C++20 atomic wait/notify — multi-phase gates, state machines, and replacing polling loops.
+This file focuses on **practical flag-signaling patterns** using C++20 atomic wait/notify - multi-phase gates, state machines, and replacing polling loops. Think of it as the hands-on companion to the latency-comparison file: here we look at how these primitives actually slot into real coordination patterns.
 
 ### Flag Signaling Patterns
 
-Atomic wait/notify is ideal for signaling discrete state transitions:
+Atomic wait/notify is ideal for signaling discrete state transitions. The producer stores a new value and fires a notification; the consumer blocks until the value no longer matches what it expected:
 
 ```cpp
-
 Thread A (producer):                Thread B (consumer):
-─────────────────────               ─────────────────────
 do_work();                          state.wait(IDLE);    // block
 state.store(READY);                 // ... wakes when state != IDLE
 state.notify_all();                 process_result();
-
 ```
 
 ### Multi-Value State Machine
 
-Unlike `condition_variable`, `atomic::wait(old)` can discriminate on **specific values**:
+Unlike `condition_variable`, `atomic::wait(old)` can discriminate on **specific values**. You can have a thread that waits only for a particular phase, not just for "any change":
 
 ```cpp
-
 enum class Phase { Init, Ready, Running, Done };
 std::atomic<Phase> phase{Phase::Init};
 
 // Wait for a SPECIFIC phase:
 phase.wait(Phase::Init);    // blocks only while phase == Init
 phase.wait(Phase::Ready);   // blocks only while phase == Ready
-
 ```
+
+This makes multi-phase coordination code extremely readable - each wait call says exactly what the thread is blocked on.
 
 ---
 
@@ -48,8 +45,9 @@ phase.wait(Phase::Ready);   // blocks only while phase == Ready
 
 **Answer:**
 
-```cpp
+The worker below drives through a three-phase pipeline by blocking on each current phase in turn. Notice how clean the state machine reads compared to a condition variable version that would need a mutex, a predicate, and a separate bool per phase.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <iostream>
@@ -70,7 +68,7 @@ int main() {
         std::cout << "Worker: entered Phase1, data = " << shared_data << "\n";
         shared_data *= 2;
 
-        // Wait for Phase2  
+        // Wait for Phase2
         state.wait(State::Phase1);
         std::cout << "Worker: entered Phase2, data = " << shared_data << "\n";
         shared_data += 100;
@@ -101,24 +99,24 @@ int main() {
     // Worker: entered Phase2, data = 42
     // Worker: Done, final data = 142
 }
-
 ```
 
-**Explanation:** `state.wait(State::Idle)` blocks until `state` is no longer `Idle`. When the controller stores `Phase1` and calls `notify_one()`, the worker unblocks. Each subsequent `wait()` targets the current phase, creating a clean state machine without any mutex or condition variable.
+`state.wait(State::Idle)` blocks until `state` is no longer `Idle`. When the controller stores `Phase1` and calls `notify_one()`, the worker unblocks. Each subsequent `wait()` targets the current phase, creating a clean state machine without any mutex or condition variable.
 
 ### Q2: Replace a polling loop with atomic::wait for flag signaling
 
 **Answer:**
 
-```cpp
+The polling approach is tempting because it is simple - just check a flag in a loop. The problem is that it wastes CPU between checks and adds latency proportional to the sleep interval. The batch gate at the end shows how `notify_all` can release many threads simultaneously, which polling cannot do efficiently.
 
+```cpp
 #include <atomic>
 #include <thread>
 #include <vector>
 #include <iostream>
 #include <chrono>
 
-// === BAD: Polling loop (wastes CPU and has ~1ms latency gap) ===
+// BAD: Polling loop (wastes CPU and has ~1ms latency gap)
 void polling_approach() {
     std::atomic<bool> flag{false};
     auto t0 = std::chrono::steady_clock::now();
@@ -128,19 +126,19 @@ void polling_approach() {
         flag.store(true, std::memory_order_release);
     });
 
-    // Polls every 1ms — wastes CPU + up to 1ms late
+    // Polls every 1ms - wastes CPU + up to 1ms late
     while (!flag.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // ← problematic
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)); // problematic
     }
 
     auto dt = std::chrono::steady_clock::now() - t0;
     std::cout << "Polling: woke after "
               << std::chrono::duration_cast<std::chrono::microseconds>(dt).count()
-              << " μs\n";
+              << " us\n";
     signaler.join();
 }
 
-// === GOOD: atomic::wait (zero CPU, instant wake) ===
+// GOOD: atomic::wait (zero CPU, instant wake)
 void wait_approach() {
     std::atomic<bool> flag{false};
     auto t0 = std::chrono::steady_clock::now();
@@ -148,15 +146,15 @@ void wait_approach() {
     std::thread signaler([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         flag.store(true, std::memory_order_release);
-        flag.notify_one(); // ← wake the waiter immediately
+        flag.notify_one(); // wake the waiter immediately
     });
 
-    flag.wait(false); // ← blocks with 0% CPU until flag != false
+    flag.wait(false); // blocks with 0% CPU until flag != false
 
     auto dt = std::chrono::steady_clock::now() - t0;
     std::cout << "Wait:    woke after "
               << std::chrono::duration_cast<std::chrono::microseconds>(dt).count()
-              << " μs\n";
+              << " us\n";
     signaler.join();
 }
 
@@ -190,57 +188,52 @@ int main() {
     batch_start_gate();
 
     // Output:
-    // Polling: woke after 51200 μs   (up to 1ms late)
-    // Wait:    woke after 50100 μs   (nearly instant wake)
+    // Polling: woke after 51200 us   (up to 1ms late)
+    // Wait:    woke after 50100 us   (nearly instant wake)
     // Releasing 8 workers...
     // All 8 workers done
 }
-
 ```
 
-**Explanation:** The polling loop sleeps in 1ms intervals, introducing up to 1ms of latency after the flag is set and burning cycles for each check. `atomic::wait` blocks efficiently (using OS futex/WaitOnAddress) and wakes within microseconds of the notification. The batch start gate pattern shows `notify_all()` releasing multiple workers simultaneously.
+The polling loop sleeps in 1ms intervals, introducing up to 1ms of latency after the flag is set and burning cycles for each check. `atomic::wait` blocks efficiently (using OS futex/WaitOnAddress) and wakes within microseconds of the notification. The batch start gate pattern shows `notify_all()` releasing multiple workers simultaneously.
 
 ### Q3: Explain how atomic::wait is more efficient than a mutex+condition_variable for simple flags
 
 **Answer:**
 
-```cpp
+The overhead breakdown below shows where the extra cost of `condition_variable` comes from. It is not that `condition_variable` is poorly implemented - it is that it carries the cost of mutex operations in addition to the OS sleep/wake, and the mutex machinery adds up.
 
+```cpp
 OVERHEAD BREAKDOWN: mutex + condition_variable vs atomic::wait
-═══════════════════════════════════════════════════════════════
 
 mutex + condition_variable (signal one flag):
-─────────────────────────────────────────────
   Notifier side:                   Waiter side:
 
   1. Lock mutex         ~20-40ns   1. Lock mutex        ~20-40ns
   2. Set flag            ~1ns      2. Check predicate    ~1ns
   3. Unlock mutex       ~20-40ns   3. Unlock + sleep    ~100ns
-  4. cv.notify_one()   ~200-500ns  4. OS wake           ~1-5μs
+  4. cv.notify_one()   ~200-500ns  4. OS wake           ~1-5us
                                    5. Re-lock mutex     ~20-40ns
 
-  Total notifier: ~250-580ns       Total waiter: ~1.2-5.1μs
+  Total notifier: ~250-580ns       Total waiter: ~1.2-5.1us
 
   Extra objects: std::mutex (40-64 bytes) + std::condition_variable (48-72 bytes)
   Syscalls: lock/unlock + futex_wake + futex_wait
 
 atomic::wait (signal one flag):
-───────────────────────────────
   Notifier side:                   Waiter side:
 
   1. Atomic store        ~5ns      1. Compare value      ~5ns
   2. notify_one()     ~100-300ns   2. OS sleep          ~100ns
-                                   3. OS wake           ~1-3μs
+                                   3. OS wake           ~1-3us
 
-  Total notifier: ~105-305ns       Total waiter: ~1-3μs
+  Total notifier: ~105-305ns       Total waiter: ~1-3us
 
   Extra objects: just the atomic itself (1-8 bytes)
   Syscalls: futex_wake + futex_wait (no lock/unlock)
-
 ```
 
 ```cpp
-
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -271,7 +264,7 @@ public:
         std::lock_guard lock(mtx_);
         ready_ = false;
     }
-    // sizeof: 40 (mutex) + 48 (cv) + 1 (bool) + padding ≈ ~128 bytes
+    // sizeof: 40 (mutex) + 48 (cv) + 1 (bool) + padding ~128 bytes
 };
 
 // === atomic::wait approach (minimal) ===
@@ -333,24 +326,18 @@ int main() {
     // - Fewer syscalls (no lock contention path)
     // - Smaller memory footprint (cache-friendly)
 }
-
 ```
 
-**Why atomic::wait wins for simple flags:**
+The ~2.3x speedup comes from four sources: no mutex lock/unlock overhead, fewer cache lines touched (1 byte vs ~128 bytes), fewer syscalls, and simpler code paths with less surface area for bugs. The condition variable is not worse by design - it is just carrying extra machinery that you do not need when the only thing you are guarding is the flag itself.
 
-1. **No mutex overhead** — lock/unlock involves atomic CAS + potential syscall
-2. **Fewer cache lines** — `atomic<bool>` is 1 byte vs ~128 bytes for mutex+cv+bool
-3. **Single syscall** — goes directly to futex/WaitOnAddress without lock arbitration
-4. **Simpler code** — less surface area for bugs (no lock ordering, no forgotten unlocks)
-
-**When condition_variable is still better:** complex predicates, multiple conditions on the same mutex, or when you need to protect shared data atomically with the wait.
+**When condition_variable is still better:** complex predicates that depend on multiple variables, situations where the same lock already protects shared data you need during the wait, or when you need `condition_variable_any` with a stop token.
 
 ---
 
 ## Notes
 
 - **Ordering on wait/notify:** `wait()` accepts a `memory_order` argument (default: `seq_cst`). For flag signaling, `acquire` on the waiter and `release` on the store is sufficient.
-- **notify without store is useless:** `notify_one()` doesn't change the value — if you notify without storing a new value, the waiter checks, sees the old value, and goes back to sleep.
+- **notify without store is useless:** `notify_one()` doesn't change the value - if you notify without storing a new value, the waiter checks, sees the old value, and goes back to sleep.
 - **atomic::wait on any type:** Works with `atomic<int>`, `atomic<enum>`, `atomic<bool>`, etc. The value comparison is bitwise (`memcmp`-style).
 - **No lost wakes:** If `store()` + `notify_one()` happens before the waiter calls `wait()`, the waiter checks the value immediately and doesn't block (it never sees the old value).
 - Compile with `-std=c++20 -O2 -pthread`.

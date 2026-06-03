@@ -9,21 +9,21 @@
 
 ## Topic Overview
 
-A **bounded producer-consumer queue** limits how many items can be buffered, creating **backpressure**: producers block when the queue is full rather than consuming unbounded memory. C++20's `std::counting_semaphore` elegantly manages this with two semaphores — one tracking empty slots, one tracking filled slots.
+A **bounded producer-consumer queue** limits how many items can be buffered at once, which creates **backpressure**: when the buffer is full, producers are forced to wait rather than consuming unbounded memory. This is a critical property for any long-running system where producers can outpace consumers. Without it, a temporarily slow consumer can cause the queue to grow until the process runs out of memory.
+
+C++20's `std::counting_semaphore` is the ideal primitive for this pattern. The trick is to use two semaphores that together track the queue's state: one counting how many empty slots are available (producers need a slot before they can push), and one counting how many filled slots are available (consumers need an item before they can pop).
 
 ### Architecture
 
 ```cpp
-
 Producer threads                              Consumer threads
-     │                                             ↑
-     ▼                                             │
- empty_slots.acquire()  ─→ blocks if 0 slots     full_slots.acquire() ─→ blocks if 0 items
-     │                                             │
+     |                                             ^
+     v                                             |
+ empty_slots.acquire()  -> blocks if 0 slots     full_slots.acquire() -> blocks if 0 items
+     |                                             |
   [ mutex: enqueue item ]                    [ mutex: dequeue item ]
-     │                                             │
- full_slots.release()   ─→ signals consumer     empty_slots.release() ─→ signals producer
-
+     |                                             |
+ full_slots.release()   -> signals consumer     empty_slots.release() -> signals producer
 ```
 
 ### Two Semaphores Pattern
@@ -33,6 +33,8 @@ Producer threads                              Consumer threads
 | `empty_slots` | N (capacity) | "Take a slot" (producer) | "Return a slot" (consumer) |
 | `full_slots` | 0 | "Take an item" (consumer) | "Signal new item" (producer) |
 
+The invariant maintained at all times is: `empty_slots + full_slots = Capacity`. Every push atomically converts one empty slot into one full slot; every pop converts one full slot back into one empty slot.
+
 ---
 
 ## Self-Assessment
@@ -41,8 +43,9 @@ Producer threads                              Consumer threads
 
 **Answer:**
 
-```cpp
+The implementation is clean and symmetric - each side mirrors the other. Notice that the semaphore acquire/release is done outside the mutex lock, which keeps the critical section as short as possible:
 
+```cpp
 #include <semaphore>
 #include <mutex>
 #include <queue>
@@ -107,17 +110,17 @@ int main() {
     consumer.join();
     // Producer blocks after 4 items until consumer catches up (backpressure!)
 }
-
 ```
 
-**Explanation:** The producer acquires `empty_slots` (decrements count) before enqueuing. When 4 items are buffered and none consumed, `empty_slots` reaches 0 and the producer blocks. The consumer acquires `full_slots` before dequeuing — if the queue is empty, it blocks. Each side releases the other's semaphore after its operation, maintaining the invariant: `empty_slots + full_slots = Capacity`.
+The producer acquires `empty_slots` before enqueuing. When 4 items are buffered and none consumed, `empty_slots` reaches 0 and the producer blocks. The consumer acquires `full_slots` before dequeuing - if the queue is empty, it blocks. Each side releases the other's semaphore after its operation, maintaining the invariant that `empty_slots + full_slots = Capacity` at all times.
 
 ### Q2: Show the difference between a bounded queue (backpressure) and an unbounded queue (memory growth)
 
 **Answer:**
 
-```cpp
+This benchmark makes the memory risk concrete. With a fast producer and a slow consumer, an unbounded queue grows to nearly the full producer output while the consumer is still working its way through:
 
+```cpp
 #include <queue>
 #include <mutex>
 #include <thread>
@@ -134,7 +137,7 @@ class UnboundedQueue {
     std::condition_variable cv_;
 public:
     void push(T item) {
-        // NEVER blocks — always accepts items
+        // NEVER blocks - always accepts items
         std::lock_guard lock(mtx_);
         queue_.push(std::move(item));
         cv_.notify_one();
@@ -172,7 +175,7 @@ int main() {
 
     fast_producer.join();
     std::cout << "Unbounded queue size: " << unbounded.size() << "\n";
-    // Output: ~99000 — almost everything buffered in memory!
+    // Output: ~99000 - almost everything buffered in memory!
     // In production: OOM killer would eventually terminate the process
 
     slow_consumer.detach(); // let it drain (simplified for demo)
@@ -184,29 +187,29 @@ int main() {
     // - Memory usage is bounded and predictable
 
     // COMPARISON:
-    // ┌──────────────┬───────────────────┬────────────────────┐
-    // │              │ Unbounded         │ Bounded            │
-    // ├──────────────┼───────────────────┼────────────────────┤
-    // │ Memory       │ O(produced-consumed)│ O(capacity)      │
-    // │ Producer     │ Never blocks      │ Blocks when full   │
-    // │ Latency      │ Grows over time   │ Bounded            │
-    // │ OOM risk     │ YES               │ No                 │
-    // │ Use case     │ Bursty, big memory│ Steady, controlled │
-    // └──────────────┴───────────────────┴────────────────────┘
+    // +--------------+-------------------+--------------------+
+    // |              | Unbounded         | Bounded            |
+    // +--------------+-------------------+--------------------+
+    // | Memory       | O(produced-consumed)| O(capacity)      |
+    // | Producer     | Never blocks      | Blocks when full   |
+    // | Latency      | Grows over time   | Bounded            |
+    // | OOM risk     | YES               | No                 |
+    // | Use case     | Bursty, big memory| Steady, controlled |
+    // +--------------+-------------------+--------------------+
 
     std::cout << "Bounded queues prevent runaway memory growth\n";
 }
-
 ```
 
-**Explanation:** An unbounded queue lets the producer run at full speed, buffering potentially millions of items in memory when the consumer is slow. A bounded queue with backpressure limits the buffer to a fixed capacity — the producer is forced to slow down to the consumer's rate, preventing memory exhaustion and keeping end-to-end latency bounded.
+An unbounded queue lets the producer run at full speed, buffering potentially millions of items in memory when the consumer is slow. A bounded queue with backpressure limits the buffer to a fixed capacity - the producer is forced to slow down to the consumer's rate, preventing memory exhaustion and keeping end-to-end latency bounded and predictable.
 
 ### Q3: Implement a multi-producer multi-consumer bounded queue and verify correctness under stress
 
 **Answer:**
 
-```cpp
+Scaling from a single producer/consumer pair to multiple on each side does not require changing the semaphore logic at all - the semaphore handles the coordination automatically. The stress test verifies correctness by checking that the sum of all consumed values exactly matches the sum of all produced values:
 
+```cpp
 #include <semaphore>
 #include <mutex>
 #include <queue>
@@ -299,17 +302,16 @@ int main() {
     // 3. Queue never exceeds capacity (semaphore enforces)
     // 4. No deadlock (producers and consumers always make progress)
 }
-
 ```
 
-**Explanation:** The MPMC queue uses `counting_semaphore` for flow control and `std::mutex` for the critical section. Multiple producers and consumers run concurrently. The stress test verifies that the sum of all produced values equals the sum of all consumed values, proving no items are lost or duplicated. The 256-item capacity ensures bounded memory regardless of production/consumption rate imbalance.
+The MPMC queue uses `counting_semaphore` for flow control and `std::mutex` for the critical section. The stress test verifies that the sum of all produced values exactly matches the sum of all consumed values, proving no items are lost or duplicated under heavy concurrent load. The 256-item capacity ensures bounded memory regardless of production/consumption rate imbalance.
 
 ---
 
 ## Notes
 
-- **Semaphore vs condition_variable:** Semaphores encode the count directly (no need for a separate counter + predicate). They're often more efficient for producer-consumer patterns.
-- **`binary_semaphore`** is `counting_semaphore<1>` — useful for simple signaling.
-- **Capacity tuning:** Too small = producers block frequently. Too large = high memory usage and latency. Profile to find the sweet spot.
-- **Ring buffer alternative:** For maximum performance, replace `std::queue` + mutex with a pre-allocated ring buffer and atomic indices.
+- Semaphore vs condition_variable: Semaphores encode the count directly, so there is no need for a separate counter and predicate check. They are often more efficient and clearer for producer-consumer patterns.
+- `binary_semaphore` is `counting_semaphore<1>` - useful for simple signaling between two threads.
+- Capacity tuning: Too small means producers block frequently. Too large means high memory usage and latency. Profile your workload to find the sweet spot.
+- Ring buffer alternative: For maximum performance, replace `std::queue` plus mutex with a pre-allocated ring buffer and atomic indices - this avoids dynamic allocation and reduces the critical section size.
 - Compile with `-std=c++20 -pthread`.

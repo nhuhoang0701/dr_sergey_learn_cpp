@@ -9,18 +9,20 @@
 
 ## Topic Overview
 
-`std::async` is the simplest way to launch parallel tasks in C++. It returns a `std::future` that holds the result. However, `std::async` has surprising behaviors (especially with `launch::deferred`) and doesn't guarantee a thread pool — it may create a new thread per call.
+`std::async` is the simplest way to launch parallel tasks in C++. It returns a `std::future` that holds the result. However, `std::async` has surprising behaviors (especially with `launch::deferred`) and doesn't guarantee a thread pool - it may create a new thread per call. That's fine for a handful of tasks, but if you're submitting hundreds of short tasks, the thread-creation overhead adds up quickly.
 
 ### std::async Launch Policies
 
+There are three launch modes and the default is not what most people expect:
+
 ```cpp
-
-std::launch::async      → runs in a NEW thread (guaranteed)
-std::launch::deferred   → runs when future.get() is called (lazy, same thread)
-std::launch::async |    → implementation chooses (default)
+std::launch::async      -> runs in a NEW thread (guaranteed)
+std::launch::deferred   -> runs when future.get() is called (lazy, same thread)
+std::launch::async |    -> implementation chooses (default)
 std::launch::deferred
-
 ```
+
+The default policy (`async | deferred`) lets the implementation decide. In practice this means you can't be sure you're getting parallelism unless you explicitly ask for `launch::async`.
 
 ### async vs Thread Pool
 
@@ -41,8 +43,9 @@ std::launch::deferred
 
 **Answer:**
 
-```cpp
+There's a critical gotcha here that catches almost everyone: you must store the futures in a container *before* calling `get()` on any of them. If you don't store a future, its destructor runs immediately and blocks until the task finishes - making everything sequential. The comments explain this:
 
+```cpp
 #include <future>
 #include <vector>
 #include <iostream>
@@ -62,7 +65,7 @@ int main() {
     constexpr int N = 8;
     auto start = std::chrono::steady_clock::now();
 
-    // Submit N tasks — each returns a future
+    // Submit N tasks - each returns a future
     std::vector<std::future<double>> futures;
     for (int i = 0; i < N; ++i) {
         futures.push_back(
@@ -72,7 +75,7 @@ int main() {
         );
     }
 
-    // Collect results — future.get() blocks until result is ready
+    // Collect results - future.get() blocks until result is ready
     std::vector<double> results;
     for (auto& f : futures) {
         results.push_back(f.get()); // blocks if not yet computed
@@ -96,29 +99,29 @@ int main() {
     std::cout << "Sequential: " << ms_seq << " ms\n";
 
     // Output (8-core machine):
-    // N=8 tasks completed in 15 ms      ← parallel
-    // Sequential: 100 ms                ← serial
+    // N=8 tasks completed in 15 ms      <- parallel
+    // Sequential: 100 ms                <- serial
     // ~6-7x speedup with 8 threads
 
     // IMPORTANT: the future returned by std::async has special behavior.
     // Its destructor blocks until the task completes!
     // So this is SEQUENTIAL (not parallel):
     //   for (int i = 0; i < N; ++i)
-    //     std::async(launch::async, f, i);  // future destroyed immediately → blocks!
+    //     std::async(launch::async, f, i);  // future destroyed immediately -> blocks!
     //
     // You MUST store futures in a container to get parallelism.
 }
-
 ```
 
-**Explanation:** Store all futures in a vector *before* calling `get()` on any of them. This ensures all tasks run in parallel. If you don't store the futures, the temporary `std::future` destructor blocks until completion — making execution sequential.
+**Explanation:** Store all futures in a vector *before* calling `get()` on any of them. This ensures all tasks run in parallel. If you don't store the futures, the temporary `std::future` destructor blocks until completion - making execution sequential.
 
 ### Q2: Show the problem with std::launch::deferred when combined with future::get on a single thread
 
 **Answer:**
 
-```cpp
+`launch::deferred` is useful for lazy evaluation, but it's a trap when you think you're getting parallelism. Watch the thread IDs in the output - all three deferred tasks run on the main thread:
 
+```cpp
 #include <future>
 #include <iostream>
 #include <chrono>
@@ -152,10 +155,10 @@ int main() {
             std::chrono::steady_clock::now() - start).count();
         std::cout << "Deferred: " << ms << " ms (sequential!)\n\n";
         // Output:
-        // Task 1 completed on thread 140234567890 ← main thread!
-        // Task 2 completed on thread 140234567890 ← main thread!
-        // Task 3 completed on thread 140234567890 ← main thread!
-        // Deferred: ~1500 ms (3 × 500ms, sequential)
+        // Task 1 completed on thread 140234567890 <- main thread!
+        // Task 2 completed on thread 140234567890 <- main thread!
+        // Task 3 completed on thread 140234567890 <- main thread!
+        // Deferred: ~1500 ms (3 x 500ms, sequential)
     }
 
     // === ASYNC: runs in parallel ===
@@ -172,9 +175,9 @@ int main() {
             std::chrono::steady_clock::now() - start).count();
         std::cout << "Async: " << ms << " ms (parallel!)\n\n";
         // Output:
-        // Task 1 completed on thread 140234111111 ← new thread
-        // Task 2 completed on thread 140234222222 ← different thread
-        // Task 3 completed on thread 140234333333 ← different thread
+        // Task 1 completed on thread 140234111111 <- new thread
+        // Task 2 completed on thread 140234222222 <- different thread
+        // Task 3 completed on thread 140234333333 <- different thread
         // Async: ~500 ms (all run in parallel)
     }
 
@@ -190,17 +193,17 @@ int main() {
         // if you need parallel execution.
     }
 }
-
 ```
 
-**Explanation:** `launch::deferred` doesn't launch a thread — it stores the callable and runs it lazily when `get()` or `wait()` is called. All tasks execute on the calling thread, sequentially. This defeats the purpose of async execution. Always use `launch::async` for true parallelism.
+**Explanation:** `launch::deferred` doesn't launch a thread - it stores the callable and runs it lazily when `get()` or `wait()` is called. All tasks execute on the calling thread, sequentially. This defeats the purpose of async execution. Always use `launch::async` for true parallelism.
 
 ### Q3: Implement a simple thread pool using jthread + queue to replace std::async
 
 **Answer:**
 
-```cpp
+For many short tasks, a thread pool beats `std::async` because it avoids the overhead of creating and destroying threads for each task. The pool creates `N` workers once at startup and reuses them for every submitted task. The `submit()` method returns a `std::future<T>` just like `std::async`, so the calling code barely needs to change:
 
+```cpp
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -306,10 +309,9 @@ int main() {
     }
 
     // Typical output (8-core machine, 100 tasks):
-    // std::async (100 threads): 250 ms  ← thread creation overhead
-    // Thread pool (8 threads):  120 ms  ← reuses threads, better locality
+    // std::async (100 threads): 250 ms  <- thread creation overhead
+    // Thread pool (8 threads):  120 ms  <- reuses threads, better locality
 }
-
 ```
 
 **Explanation:** The thread pool creates N worker threads once and reuses them for all tasks. `submit()` returns a `std::future<T>` just like `std::async`, but without creating a new thread each time. For many small tasks, a thread pool is significantly faster than `std::async` due to eliminated thread creation/destruction overhead.
@@ -319,8 +321,8 @@ int main() {
 ## Notes
 
 - **`std::async` future destructor blocks!** The future returned by `async` (unlike promise-created futures) blocks in its destructor until the task completes. This is a common source of accidental sequential execution.
-- **Default launch policy** (`async | deferred`) lets the implementation choose — this means your code might silently become sequential. Always specify `launch::async`.
+- **Default launch policy** (`async | deferred`) lets the implementation choose - this means your code might silently become sequential. Always specify `launch::async`.
 - **Thread pool libraries:** For production use, consider `BS::thread_pool`, Intel TBB, or `std::execution` (C++17 parallel algorithms).
-- **`std::packaged_task`** wraps any callable with a future — useful as the building block for custom thread pools.
+- **`std::packaged_task`** wraps any callable with a future - useful as the building block for custom thread pools.
 - **C++23/26 `std::execution`** will provide standard executors and thread pools, eventually replacing hand-rolled solutions.
 - Compile with `-std=c++20 -O2 -pthread`.

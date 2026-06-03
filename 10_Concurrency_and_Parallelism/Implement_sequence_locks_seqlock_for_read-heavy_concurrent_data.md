@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-A **seqlock** allows lock-free reads with very low overhead. Readers don't block writers. Reads are optimistic: they check if the data was modified during the read.
+A **seqlock** is a beautifully simple lock design that shines when you have a lot more readers than writers. The key idea is that readers are completely lock-free - they never block a writer, and they never spin waiting for a lock to become available. Instead, readers are *optimistic*: they grab the data, then check afterward whether a write happened during the read. If it did, they just try again.
+
+The mechanism is a single atomic sequence counter. An even value means the data is stable. An odd value means a write is in progress. Readers snapshot the counter at the start, copy the data, then check whether the counter is still the same even value. Writers bump the counter to odd to signal "I'm writing," update the data, then bump it back to even to signal "I'm done."
+
+Here is what a complete seqlock looks like in practice:
 
 ### Implementation
 
 ```cpp
-
 #include <atomic>
 #include <thread>
 
@@ -70,8 +73,9 @@ void write_data(double nx, double ny, double nz) {
     data = {nx, ny, nz};  // Update data
     lock.write_unlock();
 }
-
 ```
+
+Notice that `read_begin()` spins only if a write is actively happening (odd counter). In the common case - no concurrent writer - it falls straight through with a single acquire load. The retry loop in `read_data()` handles the rare collision. If no write happened while you were reading, `read_retry()` returns false and you're done in one pass.
 
 ---
 
@@ -79,21 +83,21 @@ void write_data(double nx, double ny, double nz) {
 
 ### Q1: When is a seqlock better than a mutex or rwlock
 
-When reads vastly outnumber writes (>100:1 ratio), when reads must never block, and when the protected data is small (fits in a few cache lines). Seqlocks are used in the Linux kernel for timestamp reading.
+When reads vastly outnumber writes (a ratio above 100:1 is a good rule of thumb), and when reads must never block waiting for a lock. The seqlock also works particularly well when the protected data is small - ideally something that fits in a handful of cache lines. The Linux kernel uses seqlocks for reading timestamp and clock data, which is an almost perfect fit: the timer interrupt updates the clock (rare write), and millions of system calls read it (constant reads).
 
 ### Q2: What are the limitations
 
-Readers may need to retry if a write happens during the read. The protected data must be trivially copyable (no pointers to internal data). Readers can starve if writes are continuous. Not suitable for large data structures.
+Readers may have to retry if a write happens during their read. Because of this, the protected data must be trivially copyable - there can be no internal pointers or resources that would be broken by copying a partially-updated value. Readers can also starve if writes arrive in a continuous stream with no gap between them, because the counter never settles to an even value long enough for a reader to finish. This makes seqlocks unsuitable for large or complex data structures.
 
 ### Q3: Why is seqlock used for gettimeofday()
 
-The system clock is updated by a timer interrupt (rare writer) and read by millions of user-space calls (frequent readers). A seqlock allows reads to be nearly free — no cache line bouncing on the lock in the common case.
+The system clock is updated by a timer interrupt, which is the rare writer in this picture. Every user-space call to read the time is a reader. A seqlock lets each reader pay almost nothing - it loads the counter, copies the timestamp, and checks the counter again. There is no cache-line bouncing on a shared lock variable in the common case, which is exactly what you want when you have millions of readers per second.
 
 ---
 
 ## Notes
 
-- Linux kernel uses seqlocks for timekeeping, network statistics, and VFS metadata.
-- Readers are wait-free in the uncontended case (single load + comparison).
-- Combine with a separate mutex for write-write exclusion.
-- Works best with small, trivially-copyable data (timestamps, coordinates, counters).
+- Linux uses seqlocks for timekeeping, network statistics, and VFS metadata - all classic read-heavy scenarios.
+- Readers are effectively wait-free in the uncontended case (a single load plus a comparison).
+- Writers still need mutual exclusion with each other - combine the seqlock with a separate mutex for write-write exclusion.
+- Works best with small, trivially-copyable data like timestamps, coordinates, and counters.

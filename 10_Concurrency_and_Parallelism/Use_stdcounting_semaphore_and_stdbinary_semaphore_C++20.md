@@ -9,29 +9,29 @@
 
 ## Topic Overview
 
-A **semaphore** is a counter-based synchronization primitive. `acquire()` decrements the counter (blocking if zero); `release()` increments it (waking a blocked thread).
+A **semaphore** is a counter-based synchronization primitive. `acquire()` decrements the counter (blocking if zero); `release()` increments it (waking a blocked thread). You can think of it as a permit system: a thread must obtain a permit to proceed, and permits are returned when the thread is done.
 
 ### Types
 
-```cpp
+Here is how you declare the two kinds:
 
+```cpp
 #include <semaphore>
 
 // counting_semaphore: counter can go up to LeastMaxValue
-std::counting_semaphore<10> sem(3); // max≥10, initial count=3
+std::counting_semaphore<10> sem(3); // max>=10, initial count=3
 
 // binary_semaphore: alias for counting_semaphore<1>
 std::binary_semaphore bsem(0);      // initial count=0 (locked)
 // Equivalent to: std::counting_semaphore<1> bsem(0);
-
 ```
 
 ### Semaphore vs Mutex
 
-```cpp
+The most important thing to understand is that a semaphore has no ownership concept. Any thread can call `release()`, regardless of which thread called `acquire()`. That is exactly the opposite of a mutex. This makes semaphores the right tool for producer-consumer signaling, not for protecting shared data.
 
+```cpp
                   Mutex                Semaphore
-─────────────────────────────────────────────────────
 Ownership:        YES (same thread     NO (any thread can
                   must lock/unlock)    acquire/release)
 Counter:          Binary (locked/      Integer (0..N)
@@ -41,7 +41,6 @@ Cross-thread:     NO                   YES (release from
                   another thread)
 Use case:         Protect shared data  Limit concurrency,
                                        signal between threads
-
 ```
 
 ### API
@@ -61,8 +60,9 @@ Use case:         Protect shared data  Limit concurrency,
 
 **Answer:**
 
-```cpp
+The counting semaphore here acts as a gatekeeper: its initial count equals the number of available resources, and a thread must "spend" a permit to get one. The RAII `Lease` type ensures the permit is always returned.
 
+```cpp
 #include <semaphore>
 #include <mutex>
 #include <vector>
@@ -143,21 +143,21 @@ int main() {
     // Thread 0 using connection 3 (concurrent: 1)
     // Thread 1 using connection 2 (concurrent: 2)
     // Thread 2 using connection 1 (concurrent: 3)
-    // Thread 3 using connection 3 (concurrent: 3)  ← reused after Thread 0 finished
+    // Thread 3 using connection 3 (concurrent: 3)  <- reused after Thread 0 finished
     // ...
     // Max concurrent: 3 (limit: 3)
 }
-
 ```
 
-**Explanation:** The counting semaphore's initial count equals the number of resources. Each `acquire()` decrements the count; when it hits zero, subsequent threads block until a resource is returned via `release()`. The mutex only protects the pool vector (very short critical section).
+The counting semaphore's initial count equals the number of resources. Each `acquire()` decrements the count; when it hits zero, subsequent threads block until a resource is returned via `release()`. The mutex only protects the pool vector (very short critical section) - the semaphore does the heavy lifting of blocking and waking threads.
 
 ### Q2: Show the difference between a semaphore and a mutex in terms of ownership semantics
 
 **Answer:**
 
-```cpp
+The ownership difference is not just a technicality - it determines what patterns are even possible. A mutex forces the locker to be the unlocker. A semaphore has no such restriction, which is exactly what you need for producer-consumer work.
 
+```cpp
 #include <semaphore>
 #include <mutex>
 #include <thread>
@@ -172,7 +172,7 @@ int main() {
         std::thread locker([&] {
             mtx.lock();
             std::cout << "Mutex: locked by thread A\n";
-            // Thread A MUST unlock — unlocking from thread B is UNDEFINED BEHAVIOR
+            // Thread A MUST unlock - unlocking from thread B is UNDEFINED BEHAVIOR
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
             mtx.unlock();
             std::cout << "Mutex: unlocked by thread A\n";
@@ -192,14 +192,14 @@ int main() {
         std::thread producer([&] {
             std::cout << "Sem: producer preparing data...\n";
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            sem.release(); // Thread A increments → count becomes 1
+            sem.release(); // Thread A increments -> count becomes 1
             std::cout << "Sem: producer signaled (release from thread A)\n";
         });
 
-        // Thread B consumes — legitimately acquires what Thread A released
+        // Thread B consumes - legitimately acquires what Thread A released
         std::thread consumer([&] {
             std::cout << "Sem: consumer waiting...\n";
-            sem.acquire(); // Thread B decrements → this is FINE
+            sem.acquire(); // Thread B decrements -> this is FINE
             std::cout << "Sem: consumer got signal (acquire from thread B)\n";
         });
 
@@ -207,7 +207,7 @@ int main() {
         consumer.join();
 
         // KEY: release() in Thread A, acquire() in Thread B
-        // This is the INTENDED use — impossible with mutex!
+        // This is the INTENDED use - impossible with mutex!
     }
 
     // === Practical example: ping-pong signaling ===
@@ -244,17 +244,17 @@ int main() {
     // Ping 2
     //   Pong 2
 }
-
 ```
 
-**Summary:** A mutex is an **ownership** primitive — only the locking thread may unlock. A semaphore is a **signaling** primitive — any thread can release, enabling producer-consumer, ping-pong, and cross-thread notification patterns that are impossible with a mutex alone.
+A mutex is an **ownership** primitive - only the locking thread may unlock. A semaphore is a **signaling** primitive - any thread can release, enabling producer-consumer, ping-pong, and cross-thread notification patterns that are impossible with a mutex alone.
 
 ### Q3: Use binary_semaphore as a one-shot notification between threads
 
 **Answer:**
 
-```cpp
+A `binary_semaphore` initialized to 0 is a natural "not ready yet" gate. The consumer calls `acquire()` and blocks until the producer calls `release()`. Unlike `condition_variable`, there is no lost-notification problem here: if the producer releases before the consumer acquires, the count is simply 1, and the next `acquire()` returns immediately without blocking.
 
+```cpp
 #include <semaphore>
 #include <thread>
 #include <vector>
@@ -352,21 +352,18 @@ int main() {
     // Worker 3 done
     // All workers completed
 }
-
 ```
 
-**Key patterns:** Binary semaphore initialized to 0 acts as a "gate" — the consumer blocks on `acquire()` until the producer calls `release()`. Unlike `condition_variable`, there's no predicate to manage, no mutex needed, and no lost-notification problem (release before acquire just sets count to 1).
+Binary semaphore initialized to 0 acts as a "gate" - the consumer blocks on `acquire()` until the producer calls `release()`. Unlike `condition_variable`, there's no predicate to manage, no mutex needed, and no lost-notification problem (release before acquire just sets count to 1).
 
 ---
 
 ## Notes
 
-- **binary_semaphore(1) ≈ mutex:** Initialized to 1, `acquire()` locks, `release()` unlocks. But unlike mutex, it has NO ownership — any thread can release.
+- **binary_semaphore(1) as a mutex substitute:** Initialized to 1, `acquire()` locks, `release()` unlocks. But unlike mutex, it has NO ownership - any thread can release.
 - **Counting semaphore for rate limiting:** `counting_semaphore<N>` with initial count N allows at most N concurrent operations.
 - **`release(n)`:** Increments count by `n` and wakes up to `n` blocked threads. Useful for batch release.
-- **`try_acquire_for()`:** Returns `false` on timeout — useful for cancellation or deadline-based designs.
+- **`try_acquire_for()`:** Returns `false` on timeout - useful for cancellation or deadline-based designs.
 - **LeastMaxValue template parameter:** `counting_semaphore<100>` guarantees the max count is at least 100. The actual max may be higher (implementation-defined).
-- **Performance:** Semaphores typically use futex/WaitOnAddress internally — similar performance to `condition_variable` but with simpler code.
+- **Performance:** Semaphores typically use futex/WaitOnAddress internally - similar performance to `condition_variable` but with simpler code.
 - Compile with `-std=c++20 -O2 -pthread`.
-
-```text

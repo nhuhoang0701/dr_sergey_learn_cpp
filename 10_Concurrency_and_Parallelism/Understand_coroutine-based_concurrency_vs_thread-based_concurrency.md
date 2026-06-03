@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-C++20 introduced coroutines — functions that can suspend and resume execution. Coroutines enable **cooperative concurrency**: a coroutine voluntarily yields control at `co_await`/`co_yield` points. Threads provide **preemptive concurrency**: the OS scheduler can interrupt any thread at any time.
+C++20 introduced coroutines - functions that can suspend and resume execution. Coroutines enable **cooperative concurrency**: a coroutine voluntarily yields control at `co_await`/`co_yield` points. Threads provide **preemptive concurrency**: the OS scheduler can interrupt any thread at any time.
+
+The reason this distinction matters in practice is cost. Creating a thread means a system call, allocating a full OS stack (often 1-8 MB), and paying for kernel-level context switches on every switch. A coroutine is just a small heap allocation (a few hundred bytes for its frame) and a function call to resume. When you need to manage thousands of concurrent tasks, that difference is enormous.
 
 ### Comparison Table
 
@@ -17,7 +19,7 @@ C++20 introduced coroutines — functions that can suspend and resume execution.
 | --- | --- | --- |
 | Scheduling | Preemptive (OS) | Cooperative (programmer) |
 | Stack | Full OS stack (~1-8 MB) | Coroutine frame (~hundreds of bytes) |
-| Context switch | Kernel transition (~1-5 μs) | Function call (~10-50 ns) |
+| Context switch | Kernel transition (~1-5 us) | Function call (~10-50 ns) |
 | Creation cost | Heavy (syscall) | Lightweight (heap alloc) |
 | Concurrency model | 1:1 (thread:OS thread) | M:N (many coroutines:few threads) |
 | Data races | Common (preemption anywhere) | Rare (yield only at explicit points) |
@@ -26,8 +28,9 @@ C++20 introduced coroutines — functions that can suspend and resume execution.
 
 ### Visual Model
 
-```cpp
+The diagram below shows the difference in how threads and coroutines map to OS threads:
 
+```cpp
 Thread-based (1:1):                 Coroutine-based (M:N):
 ┌─────┐ ┌─────┐ ┌─────┐           ┌───┐┌───┐┌───┐┌───┐┌───┐
 │ T1  │ │ T2  │ │ T3  │           │C1 ││C2 ││C3 ││C4 ││C5 │ ...1000s
@@ -38,7 +41,6 @@ Thread-based (1:1):                 Coroutine-based (M:N):
 │ OS1 │ │ OS2 │ │ OS3 │           │ OS1 │ │ OS2 │  (few threads)
 └─────┘ └─────┘ └─────┘           └─────┘ └─────┘
 3 OS threads for 3 tasks           2 OS threads for 5+ tasks
-
 ```
 
 ---
@@ -49,8 +51,9 @@ Thread-based (1:1):                 Coroutine-based (M:N):
 
 **Answer:**
 
-```cpp
+This example runs three coroutines on a single thread, round-robin, alongside three threads running the same work preemptively. Notice that the coroutine output is perfectly deterministic - because nothing runs between `co_await` points - while the thread output order varies every time:
 
+```cpp
 #include <coroutine>
 #include <iostream>
 #include <thread>
@@ -77,11 +80,11 @@ struct Task {
 Task cooperative_task(const std::string& name) {
     std::cout << "[" << name << "] step 1 on thread "
               << std::this_thread::get_id() << "\n";
-    co_await std::suspend_always{}; // ← explicit yield point
+    co_await std::suspend_always{}; // <- explicit yield point
 
     std::cout << "[" << name << "] step 2 on thread "
               << std::this_thread::get_id() << "\n";
-    co_await std::suspend_always{}; // ← explicit yield point
+    co_await std::suspend_always{}; // <- explicit yield point
 
     std::cout << "[" << name << "] step 3 on thread "
               << std::this_thread::get_id() << "\n";
@@ -114,8 +117,8 @@ int main() {
     }
     // Output (deterministic order!):
     // [A] step 1 on thread 140234567890
-    // [B] step 1 on thread 140234567890  ← same thread
-    // [C] step 1 on thread 140234567890  ← same thread
+    // [B] step 1 on thread 140234567890  <- same thread
+    // [C] step 1 on thread 140234567890  <- same thread
     // [A] step 2 on thread 140234567890
     // [B] step 2 on thread 140234567890
     // [C] step 2 on thread 140234567890
@@ -129,7 +132,7 @@ int main() {
         for (int i = 1; i <= 3; ++i) {
             std::cout << "[" << name << "] step " << i
                       << " on thread " << std::this_thread::get_id() << "\n";
-            // No yield — OS can preempt at ANY point
+            // No yield - OS can preempt at ANY point
         }
     };
 
@@ -139,21 +142,21 @@ int main() {
     t1.join(); t2.join(); t3.join();
     // Output (non-deterministic, interleaved randomly):
     // [X] step 1 on thread 140234111111
-    // [Z] step 1 on thread 140234333333  ← different threads
+    // [Z] step 1 on thread 140234333333  <- different threads
     // [Y] step 1 on thread 140234222222
     // [X] step 2 ...  (order varies every run)
 }
-
 ```
 
-**Explanation:** Coroutines yield only at `co_await` — between yield points, code runs uninterrupted on a single thread. The scheduler is in user code, giving full control over execution order. Threads run on separate OS threads and can be preempted at any instruction — the output order is non-deterministic.
+**Explanation:** Coroutines yield only at `co_await` - between yield points, code runs uninterrupted on a single thread. The scheduler is in user code, giving full control over execution order. Threads run on separate OS threads and can be preempted at any instruction - the output order is non-deterministic.
 
 ### Q2: Implement 1000 concurrent coroutine tasks and show lower overhead than 1000 threads
 
 **Answer:**
 
-```cpp
+This benchmark measures the real cost difference. Creating 1000 threads means 1000 system calls and somewhere around 8 GB of committed stack space. Coroutines are just heap allocations of a few hundred bytes each:
 
+```cpp
 #include <coroutine>
 #include <thread>
 #include <vector>
@@ -214,7 +217,7 @@ int main() {
             std::chrono::steady_clock::now() - start).count();
         std::cout << "Coroutines: " << N << " tasks, "
                   << coro_counter.load() << " ops, "
-                  << us << " μs\n";
+                  << us << " us\n";
     }
 
     // === Benchmark: 1000 threads ===
@@ -236,12 +239,12 @@ int main() {
             std::chrono::steady_clock::now() - start).count();
         std::cout << "Threads:    " << N << " tasks, "
                   << thread_counter.load() << " ops, "
-                  << us << " μs\n";
+                  << us << " us\n";
     }
 
     // Typical output:
-    // Coroutines: 1000 tasks, 3000 ops, ~200 μs
-    // Threads:    1000 tasks, 3000 ops, ~50000 μs (50 ms)
+    // Coroutines: 1000 tasks, 3000 ops, ~200 us
+    // Threads:    1000 tasks, 3000 ops, ~50000 us (50 ms)
     //
     // Coroutines are ~100-250x FASTER to create and schedule
     // because:
@@ -250,38 +253,38 @@ int main() {
     //   - No kernel context switches
     //   - Coroutine frame is ~100-200 bytes on the heap
 }
-
 ```
 
-**Explanation:** Creating 1000 threads requires 1000 `pthread_create` syscalls and allocates ~8 GB of stack space (8 MB × 1000). Coroutines allocate a small heap frame (~100-200 bytes each) and run cooperatively on the calling thread. The thread version is ~100x slower due to OS overhead.
+**Explanation:** Creating 1000 threads requires 1000 `pthread_create` syscalls and allocates roughly 8 GB of stack space (8 MB times 1000). Coroutines allocate a small heap frame (~100-200 bytes each) and run cooperatively on the calling thread. The thread version is roughly 100x slower due to OS overhead alone.
 
 ### Q3: Explain when thread-per-connection is better vs coroutine-per-connection
 
 **Answer:**
 
-```cpp
+The decision comes down to what your tasks spend most of their time doing. If they are mostly waiting (for I/O, timers, network), coroutines let you fill that wait time with other work at near-zero overhead. If they are mostly computing, you need real OS threads to exploit multiple CPU cores - a coroutine scheduler on one thread cannot parallelize compute.
 
+```cpp
 When to use THREADS (1:1):
 ─────────────────────────
-✓ CPU-bound work (computation, encoding, physics)
-  → Each thread fully utilizes a core; no benefit to yielding
-✓ Simple concurrency needs (< 100 connections)
-  → Thread overhead is negligible at small scale
-✓ Blocking I/O with no async alternative
-  → e.g., legacy database drivers that block
-✓ Real-time requirements
-  → OS thread priorities and scheduling guarantees
+CPU-bound work (computation, encoding, physics)
+  - Each thread fully utilizes a core; no benefit to yielding
+Simple concurrency needs (< 100 connections)
+  - Thread overhead is negligible at small scale
+Blocking I/O with no async alternative
+  - e.g., legacy database drivers that block
+Real-time requirements
+  - OS thread priorities and scheduling guarantees
 
 When to use COROUTINES (M:N):
 ─────────────────────────────
-✓ I/O-bound work (network servers, file I/O)
-  → Spend most time waiting; coroutines yield during waits
-✓ High concurrency (10,000+ connections)
-  → Thread-per-connection exhausts OS resources
-✓ Event-driven architectures (chat servers, game loops)
-  → Natural co_await at each event boundary
-✓ Pipeline/streaming processing
-  → co_yield produces values lazily
+I/O-bound work (network servers, file I/O)
+  - Spend most time waiting; coroutines yield during waits
+High concurrency (10,000+ connections)
+  - Thread-per-connection exhausts OS resources
+Event-driven architectures (chat servers, game loops)
+  - Natural co_await at each event boundary
+Pipeline/streaming processing
+  - co_yield produces values lazily
 
 Hybrid approach (common in production):
 ───────────────────────────────────────
@@ -295,7 +298,6 @@ Thread pool (N = CPU cores) + coroutines per thread
 │  Each thread runs 100s of coroutines     │
 │  N threads = N CPU cores                 │
 └──────────────────────────────────────────┘
-
 ```
 
 **Concrete example:**
