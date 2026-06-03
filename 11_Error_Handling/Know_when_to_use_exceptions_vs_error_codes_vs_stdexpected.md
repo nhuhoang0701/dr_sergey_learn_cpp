@@ -9,53 +9,52 @@
 
 ## Topic Overview
 
-C++ offers three main error-handling mechanisms: **exceptions**, **error codes**, and **`std::expected`** (C++23). Each has distinct trade-offs in performance, expressiveness, and suitability for different domains.
+C++ offers three main error-handling mechanisms: **exceptions**, **error codes**, and **`std::expected`** (C++23). Each has distinct trade-offs in performance, expressiveness, and suitability for different domains. The hard part isn't understanding any one of them in isolation - it's knowing which one belongs where, especially when your codebase spans multiple layers or has performance requirements.
 
 ### The Three Mechanisms at a Glance
 
 | Mechanism | API Style | Error Path Cost | Happy Path Cost | Composability |
 | --- | --- | --- | --- | --- |
-| **Exceptions** | `throw` / `try-catch` | High (~1-10 μs per throw) | Zero (table-based unwinding) | Automatic propagation |
+| **Exceptions** | `throw` / `try-catch` | High (~1-10 us per throw) | Zero (table-based unwinding) | Automatic propagation |
 | **Error codes** | Return `int`/`enum`, check at call site | Near-zero | Small (branch per call) | Manual propagation |
 | **`std::expected<T,E>`** | Return value-or-error | Near-zero | Small (slightly larger return) | Monadic chaining (C++23) |
 
 ### Decision Flow
 
+Use this as a mental checklist rather than a rigid algorithm. The most important factor is whether the failure is genuinely unexpected or a routine outcome.
+
 ```cpp
-
 Is this an EXCEPTIONAL condition (rare, unexpected)?
-  ├─ YES → Is the codebase exceptions-enabled?
-  │         ├─ YES → throw an exception
-  │         └─ NO  → error code or std::expected
+  ├─ YES -> Is the codebase exceptions-enabled?
+  │         ├─ YES -> throw an exception
+  │         └─ NO  -> error code or std::expected
   └─ NO (common/expected failure like "file not found", "invalid input")
-           ├─ C++23 available? → std::expected<T,E>
-           └─ Pre-C++23?      → error code / std::optional / out-param
-           
-Additional constraints:
-  ├─ Real-time / embedded / -fno-exceptions → error codes or expected
-  ├─ noexcept API boundary                  → error codes or expected
-  └─ Cross-language boundary (C ABI)        → error codes only
+           ├─ C++23 available? -> std::expected<T,E>
+           └─ Pre-C++23?      -> error code / std::optional / out-param
 
+Additional constraints:
+  ├─ Real-time / embedded / -fno-exceptions -> error codes or expected
+  ├─ noexcept API boundary                  -> error codes or expected
+  └─ Cross-language boundary (C ABI)        -> error codes only
 ```
 
 ### Exception Model: Zero-Overhead Principle
 
-Modern compilers use **table-based exception handling** (Itanium ABI on Linux, SEH on Windows):
+Modern compilers use **table-based exception handling** (Itanium ABI on Linux, SEH on Windows). The zero-overhead principle means the happy path - the code that never throws - pays no runtime cost for the existence of try/catch blocks. The cost is only incurred when an exception is actually thrown.
 
 ```cpp
-
 Happy path (no throw):
   ┌─────────────────────────────┐
   │ function()                  │
-  │   ... normal code ...       │  ← ZERO runtime overhead
+  │   ... normal code ...       │  <- ZERO runtime overhead
   │   return result;            │     (no extra branches, no checks)
   └─────────────────────────────┘
 
 Error path (throw):
   ┌─────────────────────────────┐
   │ throw std::runtime_error(…) │
-  │   1. Allocate exception obj │  ← ~100 ns
-  │   2. Walk stack tables      │  ← ~1-10 μs (depends on depth)
+  │   1. Allocate exception obj │  <- ~100 ns
+  │   2. Walk stack tables      │  <- ~1-10 us (depends on depth)
   │   3. Run destructors (RAII) │
   │   4. Transfer to catch      │
   └─────────────────────────────┘
@@ -64,13 +63,13 @@ Cost breakdown:
   Happy path:  0 extra instructions (compiler generates side tables)
   Error path:  ~1,000-10,000 ns (stack unwinding, RTTI matching)
   Code size:   +10-15% (exception tables in .eh_frame section)
-
 ```
 
-### `std::expected<T, E>` (C++23) — Best of Both Worlds
+### `std::expected<T, E>` (C++23) - Best of Both Worlds
+
+`std::expected` gives you the type-safety of returning an error value without the overhead of exceptions on the error path, and the composability of monadic operations. Here's the basic form plus the chaining syntax.
 
 ```cpp
-
 #include <expected>
 #include <string>
 #include <system_error>
@@ -95,14 +94,15 @@ auto result = parse_int("42")
     .or_else([](const std::string& err) -> std::expected<std::string, std::string> {
         return std::unexpected("parse failed: " + err);
     });
-
 ```
+
+If any step in the chain produces an error, the rest of the lambdas are skipped and the error flows through to the end. No boilerplate `if (!result) return result.error();` at each step.
 
 ### Important Notes
 
 - **Consistency is key:** Pick one strategy per subsystem and stick with it. Mixing freely leads to unhandled errors.
-- Mark non-throwing functions `noexcept` — enables better codegen and move semantics in containers.
-- `std::expected` is a vocabulary type — return it from functions that can commonly fail.
+- Mark non-throwing functions `noexcept` - enables better codegen and move semantics in containers.
+- `std::expected` is a vocabulary type - return it from functions that can commonly fail.
 - Exceptions cross abstraction boundaries naturally; error codes require manual propagation at each level.
 
 ---
@@ -115,23 +115,24 @@ auto result = parse_int("42")
 
 | Scenario | Why Exceptions Are Problematic |
 | --- | --- |
-| **Real-time systems** | Stack unwinding has non-deterministic latency (~1-10 μs); violates hard-deadline guarantees |
+| **Real-time systems** | Stack unwinding has non-deterministic latency (~1-10 us); violates hard-deadline guarantees |
 | **Embedded / bare-metal** | Exception tables consume Flash/ROM; unwinding runtime may be unavailable or too large |
 | **`-fno-exceptions` codebases** | `throw` is disabled at compile time; entire codebase must be exception-free |
-| **`noexcept` API boundaries** | Throwing from `noexcept` calls `std::terminate()` — undefined recovery |
+| **`noexcept` API boundaries** | Throwing from `noexcept` calls `std::terminate()` - undefined recovery |
 | **Destructors** | Throwing during stack unwinding (already handling an exception) calls `std::terminate()` |
 | **Move constructors/operators** | Throwing breaks `std::vector` reallocation strong guarantee; mark `noexcept` |
 | **Swap functions** | Throwing swap breaks most standard algorithms' exception safety |
-| **C ABI / FFI boundaries** | Exceptions cannot cross `extern "C"` boundaries — UB |
+| **C ABI / FFI boundaries** | Exceptions cannot cross `extern "C"` boundaries - UB |
 | **GPU / CUDA kernels** | Device code has no exception support |
 | **High-frequency loops** | Even if "zero-cost" on happy path, compiler may inhibit optimizations near try/catch |
-| **Expected failures** | "File not found" or "parse error" are common, not exceptional — use `expected` |
+| **Expected failures** | "File not found" or "parse error" are common, not exceptional - use `expected` |
+
+Here's a concrete example of the noexcept boundary problem. If you mark a callback `noexcept` and forget to guard against exceptions internally, any throw terminates the program with no useful diagnostic.
 
 ```cpp
-
 // Example: noexcept boundary problem
 void safe_callback() noexcept {
-    // If this throws → std::terminate()!
+    // If this throws -> std::terminate()!
     // Must catch internally or use error codes
     try {
         risky_operation();
@@ -139,17 +140,13 @@ void safe_callback() noexcept {
         log_error();  // handle internally
     }
 }
-
 ```
-
----
 
 ### Q2: Explain the zero-overhead principle: exceptions cost nothing if not thrown
 
 **Detailed Explanation:**
 
 ```cpp
-
 // The compiler generates TWO outputs for exception-enabled code:
 //
 // 1. Normal code path — IDENTICAL to code without exceptions
@@ -165,13 +162,13 @@ int compute(int x) {
                                   //   unwinder reads tables,
                                   //   calls ~vector then ~string
 }   // if no throw: s and v destroyed normally — zero overhead from exceptions
-
 ```
+
+The key insight is that the side tables live in `.eh_frame`, a separate section that is mapped into memory but never read on the happy path. The instruction stream itself is identical to exception-free code. The overhead only materializes if an exception is actually thrown.
 
 **Benchmark Evidence:**
 
 ```cpp
-
 #include <iostream>
 #include <chrono>
 #include <stdexcept>
@@ -215,26 +212,24 @@ int main() {
     std::cout << "Error codes:        " << ms_ec  << " ms, sum=" << sum2 << "\n";
     // Typical result: both ~150-200 ms — no measurable difference on happy path
 }
-
 ```
+
+Both versions run in essentially the same time on the happy path. The performance difference only shows up on the error path, which is why "exceptions are slow" is only true for the throw/catch case, not for the surrounding code.
 
 **Trade-offs:**
 
 | Aspect | Happy Path | Error Path |
 | --- | --- | --- |
-| Runtime cost | Zero (table-based) | ~1-10 μs per throw (unwinding) |
+| Runtime cost | Zero (table-based) | ~1-10 us per throw (unwinding) |
 | Code size | +10-15% (exception tables) | N/A |
 | Instruction cache | Slightly worse (larger binary) | N/A |
 | Branch prediction | No branches for error checking | N/A |
 
----
-
 ### Q3: Rewrite a function that throws for a common case to use `std::expected` instead
 
-**Solution — Before and After:**
+**Solution - Before and After:**
 
 ```cpp
-
 #include <iostream>
 #include <expected>
 #include <string>
@@ -242,7 +237,7 @@ int main() {
 #include <sstream>
 #include <system_error>
 
-// ❌ BAD: Throws for a COMMON failure (file not found is expected in many workflows)
+// BAD: Throws for a COMMON failure (file not found is expected in many workflows)
 std::string read_file_throws(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open())
@@ -254,7 +249,7 @@ std::string read_file_throws(const std::string& path) {
     return ss.str();
 }
 
-// ✅ GOOD: Returns std::expected — caller handles failure without try/catch
+// GOOD: Returns std::expected — caller handles failure without try/catch
 enum class FileError {
     not_found,
     permission_denied,
@@ -317,8 +312,9 @@ int main() {
 //   Error: Cannot open: config.txt
 //   Error: file not found
 //   Failed to read file
-
 ```
+
+The `expected` version forces the caller to decide what to do with the error. With the throwing version, it's easy to call the function and forget the `try/catch` - the compiler won't remind you. With `expected`, ignoring the error means ignoring the return value, which at least produces a warning in most compilers.
 
 **When to Use Which:**
 
@@ -334,8 +330,8 @@ int main() {
 
 ## Notes
 
-- **`std::expected` vs `std::optional`:** `expected<T,E>` carries an error value; `optional<T>` only says "no value" without why.
-- **`std::unexpected(e)`** constructs the error state — it's the `expected` equivalent of `throw`.
+- **`std::expected` vs `std::optional`:** `expected<T,E>` carries an error value; `optional<T>` only says "no value" without saying why.
+- **`std::unexpected(e)`** constructs the error state - it's the `expected` equivalent of `throw`.
 - **Monadic operations** (`.transform()`, `.and_then()`, `.or_else()`) avoid deep nesting of `if (result)` checks.
 - **Binary size:** `std::expected` adds no hidden tables, unlike exceptions which add `.eh_frame` overhead.
 - **Migration tip:** Wrap legacy throwing APIs in a function returning `expected` at the boundary.

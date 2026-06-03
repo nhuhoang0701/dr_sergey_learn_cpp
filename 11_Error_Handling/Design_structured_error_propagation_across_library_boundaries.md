@@ -2,13 +2,13 @@
 
 **Category:** Error Handling  
 **Standard:** C++11 / C++17 / C++23 (`std::expected`)  
-**Reference:** [cppreference – std::expected](https://en.cppreference.com/w/cpp/utility/expected), [cppreference – std::error_code](https://en.cppreference.com/w/cpp/error/error_code)  
+**Reference:** [cppreference - std::expected](https://en.cppreference.com/w/cpp/utility/expected), [cppreference - std::error_code](https://en.cppreference.com/w/cpp/error/error_code)  
 
 ---
 
 ## Topic Overview
 
-When code crosses a library boundary — a shared library (`.so`/`.dll`), a module boundary, or a third-party SDK — error propagation becomes a design problem with real constraints. Exceptions may not cross ABI boundaries safely, error enums from one library are opaque to another, and version changes can break error contracts.
+When code crosses a library boundary - a shared library (`.so`/`.dll`), a module boundary, or a third-party SDK - error propagation becomes a design problem with real constraints. Exceptions may not cross ABI boundaries safely, error enums from one library are opaque to another, and version changes can break error contracts.
 
 | Mechanism | Pros | Cons | Best for |
 | --- | --- | --- | --- |
@@ -19,8 +19,9 @@ When code crosses a library boundary — a shared library (`.so`/`.dll`), a modu
 
 A robust boundary design typically uses a **layered approach**: the public ABI returns a stable error type (`error_code` or C `int`), while internal code uses exceptions or `std::expected`. A thin translation layer at the boundary catches exceptions and converts them to error codes.
 
-```cpp
+Here's the three-layer picture. The internal code can be as expressive as you like; the translation layer is the firewall.
 
+```cpp
 ┌─────────────────────────────────────────────────────────────────┐
 │  Application (C++23)                                            │
 │  Uses: std::expected<T, AppError> internally                    │
@@ -34,15 +35,14 @@ A robust boundary design typically uses a **layered approach**: the public ABI r
 │  Returns: errno, HRESULT, or its own error codes                │
 │  Translation at import: platform code -> std::error_code        │
 └─────────────────────────────────────────────────────────────────┘
-
 ```
 
 Key design principles:
 
 1. **Never let exceptions escape a library boundary** unless the library and caller are guaranteed to use the same compiler, standard library, and exception ABI.
 2. **Version your error enums.** Add new codes at the end. Never remove or renumber. Provide an `unknown` fallback.
-3. **Provide a `message()` function** that returns a human-readable string allocated by the library — the caller must not free or interpret the format.
-4. **Map incoming platform errors to your domain** at the boundary — don't expose raw `errno` or `HRESULT` to callers.
+3. **Provide a `message()` function** that returns a human-readable string allocated by the library - the caller must not free or interpret the format.
+4. **Map incoming platform errors to your domain** at the boundary - don't expose raw `errno` or `HRESULT` to callers.
 
 ---
 
@@ -50,8 +50,9 @@ Key design principles:
 
 ### Q1: Implement a boundary translation layer that catches exceptions and returns `error_code`
 
-```cpp
+The key insight here is the `noexcept` on the public API function. That's the promise to callers that nothing will escape. Inside, a `try/catch(...)` with fine-grained catches maps each known internal exception type to a specific public error code. Any other exception becomes `internal_error`, which is honest but doesn't leak internal details.
 
+```cpp
 // boundary_translation.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o boundary_translation boundary_translation.cpp
 #include <iostream>
@@ -170,13 +171,15 @@ int main() {
 // "" -> ERROR [measure:1] invalid measurement input
 // "overflow" -> ERROR [measure:2] measurement out of range
 // "unknown" -> ERROR [measure:3] internal measurement error
-
 ```
+
+The public function is `noexcept` and returns a plain `std::error_code`. Everything messy is contained inside. This is the fundamental shape of a well-behaved library boundary.
 
 ### Q2: Design a versioned error type for a library that must maintain ABI compatibility
 
-```cpp
+When you ship a library that other codebases link against, you can't change the layout of your error type between versions - their compiled code will break. The trick is a POD struct with a `version` field so callers that were compiled against v1 can still handle v2 codes gracefully (by checking `err.version > known_version`).
 
+```cpp
 // versioned_errors.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o versioned_errors versioned_errors.cpp
 #include <cstdint>
@@ -279,13 +282,15 @@ int main() {
 // old_api -> ERROR 5 (v2): API deprecated
 //   (Note: this error code was added in API v2)
 // (null) -> ERROR 2 (v1): access denied
-
 ```
+
+The `version` field in the struct means a v1 client can receive a v2 error code and know "this is something I don't understand yet" rather than silently treating it as some other v1 code. That's the difference between a defensively designed API and one that breaks quietly when you update the library.
 
 ### Q3: Bridge `std::expected` (internal) with `std::error_code` (public boundary) using a translation utility
 
-```cpp
+This is the cleanest pattern for modern C++ libraries: use `std::expected` throughout your internal implementation for expressive, chainable error handling, and then expose a `std::error_code`-returning public API. The bridge utility `to_error_code` is the glue.
 
+```cpp
 // expected_bridge.cpp — C++23
 // Compile: g++ -std=c++23 -O2 -Wall -Wextra -o expected_bridge expected_bridge.cpp
 #include <expected>
@@ -406,18 +411,19 @@ int main() {
 // timeout = 30
 // invalid -> ERROR [config:2] configuration value parse error
 // missing -> ERROR [config:1] configuration key not found
-
 ```
+
+The internal chain (`read_and_validate` calling `read_config_int` and using `.and_then`) is clean and readable. The public boundary collapses all of that into a simple output-parameter + error-code pattern that works from C or any C++ version. Best of both worlds.
 
 ---
 
 ## Notes
 
-- **Never let C++ exceptions escape `extern "C"` boundaries** — it is undefined behavior. Always wrap in `try/catch(...)`.
+- **Never let C++ exceptions escape `extern "C"` boundaries** - it is undefined behavior. Always wrap in `try/catch(...)`.
 - At ABI boundaries, prefer `std::error_code` (int + category pointer) or plain `int` error codes. Both are trivially copyable and ABI-stable.
 - `std::expected<T, std::error_code>` is ideal for internal APIs. Bridge it to `error_code` return values at the public boundary.
 - **Version your error enums**: add a version tag to new codes, never renumber old ones, and always handle `default`/`unknown` gracefully.
-- Provide a library-owned `message()` function — don't force callers to maintain their own error string tables.
+- Provide a library-owned `message()` function - don't force callers to maintain their own error string tables.
 - `std::error_code` with custom categories works well for inter-module communication within the same process. For cross-process or cross-language boundaries, use plain C integers.
-- The translation layer pattern (catch internal exceptions → map to error codes) should be thin and mechanically verifiable. Consider code-generating it from an error definition table.
-- When wrapping a third-party library, map its error codes into your domain at the import boundary — don't leak foreign error categories to your callers.
+- The translation layer pattern (catch internal exceptions -> map to error codes) should be thin and mechanically verifiable. Consider code-generating it from an error definition table.
+- When wrapping a third-party library, map its error codes into your domain at the import boundary - don't leak foreign error categories to your callers.

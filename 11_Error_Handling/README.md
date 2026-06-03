@@ -35,14 +35,13 @@ Exceptions, error codes, std::expected, noexcept, and error handling best practi
 
 ## Notes
 
-- std::expected (C++23) is the modern way to return errors without exceptions
-- Exception safety levels: no-throw, strong, basic, none — aim for at least basic guarantee
-- 
-oexcept on functions enables compiler optimizations and is required for move operations in containers
-- Don't throw in destructors — it causes std::terminate if another exception is in flight
-- std::error_code / std::error_category provide system-compatible error handling
-- Catch exceptions by const reference (const std::exception&) to avoid slicing
-- std::nested_exception allows wrapping lower-level errors while preserving original context
-- Prefer returning error codes in performance-critical paths — exceptions have non-zero cost on the throw path
-- Use static_assert and concepts to catch errors at compile time instead of runtime
-- Function-try-blocks on constructors are the only way to catch exceptions from member initializer lists
+- `std::expected` (C++23) is the modern way to return errors without exceptions - use it for common, expected failure modes.
+- Exception safety levels: no-throw, strong, basic, none - aim for at least the basic guarantee in all your code.
+- `noexcept` on functions enables compiler optimizations and is required for move operations in containers to avoid falling back to copies.
+- Don't throw in destructors - it causes `std::terminate` if another exception is already in flight during stack unwinding.
+- `std::error_code` / `std::error_category` provide system-compatible error handling and are the right choice for library interfaces and ABI boundaries.
+- Catch exceptions by const reference (`const std::exception&`) to avoid slicing away the derived type information.
+- `std::nested_exception` allows wrapping lower-level errors while preserving the original context - essential for diagnostic chains in multi-layer architectures.
+- Prefer returning error codes or `std::expected` in performance-critical paths - exceptions have non-trivial cost when they are actually thrown.
+- Use `static_assert` and concepts to catch errors at compile time instead of runtime whenever possible.
+- Function-try-blocks on constructors are the only way to catch exceptions thrown from member initializer lists.

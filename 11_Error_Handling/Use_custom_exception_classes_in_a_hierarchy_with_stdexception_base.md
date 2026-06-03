@@ -8,24 +8,26 @@
 
 ## Topic Overview
 
-Custom exception hierarchies allow you to define **domain-specific error types** that integrate seamlessly with the standard `try/catch` mechanism. By deriving from `std::exception` (or its subclasses), you get polymorphic catching, meaningful `what()` messages, and the ability to carry structured error data.
+Custom exception hierarchies let you define **domain-specific error types** that integrate seamlessly with the standard `try/catch` mechanism. By deriving from `std::exception` (or its subclasses), you get polymorphic catching, meaningful `what()` messages, and the ability to carry structured error data - like HTTP status codes, database error codes, or network timeouts - right on the exception object.
 
 ### Design Principles
 
+The most important decision is how granular to make your hierarchy. Too flat and you cannot distinguish between different kinds of errors; too deep and catching becomes awkward. Here is the contrast:
+
 ```cpp
-
-Good hierarchy:                      Bad hierarchy:
-std::exception                       std::exception
-  └── std::runtime_error               └── MyError (catches EVERYTHING)
-        └── AppError
-              ├── NetworkError       Flat, no granularity — can't
-              │     ├── HttpError    distinguish network from DB errors
-              │     └── DnsError
-              └── DatabaseError
-                    ├── QueryError
-                    └── ConnectionError
-
+// Good hierarchy:                      Bad hierarchy:
+// std::exception                       std::exception
+//   └── std::runtime_error               └── MyError (catches EVERYTHING)
+//         └── AppError
+//               ├── NetworkError       Flat, no granularity - can't
+//               │     ├── HttpError    distinguish network from DB errors
+//               │     └── DnsError
+//               └── DatabaseError
+//                     ├── QueryError
+//                     └── ConnectionError
 ```
+
+A three-level hierarchy (app root, domain layer, specific error) is usually enough for any application. Going deeper than that rarely pays off.
 
 ### Rules for Custom Exceptions
 
@@ -40,14 +42,15 @@ std::exception                       std::exception
 
 ### Core Pattern
 
-```cpp
+The simplest custom exception just adds a name to an existing standard class. The base class handles string lifetime for you, so this pattern is nearly zero boilerplate:
 
+```cpp
 #include <stdexcept>
 #include <string>
 
 class AppError : public std::runtime_error {
 public:
-    // Pass message to runtime_error — it manages the string lifetime
+    // Pass message to runtime_error - it manages the string lifetime
     explicit AppError(const std::string& msg)
         : std::runtime_error(msg) {}
 };
@@ -60,25 +63,27 @@ public:
 
     int status_code() const noexcept { return status_code_; }
 };
-
 ```
+
+The pattern scales up naturally: each level adds domain-specific fields, and the `what()` message is built by passing a formatted string to the base constructor.
 
 ### Important Notes
 
-- `std::exception::what()` is `virtual` and `noexcept` — never throw from it.
-- `std::runtime_error` and `std::logic_error` store the message string internally — safe to construct from temporary strings.
-- Avoid slicing: `throw NetworkError(...)` is caught correctly by `catch (const AppError&)` — but only by reference, not by value.
+- `std::exception::what()` is `virtual` and `noexcept` - never throw from it.
+- `std::runtime_error` and `std::logic_error` store the message string internally - safe to construct from temporary strings.
+- Avoid slicing: `throw NetworkError(...)` is caught correctly by `catch (const AppError&)` - but only by reference, not by value.
 
 ---
 
 ## Self-Assessment
 
-### Q1: Design a three-level exception hierarchy: `AppException` → `NetworkException` → `TimeoutException`
+### Q1: Design a three-level exception hierarchy: `AppException` -> `NetworkException` -> `TimeoutException`
 
-**Solution — Complete Three-Level Hierarchy:**
+Each level in this hierarchy adds fields that are specific to that layer. `AppException` gets an error ID. `NetworkException` adds host and port. `TimeoutException` adds timeout limits and elapsed time. The `what()` message is built in the constructor and passed up the chain:
+
+**Solution - Complete Three-Level Hierarchy:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -138,7 +143,7 @@ int main() {
     try {
         connect_to_server("db.example.com", 5432);
     }
-    // MOST DERIVED FIRST — order matters!
+    // MOST DERIVED FIRST - order matters!
     catch (const TimeoutException& e) {
         std::cout << "[TIMEOUT] " << e.what() << "\n";
         std::cout << "  Host: " << e.host() << ":" << e.port() << "\n";
@@ -161,17 +166,17 @@ int main() {
 //   [TIMEOUT] Connection to db.example.com:5432 timed out after 3500ms (limit: 3000ms)
 //     Host: db.example.com:5432
 //     Elapsed: 3500ms / Limit: 3000ms
-
 ```
 
 ---
 
 ### Q2: Show catch ordering: most derived first to avoid catching too broadly
 
-**Solution — Correct vs Incorrect Ordering:**
+This is one of those rules that is easy to state but surprisingly easy to get wrong. C++ matches the first `catch` clause whose type is compatible - and a base class is always compatible with a derived class. Put the base class first and you will never reach the derived handler:
+
+**Solution - Correct vs Incorrect Ordering:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -198,14 +203,14 @@ void run_query() {
     throw QueryError("syntax error near 'SELCT'", "SELCT * FROM users");
 }
 
-// ❌ BAD: Base class catches FIRST — derived handlers never execute
+// BAD: Base class catches FIRST - derived handlers never execute
 void bad_ordering() {
     try {
         run_query();
     }
-    catch (const std::exception& e) {  // catches EVERYTHING — too broad
+    catch (const std::exception& e) {  // catches EVERYTHING - too broad
         std::cout << "std::exception: " << e.what() << "\n";
-        // QueryError caught here — we lose access to .query()
+        // QueryError caught here - we lose access to .query()
     }
     catch (const AppError& e) {  // NEVER REACHED
         std::cout << "AppError: " << e.what() << "\n";
@@ -217,12 +222,12 @@ void bad_ordering() {
 }
 // Compiler warning: "exception handler will never be executed"
 
-// ✅ GOOD: Most derived first
+// GOOD: Most derived first
 void good_ordering() {
     try {
         run_query();
     }
-    catch (const QueryError& e) {  // most derived — matched first
+    catch (const QueryError& e) {  // most derived - matched first
         std::cout << "QueryError: " << e.what()
                   << "\n  Query: " << e.query() << "\n";
     }
@@ -245,29 +250,27 @@ int main() {
 //   --- correct ordering ---
 //   QueryError: syntax error near 'SELCT'
 //     Query: SELCT * FROM users
-
 ```
 
-**The Rule:**
+The simple rule to remember is: `catch` clauses are checked top-to-bottom, and the first match wins. Base classes match derived objects. So always order from most specific to least specific:
 
 ```cpp
-
-catch clauses are checked TOP-TO-BOTTOM.
-First match wins. Base classes match derived objects.
-
-ORDER: derived → base → std::exception → catch(...)
-       most specific → least specific
-
+// catch clauses are checked TOP-TO-BOTTOM.
+// First match wins. Base classes match derived objects.
+//
+// ORDER: derived -> base -> std::exception -> catch(...)
+//        most specific -> least specific
 ```
 
 ---
 
 ### Q3: Explain why catching by value vs by reference matters for polymorphic exception objects
 
+Catching by value causes "slicing" - the derived part of the exception object is literally cut off during the copy, and you end up with a base-class object. You lose all the structured fields you carefully added. This is why `catch (const SomeError&)` is always the right form.
+
 **The Slicing Problem:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -285,7 +288,7 @@ void throw_detailed() {
 }
 
 int main() {
-    // ❌ BAD: Catch by VALUE → SLICING
+    // BAD: Catch by VALUE -> SLICING
     try {
         throw_detailed();
     }
@@ -299,13 +302,13 @@ int main() {
         // auto& d = dynamic_cast<DetailedError&>(e);  // throws bad_cast!
     }
 
-    // ✅ GOOD: Catch by CONST REFERENCE → full polymorphism preserved
+    // GOOD: Catch by CONST REFERENCE -> full polymorphism preserved
     try {
         throw_detailed();
     }
     catch (const std::runtime_error& e) {  // catches BY REFERENCE
         std::cout << "Type: " << typeid(e).name() << "\n";
-        // Type is DetailedError — full polymorphic object preserved!
+        // Type is DetailedError - full polymorphic object preserved!
 
         // Can safely downcast:
         if (auto* d = dynamic_cast<const DetailedError*>(&e)) {
@@ -317,46 +320,39 @@ int main() {
 //   Type: class std::runtime_error   (sliced!)
 //   Type: class DetailedError        (preserved!)
 //   Code: 504
-
 ```
 
-**What Happens During Slicing:**
+Here is exactly what happens to the object during slicing:
 
 ```cpp
-
-throw DetailedError("db timeout", 504):
-
-Original object in exception storage:
-┌──────────────────────────────────┐
-│ runtime_error part:              │
-│   what_ = "db timeout"          │
-│ DetailedError part:              │
-│   code_ = 504                   │
-└──────────────────────────────────┘
-
-catch (std::runtime_error e):      ← copy by VALUE
-┌──────────────────────────────────┐
-│ runtime_error part:              │
-│   what_ = "db timeout"          │  ← only this is copied
-│   (DetailedError part GONE)     │
-└──────────────────────────────────┘
-
-catch (const std::runtime_error& e):  ← reference to ORIGINAL
-  → Points to the full DetailedError object
-  → code_ still accessible via dynamic_cast
-
+// throw DetailedError("db timeout", 504):
+//
+// Original object in exception storage:
+//   runtime_error part:
+//     what_ = "db timeout"
+//   DetailedError part:
+//     code_ = 504
+//
+// catch (std::runtime_error e):      <- copy by VALUE
+//   runtime_error part:
+//     what_ = "db timeout"           <- only this is copied
+//     (DetailedError part GONE)
+//
+// catch (const std::runtime_error& e):  <- reference to ORIGINAL
+//   -> Points to the full DetailedError object
+//   -> code_ still accessible via dynamic_cast
 ```
 
 **The Rules:**
 
 | Catch Style | Polymorphism | Performance | Recommended? |
 | --- | --- | --- | --- |
-| `catch (Exception e)` | ❌ Sliced | Bad (copy) | **Never** |
-| `catch (Exception& e)` | ✅ Preserved | Good (reference) | OK |
-| `catch (const Exception& e)` | ✅ Preserved | Good (reference) | **Best** |
+| `catch (Exception e)` | Sliced | Bad (copy) | Never |
+| `catch (Exception& e)` | Preserved | Good (reference) | OK |
+| `catch (const Exception& e)` | Preserved | Good (reference) | **Best** |
 | `catch (...)` | N/A | N/A | Last resort only |
 
-**Always catch by `const` reference** — it preserves the full polymorphic object, avoids unnecessary copies, and prevents accidental modification.
+**Always catch by `const` reference** - it preserves the full polymorphic object, avoids unnecessary copies, and prevents accidental modification.
 
 ---
 
@@ -364,7 +360,7 @@ catch (const std::runtime_error& e):  ← reference to ORIGINAL
 
 - **Virtual inheritance:** If your hierarchy has diamond patterns, use `virtual` inheritance from `std::exception` to avoid ambiguous base classes.
 - **`noexcept` on `what()`:** The base class `what()` is `noexcept`. Custom overrides must also be `noexcept`.
-- **Don't inherit from `std::exception` directly** unless you have a reason — prefer `std::runtime_error` or `std::logic_error` for their string management.
+- **Don't inherit from `std::exception` directly** unless you have a reason - prefer `std::runtime_error` or `std::logic_error` for their string management.
 - **`throw;` vs `throw e;`:** Inside a catch block, `throw;` rethrows the original (no slicing). `throw e;` throws a **copy** (may slice!).
-- **Keep constructors simple** — exception constructors run during error handling; if they throw, you get `std::terminate()`.
-- **`std::exception_ptr`** stores any exception polymorphically — use with `std::current_exception()` and `std::rethrow_exception()` for cross-thread propagation.
+- **Keep constructors simple** - exception constructors run during error handling; if they throw, you get `std::terminate()`.
+- **`std::exception_ptr`** stores any exception polymorphically - use with `std::current_exception()` and `std::rethrow_exception()` for cross-thread propagation.

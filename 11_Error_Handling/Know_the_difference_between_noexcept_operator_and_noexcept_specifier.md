@@ -2,7 +2,7 @@
 
 **Category:** Error Handling  
 **Standard:** C++11 / C++17 (conditional noexcept refinements)  
-**Reference:** [cppreference – noexcept specifier](https://en.cppreference.com/w/cpp/language/noexcept_spec), [cppreference – noexcept operator](https://en.cppreference.com/w/cpp/language/noexcept)  
+**Reference:** [cppreference - noexcept specifier](https://en.cppreference.com/w/cpp/language/noexcept_spec), [cppreference - noexcept operator](https://en.cppreference.com/w/cpp/language/noexcept)  
 
 ---
 
@@ -13,24 +13,24 @@ C++ reuses the keyword `noexcept` in two fundamentally different roles. As a **s
 | Aspect | `noexcept` Specifier | `noexcept` Operator |
 | --- | --- | --- |
 | **Syntax position** | After parameter list: `void f() noexcept;` | Inside an expression: `noexcept(expr)` |
-| **Evaluates to** | N/A — it is a declaration annotation | `bool` — compile-time constant |
-| **Part of the type?** | Yes (since C++17) | No — yields a `constexpr bool` |
-| **Operand evaluated?** | N/A | Never — unevaluated context |
+| **Evaluates to** | N/A - it is a declaration annotation | `bool` - compile-time constant |
+| **Part of the type?** | Yes (since C++17) | No - yields a `constexpr bool` |
+| **Operand evaluated?** | N/A | Never - unevaluated context |
 | **Primary use** | Promise the function won't throw | Query whether an expression can throw |
+
+The reason this trips people up is the visual similarity: both use the word `noexcept`, and when they're nested together it's easy to lose track of which role each plays.
 
 The powerful idiom `noexcept(noexcept(expr))` combines both: the **outer** `noexcept` is the specifier, and the **inner** `noexcept(expr)` is the operator. The function becomes conditionally noexcept based on whether `expr` would throw.
 
 ```cpp
-
 noexcept( noexcept( some_expression ) )
 ^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
   |           |
   |           +-- operator: returns true/false
   +------------- specifier: applies that bool to the function
-
 ```
 
-This pattern is essential for writing generic code that correctly propagates exception specifications. Without it, a template wrapper might silently weaken a `noexcept` guarantee or incorrectly promise one. In C++17, `noexcept` became part of the function type, meaning `void(*)() noexcept` and `void(*)()` are distinct types — making correct conditional `noexcept` even more important.
+This pattern is essential for writing generic code that correctly propagates exception specifications. Without it, a template wrapper might silently weaken a `noexcept` guarantee or incorrectly promise one. In C++17, `noexcept` became part of the function type, meaning `void(*)() noexcept` and `void(*)()` are distinct types - making correct conditional `noexcept` even more important for templates and function pointers.
 
 ---
 
@@ -38,8 +38,9 @@ This pattern is essential for writing generic code that correctly propagates exc
 
 ### Q1: Implement a generic `swap_impl` that is conditionally `noexcept` based on the swapped type
 
-```cpp
+The goal here is a `swap` that correctly advertises itself as `noexcept` for types whose move operations are `noexcept`, and as potentially-throwing for types whose move operations might throw. The `noexcept(noexcept(...))` idiom does exactly this - the inner operator queries the actual operations used, and the outer specifier applies the result to the function signature.
 
+```cpp
 // swap_conditional.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o swap_conditional swap_conditional.cpp
 #include <iostream>
@@ -92,13 +93,15 @@ int main() {
 // Output:
 // Safe:  s1=2 s2=1
 // Risky: r1=4 r2=3
-
 ```
+
+The `static_assert` lines use the operator form to verify at compile time that the specifier is set correctly. That's a useful pattern in templates: not just computing the right `noexcept` value, but asserting it as documentation.
 
 ### Q2: Show how `noexcept` being part of the function type (C++17) affects function pointers
 
-```cpp
+Before C++17, `noexcept` was just an informal attribute on a function - it had no effect on the function's type. In C++17 it became part of the type itself, so `void(*)()` and `void(*)() noexcept` are genuinely different types. This matters for generic code, callbacks, and `std::function` wrappers.
 
+```cpp
 // noexcept_type.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o noexcept_type noexcept_type.cpp
 #include <iostream>
@@ -134,13 +137,15 @@ int main() {
 // p1 noexcept? 0
 // p3 noexcept? 1
 // Done.
-
 ```
+
+Notice that `p1` holds `safe_fn` but `noexcept(p1())` returns 0 - because the operator looks at the declared type of the pointer (`FnThrow`), not at what function is currently stored in it. The noexcept-ness of a call through a pointer is determined statically by the pointer's type, not dynamically by the callee.
 
 ### Q3: Write a compile-time trait that detects whether a type's constructor is `noexcept` and use it to select an algorithm
 
-```cpp
+This is the practical application: using the operator to select between a fast move-based path and a safe copy-based path at compile time. `std::vector::push_back` does essentially the same thing internally - it moves elements when it can guarantee no exception, and copies otherwise to preserve the strong exception guarantee.
 
+```cpp
 // select_algorithm.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o select_algorithm select_algorithm.cpp
 #include <iostream>
@@ -213,17 +218,18 @@ int main() {
 // b.size()=2
 // [slow path: copy for strong guarantee]
 // d.size()=2
-
 ```
+
+The `if constexpr` branch is selected at compile time based on the trait - no runtime overhead. This is the same reasoning that makes marking your move constructors `noexcept` so important: it's not just documentation, it directly affects which code path the standard library chooses.
 
 ---
 
 ## Notes
 
 - `noexcept` without parentheses on a function is equivalent to `noexcept(true)`.
-- The `noexcept` operator never evaluates its operand — it operates in an unevaluated context like `sizeof` and `decltype`.
-- Since C++17, `noexcept` is part of the function **type**, not just a decoration.  This affects overload resolution, function pointers, and `std::function` template arguments.
+- The `noexcept` operator never evaluates its operand - it operates in an unevaluated context like `sizeof` and `decltype`.
+- Since C++17, `noexcept` is part of the function **type**, not just a decoration. This affects overload resolution, function pointers, and `std::function` template arguments.
 - `std::move_if_noexcept` and `std::vector::push_back` internally rely on the `noexcept` operator to decide between move and copy, directly impacting performance.
-- Throwing from a `noexcept` function calls `std::terminate` — there is no stack unwinding.  Use `noexcept` only when you can genuinely guarantee no exceptions.
+- Throwing from a `noexcept` function calls `std::terminate` - there is no stack unwinding. Use `noexcept` only when you can genuinely guarantee no exceptions.
 - Conditional `noexcept` on destructors is rarely needed: destructors are implicitly `noexcept(true)` unless a base or member has a potentially-throwing destructor.
-- Prefer `noexcept(noexcept(expr))` over manually writing `noexcept(std::is_nothrow_...)` traits — the operator-based form automatically tracks the actual expression.
+- Prefer `noexcept(noexcept(expr))` over manually writing `noexcept(std::is_nothrow_...)` traits - the operator-based form automatically tracks the actual expression.

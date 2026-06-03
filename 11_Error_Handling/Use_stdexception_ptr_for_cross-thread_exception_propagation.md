@@ -9,27 +9,27 @@
 
 ## Topic Overview
 
-`std::exception_ptr` is a reference-counted smart pointer that can hold a copy of any exception. It enables **capturing** an exception in one context (a worker thread, a callback, a coroutine) and **rethrowing** it in a completely different context — most commonly the main thread. Without `exception_ptr`, exceptions thrown in worker threads would terminate the program.
+`std::exception_ptr` is a reference-counted smart pointer that can hold a copy of any exception. It enables **capturing** an exception in one context (a worker thread, a callback, a coroutine) and **rethrowing** it in a completely different context - most commonly the main thread. Without `exception_ptr`, exceptions thrown in worker threads would terminate the program.
 
 ### The Problem: Exceptions Don't Cross Thread Boundaries
 
-```cpp
+The reason this matters is that C++ exceptions are fundamentally a per-thread concept: an exception thrown in thread A can only be caught in thread A. If it escapes the thread's top-level function uncaught, the runtime calls `std::terminate`. `exception_ptr` is the bridge that lets you safely carry an exception across that boundary:
 
+```cpp
 Thread A (worker)                    Thread B (main)
-┌──────────────────┐                ┌──────────────────────────┐
-│ throw runtime_err │ ──────X────── │ try { t.join(); }        │
-│ (uncaught!)       │  Can't cross  │ // exception is LOST     │
-│ → std::terminate  │               │ // or worse: terminate() │
-└──────────────────┘                └──────────────────────────┘
++------------------+                +---------------------------+
+| throw runtime_err | ------X------ | try { t.join(); }         |
+| (uncaught!)       |  Can't cross  | // exception is LOST      |
+| -> std::terminate |               | // or worse: terminate()  |
++------------------+                +---------------------------+
 
 WITH exception_ptr:
 Thread A (worker)                    Thread B (main)
-┌──────────────────┐                ┌──────────────────────────┐
-│ catch (...)       │                │ if (eptr)                │
-│  eptr = current_  │ ──────✓────── │   rethrow_exception(eptr)│
-│   exception()     │  Safe to copy │ // exception re-thrown!   │
-└──────────────────┘                └──────────────────────────┘
-
++------------------+                +---------------------------+
+| catch (...)       |                | if (eptr)                 |
+|  eptr = current_  | ------OK----- |   rethrow_exception(eptr) |
+|   exception()     |  Safe to copy | // exception re-thrown!   |
++------------------+                +---------------------------+
 ```
 
 ### Core API
@@ -37,20 +37,21 @@ Thread A (worker)                    Thread B (main)
 | Function | Purpose |
 | --- | --- |
 | `std::current_exception()` | Captures the currently-handled exception into an `exception_ptr` (inside a `catch` block) |
-| `std::rethrow_exception(eptr)` | Rethrows the exception held by `eptr` — can be caught normally |
+| `std::rethrow_exception(eptr)` | Rethrows the exception held by `eptr` - can be caught normally |
 | `std::make_exception_ptr(e)` | Creates an `exception_ptr` from any exception object (no need to throw first) |
 | `eptr == nullptr` | Check if `exception_ptr` holds an exception |
 
 ### Lifecycle
 
-```cpp
+Here is the simplest possible demonstration: capture an exception in one place, then rethrow it somewhere else entirely. The exception object lives as long as the `exception_ptr` that holds it:
 
+```cpp
 #include <exception>
 #include <iostream>
 #include <stdexcept>
 
 int main() {
-    std::exception_ptr eptr;  // null — no exception held
+    std::exception_ptr eptr;  // null - no exception held
 
     // Capture an exception
     try {
@@ -73,15 +74,14 @@ int main() {
 }
 // Expected output:
 //   Re-caught: something failed
-
 ```
 
 ### Important Notes
 
-- `exception_ptr` is **reference-counted** — cheap to copy, multiple copies share the same exception object.
+- `exception_ptr` is **reference-counted** - cheap to copy, multiple copies share the same exception object.
 - `current_exception()` called **outside** a catch block returns a null `exception_ptr`.
 - The exception object's lifetime extends as long as any `exception_ptr` refers to it.
-- `rethrow_exception()` is `[[noreturn]]` — it always throws.
+- `rethrow_exception()` is `[[noreturn]]` - it always throws.
 
 ---
 
@@ -89,10 +89,11 @@ int main() {
 
 ### Q1: Capture an exception with `std::current_exception()` and rethrow it in another thread
 
-**Solution — Worker Thread Exception Propagation:**
+**Solution - Worker Thread Exception Propagation:**
+
+This is the pattern you will use most often. The rule is simple: always wrap your worker function body in a try/catch, capture with `current_exception()`, and check it in the main thread after `join()`. Never let an exception escape the thread function uncaught:
 
 ```cpp
-
 #include <iostream>
 #include <thread>
 #include <exception>
@@ -110,7 +111,7 @@ void worker_task(int task_id) {
 
         std::cout << "Task #" << task_id << " completed successfully\n";
     } catch (...) {
-        // Capture the exception — don't let it escape the thread!
+        // Capture the exception - don't let it escape the thread!
         worker_exception = std::current_exception();
     }
 }
@@ -171,17 +172,19 @@ int main() {
 //   Thread 0 error: Worker 0 failed
 //   Thread 2 error: Worker 2 failed
 //   Thread 4 error: Worker 4 failed
-
 ```
+
+The per-thread vector of `exception_ptr` objects is the right approach when you spawn multiple workers. Each thread owns its own slot - no mutex needed for the captures themselves, because each thread only writes to its own index.
 
 ---
 
 ### Q2: Show how `std::promise` uses `exception_ptr` internally when `set_exception` is called
 
-**Solution — Promise/Future Exception Propagation:**
+**Solution - Promise/Future Exception Propagation:**
+
+`std::promise` is really just a structured wrapper around `exception_ptr` plus a value. When you call `set_exception`, it stores the pointer. When you call `future::get()`, it rethrows if a pointer is present. This example shows all three ways to get an exception into a future:
 
 ```cpp
-
 #include <iostream>
 #include <thread>
 #include <future>
@@ -256,32 +259,30 @@ int main() {
 //   Caught from future: Division by zero
 //   Caught make_exception_ptr: pre-built error
 //   Caught from async: async failed
-
 ```
 
 ### How `promise`/`future` Uses `exception_ptr` Internally:
 
 ```cpp
-
 promise::set_exception(eptr)     future::get()
-┌──────────────────────────┐     ┌─────────────────────────────┐
-│ shared_state->exception  │     │ if (shared_state->exception)│
-│   = eptr;                │────▶│   rethrow_exception(        │
-│ shared_state->ready      │     │     shared_state->exception)│
-│   = true;                │     │ else                        │
-│ notify waiting thread    │     │   return shared_state->value│
-└──────────────────────────┘     └─────────────────────────────┘
-
++--------------------------+     +-------------------------------+
+| shared_state->exception  |     | if (shared_state->exception)  |
+|   = eptr;                |---->|   rethrow_exception(          |
+| shared_state->ready      |     |     shared_state->exception)  |
+|   = true;                |     | else                          |
+| notify waiting thread    |     |   return shared_state->value  |
++--------------------------+     +-------------------------------+
 ```
 
 ---
 
 ### Q3: Explain why `exception_ptr` is safe to copy and transmit across thread boundaries
 
-**Solution — Thread Safety of `exception_ptr`:**
+**Solution - Thread Safety of `exception_ptr`:**
+
+You might wonder whether it is safe to hand the same `exception_ptr` to multiple threads simultaneously. It is, and this example shows why: each copy only increments an atomic reference count, and the exception object itself is immutable after capture:
 
 ```cpp
-
 #include <iostream>
 #include <thread>
 #include <exception>
@@ -292,7 +293,7 @@ int main() {
     // Create an exception_ptr
     auto eptr = std::make_exception_ptr(std::runtime_error("shared error"));
 
-    // COPY it to multiple threads — this is safe!
+    // COPY it to multiple threads - this is safe!
     std::vector<std::thread> threads;
     for (int i = 0; i < 4; ++i) {
         threads.emplace_back([eptr, i] {  // captured by VALUE (copied)
@@ -311,64 +312,59 @@ int main() {
 //   Thread 1 caught: shared error
 //   Thread 2 caught: shared error
 //   Thread 3 caught: shared error
-
 ```
 
 **Why `exception_ptr` Is Thread-Safe:**
 
 | Property | Explanation |
 | --- | --- |
-| **Reference-counted** | Like `shared_ptr` — uses atomic ref counting internally. Copies increment the count, destruction decrements it. |
-| **Immutable exception object** | The stored exception is never modified after capture — read-only access from all threads. |
+| **Reference-counted** | Like `shared_ptr` - uses atomic ref counting internally. Copies increment the count, destruction decrements it. |
+| **Immutable exception object** | The stored exception is never modified after capture - read-only access from all threads. |
 | **No data races** | Copying an `exception_ptr` only touches the atomic ref count. The pointed-to exception is shared but immutable. |
-| **Lifetime management** | The exception object lives as long as at least one `exception_ptr` refers to it — no dangling. |
-| **Standard guarantee** | [except.propagation] §14.7 explicitly states `exception_ptr` can be used to propagate exceptions across threads. |
+| **Lifetime management** | The exception object lives as long as at least one `exception_ptr` refers to it - no dangling. |
+| **Standard guarantee** | [except.propagation] SS14.7 explicitly states `exception_ptr` can be used to propagate exceptions across threads. |
 
 ```cpp
-
 exception_ptr Internals (conceptual):
-┌────────────┐   ┌────────────┐   ┌────────────┐
-│ eptr copy 1│   │ eptr copy 2│   │ eptr copy 3│
-│ (Thread A) │   │ (Thread B) │   │ (Thread C) │
-└─────┬──────┘   └─────┬──────┘   └─────┬──────┘
-      │                │                │
-      └────────────────┼────────────────┘
-                       ▼
-              ┌────────────────┐
-              │ Exception obj  │  ← atomic refcount = 3
-              │ (immutable)    │  ← allocated once, shared
-              │ runtime_error  │
-              │ "shared error" │
-              └────────────────┘
-
++------------+   +------------+   +------------+
+| eptr copy 1|   | eptr copy 2|   | eptr copy 3|
+| (Thread A) |   | (Thread B) |   | (Thread C) |
++-----+------+   +-----+------+   +-----+------+
+      |                |                |
+      +----------------+----------------+
+                       |
+              +----------------+
+              | Exception obj  |  <- atomic refcount = 3
+              | (immutable)    |  <- allocated once, shared
+              | runtime_error  |
+              | "shared error" |
+              +----------------+
 ```
 
-**What IS and ISN'T safe:**
+Here is a quick summary of what is and is not safe to do with a shared `exception_ptr`:
 
 ```cpp
-
-// ✅ Safe: copying exception_ptr across threads
+// Safe: copying exception_ptr across threads
 auto eptr2 = eptr;  // atomic ref increment
 
-// ✅ Safe: rethrowing from any thread
+// Safe: rethrowing from any thread
 std::rethrow_exception(eptr);
 
-// ✅ Safe: comparing
+// Safe: comparing
 if (eptr == nullptr) { /* ... */ }
 
-// ❌ NOT safe: writing to the SAME exception_ptr variable from multiple threads
+// NOT safe: writing to the SAME exception_ptr variable from multiple threads
 // (same as any shared non-atomic variable)
 // Use a mutex or per-thread exception_ptrs instead.
-
 ```
 
 ---
 
 ## Notes
 
-- **Always capture exceptions in worker threads** — uncaught exceptions in a `std::thread` call `std::terminate`.
-- **`std::async` propagates automatically** — it internally uses `exception_ptr` + `promise`/`future`.
-- **`std::current_exception()` in a catch block** — if called outside a catch block, returns null.
-- **`make_exception_ptr(e)`** is more efficient than `try { throw e; } catch (...) { return current_exception(); }` — avoids an actual throw/catch cycle on some implementations.
-- **`exception_ptr` keeps the exception alive** — be careful about long-lived `exception_ptr` objects holding large exception hierarchies in memory.
-- **`packaged_task`** also uses `exception_ptr` behind the scenes — any exception thrown inside a `packaged_task` is automatically stored and re-thrown on `future::get()`.
+- **Always capture exceptions in worker threads** - uncaught exceptions in a `std::thread` call `std::terminate`.
+- **`std::async` propagates automatically** - it internally uses `exception_ptr` + `promise`/`future`.
+- **`std::current_exception()` in a catch block** - if called outside a catch block, returns null.
+- **`make_exception_ptr(e)`** is more efficient than `try { throw e; } catch (...) { return current_exception(); }` - avoids an actual throw/catch cycle on some implementations.
+- **`exception_ptr` keeps the exception alive** - be careful about long-lived `exception_ptr` objects holding large exception hierarchies in memory.
+- **`packaged_task`** also uses `exception_ptr` behind the scenes - any exception thrown inside a `packaged_task` is automatically stored and re-thrown on `future::get()`.

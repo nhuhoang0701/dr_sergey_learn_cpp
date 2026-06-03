@@ -15,33 +15,34 @@ C++23 adds **monadic operations** to `std::expected`, enabling functional-style 
 
 | Operation | Signature (on `expected<T,E>`) | Purpose |
 | --- | --- | --- |
-| `transform(f)` | `f: T → U` → `expected<U,E>` | Map the value (like `std::optional::transform`) |
-| `and_then(f)` | `f: T → expected<U,E>` → `expected<U,E>` | Chain fallible operations (like `flatMap`/`bind`) |
-| `or_else(f)` | `f: E → expected<T,E2>` → `expected<T,E2>` | Handle/recover from errors |
+| `transform(f)` | `f: T -> U` -> `expected<U,E>` | Map the value (like `std::optional::transform`) |
+| `and_then(f)` | `f: T -> expected<U,E>` -> `expected<U,E>` | Chain fallible operations (like `flatMap`/`bind`) |
+| `or_else(f)` | `f: E -> expected<T,E2>` -> `expected<T,E2>` | Handle/recover from errors |
 
 ### Visual Pipeline
 
-```cpp
+The key thing to internalize is what happens when a step produces an error: every subsequent `transform` and `and_then` in the chain is simply skipped, and the error travels through untouched until it hits an `or_else` or reaches the final result:
 
+```cpp
                     transform(f)         and_then(g)         or_else(h)
                    Maps success         Chains fallible      Handles error
- ┌─────────┐      ┌──────────┐        ┌──────────┐        ┌──────────┐
- │ expected │─OK──▶│ f(value) │──OK──▶ │ g(value) │──OK──▶ │ pass     │──▶ result
- │ <T, E>   │      │ → U      │        │ → exp<U> │        │ through  │
- │          │─ERR─▶│ skip f   │──ERR─▶ │ skip g   │──ERR─▶ │ h(error) │──▶ recovery
- └─────────┘      └──────────┘        └──────────┘        └──────────┘
+ +---------+      +----------+        +----------+        +----------+
+ | expected |--OK->| f(value) |--OK--> | g(value) |--OK--> | pass     |--> result
+ | <T, E>   |      | -> U     |        | -> exp<U>|        | through  |
+ |          |-ERR->| skip f   |-ERR--> | skip g   |-ERR--> | h(error) |--> recovery
+ +---------+      +----------+        +----------+        +----------+
 
 Key insight:
-  transform:  f takes T, returns U     → wraps in expected<U,E>
-  and_then:   f takes T, returns expected<U,E>  → NO double wrapping
-  or_else:    f takes E, returns expected<T,E2> → error recovery
-
+  transform:  f takes T, returns U             -> wraps in expected<U,E>
+  and_then:   f takes T, returns expected<U,E> -> NO double wrapping
+  or_else:    f takes E, returns expected<T,E2> -> error recovery
 ```
 
 ### Side-by-Side: Imperative vs Monadic
 
-```cpp
+Here is the contrast that motivates the whole approach. The imperative version is correct, but the `if (!result) return` noise on every step makes the happy path hard to see. The monadic version reads as a plain pipeline of what you actually want to happen:
 
+```cpp
 #include <expected>
 #include <string>
 
@@ -51,7 +52,7 @@ std::expected<int, Error>    parse(const std::string& s);
 std::expected<int, Error>    validate(int n);
 std::expected<double, Error> compute(int n);
 
-// ❌ Imperative: verbose, repetitive
+// BAD: Imperative - verbose, repetitive
 double process_imperative(const std::string& input) {
     auto parsed = parse(input);
     if (!parsed) return /* handle error */;
@@ -62,20 +63,19 @@ double process_imperative(const std::string& input) {
     return *result;
 }
 
-// ✅ Monadic: clean pipeline
+// GOOD: Monadic - clean pipeline
 std::expected<double, Error> process_monadic(const std::string& input) {
     return parse(input)
         .and_then(validate)
         .and_then(compute);
 }
-
 ```
 
 ### Additional Operations (C++23)
 
 | Operation | Purpose |
 | --- | --- |
-| `transform_error(f)` | Map the error value: `f: E → E2` → `expected<T,E2>` |
+| `transform_error(f)` | Map the error value: `f: E -> E2` -> `expected<T,E2>` |
 | `value_or(default)` | Return value if present, else default |
 
 ---
@@ -84,10 +84,11 @@ std::expected<double, Error> process_monadic(const std::string& input) {
 
 ### Q1: Chain three fallible operations using `and_then` without any if-checks
 
-**Solution — User Registration Pipeline:**
+**Solution - User Registration Pipeline:**
+
+Each validation step returns an `expected<User, RegError>`. If any step fails, `and_then` skips all remaining steps and propagates the first error - just like short-circuit evaluation, but for error-returning functions:
 
 ```cpp
-
 #include <expected>
 #include <string>
 #include <iostream>
@@ -119,7 +120,7 @@ struct User {
     std::string email;
 };
 
-// Three fallible steps — each returns expected<User, RegError>
+// Three fallible steps - each returns expected<User, RegError>
 
 std::expected<User, RegError> validate_name(User user) {
     if (user.name.empty())
@@ -144,7 +145,7 @@ std::expected<User, RegError> validate_email(User user) {
     return user;
 }
 
-// Chain with and_then — NO if-checks!
+// Chain with and_then - NO if-checks!
 std::expected<User, RegError> register_user(User user) {
     return validate_name(std::move(user))
         .and_then(validate_age)
@@ -177,29 +178,27 @@ int main() {
 //   Error: Name cannot be empty
 //   Error: Age must be 1-150
 //   Error: Email must contain @
-
 ```
 
 **How `and_then` short-circuits:**
 
 ```cpp
-
 register_user({"", 25, "bob@example.com"})
-  → validate_name("") → unexpected{empty_name}
-  → and_then(validate_age) → SKIPPED (already error)
-  → and_then(validate_email) → SKIPPED (already error)
-  → unexpected{empty_name}   ← first error propagated
-
+  -> validate_name("") -> unexpected{empty_name}
+  -> and_then(validate_age) -> SKIPPED (already error)
+  -> and_then(validate_email) -> SKIPPED (already error)
+  -> unexpected{empty_name}   <- first error propagated
 ```
 
 ---
 
 ### Q2: Use `transform` to map the success value without unwrapping
 
-**Solution — `transform` vs `and_then`:**
+**Solution - `transform` vs `and_then`:**
+
+The distinction between `transform` and `and_then` trips people up at first. The rule is: if your mapping function can fail and returns an `expected`, use `and_then`. If it is a plain transformation that always succeeds, use `transform` - it handles the wrapping for you:
 
 ```cpp
-
 #include <expected>
 #include <string>
 #include <iostream>
@@ -224,22 +223,22 @@ std::expected<int, Error> parse_int(const std::string& s) {
 }
 
 int main() {
-    // transform: takes T, returns U → wrapped in expected<U,E> automatically
+    // transform: takes T, returns U -> wrapped in expected<U,E> automatically
     // Use when the mapping function CANNOT fail
 
     auto result = read_input(true)
-        .and_then(parse_int)           // string → expected<int,Error>  (can fail)
-        .transform([](int n) {         // int → double  (cannot fail)
+        .and_then(parse_int)           // string -> expected<int,Error>  (can fail)
+        .transform([](int n) {         // int -> double  (cannot fail)
             return n * 2.5;
         })
-        .transform([](double d) {      // double → string (cannot fail)
+        .transform([](double d) {      // double -> string (cannot fail)
             return "Result: " + std::to_string(d);
         });
 
     if (result)
         std::cout << *result << "\n";  // "Result: 105.000000"
 
-    // Error case — transform is skipped
+    // Error case - transform is skipped
     auto err_result = read_input(false)
         .and_then(parse_int)
         .transform([](int n) {
@@ -251,13 +250,13 @@ int main() {
         std::cout << "Error: " << err_result.error() << "\n";
 
     // === transform vs and_then comparison ===
-    // transform: f returns U      → result is expected<U,E>
-    // and_then:  f returns exp<U> → result is expected<U,E> (flattened)
+    // transform: f returns U      -> result is expected<U,E>
+    // and_then:  f returns exp<U> -> result is expected<U,E> (flattened)
 
-    // ❌ WRONG: using and_then for a non-fallible function
+    // ERROR: using and_then for a non-fallible function
     //    Would need to wrap: .and_then([](int n) -> expected<double,Error> { return n*2.5; })
 
-    // ✅ RIGHT: use transform for non-fallible mapping
+    // CORRECT: use transform for non-fallible mapping
     //    .transform([](int n) { return n * 2.5; })
 
     // === transform_error: map the error side ===
@@ -273,28 +272,26 @@ int main() {
 //   Result: 105.000000
 //   Error: read failed
 //   IO Error: read failed
-
 ```
 
 **Quick Reference:**
 
 ```cpp
-
-transform(f):        value →  f(value)  → expected<U,E>     (auto-wrapped)
-and_then(f):         value →  f(value)  → expected<U,E>     (f returns expected)
-transform_error(f):  error →  f(error)  → expected<T,E2>    (maps error)
-or_else(f):          error →  f(error)  → expected<T,E2>    (f returns expected)
-
+transform(f):        value ->  f(value)  -> expected<U,E>     (auto-wrapped)
+and_then(f):         value ->  f(value)  -> expected<U,E>     (f returns expected)
+transform_error(f):  error ->  f(error)  -> expected<T,E2>    (maps error)
+or_else(f):          error ->  f(error)  -> expected<T,E2>    (f returns expected)
 ```
 
 ---
 
 ### Q3: Use `or_else` to provide a fallback value when an expected holds an error
 
-**Solution — Error Recovery with `or_else`:**
+**Solution - Error Recovery with `or_else`:**
+
+`or_else` is the mirror image of `and_then`: it runs only when there is an error, and it can either recover (return a success value) or propagate a different error. This makes it ideal for cascading fallback strategies - try one source, then another, then a default:
 
 ```cpp
-
 #include <expected>
 #include <string>
 #include <iostream>
@@ -322,7 +319,7 @@ std::expected<Config, ConfigError> load_from_file(const std::string& path) {
 }
 
 std::expected<Config, ConfigError> load_from_env() {
-    // Simulate: env vars not set → parse error
+    // Simulate: env vars not set -> parse error
     return std::unexpected(ConfigError::parse_error);
 }
 
@@ -352,7 +349,7 @@ int main() {
     auto selective = load_from_file("missing.conf")
         .or_else([](ConfigError e) -> std::expected<Config, ConfigError> {
             if (e == ConfigError::permission_denied)
-                return std::unexpected(e);  // propagate — can't recover
+                return std::unexpected(e);  // propagate - can't recover
             // For other errors, provide default
             return Config{"fallback-host", 9090};
         });
@@ -383,14 +380,14 @@ int main() {
 //   Config: localhost:8080
 //   Selective: fallback-host:9090
 //   Endpoint: default-host:3000
-
 ```
 
-### `or_else` vs Direct Error Check:
+Notice the selective recovery pattern: the `or_else` lambda inspects the error and can choose to propagate it unchanged by returning `std::unexpected(e)`. You are not forced to recover - you can let certain errors through while catching others.
+
+`or_else` vs direct error check:
 
 ```cpp
-
-// ❌ Imperative fallback chain
+// BAD: Imperative fallback chain
 auto config = load_from_file("app.conf");
 if (!config) {
     config = load_from_env();
@@ -399,22 +396,21 @@ if (!config) {
     }
 }
 
-// ✅ Monadic fallback chain
+// GOOD: Monadic fallback chain
 auto config = load_from_file("app.conf")
     .or_else([](auto) { return load_from_env(); })
     .or_else([](auto) { return default_config(); });
-
 ```
 
 ---
 
 ## Notes
 
-- **`and_then`** is for **chaining fallible operations** — the function returns `expected<U,E>`. Like Haskell's `>>=` (bind) or Rust's `and_then`.
-- **`transform`** is for **mapping values** — the function returns `U`, which is automatically wrapped. Like `fmap` / Rust's `map`.
-- **`or_else`** is for **error recovery** — the function takes the error and returns a new `expected<T,E>`.
-- **`transform_error`** is for **mapping errors** without touching the value — useful for error enrichment or conversion.
-- **Error propagation is automatic** — if the expected holds an error, `transform` and `and_then` skip their function and propagate the error.
+- **`and_then`** is for **chaining fallible operations** - the function returns `expected<U,E>`. Like Haskell's `>>=` (bind) or Rust's `and_then`.
+- **`transform`** is for **mapping values** - the function returns `U`, which is automatically wrapped. Like `fmap` / Rust's `map`.
+- **`or_else`** is for **error recovery** - the function takes the error and returns a new `expected<T,E>`.
+- **`transform_error`** is for **mapping errors** without touching the value - useful for error enrichment or conversion.
+- **Error propagation is automatic** - if the expected holds an error, `transform` and `and_then` skip their function and propagate the error.
 - All four operations are **const-correct** and have **rvalue overloads** for move optimization.
-- **`std::optional`** also has `transform`, `and_then`, `or_else` in C++23 — same pattern.
+- **`std::optional`** also has `transform`, `and_then`, `or_else` in C++23 - same pattern.
 - **Compiler requirement:** GCC 13+, Clang 16+, MSVC 19.34+ for full C++23 monadic support.

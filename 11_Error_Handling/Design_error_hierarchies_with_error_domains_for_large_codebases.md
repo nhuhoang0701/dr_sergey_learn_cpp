@@ -2,18 +2,19 @@
 
 **Category:** Error Handling  
 **Standard:** C++11 / C++17 / C++23 (`std::expected`)  
-**Reference:** [cppreference – error_category](https://en.cppreference.com/w/cpp/error/error_category), [cppreference – error_code](https://en.cppreference.com/w/cpp/error/error_code)  
+**Reference:** [cppreference - error_category](https://en.cppreference.com/w/cpp/error/error_category), [cppreference - error_code](https://en.cppreference.com/w/cpp/error/error_code)  
 
 ---
 
 ## Topic Overview
 
-Large C++ codebases — spanning networking, storage, authentication, and business logic — need a structured way to define, categorize, and compare errors without coupling modules together. The `<system_error>` framework provides the building blocks: **error codes** (integer + category), **error categories** (singleton classifiers), and **error conditions** (portable comparison targets).
+Large C++ codebases - spanning networking, storage, authentication, and business logic - need a structured way to define, categorize, and compare errors without coupling modules together. The `<system_error>` framework provides the building blocks: **error codes** (integer + category), **error categories** (singleton classifiers), and **error conditions** (portable comparison targets).
 
 An **error domain** is a logical grouping: one `enum` of codes plus one `error_category` singleton. Each library or subsystem owns a domain. Cross-module comparison is enabled by mapping domain-specific codes to well-known `std::errc` conditions or to shared project-wide condition enums.
 
-```cpp
+Here's the shape of the architecture visually. The application layer never needs to know which subsystem produced an error - it compares against shared conditions, and each domain's category handles the translation.
 
+```cpp
 ┌──────────────────────────────────────────────────────────────────┐
 │                         Application                              │
 │   Compares against:  AppCondition::resource_unavailable          │
@@ -30,13 +31,14 @@ An **error domain** is a logical grouping: one `enum` of codes plus one `error_c
     default_error_condition()  default_error_condition()
     maps to AppCondition /     maps to AppCondition /
     std::errc                  std::errc
-
 ```
+
+If the diagram feels dense, the core idea is simple: each domain translates its own specific codes into shared abstract conditions. The application layer only needs to know about the abstract conditions.
 
 | Design Rule | Rationale |
 | --- | --- |
 | One `enum class` per module | Avoids integer collisions across modules |
-| One `error_category` singleton per enum | Categories are compared by address — must be unique |
+| One `error_category` singleton per enum | Categories are compared by address - must be unique |
 | Map to shared conditions via `default_error_condition()` | Enables portable cross-module `==` comparison |
 | Register enums with `is_error_code_enum` | Enables implicit conversion to `std::error_code` |
 | Optionally define project-wide condition enums | For domain concepts not covered by `std::errc` |
@@ -49,8 +51,9 @@ A well-designed error hierarchy lets callers write `if (ec == AppCondition::reso
 
 ### Q1: Build a multi-domain error hierarchy with a shared condition enum
 
-```cpp
+This example puts the whole pattern together: a shared application-level condition enum, two independent domain enums (network and storage), and a `handle()` function that dispatches only on the abstract condition. Notice how `default_error_condition()` is the bridge between specific domain codes and the abstract conditions.
 
+```cpp
 // error_hierarchy.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o error_hierarchy error_hierarchy.cpp
 #include <iostream>
@@ -213,13 +216,15 @@ int main() {
 //   -> Action: retry or fail over
 // [storage:2] data checksum mismatch
 //   -> Action: invalidate cache, re-fetch
-
 ```
+
+The `handle` function never mentions `NetError` or `StorageError`. It doesn't need to. The `default_error_condition()` override on each category does the translation, so `==` against an `AppCondition` just works. The category name and raw value are still available for logging via `ec.category().name()` and `ec.value()`.
 
 ### Q2: Ensure category singletons are safe across shared libraries (DLL/SO boundaries)
 
-```cpp
+This is one of those problems that bites you silently. If two shared libraries each have their own copy of the static local inside the category accessor function, then error code comparisons between them will fail because they compare category pointer addresses - and those addresses will differ. The fix is to use `inline` functions (C++17), which guarantees a single definition and a single address across all translation units.
 
+```cpp
 // singleton_safety.cpp — C++17
 // Compile: g++ -std=c++17 -O2 -Wall -Wextra -o singleton_safety singleton_safety.cpp
 #include <iostream>
@@ -285,13 +290,15 @@ int main() {
 // lib_b category address: 0x... (same)
 // Same singleton? YES
 // Cross-TU comparison works: invalid authentication token
-
 ```
+
+If you see "NO - BUG!" here, you have a duplicate singleton problem and your error code comparisons across library boundaries will silently lie to you. The `inline` keyword on both the function and the category accessor is your insurance policy against this.
 
 ### Q3: Compose error domains with `std::expected` (C++23) for ergonomic propagation
 
-```cpp
+C++23's `std::expected` pairs naturally with the `std::error_code` domain infrastructure. You get the domain system's clean categorization and the monadic chaining that `expected` enables - propagating errors up the call chain is just a matter of returning `std::unexpected(val.error())`.
 
+```cpp
 // expected_domains.cpp — C++23
 // Compile: g++ -std=c++23 -O2 -Wall -Wextra -o expected_domains expected_domains.cpp
 #include <expected>
@@ -366,8 +373,9 @@ int main() {
 // 42 -> 84
 // hello -> ERROR [parse:1] invalid syntax
 // 99999999999999999 -> ERROR [parse:2] numeric overflow
-
 ```
+
+The error code flows through `double_it` untouched, carrying both the domain identity (the category) and the specific code. The caller gets all the information it needs to either display the error or handle it by category.
 
 ---
 
@@ -375,8 +383,8 @@ int main() {
 
 - **One enum + one category per module** eliminates integer collisions and provides clear ownership of error codes.
 - Category singletons must have **exactly one address** across the entire program. Use `inline` functions or variables (C++17) to avoid ODR issues across shared libraries.
-- Define a **project-wide `error_condition` enum** (like `AppCondition`) for concepts beyond `std::errc` — subsystem-specific conditions such as "data corrupt" or "rate limited."
+- Define a **project-wide `error_condition` enum** (like `AppCondition`) for concepts beyond `std::errc` - subsystem-specific conditions such as "data corrupt" or "rate limited."
 - `default_error_condition()` is your mapping layer: override it to connect domain codes to shared conditions.
 - `is_error_code_enum<E>` enables implicit `error_code` construction. `is_error_condition_enum<E>` enables implicit `error_condition` construction. Register the right one.
 - In C++23, `std::expected<T, std::error_code>` gives monadic error propagation while retaining the full category/domain infrastructure.
-- Document the mapping table (domain code → condition) in each module's header — this is the "error contract" for callers.
+- Document the mapping table (domain code -> condition) in each module's header - this is the "error contract" for callers.

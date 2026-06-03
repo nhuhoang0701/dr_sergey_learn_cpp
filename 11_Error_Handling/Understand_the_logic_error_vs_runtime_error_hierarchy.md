@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-The C++ standard library exception hierarchy splits errors into two fundamental categories: **`std::logic_error`** (programming bugs that could be prevented) and **`std::runtime_error`** (environmental failures that cannot be prevented by code alone).
+The C++ standard library exception hierarchy splits errors into two fundamental categories: **`std::logic_error`** (programming bugs that could be prevented) and **`std::runtime_error`** (environmental failures that cannot be prevented by code alone). Getting this split right matters because it affects how you respond: bugs need to be fixed, environmental failures need to be handled gracefully.
 
 ### The Standard Exception Hierarchy
 
-```cpp
+The full hierarchy is wider than most people realize. Here is the complete tree from `std::exception` downward:
 
+```cpp
 std::exception
 ├── std::logic_error
 │   ├── std::invalid_argument     // bad parameter value
@@ -39,21 +40,26 @@ std::exception
 ├── std::bad_variant_access
 ├── std::bad_function_call
 └── std::bad_weak_ptr
-
 ```
 
+Notice that `std::bad_alloc` and the `bad_*` family are direct children of `std::exception` - they do not fit neatly into the logic/runtime split.
+
 ### The Key Distinction
+
+If the table feels like a lot, it boils down to one question: **could a programmer have prevented this by writing correct code?**
 
 | Aspect | `std::logic_error` | `std::runtime_error` |
 | --- | --- | --- |
 | **Nature** | Bug in the program's logic | External/environmental failure |
-| **Preventable?** | Yes — fix the code | No — can't control the environment |
+| **Preventable?** | Yes - fix the code | No - can't control the environment |
 | **Example** | Passing -1 to `sqrt()` | Disk full, network down |
 | **Correct response** | Fix the caller's code | Catch and handle gracefully |
 | **In production** | Should never be thrown (indicates a bug) | Expected to occur occasionally |
 | **Alternative** | `assert()` / contracts | Exception or `std::expected` |
 
 ### Which Standard Functions Throw Which
+
+Here are some concrete examples from the standard library that illustrate the split:
 
 | Function | Exception | Category |
 | --- | --- | --- |
@@ -65,11 +71,13 @@ std::exception
 | `std::filesystem::copy(...)` | `std::filesystem_error` | runtime_error |
 | `std::make_error_code(...)` | `std::system_error` | runtime_error |
 
+All the "bad index" and "bad conversion" errors are `logic_error` because a well-written caller would have validated the input first. File system and OS errors are `runtime_error` because they can happen even with perfect code.
+
 ### Important Notes
 
-- `std::exception::what()` returns a `const char*` — always override it in custom exceptions.
+- `std::exception::what()` returns a `const char*` - always override it in custom exceptions.
 - Catch by `const` reference: `catch (const std::exception& e)`.
-- The distinction is **semantic** — the compiler doesn't enforce it. You must choose correctly.
+- The distinction is **semantic** - the compiler doesn't enforce it. You must choose correctly.
 
 ---
 
@@ -77,16 +85,17 @@ std::exception
 
 ### Q1: Explain the intent: `logic_error` is a bug, `runtime_error` is environment failure
 
+The key thing to internalize is that the *correct* response to each kind of error is different. For `logic_error`, the right answer is to fix the calling code - not to write better error handling. For `runtime_error`, the right answer is to catch it and deal with it gracefully at runtime.
+
 **Detailed Explanation:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <vector>
 #include <fstream>
 
-// ========== logic_error examples — these are PROGRAMMER BUGS ==========
+// ========== logic_error examples - these are PROGRAMMER BUGS ==========
 
 void demonstrate_logic_errors() {
     // 1. invalid_argument: caller passed bad data
@@ -116,10 +125,10 @@ void demonstrate_logic_errors() {
     }
 }
 
-// ========== runtime_error examples — these are ENVIRONMENT FAILURES ==========
+// ========== runtime_error examples - these are ENVIRONMENT FAILURES ==========
 
 void demonstrate_runtime_errors() {
-    // 1. filesystem_error: file doesn't exist (not a bug — just reality)
+    // 1. filesystem_error: file doesn't exist (not a bug - just reality)
     try {
         std::ifstream f("nonexistent_file.txt");
         if (!f) throw std::runtime_error("file not found");
@@ -147,7 +156,6 @@ int main() {
 //   logic_error: sqrt of negative number
 //   runtime_error: file not found
 //   runtime_error: No such file or directory
-
 ```
 
 **The Mental Model:**
@@ -159,17 +167,18 @@ int main() {
 
 ### Q2: Show that catching `logic_error` in production code often indicates a design flaw
 
-**Solution — Why Catching `logic_error` Is a Code Smell:**
+The reason this is a code smell is subtle: if you catch an `out_of_range` and continue, you have silently accepted a bug. The code has a wrong loop bound or an unchecked index, and you are just papering over it. The right fix is to eliminate the out-of-bounds access entirely, not to catch the exception it throws.
+
+**Solution - Why Catching `logic_error` Is a Code Smell:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <vector>
 #include <string>
 #include <cassert>
 
-// ❌ BAD: Catching logic_error to "handle" a bug
+// BAD: Catching logic_error to "handle" a bug
 void bad_design(const std::vector<int>& data) {
     try {
         // Using .at() and catching out_of_range means the programmer
@@ -179,28 +188,28 @@ void bad_design(const std::vector<int>& data) {
             process(data.at(i));
         }
     } catch (const std::out_of_range&) {
-        // "Handling" the bug — this is a code smell!
+        // "Handling" the bug - this is a code smell!
         // The real fix is: i < data.size()
-        std::cout << "Caught out_of_range — 'handled' it\n";
+        std::cout << "Caught out_of_range - 'handled' it\n";
     }
 }
 
-// ✅ GOOD: Fix the logic, don't catch the bug
+// GOOD: Fix the logic, don't catch the bug
 void good_design(const std::vector<int>& data) {
     for (size_t i = 0; i < data.size(); ++i) {  // correct loop bound
-        process(data[i]);  // operator[] — no exception, just correct code
+        process(data[i]);  // operator[] - no exception, just correct code
     }
 }
 
-// ✅ GOOD: Use assertions for internal contracts
+// GOOD: Use assertions for internal contracts
 int safe_element(const std::vector<int>& v, size_t idx) {
     assert(idx < v.size() && "Bug: index out of bounds");
     return v[idx];
 }
 
-// ✅ GOOD: Validate USER INPUT at boundaries, then use contracts internally
+// GOOD: Validate USER INPUT at boundaries, then use contracts internally
 int parse_and_access(const std::string& user_input, const std::vector<int>& data) {
-    // Validate external input → return error (not assert)
+    // Validate external input -> return error (not assert)
     int idx;
     try {
         idx = std::stoi(user_input);
@@ -215,7 +224,7 @@ int parse_and_access(const std::string& user_input, const std::vector<int>& data
         return -1;
     }
 
-    return data[idx];  // known to be safe — no .at(), no try/catch
+    return data[idx];  // known to be safe - no .at(), no try/catch
 }
 
 int main() {
@@ -224,26 +233,28 @@ int main() {
     std::cout << parse_and_access("abc", v) << "\n";  // -1
     std::cout << parse_and_access("99", v) << "\n";   // -1
 }
-
 ```
+
+The `parse_and_access` function shows the right pattern: use exceptions to validate user-supplied input (because that is a genuine runtime uncertainty), but once you have validated the input, write code that is provably correct and does not need to throw at all.
 
 **The Rule:**
 
 | Exception Type | Caught in Production? | Why? |
 | --- | --- | --- |
-| `std::runtime_error` | ✅ Yes — handle gracefully | Environment failures are expected |
-| `std::logic_error` | ❌ Rarely — indicates a bug | Fix the code instead of catching |
-| `std::bad_alloc` | ⚠️ Sometimes | Resource exhaustion — may be recoverable |
-| `std::exception` (catch-all) | ✅ At top level only | Log and exit gracefully |
+| `std::runtime_error` | Yes - handle gracefully | Environment failures are expected |
+| `std::logic_error` | Rarely - indicates a bug | Fix the code instead of catching |
+| `std::bad_alloc` | Sometimes | Resource exhaustion - may be recoverable |
+| `std::exception` (catch-all) | At top level only | Log and exit gracefully |
 
 ---
 
 ### Q3: Write a custom exception class inheriting `runtime_error` with structured context fields
 
-**Solution — Rich Exception with Context:**
+When you derive from `std::runtime_error`, you get string management for free through the base class constructor. The `what()` message is handled automatically. Your job is to add structured fields - status codes, URLs, timestamps, whatever makes the error actionable:
+
+**Solution - Rich Exception with Context:**
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -316,7 +327,7 @@ int main() {
         std::cout << "  Status: " << e.status_code() << "\n";
         std::cout << "  URL: " << e.url() << "\n";
         if (e.is_retryable())
-            std::cout << "  → Will retry\n";
+            std::cout << "  -> Will retry\n";
     }
     catch (const std::runtime_error& e) {
         std::cout << "Runtime error: " << e.what() << "\n";
@@ -328,37 +339,38 @@ int main() {
 // Expected output:
 //   Timeout: HTTP 408 GET https://api.example.com/data (5000ms)
 //     Retryable: yes
+```
 
+The `build_message` static helper constructs the `what()` string and passes it to the `runtime_error` base constructor. This is the standard pattern - you get all the string lifetime management for free.
+
+The hierarchy you should build toward for a real application looks like this:
+
+```cpp
+// std::exception
+//   └── std::runtime_error          (environment failures)
+//         └── AppException          your root
+//               ├── NetworkError
+//               │     ├── HttpError structured fields
+//               │     ├── DnsError
+//               │     └── TimeoutError
+//               ├── DatabaseError
+//               └── ConfigError
 ```
 
 **Design Rules for Custom Exception Hierarchies:**
 
-```cpp
-
-std::exception
-  └── std::runtime_error          ← (environment failures)
-        └── AppException          ← your root
-              ├── NetworkError
-              │     ├── HttpError ← structured fields
-              │     ├── DnsError
-              │     └── TimeoutError
-              ├── DatabaseError
-              └── ConfigError
-
-```
-
 1. **Always derive from `std::exception`** (or a standard derived class).
-2. **Override `what()` via the `runtime_error(string)` constructor** — don't override `what()` directly.
+2. **Override `what()` via the `runtime_error(string)` constructor** - don't override `what()` directly.
 3. **Add structured fields** (status codes, URLs, etc.) accessible via `const` member functions.
-4. **Catch most-derived first** — C++ matches the first `catch` clause in order.
-5. **Catch by `const` reference** — avoids slicing.
+4. **Catch most-derived first** - C++ matches the first `catch` clause in order.
+5. **Catch by `const` reference** - avoids slicing.
 
 ---
 
 ## Notes
 
 - **Slicing danger:** `catch (std::exception e)` (by value) slices off derived data. Always catch by `const` reference.
-- **`std::exception::what()` returns `const char*`** — the string must remain valid for the exception's lifetime. `std::runtime_error` manages this via an internal `std::string`.
-- **Don't throw `std::logic_error` in library code** for input validation — use `std::expected` or `std::invalid_argument` only when the API documents that the caller must validate.
-- **`std::bad_alloc` doesn't derive from `logic_error` or `runtime_error`** — it derives directly from `std::exception`. This is because memory exhaustion is neither a logic bug nor purely an environment issue.
-- **Keep exception classes lightweight** — they're copied during stack unwinding. Avoid large members or heap allocations in the constructor.
+- **`std::exception::what()` returns `const char*`** - the string must remain valid for the exception's lifetime. `std::runtime_error` manages this via an internal `std::string`.
+- **Don't throw `std::logic_error` in library code** for input validation - use `std::expected` or `std::invalid_argument` only when the API documents that the caller must validate.
+- **`std::bad_alloc` doesn't derive from `logic_error` or `runtime_error`** - it derives directly from `std::exception`. This is because memory exhaustion is neither a logic bug nor purely an environment issue.
+- **Keep exception classes lightweight** - they're copied during stack unwinding. Avoid large members or heap allocations in the constructor.

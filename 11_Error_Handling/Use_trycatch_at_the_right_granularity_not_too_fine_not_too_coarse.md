@@ -8,22 +8,22 @@
 
 ## Topic Overview
 
-Exception handling is most effective when **try/catch boundaries** align with **logical transaction boundaries** — the level at which you can meaningfully respond to or report an error. Too fine-grained catching adds noise and hides intent. Too coarse-grained catching swallows diagnostic details and prevents targeted recovery.
+Exception handling is most effective when **try/catch boundaries** align with **logical transaction boundaries** - the level at which you can meaningfully respond to or report an error. Too fine-grained catching adds noise and hides intent. Too coarse-grained catching swallows diagnostic details and prevents targeted recovery.
 
 ### The Granularity Spectrum
 
-```cpp
+Think of it in terms of what you can actually do with the exception at each level. If the only thing you can do is log and return, wrapping every individual call in its own try/catch is pure noise. Group the calls that belong together, and catch once at the boundary of the logical operation:
 
+```cpp
 Too fine (anti-pattern)             Right level                  Too coarse (anti-pattern)
-──────────────────────              ──────────                   ────────────────────────
+----------------------              ----------                   ----------------------
 try { a(); } catch (...) {}         try {                        try {
 try { b(); } catch (...) {}             a();                         entire_main();
 try { c(); } catch (...) {}             b();                     } catch (...) {
                                         c();                         // what failed? which
-❌ Can't tell which failed          } catch (const DbErr&) {}        // step? no context.
-❌ Hides control flow               // One transaction boundary   }
-❌ Swallows errors silently                                       ❌ Swallows ALL errors
-
+// BAD: Can't tell which failed     } catch (const DbErr&) {}        // step? no context.
+// BAD: Hides control flow          // One transaction boundary   }
+// BAD: Swallows errors silently                                  // BAD: Swallows ALL errors
 ```
 
 ### Guidelines for Choosing Granularity
@@ -39,23 +39,21 @@ try { c(); } catch (...) {}             b();                     } catch (...) {
 ### The "Catch By Const Reference" Rule
 
 ```cpp
-
-// ❌ BAD: catch by value — SLICES derived exceptions
+// BAD: catch by value - SLICES derived exceptions
 try { throw DerivedError("details"); }
-catch (BaseError e) {    // copies + slices — DerivedError → BaseError
+catch (BaseError e) {    // copies + slices - DerivedError -> BaseError
     e.what();            // loses DerivedError::what() override
 }
 
-// ❌ BAD: catch by non-const reference (unless you modify and rethrow)
+// BAD: catch by non-const reference (unless you modify and rethrow)
 try { throw SomeError(); }
 catch (SomeError& e) { }  // works but non-const suggests mutation
 
-// ✅ GOOD: catch by const reference
+// GOOD: catch by const reference
 try { throw DerivedError("details"); }
 catch (const BaseError& e) {  // no copy, no slicing, preserves vtable
-    e.what();                  // calls DerivedError::what() ✓
+    e.what();                  // calls DerivedError::what()
 }
-
 ```
 
 ---
@@ -64,10 +62,11 @@ catch (const BaseError& e) {  // no copy, no slicing, preserves vtable
 
 ### Q1: Show a try block around a single expression vs an entire function and explain the readability tradeoff
 
-**Solution — Fine vs Coarse Granularity:**
+**Solution - Fine vs Coarse Granularity:**
+
+Read through the three versions below and notice how the "too fine" version makes the happy path almost impossible to follow - the error handling code outnumbers the actual logic:
 
 ```cpp
-
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -84,7 +83,7 @@ Config parse_config(const std::string& text);        // may throw parse_error
 void connect_db(const std::string& host, int port);  // may throw connection_error
 std::vector<std::string> query(const std::string& q); // may throw query_error
 
-// ❌ TOO FINE: wrapping every expression individually
+// BAD: TOO FINE - wrapping every expression individually
 void too_fine(const std::string& path) {
     std::string text;
     try {
@@ -92,7 +91,7 @@ void too_fine(const std::string& path) {
         text.assign(std::istreambuf_iterator<char>(f), {});
     } catch (const std::exception& e) {
         std::cerr << "Read error\n";
-        return;  // early return — disrupts flow
+        return;  // early return - disrupts flow
     }
 
     Config cfg;
@@ -112,12 +111,12 @@ void too_fine(const std::string& path) {
 
     // Problems:
     //   - 3 try/catch blocks for 1 logical operation (initialize)
-    //   - Each catch does the same thing — log and return
+    //   - Each catch does the same thing - log and return
     //   - Hard to read the "happy path"
     //   - Can't distinguish errors in a unified handler
 }
 
-// ✅ RIGHT: one try for one logical transaction
+// GOOD: one try for one logical transaction
 void right_granularity(const std::string& path) {
     try {
         std::ifstream f(path);
@@ -139,7 +138,7 @@ void right_granularity(const std::string& path) {
     // One error handling point for one logical operation
 }
 
-// ❌ TOO COARSE: wrapping main()
+// BAD: TOO COARSE - wrapping main()
 int too_coarse_main() {
     try {
         // 500 lines of application logic...
@@ -154,30 +153,28 @@ int too_coarse_main() {
 int main() {
     right_granularity("config.txt");
 }
-
 ```
 
 **Readability comparison:**
 
 ```cpp
-
 Too Fine:                    Right Level:                 Too Coarse:
 3 try/catch, 3 returns       1 try/catch                  1 try/catch
 Happy path fragmented         Happy path clear             Happy path buried
 9 lines of error handling     3 lines of error handling    3 lines, no context
 Easy to miss an error         All errors caught            All errors caught
                               at the right level           but can't act on them
-
 ```
 
 ---
 
 ### Q2: Demonstrate how catching at the wrong level swallows context needed for diagnosis
 
-**Solution — Context Loss Through Wrong-Level Catching:**
+**Solution - Context Loss Through Wrong-Level Catching:**
+
+The reason this matters is that rich exception types carry structured data - not just a string message, but typed fields like error codes and query text. When you catch too early and re-throw as a base type, all of that structured data is gone forever:
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -203,7 +200,7 @@ void execute_query(const std::string& q) {
     throw DatabaseError("Syntax error near 'FORM'", q, 1064);
 }
 
-// ❌ BAD: catching TOO EARLY swallows context
+// BAD: catching TOO EARLY swallows context
 void bad_repository_layer(const std::string& query) {
     try {
         execute_query(query);
@@ -214,9 +211,9 @@ void bad_repository_layer(const std::string& query) {
     }
 }
 
-// ✅ GOOD: let specific exceptions propagate, or re-throw with context
+// GOOD: let specific exceptions propagate, or re-throw with context
 void good_repository_layer(const std::string& query) {
-    // Option A: Don't catch — let it propagate with full context
+    // Option A: Don't catch - let it propagate with full context
     execute_query(query);
 
     // Option B: Catch, add context, re-throw
@@ -229,7 +226,7 @@ void good_repository_layer(const std::string& query) {
 }
 
 int main() {
-    // ❌ Bad path: context lost
+    // Bad path: context lost
     std::cout << "=== Bad catching level ===\n";
     try {
         bad_repository_layer("SELECT * FORM users");
@@ -240,7 +237,7 @@ int main() {
         // Can't tell if it's a syntax error, connection issue, or permission problem
     }
 
-    // ✅ Good path: context preserved
+    // Good path: context preserved
     std::cout << "\n=== Right catching level ===\n";
     try {
         good_repository_layer("SELECT * FORM users");
@@ -259,30 +256,28 @@ int main() {
 //   Error: Syntax error near 'FORM'
 //   Query: SELECT * FORM users
 //   Code:  1064
-
 ```
 
 **Rule of thumb:**
 
 ```cpp
-
 Do NOT catch if you:            DO catch if you:
-─────────────────────           ──────────────────
-• Can't recover                 • Can retry the operation
-• Would just re-throw           • Need to translate the error for a higher layer
-• Would lose context            • Are at a natural boundary (HTTP handler, main loop)
-• Are in a library function     • Need to log AND propagate (throw_with_nested)
-
+---------------------           ------------------
+- Can't recover                 - Can retry the operation
+- Would just re-throw           - Need to translate the error for a higher layer
+- Would lose context            - Are at a natural boundary (HTTP handler, main loop)
+- Are in a library function     - Need to log AND propagate (throw_with_nested)
 ```
 
 ---
 
 ### Q3: Apply the "catch by const reference" rule and explain why catching by value slices
 
-**Solution — Slicing Demonstration:**
+**Solution - Slicing Demonstration:**
+
+Exception slicing is a subtle bug: you throw a derived exception with extra fields, but the catch clause copies just the base portion of the object. The derived part - including overridden virtual functions - silently disappears. Catching by const reference avoids the copy entirely and preserves the full dynamic type:
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -309,18 +304,18 @@ void throw_app_error() {
 }
 
 int main() {
-    // ❌ Catch by VALUE — SLICES the exception
+    // Catch by VALUE - SLICES the exception
     std::cout << "=== Catch by value (SLICING) ===\n";
     try {
         throw_app_error();
-    } catch (std::runtime_error e) {  // ← by value: copies and SLICES
+    } catch (std::runtime_error e) {  // by value: copies and SLICES
         std::cout << "Type: " << typeid(e).name() << "\n";
         std::cout << "what(): " << e.what() << "\n";
         // Lost: AppError::code_, AppError::what() override
         // e is now a plain runtime_error!
     }
 
-    // ❌ Catch base by value — even more slicing
+    // Catch base by value - even more slicing
     std::cout << "\n=== Catch std::exception by value ===\n";
     try {
         throw_app_error();
@@ -329,14 +324,14 @@ int main() {
         // May even lose the error message on some implementations!
     }
 
-    // ✅ Catch by CONST REFERENCE — preserves everything
+    // Catch by CONST REFERENCE - preserves everything
     std::cout << "\n=== Catch by const reference (CORRECT) ===\n";
     try {
         throw_app_error();
     } catch (const std::runtime_error& e) {
         std::cout << "Type: " << typeid(e).name() << "\n";
         std::cout << "what(): " << e.what() << "\n";
-        // Dynamic type preserved — calls AppError::what()!
+        // Dynamic type preserved - calls AppError::what()!
 
         // Can even downcast if needed:
         if (auto* app_err = dynamic_cast<const AppError*>(&e)) {
@@ -344,15 +339,15 @@ int main() {
         }
     }
 
-    // ✅ Catch ordering: most derived FIRST
+    // Catch ordering: most derived FIRST
     std::cout << "\n=== Correct catch ordering ===\n";
     try {
         throw_app_error();
-    } catch (const AppError& e) {          // Most derived — checked FIRST
+    } catch (const AppError& e) {          // Most derived - checked FIRST
         std::cout << "AppError: " << e.what() << ", code=" << e.code() << "\n";
-    } catch (const std::runtime_error& e) { // Base — checked second
+    } catch (const std::runtime_error& e) { // Base - checked second
         std::cout << "runtime_error: " << e.what() << "\n";
-    } catch (const std::exception& e) {     // Most general — last
+    } catch (const std::exception& e) {     // Most general - last
         std::cout << "exception: " << e.what() << "\n";
     }
 }
@@ -371,31 +366,28 @@ int main() {
 //
 //   === Correct catch ordering ===
 //   AppError: file corruption detected [code=42], code=42
-
 ```
 
 **Why slicing happens:**
 
 ```cpp
-
 AppError object in exception storage:
-┌────────────────────────────────────┐
-│ std::exception  { vtable, what }   │
-│ std::runtime_error { message }     │
-│ AppError { code_ = 42 }           │ ← full object
-└────────────────────────────────────┘
++------------------------------------+
+| std::exception  { vtable, what }   |
+| std::runtime_error { message }     |
+| AppError { code_ = 42 }           | <- full object
++------------------------------------+
 
-catch (std::runtime_error e):         // by VALUE → copy constructor
-┌────────────────────────────────┐
-│ std::exception  { vtable }     │
-│ std::runtime_error { message } │    ← AppError portion GONE
-└────────────────────────────────┘    ← vtable points to runtime_error
+catch (std::runtime_error e):         // by VALUE -> copy constructor
++--------------------------------+
+| std::exception  { vtable }     |
+| std::runtime_error { message } |    <- AppError portion GONE
++--------------------------------+    <- vtable points to runtime_error
 
-catch (const std::runtime_error& e):  // by REFERENCE → no copy
-→ reference to the ORIGINAL object
-→ vtable still points to AppError
-→ dynamic dispatch works correctly
-
+catch (const std::runtime_error& e):  // by REFERENCE -> no copy
+-> reference to the ORIGINAL object
+-> vtable still points to AppError
+-> dynamic dispatch works correctly
 ```
 
 ---
@@ -403,8 +395,8 @@ catch (const std::runtime_error& e):  // by REFERENCE → no copy
 ## Notes
 
 - **CppCoreGuidelines E.15:** Catch exceptions from a hierarchy by reference.
-- **CppCoreGuidelines E.17:** Don't try to catch every exception in every function — catch where you can handle it.
+- **CppCoreGuidelines E.17:** Don't try to catch every exception in every function - catch where you can handle it.
 - **Catch `...` only at boundaries:** `main()`, thread entry points, callback dispatchers.
-- **"Catch-log-rethrow"** is acceptable: `catch (const E& e) { log(e); throw; }` — preserves the original exception. `throw;` rethrows without slicing.
-- **Function-try-blocks** exist for constructors: `C::C() try : member(...) { } catch (...) { }` — rarely used, useful for logging init failures.
+- **"Catch-log-rethrow"** is acceptable: `catch (const E& e) { log(e); throw; }` - preserves the original exception. `throw;` rethrows without slicing.
+- **Function-try-blocks** exist for constructors: `C::C() try : member(...) { } catch (...) { }` - rarely used, useful for logging init failures.
 - **`noexcept` vs try/catch:** If a function can't meaningfully handle an error, mark it `noexcept` rather than wrapping in try/catch.

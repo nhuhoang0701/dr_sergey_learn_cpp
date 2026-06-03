@@ -12,20 +12,21 @@
 
 ### Class Hierarchy
 
+It helps to know where `system_error` sits in the exception hierarchy, because you can catch it as a `std::runtime_error` if you do not need the error code details:
+
 ```cpp
-
 std::exception
-  └── std::runtime_error
-        └── std::system_error          ← wraps error_code
-              └── std::ios_base::failure (C++11)
-              └── std::filesystem::filesystem_error (C++17)
-
+  +-- std::runtime_error
+        +-- std::system_error          <- wraps error_code
+              +-- std::ios_base::failure (C++11)
+              +-- std::filesystem::filesystem_error (C++17)
 ```
 
 ### Construction
 
-```cpp
+There are three common ways to construct a `system_error`. The most important rule is to capture `errno` immediately after the failing call - any subsequent function call (even an innocent one) may overwrite it:
 
+```cpp
 #include <system_error>
 #include <cerrno>
 
@@ -41,13 +42,13 @@ throw std::system_error(
 // From error_code directly
 std::error_code ec(EACCES, std::generic_category());
 throw std::system_error(ec, "cannot access resource");
-
 ```
 
 ### Catching and Inspecting
 
-```cpp
+When you catch a `system_error`, you get access to both a human-readable message and the structured error code. The portable comparison through `std::errc` is particularly useful when you want platform-independent error handling:
 
+```cpp
 try {
     // ... code that throws system_error ...
 } catch (const std::system_error& e) {
@@ -58,12 +59,11 @@ try {
 
     // Portable comparison via errc:
     if (e.code() == std::errc::permission_denied)
-        std::cout << "→ permission denied\n";
+        std::cout << "-> permission denied\n";
 }
-
 ```
 
-### `system_error` vs `error_code` — When to Use Which
+### `system_error` vs `error_code` - When to Use Which
 
 | Use Case | Mechanism | Rationale |
 | --- | --- | --- |
@@ -78,10 +78,11 @@ try {
 
 ### Q1: Throw a `std::system_error` from a failed POSIX call and catch it to extract the error message
 
-**Solution — Wrapping `open()` and `read()`:**
+**Solution - Wrapping `open()` and `read()`:**
+
+The pattern here is straightforward: call the C function, check the return value, and if it failed, throw immediately while `errno` still holds the right value. Notice how `read()` saves `errno` before calling `close()` - that extra call would overwrite it:
 
 ```cpp
-
 #include <iostream>
 #include <system_error>
 #include <cerrno>
@@ -100,7 +101,7 @@ try {
 void read_file(const std::string& path) {
     int fd = ::open(path.c_str(), O_RDONLY);
     if (fd == -1) {
-        // errno is set by open() — capture it IMMEDIATELY
+        // errno is set by open() - capture it IMMEDIATELY
         throw std::system_error(errno, std::system_category(),
                                 "open(\"" + path + "\")");
     }
@@ -126,11 +127,11 @@ int main() {
         std::cout << "what():     " << e.what() << "\n";
         std::cout << "value():    " << e.code().value() << "\n";
         std::cout << "message():  " << e.code().message() << "\n";
-        std::cout << "category():  " << e.code().category().name() << "\n";
+        std::cout << "category(): " << e.code().category().name() << "\n";
 
-        // Portable check — works across OSes:
+        // Portable check - works across OSes:
         if (e.code() == std::errc::no_such_file_or_directory)
-            std::cout << "→ File does not exist (portable check).\n";
+            std::cout << "-> File does not exist (portable check).\n";
     }
 }
 // Expected output (Linux):
@@ -138,18 +139,20 @@ int main() {
 //   value():    2
 //   message():  No such file or directory
 //   category(): system
-//   → File does not exist (portable check).
-
+//   -> File does not exist (portable check).
 ```
+
+Notice that `what()` automatically concatenates your context message with the system's error description. That combined string is what makes `system_error` so useful in log output - you get the full picture from a single call.
 
 ---
 
 ### Q2: Show how `system_error::code()` returns an `error_code` comparable with `std::errc` values
 
-**Solution — `code()` and Portable Comparison:**
+**Solution - `code()` and Portable Comparison:**
+
+The comparison `ec == std::errc::permission_denied` works across platforms because the category's `equivalent()` method maps the platform-specific integer to a portable `errc` condition. You write one comparison and it works on Linux, macOS, and Windows:
 
 ```cpp
-
 #include <iostream>
 #include <system_error>
 #include <cerrno>
@@ -171,13 +174,13 @@ void demonstrate_code_comparison() {
 
         // Portable comparison using std::errc:
         if (ec == std::errc::permission_denied)
-            std::cout << "  → PORTABLE: permission denied\n";
+            std::cout << "  -> PORTABLE: permission denied\n";
         else if (ec == std::errc::no_such_file_or_directory)
-            std::cout << "  → PORTABLE: file not found\n";
+            std::cout << "  -> PORTABLE: file not found\n";
         else if (ec == std::errc::file_exists)
-            std::cout << "  → PORTABLE: file already exists\n";
+            std::cout << "  -> PORTABLE: file already exists\n";
         else if (ec == std::errc::not_enough_memory)
-            std::cout << "  → PORTABLE: out of memory\n";
+            std::cout << "  -> PORTABLE: out of memory\n";
     }
 }
 
@@ -207,41 +210,39 @@ int main() {
 }
 // Expected output (Linux):
 //   Code 13 [system]: Permission denied
-//     → PORTABLE: permission denied
+//     -> PORTABLE: permission denied
 //   Code 2 [system]: No such file or directory
-//     → PORTABLE: file not found
+//     -> PORTABLE: file not found
 //   Code 17 [system]: File exists
-//     → PORTABLE: file already exists
+//     -> PORTABLE: file already exists
 //   Code 12 [system]: Cannot allocate memory
-//     → PORTABLE: out of memory
+//     -> PORTABLE: out of memory
 //
 //   Handle: ask user for elevated privileges
-
 ```
 
 **How the comparison works:**
 
 ```cpp
-
 ec == std::errc::permission_denied
-  ↓
+  |
 ec.category().equivalent(ec.value(), errc::permission_denied)
-  ↓
+  |
 system_category maps OS error code to generic_category
-  ↓
-On Linux: EACCES(13) maps to errc::permission_denied → true
-On Windows: ERROR_ACCESS_DENIED(5) maps to errc::permission_denied → true
-
+  |
+On Linux: EACCES(13) maps to errc::permission_denied -> true
+On Windows: ERROR_ACCESS_DENIED(5) maps to errc::permission_denied -> true
 ```
 
 ---
 
 ### Q3: Implement a C++ wrapper around a C file API that converts `errno` to `system_error` on failure
 
-**Solution — RAII File Wrapper with `system_error`:**
+**Solution - RAII File Wrapper with `system_error`:**
+
+This is what wrapping a C API in idiomatic C++ looks like. The constructor either succeeds or throws - callers never hold a half-constructed `File` object. Every subsequent operation follows the same pattern: check the return value, save `errno`, throw if needed:
 
 ```cpp
-
 #include <iostream>
 #include <system_error>
 #include <string>
@@ -255,7 +256,7 @@ class File {
     std::string path_;
 
 public:
-    // Open file — throws system_error on failure
+    // Open file - throws system_error on failure
     explicit File(const std::string& path, const char* mode = "r")
         : path_(path)
     {
@@ -299,7 +300,7 @@ public:
         return content;
     }
 
-    // Write data — throws on failure
+    // Write data - throws on failure
     void write(const std::string& data) {
         size_t n = std::fwrite(data.data(), 1, data.size(), fp_);
         if (n != data.size())
@@ -336,7 +337,7 @@ int main() {
         std::cout << "Error: " << e.what() << "\n";
 
         if (e.code() == std::errc::no_such_file_or_directory)
-            std::cout << "→ File not found (portable)\n";
+            std::cout << "-> File not found (portable)\n";
     }
 
     // Cleanup
@@ -346,31 +347,28 @@ int main() {
 //   Written successfully.
 //   Read: Hello from RAII wrapper!
 //   Error: fopen("/no/such/path.txt", "r"): No such file or directory
-//   → File not found (portable)
-
+//   -> File not found (portable)
 ```
 
-**Pattern: errno → system_error:**
+**Pattern: errno -> system_error:**
 
 ```cpp
-
-C function call → check return value → if error:
+C function call -> check return value -> if error:
   int saved = errno;           // Save IMMEDIATELY (next call may change it)
   throw std::system_error(     // Throw with:
       saved,                   //   errno value
       std::system_category(),  //   OS error category
       "context message"        //   what happened
   );
-
 ```
 
 ---
 
 ## Notes
 
-- **Save `errno` immediately** — any intervening function call (including `close()`, `std::string` allocation) may overwrite it.
+- **Save `errno` immediately** - any intervening function call (including `close()`, `std::string` allocation) may overwrite it.
 - **`std::system_category()`** maps to OS errors: `errno` values on POSIX, `GetLastError()` values on Windows.
-- **`std::generic_category()`** maps to portable `std::errc` values — use for cross-platform error creation.
-- **`filesystem_error`** derives from `system_error` — catching `system_error` also catches filesystem errors.
+- **`std::generic_category()`** maps to portable `std::errc` values - use for cross-platform error creation.
+- **`filesystem_error`** derives from `system_error` - catching `system_error` also catches filesystem errors.
 - **Dual API pattern:** Provide a throwing version and an `error_code` overload, like the standard library does for `<filesystem>`.
-- **`what()` includes both your context message and the system's error description** — e.g., `"open(\"/foo\"): No such file or directory"`.
+- **`what()` includes both your context message and the system's error description** - e.g., `"open(\"/foo\"): No such file or directory"`.

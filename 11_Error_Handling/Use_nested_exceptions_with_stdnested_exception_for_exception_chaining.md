@@ -15,8 +15,9 @@
 
 ### `std::nested_exception` Class
 
-```cpp
+Here is the relevant part of the class interface - the two members you will use most are `rethrow_nested()` to get back to the inner exception, and `nested_ptr()` if you want to inspect it without throwing:
 
+```cpp
 class nested_exception {
 public:
     nested_exception() noexcept;                    // captures current_exception()
@@ -26,13 +27,13 @@ public:
     [[noreturn]] void rethrow_nested() const;       // rethrows stored exception
     std::exception_ptr nested_ptr() const noexcept; // access stored ptr
 };
-
 ```
 
 ### How the Mechanism Works
 
-```cpp
+The reason this trips people up is that `std::throw_with_nested` does not literally wrap your exception inside another object at runtime - it synthesises a new type on the fly that inherits from both your exception class and `std::nested_exception`. Here is what the compiler-generated chain looks like:
 
+```cpp
 Inside a catch block:
 
   catch (const LowLevelError& e) {
@@ -48,19 +49,20 @@ Inside a catch block:
 
   2. nested_exception() constructor captures std::current_exception()
 
-     → stores a reference to the LowLevelError
+     -> stores a reference to the LowLevelError
 
   3. The _Generated object is thrown
 
   Result:
-  ┌──────────────────────────────────┐
-  │ _Generated object                │
-  │   ├── HighLevelError data        │  ← your outer exception
-  │   └── nested_exception           │
-  │         └── exception_ptr ───────┼──→ LowLevelError (preserved)
-  └──────────────────────────────────┘
-
+  +----------------------------------+
+  | _Generated object                |
+  |   +-- HighLevelError data        |  <- your outer exception
+  |   +-- nested_exception           |
+  |         +-- exception_ptr -------+--> LowLevelError (preserved)
+  +----------------------------------+
 ```
+
+The outer exception is what the caller catches. The inner (original) exception is reachable via `rethrow_nested()` or `nested_ptr()`.
 
 ### Key Functions
 
@@ -73,9 +75,9 @@ Inside a catch block:
 
 ### Important Notes
 
-- `std::throw_with_nested` **must** be called inside a `catch` block — it uses `std::current_exception()`.
-- If the exception type is `final`, `throw_with_nested` cannot derive from it — it throws without nesting.
-- `nested_exception` uses `exception_ptr` internally — reference-counted, thread-safe to copy.
+- `std::throw_with_nested` **must** be called inside a `catch` block - it uses `std::current_exception()`.
+- If the exception type is `final`, `throw_with_nested` cannot derive from it - it throws without nesting.
+- `nested_exception` uses `exception_ptr` internally - reference-counted, thread-safe to copy.
 - Available since **C++11** (not C++20 as the template suggested).
 
 ---
@@ -84,10 +86,11 @@ Inside a catch block:
 
 ### Q1: Chain exceptions using `std::throw_with_nested` and unwrap them with `std::rethrow_if_nested`
 
-**Solution — Three-Layer Exception Chain:**
+**Solution - Three-Layer Exception Chain:**
+
+This example builds a realistic multi-layer scenario: a file-read failure at the bottom propagates through a config-parser and then a server startup function. Watch how each layer wraps the exception from below, so the caller gets the full story:
 
 ```cpp
-
 #include <iostream>
 #include <stdexcept>
 #include <exception>
@@ -148,24 +151,26 @@ int main() {
 //   server startup failed
 //     failed to parse config 'app.conf'
 //       cannot open 'app.conf'
-
 ```
+
+`print_chain` is a recursive unwinder: each call prints the current message, then calls `rethrow_if_nested` to reach the next layer. When there is nothing more to unwrap, `rethrow_if_nested` returns normally and the recursion ends.
 
 **Step-by-step unwinding:**
 
-1. Catch `std::exception& e` → it's `runtime_error("server startup failed")` with a nested exception.
-2. `rethrow_if_nested(e)` → rethrows the nested `runtime_error("failed to parse config")`.
-3. Catch again, `rethrow_if_nested` → rethrows `runtime_error("cannot open 'app.conf'")`.
-4. Catch again, `rethrow_if_nested` → no nesting → returns normally → recursion ends.
+1. Catch `std::exception& e` - it's `runtime_error("server startup failed")` with a nested exception.
+2. `rethrow_if_nested(e)` - rethrows the nested `runtime_error("failed to parse config")`.
+3. Catch again, `rethrow_if_nested` - rethrows `runtime_error("cannot open 'app.conf'")`.
+4. Catch again, `rethrow_if_nested` - no nesting - returns normally - recursion ends.
 
 ---
 
 ### Q2: Write a recursive exception printer that traverses the nested chain
 
-**Solution — Production-Quality Chain Formatter:**
+**Solution - Production-Quality Chain Formatter:**
+
+Sometimes you want more than a simple indented dump. This example shows three different presentation formats for the same chain: a tree, an arrow chain, and root-cause extraction. Each is useful in different contexts (log files, error banners, monitoring dashboards):
 
 ```cpp
-
 #include <iostream>
 #include <exception>
 #include <stdexcept>
@@ -213,7 +218,7 @@ std::string format_arrow(const std::exception& e) {
     auto msgs = collect_chain(e);
     std::ostringstream oss;
     for (size_t i = 0; i < msgs.size(); ++i) {
-        if (i > 0) oss << " → ";
+        if (i > 0) oss << " -> ";
         oss << msgs[i];
     }
     return oss.str();
@@ -228,7 +233,7 @@ std::string root_cause(const std::exception& e) {
     } catch (...) {
         return "(unknown)";
     }
-    return e.what();  // no nesting — this IS the root
+    return e.what();  // no nesting - this IS the root
 }
 
 // Demo
@@ -268,7 +273,7 @@ int main() {
 //       Caused by: disk full
 //
 //   === Arrow format ===
-//   save document failed → write failed → disk full
+//   save document failed -> write failed -> disk full
 //
 //   === Root cause ===
 //   disk full
@@ -277,18 +282,20 @@ int main() {
 //   [0] save document failed
 //   [1] write failed
 //   [2] disk full
-
 ```
+
+Notice that `root_cause` just recurses until `rethrow_if_nested` returns normally, at which point the current exception has no inner layer and is therefore the root.
 
 ---
 
 ### Q3: Explain when nested exceptions are more informative than replacing the original exception
 
-**Replacing vs Nesting — Comparison:**
+**Replacing vs Nesting - Comparison:**
+
+The key intuition here is that when you catch and rethrow a completely new exception, you are discarding everything the original exception knew about itself. With nesting, you preserve it:
 
 ```cpp
-
-// ❌ REPLACING: Original exception information is LOST
+// BAD: Original exception information is LOST
 try {
     database_query("SELECT ...");
 } catch (const db::connection_error& e) {
@@ -296,37 +303,37 @@ try {
     // Lost: which connection? what error code? timeout?
 }
 
-// ✅ NESTING: Original exception is PRESERVED
+// GOOD: Original exception is PRESERVED
 try {
     database_query("SELECT ...");
 } catch (...) {
     std::throw_with_nested(app::SaveError("save failed"));
     // Preserved: the full db::connection_error with all its data
 }
-
 ```
 
 **When Nesting Is More Informative:**
 
 | Scenario | Replacing | Nesting |
 | --- | --- | --- |
-| **Multi-layer architecture** | "save failed" | "save failed → db error → connection refused to 10.0.0.5:5432" |
+| **Multi-layer architecture** | "save failed" | "save failed -> db error -> connection refused to 10.0.0.5:5432" |
 | **Third-party libraries** | Must stringify upstream error | Preserves upstream exception type + data |
-| **Log analysis** | Single message — hard to find root cause | Full chain — root cause obvious |
+| **Log analysis** | Single message - hard to find root cause | Full chain - root cause obvious |
 | **Programmatic handling** | Can only inspect outer type | Can `dynamic_cast` inner exception to get structured data |
-| **Test diagnostics** | "test failed" | "test failed → setup failed → fixture file missing" |
+| **Test diagnostics** | "test failed" | "test failed -> setup failed -> fixture file missing" |
 
 **When Nesting Is NOT Needed:**
 
-1. **You're re-throwing unchanged:** Use `throw;` — no wrapping needed.
+1. **You're re-throwing unchanged:** Use `throw;` - no wrapping needed.
 2. **No additional context:** If the inner exception already says everything, don't wrap.
-3. **Error codes / `std::expected`:** These don't use exceptions — use error enums or structs instead.
+3. **Error codes / `std::expected`:** These don't use exceptions - use error enums or structs instead.
 4. **Same abstraction level:** Wrapping `IoError` in another `IoError` adds noise, not value.
 
 **Accessing Nested Data Programmatically:**
 
-```cpp
+One of the more powerful aspects of nesting is that the inner exception is still a full typed object. You can `dynamic_cast` into it after rethrowing and read its structured fields, rather than parsing a string:
 
+```cpp
 try {
     operation();
 } catch (const AppError& e) {
@@ -342,7 +349,6 @@ try {
         std::cout << "Query: " << db_err.query() << "\n";
     }
 }
-
 ```
 
 ---
@@ -350,8 +356,8 @@ try {
 ## Notes
 
 - `std::nested_exception` is available since **C++11**, not C++20.
-- `nested_exception::nested_ptr()` returns `exception_ptr` — can be null if constructed outside a catch block.
-- `rethrow_nested()` is `[[noreturn]]` — it always throws. Calling it when `nested_ptr()` is null calls `std::terminate()`.
+- `nested_exception::nested_ptr()` returns `exception_ptr` - can be null if constructed outside a catch block.
+- `rethrow_nested()` is `[[noreturn]]` - it always throws. Calling it when `nested_ptr()` is null calls `std::terminate()`.
 - Maximum practical nesting depth: 3-5 levels. Deeper chains become noise rather than information.
-- **Performance:** Nesting adds one `exception_ptr` copy (reference count increment) per level — negligible on error paths.
+- **Performance:** Nesting adds one `exception_ptr` copy (reference count increment) per level - negligible on error paths.
 - **Thread safety:** `exception_ptr` is reference-counted and safe to copy across threads.
