@@ -10,11 +10,15 @@
 
 The **Lakos Rule** (from John Lakos): functions with **wide contracts** (valid for all inputs) can be `noexcept`. Functions with **narrow contracts** (preconditions) should **not** be `noexcept` because precondition-violation handling may need to throw.
 
+The intuition here is simple. If a function has no preconditions, there is nothing that can go wrong before you even start - so promising not to throw is safe. If a function has preconditions, someone will eventually call it wrong, and you want to preserve the ability to signal that violation through an exception rather than calling `std::terminate`.
+
 ### Wide vs Narrow Contracts
+
+Here is a quick reference for which side of the line common operations fall on:
 
 | Contract | Preconditions | Example | `noexcept`? |
 | --- | --- | --- | --- |
-| Wide | None — works for all inputs | `vector::size()` | Yes |
+| Wide | None - works for all inputs | `vector::size()` | Yes |
 | Wide | None | `vector::empty()` | Yes |
 | Narrow | `index < size()` | `vector::operator[]` | Debatable |
 | Narrow | `!empty()` | `stack::top()` | Debatable |
@@ -27,13 +31,14 @@ The **Lakos Rule** (from John Lakos): functions with **wide contracts** (valid f
 
 ### Q1: Explain the Lakos Rule with examples of wide and narrow contracts
 
-```cpp
+Let's make a stack that distinguishes its wide-contract operations (`empty`, `size`, `push`) from its narrow-contract ones (`top`, `pop`). The narrow ones need to be able to throw - so they don't get `noexcept`.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <vector>
 
-// WIDE contract: valid for ANY input — safe to be noexcept
+// WIDE contract: valid for ANY input - safe to be noexcept
 class SafeStack {
     std::vector<int> data_;
 public:
@@ -82,13 +87,15 @@ int main() {
 // Top: 20
 // Pop: 20
 // Caught: pop() on empty stack
-
 ```
+
+Notice that `top` and `pop` throw instead of crashing - that is exactly what the Lakos Rule is designed to preserve.
 
 ### Q2: Show why `noexcept` on a narrow-contract function prevents catching precondition violations
 
-```cpp
+This is where the rule really bites. If you mark a narrow-contract function `noexcept` and it then tries to throw, the runtime calls `std::terminate` immediately. Your test framework never gets to catch the failure - the whole process just dies.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 
@@ -102,9 +109,9 @@ public:
     int at_bad(size_t index) noexcept {
         if (index >= size_) {
             // We want to report the error, but we're noexcept!
-            // Option 1: throw → std::terminate (program dies)
-            // Option 2: return garbage → silent corruption
-            // Option 3: abort() → no recovery possible
+            // Option 1: throw -> std::terminate (program dies)
+            // Option 2: return garbage -> silent corruption
+            // Option 3: abort() -> no recovery possible
             std::cerr << "Index out of bounds!\n";
             std::abort();  // only safe option, but no recovery
         }
@@ -115,9 +122,7 @@ public:
     int at_good(size_t index) {
         if (index >= size_)
             throw std::out_of_range("index " + std::to_string(index)
-
                 + " >= size " + std::to_string(size_));
-
         return data_[index];
     }
 };
@@ -133,19 +138,21 @@ int main() {
         std::cout << "Test passed: caught " << e.what() << '\n';
     }
 
-    // at_bad(10) would call std::abort() — test framework can't catch it!
+    // at_bad(10) would call std::abort() -- test framework can't catch it!
     std::cout << "Test suite continues after at_good failure\n";
 }
 // Expected output:
 // Test passed: caught index 10 >= size 3
 // Test suite continues after at_good failure
-
 ```
+
+The `at_good` version lets the test framework catch and report the failure gracefully. The `at_bad` version would kill the process. That is the whole motivation for the Lakos Rule in testing and library contexts.
 
 ### Q3: Apply the Lakos Rule to swap, move, and comparison operators
 
-```cpp
+Wide-contract operations that you write all the time - `swap`, move constructors, comparisons - are safe to mark `noexcept` because they genuinely work for any valid combination of inputs.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <utility>
@@ -157,7 +164,7 @@ public:
     Widget(std::string n, int v) : name_(std::move(n)), value_(v) {}
 
     // SWAP: wide contract (always valid for any two Widgets)
-    // → noexcept: YES
+    // -> noexcept: YES
     friend void swap(Widget& a, Widget& b) noexcept {
         using std::swap;
         swap(a.name_, b.name_);    // string swap is noexcept
@@ -165,12 +172,12 @@ public:
     }
 
     // MOVE constructor: wide contract (source is valid object)
-    // → noexcept: YES (critical for vector reallocation)
+    // -> noexcept: YES (critical for vector reallocation)
     Widget(Widget&& other) noexcept
         : name_(std::move(other.name_)), value_(other.value_) {}
 
     // MOVE assignment: wide contract
-    // → noexcept: YES
+    // -> noexcept: YES
     Widget& operator=(Widget&& other) noexcept {
         name_ = std::move(other.name_);
         value_ = other.value_;
@@ -178,7 +185,7 @@ public:
     }
 
     // COMPARISON: wide contract (any two Widgets can be compared)
-    // → noexcept: YES
+    // -> noexcept: YES
     friend bool operator==(const Widget& a, const Widget& b) noexcept {
         return a.value_ == b.value_ && a.name_ == b.name_;
     }
@@ -206,8 +213,9 @@ int main() {
 // After swap:  Beta(2), Alpha(1)
 // Equal: false
 // a < b: false
-
 ```
+
+Pay special attention to the move constructor: marking it `noexcept` is not just stylistic. `std::vector` checks this at reallocation time via `std::move_if_noexcept` - if your move isn't `noexcept`, the vector falls back to copying every element.
 
 **Summary:**
 
@@ -224,7 +232,7 @@ int main() {
 
 ## Notes
 
-- The Lakos Rule is debated — some argue even narrow-contract functions should be `noexcept` in release builds (with assertions disabled).
+- The Lakos Rule is debated - some argue even narrow-contract functions should be `noexcept` in release builds (with assertions disabled).
 - `noexcept` affects codegen: compilers may omit exception-handling tables.
-- `std::vector` uses `std::move_if_noexcept` — if your move isn't `noexcept`, vector falls back to copying on reallocation.
+- `std::vector` uses `std::move_if_noexcept` - if your move isn't `noexcept`, vector falls back to copying on reallocation.
 - C++ Contracts (C++26) will provide a standard way to express preconditions without the noexcept dilemma.

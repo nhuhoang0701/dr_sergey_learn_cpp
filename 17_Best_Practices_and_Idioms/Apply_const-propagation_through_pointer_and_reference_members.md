@@ -11,10 +11,13 @@
 
 In C++ a `const` member function makes `this` a pointer-to-const, so **member pointers become `T* const`** (the pointer itself is const), not `const T*` (what it points to is const). This means a `const` method can still mutate the object through a stored pointer.
 
+The reason this trips people up is that `const` on a method sounds like a blanket promise - "this object won't change." But C++'s const model is *shallow*: it freezes the directly stored bytes of the object, not anything those bytes point to. A pointer member stores an address, and making the address read-only says nothing about the memory at that address.
+
 ### The Shallow-Const Problem
 
-```cpp
+Here's the problem made concrete. The `const` qualifier on `modify()` doesn't do what you might hope:
 
+```cpp
 struct Widget {
     int* ptr;                // raw pointer member
     void modify() const {    // const method
@@ -23,13 +26,16 @@ struct Widget {
 };
 
 ┌───────────────────┐   ptr (int* const)   ┌─────────┐
-│  const Widget      │ ────────────▶ │ int     │  ← mutable!
-│  (this is const)   │  can't change ptr  │ *ptr=42 │  ← allowed!
+│  const Widget      │ ────────────▶ │ int     │  <- mutable!
+│  (this is const)   │  can't change ptr  │ *ptr=42 │  <- allowed!
 └───────────────────┘  but CAN write *ptr └─────────┘
-
 ```
 
+The pointer itself is frozen (you can't make `ptr` point somewhere else), but the integer it points to is completely writable. That's shallow const in a nutshell.
+
 ### Solutions
+
+There are a few ways to get the deep-const behaviour you probably wanted:
 
 | Approach | How | Pros | Cons |
 | --- | --- | --- | --- |
@@ -43,8 +49,9 @@ struct Widget {
 
 ### Q1: Show that a `const T*` member in a const method allows calling const methods on `*ptr`
 
-```cpp
+The key distinction here is between `CarBroken` (which stores a plain `Engine*`) and `CarFixed` (which manually re-casts to `const Engine*` inside const methods). Watch how the compiler reacts differently to each:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <memory>
@@ -97,8 +104,9 @@ int main() {
 // Expected output:
 // Power: 100
 // Power: 150
-
 ```
+
+The fix is straightforward: inside the `const` method, bind a `const Engine*` local variable from the raw pointer. That local variable carries the const-ness forward, so the compiler will refuse any non-const calls through it.
 
 ### Q2: Explain why const correctness on members is not automatically transitive through pointers
 
@@ -107,7 +115,6 @@ int main() {
 When you have a `const` object, all its **directly stored** members become const. But for pointer/reference members, only **the pointer itself** becomes const, not what it points to:
 
 ```cpp
-
 struct S {
     int value;       // in const S: const int
     int* ptr;        // in const S: int* const (NOT const int*)
@@ -115,15 +122,13 @@ struct S {
     std::unique_ptr<int> uptr;  // in const S: const unique_ptr<int>
                                 // BUT: *uptr is still mutable!
 };
-
 ```
 
 **Why?** The C++ object model treats a pointer member as containing an **address** (an integer). Making an object `const` freezes the address (you can't reseat the pointer), but doesn't affect the separate object at that address.
 
-**The same problem affects `unique_ptr` and `shared_ptr`:**
+The same problem affects `unique_ptr` and `shared_ptr` - they're smart wrappers around a pointer, so `const unique_ptr<T>` is analogous to `T* const`: you can't change which object it owns, but you can still mutate the owned object:
 
 ```cpp
-
 struct Widget {
     std::unique_ptr<int> data = std::make_unique<int>(0);
 
@@ -132,13 +137,15 @@ struct Widget {
         // data = std::make_unique<int>(1);  // ERROR: can't reseat
     }
 };
-
 ```
+
+This is a common source of surprise: people expect smart pointers to be "safer" but they inherit the same shallow-const behaviour as raw pointers when stored as members.
 
 ### Q3: Use `propagate_const` to make const propagate through a pointer member
 
-```cpp
+The cleanest solution is a wrapper that forwards const-ness to the pointee. When the wrapper is accessed through a const context it hands back a `const T*`; through a non-const context it hands back a plain `T*`. Here's a minimal implementation to make that concrete:
 
+```cpp
 #include <iostream>
 #include <memory>
 
@@ -201,8 +208,9 @@ int main() {
 // Power: 100
 // Power: 150
 // Power: 150
-
 ```
+
+Notice that `Car` itself hasn't changed much - the key is that `propagate_const` wraps the `unique_ptr` and its `const` overloads of `operator->` and `operator*` return `const Engine*` when called in a const context. The `inspect()` function now genuinely cannot call `boost()` - the protection is automatic and no extra code is needed at the call site.
 
 ---
 

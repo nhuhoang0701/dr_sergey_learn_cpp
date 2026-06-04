@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-**Data-Oriented Design (DoD)** focuses on how data flows through the CPU cache hierarchy. By organizing data for sequential access patterns, you minimize cache misses and enable SIMD vectorization.
+**Data-Oriented Design (DoD)** focuses on how data flows through the CPU cache hierarchy. The core idea is simple: modern CPUs are fast, but memory is slow. When the CPU needs a value that isn't in cache, it stalls and waits - sometimes for hundreds of cycles. By organizing data for sequential access patterns, you minimize those stalls and give the compiler room to generate SIMD (vectorized) instructions.
+
+The traditional OOP way of thinking organizes data around objects: each object bundles all its fields together. DoD asks a different question - how is the data *processed*? If you only ever look at one field at a time across many objects, bundling all the other fields alongside it wastes cache space.
 
 ### AoS vs SoA
 
-```cpp
+The diagram below makes the memory layout difference immediately visible:
 
+```cpp
 Array of Structs (AoS):                Struct of Arrays (SoA):
 ┌───────────────────────┐         ┌───────────────────────┐
 │ [x,y,z,vx,vy,vz,mass] │         │ x:  [x0 x1 x2 x3 ...]  │
@@ -25,14 +28,17 @@ Array of Structs (AoS):                Struct of Arrays (SoA):
 If you only need x values:
 AoS: loads x,y,z,vx,vy,vz,mass per cache line (6/7 wasted)
 SoA: loads x0,x1,x2,...  per cache line (all useful)
-
 ```
+
+In AoS, when you fetch `x[0]` from memory you pull a whole cache line - but that line contains `y0`, `z0`, `vx0`, and all the other fields you don't need right now. In SoA, that same cache line holds `x0` through `x15`: sixteen useful values instead of one.
 
 ### Cache Line Utilization
 
+The numbers make the efficiency gap concrete:
+
 | Layout | Bytes per particle | Bytes used per cache line (64B) | Utilization |
 | --- | --- | --- | --- |
-| AoS (access x only) | 28 (7×4) | 4 out of 28 per struct = ~14% | Poor |
+| AoS (access x only) | 28 (7x4) | 4 out of 28 per struct = ~14% | Poor |
 | SoA (access x only) | 4 | 64 out of 64 = 100% | Optimal |
 
 ---
@@ -41,8 +47,9 @@ SoA: loads x0,x1,x2,...  per cache line (all useful)
 
 ### Q1: Transform an array of structs (AoS) to a struct of arrays (SoA) and measure cache miss improvement
 
-```cpp
+This benchmark runs the same position update - `x += vx * dt` - over 10 million particles in both layouts. The only difference is memory layout; the arithmetic is identical:
 
+```cpp
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -117,15 +124,15 @@ int main() {
 // AoS: ~45 ms
 // SoA: ~20 ms
 // Speedup: ~2.2x
-
 ```
+
+The roughly 2x speedup comes entirely from better cache utilization - the CPU is spending less time waiting for memory and more time doing arithmetic. On AVX-capable hardware with auto-vectorization, the gap can be even larger.
 
 ### Q2: Explain why SoA is faster when processing only one field of a large struct array
 
 **Cache line analysis:**
 
 ```cpp
-
 Cache line = 64 bytes = 16 floats
 
 AoS: sizeof(ParticleAoS) = 28 bytes (7 floats)
@@ -139,8 +146,9 @@ SoA: x array is contiguous floats
   Cache line loads: [x0,x1,x2,...,x15]  (16 x values per line)
   Useful bytes: 64/64 = 100% utilization
   For 10M particles: ~40MB touched, all useful
-
 ```
+
+That's not just a cache story - it's also a memory bandwidth story. SoA reads 7x less data from RAM for this access pattern, which matters a lot on systems where memory bandwidth is the bottleneck.
 
 **Additional benefits of SoA:**
 
@@ -156,8 +164,9 @@ SoA: x array is contiguous floats
 
 ### Q3: Apply DoD to a particle system and show SIMD-friendly memory layout
 
-```cpp
+Here's a production-style particle system using SoA layout, with `alignas(32)` to hint to the compiler that AVX-width loads are safe. Notice how `update_positions` and `apply_gravity` each touch only the arrays they need - nothing else pollutes the cache:
 
+```cpp
 #include <cstddef>
 #include <iostream>
 #include <vector>
@@ -216,14 +225,15 @@ int main() {
 // Expected output (approx):
 // Particle 0: (1, -4.9)
 // Particle 99: (100, -4.9)
-
 ```
+
+The three separate loops in `update_positions` look odd at first - why not one loop that updates x, y, and z together? The answer is that each separate loop iterates over a single contiguous array, which gives the auto-vectorizer a clean, dependency-free stream of data. A merged loop that interleaves x, y, and z updates may confuse the vectorizer or produce less efficient code.
 
 ---
 
 ## Notes
 
-- DoD doesn't mean "never use objects" — it means organize data for how it's **processed**, not how it's **conceptualized**.
+- DoD doesn't mean "never use objects" - it means organize data for how it's **processed**, not how it's **conceptualized**.
 - Profile first: AoS may be fine if struct fits in a cache line and all fields are used together.
 - Use `perf stat` (Linux) or VTune to measure actual cache miss rates.
 - Alignment with `alignas(32)` helps AVX instructions.

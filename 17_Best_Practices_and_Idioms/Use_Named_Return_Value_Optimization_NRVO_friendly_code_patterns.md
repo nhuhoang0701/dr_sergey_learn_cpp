@@ -11,16 +11,16 @@
 
 **NRVO** allows the compiler to construct a named local variable directly in the caller's return slot, eliminating the copy/move entirely. Unlike RVO (prvalue), NRVO is **not guaranteed** by the standard but is performed by all major compilers.
 
+The distinction between RVO and NRVO is worth understanding clearly. RVO applies when you return a temporary directly - `return Widget{};`. C++17 mandates this elision. NRVO applies when you return a *named* local variable - `Widget w; ...; return w;`. Compilers do this in practice, but the standard does not require it, so you need to write your code to make it easy for the compiler to apply.
+
 ### RVO vs NRVO
 
 ```asm
-
 RVO (guaranteed C++17):       NRVO (optional, but universal):
 return Widget{};              Widget w;
                               w.setup();
                               return w;
 Compiler MUST elide copy.     Compiler usually elides copy.
-
 ```
 
 ---
@@ -29,8 +29,9 @@ Compiler MUST elide copy.     Compiler usually elides copy.
 
 ### Q1: Show NRVO in action with a named local variable
 
-```cpp
+The instrumented `Widget` class below prints on every construction, copy, move, and destruction. With NRVO working, you should see only one construction - no copy or move at all.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -77,13 +78,15 @@ int main() {
 // --- end ---
 // Destroy: RVO
 // Destroy: NRVO
-
 ```
+
+The object is built directly into `w1`'s storage - `create_widget`'s local variable `w` and the caller's `w1` are the same memory location.
 
 ### Q2: Show when multiple return paths prevent NRVO and how to fix it
 
-```cpp
+NRVO requires the compiler to know at compile time *which* named variable will end up in the return slot. When you have multiple return paths returning different variables, that determination is impossible and NRVO is defeated.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -101,7 +104,7 @@ public:
     }
 };
 
-// BAD: two different named variables → NRVO prevented
+// BAD: two different named variables -> NRVO prevented
 Heavy create_bad(bool flag) {
     Heavy a("A");
     Heavy b("B");
@@ -110,7 +113,7 @@ Heavy create_bad(bool flag) {
     // Result: copy or move (not elided)
 }
 
-// GOOD: single named variable → NRVO works
+// GOOD: single named variable -> NRVO works
 Heavy create_good(bool flag) {
     Heavy result(flag ? "A" : "B");  // single variable
     return result;  // NRVO applies
@@ -139,10 +142,13 @@ int main() {
 // Construct: A  <-- no copy/move
 // --- also good (RVO) ---
 // Construct: A  <-- no copy/move
-
 ```
 
+The `create_also_good` pattern is worth remembering: if you can return prvalues directly from each branch, you get guaranteed RVO (C++17) rather than the optional NRVO.
+
 ### Q3: Explain how guaranteed copy elision (C++17) differs from NRVO
+
+The practical difference that really matters: guaranteed RVO works even when the copy and move constructors are deleted. NRVO does not - the compiler needs a valid copy or move constructor as a fallback in case it cannot apply the optimization.
 
 | Feature | Guaranteed copy elision (RVO) | NRVO |
 | --- | --- | --- |
@@ -153,7 +159,6 @@ int main() {
 | Example | `return std::string("hi")` | `std::string s = "hi"; return s;` |
 
 ```cpp
-
 #include <iostream>
 
 class NoCopy {
@@ -181,8 +186,9 @@ int main() {
 }
 // Expected output:
 // Construct
-
 ```
+
+This is why move-only types like `std::unique_ptr` work fine as return values - they rely on guaranteed RVO (prvalue elision), not NRVO.
 
 ---
 

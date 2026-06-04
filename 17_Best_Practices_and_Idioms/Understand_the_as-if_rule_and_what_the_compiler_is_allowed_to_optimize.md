@@ -15,20 +15,22 @@ The **as-if rule** states the compiler may perform any transformation that does 
 2. I/O operations
 3. Accesses to atomic objects
 
-Everything else — memory layout, instruction order, intermediate values — can be transformed freely.
+Everything else - memory layout, instruction order, intermediate values - can be transformed freely. The compiler doesn't have to execute your code the way you wrote it; it just has to produce a result that looks like it did.
 
 ### What the Compiler Can Do Under As-If
+
+If the table feels like a lot, it boils down to this: anything that only affects values you compute internally is fair game, but anything that interacts with the outside world (files, devices, other threads via atomics) is protected.
 
 | Optimization | What happens | Allowed? |
 | --- | --- | --- |
 | Dead code elimination | Remove unreachable code | Yes |
-| Constant folding | `2+3` → `5` at compile time | Yes |
+| Constant folding | `2+3` -> `5` at compile time | Yes |
 | Loop vectorization | SIMD instead of scalar | Yes |
 | Function inlining | Replace call with body | Yes |
 | Copy elision (RVO/NRVO) | Skip copy/move construction | Yes (special) |
 | Reorder non-volatile stores | Change write order | Yes |
-| Reorder volatile stores | Change volatile write order | **No** |
-| Remove I/O | Skip `printf` | **No** |
+| Reorder volatile stores | Change volatile write order | No |
+| Remove I/O | Skip `printf` | No |
 
 ---
 
@@ -36,8 +38,9 @@ Everything else — memory layout, instruction order, intermediate values — ca
 
 ### Q1: Show a loop that the compiler vectorizes under the as-if rule
 
-```cpp
+The final result - the values in `out` - is all that matters. How the CPU gets there is entirely up to the optimizer.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -82,13 +85,15 @@ int main() {
 // Expected output:
 // 9 9 9 9 9 9 9 9
 // sum(100) = 5050
-
 ```
+
+The `sum_1_to_n` example is worth dwelling on: the compiler recognizes the summation pattern and replaces the entire loop body with the closed-form formula. Your loop never runs. That is the as-if rule at its most aggressive.
 
 ### Q2: Explain why `std::memcpy` through a non-aliased pointer is an optimization opportunity
 
-```cpp
+Strict aliasing is the rule that two pointers of different types are assumed not to point to the same memory. The compiler uses this assumption to generate better code. Violating it through casts is undefined behavior - but `std::memcpy` is the sanctioned way to reinterpret bytes without breaking that rule.
 
+```cpp
 #include <cstring>
 #include <iostream>
 
@@ -107,7 +112,7 @@ float int_bits_to_float_good(int i) {
     std::memcpy(&f, &i, sizeof(f));  // no aliasing violation
     return f;
     // Compiler generates the same code as the UB version:
-    // just a register move (movd xmm0, edi) — zero overhead
+    // just a register move (movd xmm0, edi) -- zero overhead
 }
 
 // The compiler knows that after memcpy, the destination pointer
@@ -127,17 +132,19 @@ void process(float* __restrict out, const int* __restrict in, size_t n) {
 int main() {
     int bits = 0x40490FDB;  // IEEE 754 representation of ~pi
     float pi = int_bits_to_float_good(bits);
-    std::cout << "pi ≈ " << pi << '\n';
+    std::cout << "pi approx " << pi << '\n';
 }
 // Expected output:
-// pi ≈ 3.14159
-
+// pi approx 3.14159
 ```
+
+The assembly output for `int_bits_to_float_good` and `int_bits_to_float_bad` is typically identical - a single register move. The `memcpy` is optimized away entirely. You get correctness for free.
 
 ### Q3: Demonstrate that the compiler can reorder memory accesses (unless volatile/atomic)
 
-```cpp
+This is a genuinely important concept for concurrent code. The as-if rule allows the compiler to reorder plain memory writes freely - and even when it doesn't, the CPU itself may reorder them at runtime. Only `volatile` and `std::atomic` impose ordering constraints.
 
+```cpp
 #include <atomic>
 #include <iostream>
 
@@ -174,8 +181,9 @@ int main() {
 // Key insight: in a multi-threaded context, another thread could
 // see b=2 before a=1 (for plain ints). Only atomics provide
 // cross-thread ordering guarantees.
-
 ```
+
+The reason `volatile` doesn't help with multi-threading is subtle: it prevents the *compiler* from reordering, but the CPU itself can still reorder writes in its store buffer before they become visible to other cores. Only `std::atomic` coordinates with the CPU's memory model.
 
 **Reordering summary:**
 
@@ -190,7 +198,7 @@ int main() {
 
 ## Notes
 
-- Copy elision (RVO/NRVO) is technically an exception to the as-if rule — it changes observable behavior (fewer constructor/destructor calls) but is explicitly permitted.
-- The as-if rule is why `volatile` doesn't help with multi-threading — it prevents compiler reordering but not CPU reordering.
-- Use `std::bit_cast` (C++20) instead of `memcpy` for type punning — same performance, cleaner syntax.
+- Copy elision (RVO/NRVO) is technically an exception to the as-if rule - it changes observable behavior (fewer constructor/destructor calls) but is explicitly permitted.
+- The as-if rule is why `volatile` doesn't help with multi-threading - it prevents compiler reordering but not CPU reordering.
+- Use `std::bit_cast` (C++20) instead of `memcpy` for type punning - same performance, cleaner syntax.
 - Compiler Explorer (godbolt.org) is the best tool to see what the as-if rule lets the compiler do.

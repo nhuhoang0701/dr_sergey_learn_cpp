@@ -9,13 +9,11 @@
 
 ## Topic Overview
 
-**Magic numbers** are unexplained literal values in code. They make code harder to read, maintain, and update. Replace them with `constexpr` named constants.
+**Magic numbers** are bare literal values sitting in code with no explanation. The problem isn't just readability - it's maintainability. When `1024` appears seven times in a codebase, you don't know which ones are "max packet size" and which ones are coincidentally the same value for an unrelated reason. Replace them with `constexpr` named constants, and the intent is captured at the point of declaration, reusable everywhere, and changeable in one place.
 
 ```cpp
-
 BAD:  buffer.resize(1024);    // Why 1024? Max packet? Page size? Random?
 GOOD: buffer.resize(kMaxPacketSize);  // Self-documenting
-
 ```
 
 ---
@@ -24,8 +22,9 @@ GOOD: buffer.resize(kMaxPacketSize);  // Self-documenting
 
 ### Q1: Replace magic numbers with named constants
 
-```cpp
+Look at `process_bad` below. The value `1024` appears three times, and a reader has no way to know whether all three refer to the same concept or whether one of them is coincidental. `process_good` makes the relationship explicit - every use of the constant visibly refers to the same named thing.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <vector>
@@ -66,18 +65,20 @@ int main() {
 // Expected output:
 // Processing 100 bytes
 // Max payload: 1012
-
 ```
+
+Notice also that `kMaxPayload` is defined in terms of the other constants. If you change `kHeaderSize`, `kMaxPayload` updates automatically everywhere it's used - no hunting required.
 
 ### Q2: Show maintenance cost of magic numbers vs named constants
 
-```cpp
+Here's the scenario that makes the cost concrete. You need to change a timeout from 5000 ms to 3000 ms. With magic numbers, you search the codebase for `5000`, find ten matches, and now you have to figure out which ones are timeouts and which ones are buffer sizes or port numbers that happen to be the same value. With a named constant, you change one line and you're done.
 
+```cpp
 #include <iostream>
 
 // Scenario: change timeout from 5000ms to 3000ms
 
-// BAD: magic number — must find every 5000 in the codebase
+// BAD: magic number - must find every 5000 in the codebase
 // Some 5000s might be timeouts, others might be something else!
 /*
     connect(host, 5000);       // timeout?
@@ -86,7 +87,7 @@ int main() {
     if (elapsed > 5000) ...    // timeout
 */
 
-// GOOD: named constant — change ONE place
+// GOOD: named constant - change ONE place
 constexpr int kTimeoutMs = 3000;  // changed here, done!
 
 void connect(const char* host, int timeout) {
@@ -109,13 +110,15 @@ int main() {
 // Connecting to server.com timeout=3000ms
 // Retry after 3000ms
 // Timed out!
-
 ```
+
+Every call that uses `kTimeoutMs` picks up the change automatically. The `buffer.resize(5000)` case is left alone because it was a different constant with the same value - and with named constants, you would never have had that confusion in the first place.
 
 ### Q3: Use `constexpr` with user-defined literals for self-documenting constants
 
-```cpp
+For numeric values with physical units, user-defined literals (UDLs) take named constants one step further: the unit becomes part of the value's syntax. You can't accidentally pass meters to a function expecting kilograms when the types carry their units.
 
+```cpp
 #include <chrono>
 #include <iostream>
 
@@ -156,14 +159,15 @@ int main() {
 // Coin: 0.005 kg
 // Timeout: 500 ms
 // Delay: 2 s
-
 ```
+
+The `std::chrono` literals (`500ms`, `2s`) are the most common example of this in the standard library. They make time values unambiguous in a way that bare integers simply cannot.
 
 ---
 
 ## Notes
 
-- `constexpr` vs `const`: `constexpr` is evaluated at compile time, `const` may be runtime.
-- Use `inline constexpr` in headers to avoid ODR violations.
-- Acceptable "magic numbers": 0, 1, -1 (loop bounds), 2 (halving). Everything else should be named.
-- Namespaces group related constants: `protocol::kMaxPacketSize`, `ui::kDefaultWidth`.
+- `constexpr` vs `const`: `constexpr` is evaluated at compile time; `const` may be a runtime value. Prefer `constexpr` for true constants.
+- Use `inline constexpr` in headers to avoid ODR violations when the constant is used across multiple translation units.
+- Acceptable "magic numbers": `0`, `1`, `-1` (loop bounds and identity values), `2` (halving). Everything else should be named.
+- Namespaces group related constants meaningfully: `protocol::kMaxPacketSize`, `ui::kDefaultWidth`.

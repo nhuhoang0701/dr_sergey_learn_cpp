@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-**Guard clauses** are early returns that handle error/edge cases first, leaving the main logic at the lowest nesting level. This eliminates the "arrow anti-pattern" where code is deeply nested.
+**Guard clauses** are early returns that deal with the error and edge cases up front, so that the happy path runs at the lowest nesting level with nothing else to worry about. The alternative - wrapping everything in nested `if` blocks - produces what's commonly called the "arrow anti-pattern," where the code drifts steadily to the right as conditions pile up.
+
+The shape comparison says it all:
 
 ```cpp
-
 Arrow anti-pattern:              Guard clauses:
 if (a) {                         if (!a) return error;
   if (b) {                       if (!b) return error;
@@ -22,8 +23,9 @@ if (a) {                         if (!a) return error;
     }
   }
 }
-
 ```
+
+The guard-clause version is flat. You read down a list of "bail out if this is wrong" checks, and when you reach the end of the list you know everything is fine and you can focus entirely on the logic.
 
 ---
 
@@ -31,8 +33,9 @@ if (a) {                         if (!a) return error;
 
 ### Q1: Refactor deeply nested code into flat guard clauses
 
-```cpp
+The `process_bad` function below nests five conditions inside each other. Finding which `}` closes which `if` is genuinely hard, and each new requirement adds another indent level. The `process_good` version says the same thing in a flat list of preconditions followed by one line of actual work.
 
+```cpp
 #include <iostream>
 #include <optional>
 #include <string>
@@ -97,13 +100,15 @@ int main() {
 // Order processed for Alice
 // User inactive
 // No user
-
 ```
+
+Notice how each guard clause lines up at the same indent level. You can scan straight down the left margin and read off the complete set of failure conditions, then find the success case immediately below them.
 
 ### Q2: Show that early return is compatible with RAII
 
-```cpp
+A common objection to early return is "but I need to clean up before I leave." The answer is: use RAII, and cleanup happens automatically on every return path whether you think about it or not. Locks, file handles, database connections - all of them get destroyed when the scope exits, no matter how many early returns there are.
 
+```cpp
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -150,15 +155,15 @@ int main() {
 // DB connected
 // DB disconnected
 // Error: empty request
-
 ```
+
+Every return path in `process_request` - success or failure - produces the same "DB disconnected" output, proving the destructor fires every time. This is exactly why the combination of RAII and early return is so clean: neither pattern fights the other.
 
 ### Q3: Explain the arrow anti-pattern and how guard clauses eliminate it
 
-The **arrow anti-pattern** gets its name from the shape of the code when viewed from the side — it points to the right like an arrow:
+The **arrow anti-pattern** gets its name from the shape of the code when viewed from the side - the indentation keeps growing to the right, forming a visual arrowhead that points at the actual logic buried at the deepest level.
 
 ```cpp
-
 if (a) {
     if (b) {
         if (c) {
@@ -168,33 +173,32 @@ if (a) {
         }
     }
 }
-
 ```
 
 **Problems:**
 
-1. Hard to tell which `}` matches which `if`
-2. Error handling is far from the check that triggers it
-3. Main logic is buried at the deepest level
-4. Every new condition adds another level
+1. Hard to tell which `}` matches which `if`.
+2. Error handling is far from the check that triggers it - the error message for the first condition is physically separated from the check by all the nested code.
+3. Main logic is buried at the deepest level, where you have to hold four conditions in your head just to understand what the code is doing.
+4. Every new condition adds another level, making the problem progressively worse.
 
 **Guard clauses fix all of these:**
 
 ```cpp
-
 if (!a) return;  // error: handle immediately
 if (!b) return;  // error: handle immediately
 if (!c) return;  // error: handle immediately
 if (!d) return;  // error: handle immediately
 // Main logic is at the TOP level, not buried deep
-
 ```
+
+Each check and its response are right next to each other. The main logic sits at the top indent level, uncluttered, with no braces to count.
 
 ---
 
 ## Notes
 
-- Guard clauses work perfectly with RAII — destructors run on every return path.
-- Don't use early return with raw `new`/`delete` — use smart pointers instead.
-- `std::optional` and `std::expected` (C++23) work great with guard clauses.
-- Some style guides limit function length, making guard clauses even more valuable.
+- Guard clauses work perfectly with RAII - destructors run on every return path automatically.
+- Don't use early return with raw `new`/`delete` - use smart pointers instead, and then early return is safe.
+- `std::optional` and `std::expected` (C++23) work great with guard clauses as return types.
+- Some style guides limit function length, making guard clauses even more valuable for keeping the happy path short and readable.

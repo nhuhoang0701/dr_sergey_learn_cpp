@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-`[[assume(expr)]]` tells the compiler that `expr` is guaranteed to be true at that point. The compiler uses this information to generate better code. If the assumption is **wrong**, it's **undefined behavior**.
+`[[assume(expr)]]` is a way to hand the compiler a signed guarantee: "I promise this expression is always true at this point in the program - now use that fact to generate better code." The compiler never evaluates the expression at runtime; it simply treats it as axiomatic. If the assumption turns out to be wrong at runtime, the behavior is **undefined** - the compiler may have generated code that assumes the impossible case can never happen, and all bets are off.
 
 ### How It Works
 
-```cpp
+The idea is straightforward: you know something about your data that the compiler cannot infer from the code alone. Rather than leaving the compiler to guess conservatively, you tell it directly.
 
+```cpp
 void process(int* data, int n) {
     [[assume(n > 0)]];           // promise: n is always positive
     [[assume(n % 4 == 0)]];      // promise: n is always a multiple of 4
@@ -25,8 +26,9 @@ void process(int* data, int n) {
 // 1. Skip the n <= 0 check (loop always executes)
 // 2. Unroll by 4 without remainder loop
 // 3. Vectorize more aggressively
-
 ```
+
+With those two assumptions in place, the compiler no longer needs a guard for the empty-input case and can emit a clean SIMD loop without a scalar cleanup tail. Two lines of code, measurably better output.
 
 ---
 
@@ -34,8 +36,9 @@ void process(int* data, int n) {
 
 ### Q1: Add `[[assume(n > 0)]]` before a loop and inspect the effect
 
-```cpp
+The most direct way to understand what `[[assume]]` buys you is to look at the assembly. Without the annotation, the compiler must defensively handle `n == 0`; with it, that check disappears. The alignment assumption on top of that opens the door to auto-vectorization with no remainder path.
 
+```cpp
 #include <cstddef>
 #include <iostream>
 
@@ -76,22 +79,22 @@ int main() {
 // Assembly comparison (godbolt.org with -O2 -std=c++23):
 // without assume: includes "test edi, edi; jle .return_zero"
 // with assume:    no zero-check, jumps straight to loop
-
 ```
+
+Notice that the runtime output is identical - the difference only shows up in the generated assembly. Paste both versions into Compiler Explorer with `-O2 -std=c++23` and compare the instruction counts.
 
 ### Q2: Explain the UB semantics of `[[assume]]` and security implications
 
-If the assumed expression is false at runtime, the behavior is **undefined**. The compiler may generate code that is completely wrong.
+This is the part that trips people up. The expression inside `[[assume]]` is a contract, not a check. The compiler eliminates any code paths that would only be reached if the assumption were false - so if the assumption is violated, those paths are gone and there is nothing to fall back on. The result can range from a wrong answer to a security hole.
 
 ```cpp
-
 #include <iostream>
 
 int divide_by_nonzero(int a, int b) {
     [[assume(b != 0)]];     // promise: b is never zero
     return a / b;
     // Compiler removes the division-by-zero check
-    // If b IS zero: UB → crash, wrong result, or security vulnerability
+    // If b IS zero: UB -> crash, wrong result, or security vulnerability
 }
 
 // SECURITY RISK:
@@ -113,19 +116,21 @@ int main() {
 // Expected output:
 // 5
 // 20
-
 ```
+
+The reason the security angle matters is that an attacker who can control `index` or `b` can now bypass what looks like a check but isn't one at all. The compiler has already eliminated the guard.
 
 **Security rules for `[[assume]]`:**
 
-1. NEVER assume user input is valid
-2. Only use in internal functions after validation
-3. Prefer `assert()` during development, `[[assume]]` only in release
+1. NEVER assume user input is valid.
+2. Only use in internal functions after validation has already happened at the boundary.
+3. Prefer `assert()` during development; switch to `[[assume]]` only in release where the correctness is well established.
 
 ### Q3: Compare `[[assume]]`, `__builtin_assume`, and `assert`
 
-```cpp
+All three let you express "this should be true," but they behave very differently. Here they are side by side so you can see exactly what each one does (and does not) do.
 
+```cpp
 #include <cassert>
 #include <iostream>
 
@@ -147,8 +152,9 @@ int main() {
 }
 // Expected output:
 // Processing 5 items
-
 ```
+
+The table below summarizes the key differences. Pay attention to the "side effects in expr" row - `[[assume]]` never evaluates its argument, so `[[assume(++x > 0)]]` would silently not increment `x`.
 
 | Feature | `assert(expr)` | `__builtin_assume(expr)` | `[[assume(expr)]]` |
 | --- | --- | --- | --- |
@@ -164,7 +170,7 @@ int main() {
 
 ## Notes
 
-- `[[assume]]` expression is **never evaluated** — don't put side effects in it.
+- `[[assume]]` expression is **never evaluated** - don't put side effects in it.
 - MSVC equivalent: `__assume(expr)` (available since VS 2005).
-- Best practice: use `assert()` + `[[assume]]` together: `assert(n > 0); [[assume(n > 0)]];`
+- Best practice: use `assert()` + `[[assume]]` together: `assert(n > 0); [[assume(n > 0)]];` - you get runtime checking in debug and the optimizer hint in release.
 - Profile first: `[[assume]]` only helps in hot paths where the compiler can't already deduce the fact.

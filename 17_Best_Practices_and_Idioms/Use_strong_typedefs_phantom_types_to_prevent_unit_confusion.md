@@ -8,10 +8,9 @@
 
 ## Topic Overview
 
-**Strong typedefs** wrap primitive types so the compiler distinguishes between values with different meanings (meters vs seconds, dollars vs euros). A regular `typedef` or `using` is just an alias — it doesn't prevent mixing.
+**Strong typedefs** wrap primitive types so the compiler distinguishes between values with different meanings (meters vs seconds, dollars vs euros). A regular `typedef` or `using` is just an alias - it does not create a new type, so the compiler cannot tell them apart and will not warn you when you mix them up.
 
 ```cpp
-
 using Meters = double;   // WEAK: Meters and Seconds are both double
 using Seconds = double;  // distance / time compiles with NO warning!
 
@@ -20,8 +19,9 @@ struct Meters  { double value; };
 struct Seconds { double value; };
 // Meters m{5.0}; Seconds s{3.0};
 // m.value / s.value;  // forces explicit extraction
-
 ```
+
+The cost is essentially zero at runtime - the compiler optimizes the wrapper away entirely. What you gain is that an entire class of unit-confusion bugs becomes a compile error.
 
 ---
 
@@ -29,8 +29,9 @@ struct Seconds { double value; };
 
 ### Q1: Implement Meters and Seconds as strong typedefs
 
-```cpp
+The key technique is using an empty tag struct as a type parameter. `StrongType<MetersTag>` and `StrongType<SecondsTag>` are completely different types even though they have the same internal structure, because `MetersTag` and `SecondsTag` are different. Same-type arithmetic works naturally; cross-type arithmetic is a compile error.
 
+```cpp
 #include <iostream>
 
 // Strong typedef template
@@ -83,13 +84,15 @@ int main() {
 // Expected output:
 // Total distance: 150 m
 // Speed: 10.4384 m/s
-
 ```
+
+The explicit `.value` extraction for cross-type math is intentional - it forces the programmer to acknowledge that they are combining quantities of different dimensions and take responsibility for the correctness of that combination.
 
 ### Q2: Generic zero-overhead strong type wrapper
 
-```cpp
+This version uses `operator<=>` for comparison and inline tag struct definitions, which keeps the code compact. Notice that `sizeof(Width) == sizeof(int)` - there is genuinely no overhead, the wrapper exists only at the type system level.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -132,13 +135,15 @@ int main() {
 // Expected output:
 // Box: 10x20x30
 // sizeof(Width) = 4
-
 ```
+
+The `create_box(h, w, d)` error is especially valuable: function argument order mistakes are among the hardest bugs to spot in code review, but the compiler catches them instantly when arguments have distinct types.
 
 ### Q3: A real bug strong types prevent (Mars Climate Orbiter)
 
-```cpp
+This is not a hypothetical. In 1999 a $327.6 million spacecraft was lost because one engineering team provided thruster data in pound-force-seconds while another team's software expected newton-seconds. Both values were just `double`. Nobody noticed.
 
+```cpp
 #include <iostream>
 
 // ================================================
@@ -150,7 +155,7 @@ int main() {
 // Cost: $327.6 million
 // ================================================
 
-// BAD: both are just double — easy to mix up
+// BAD: both are just double - easy to mix up
 void adjust_trajectory_bad(double impulse_ns) {
     // Assumes newton-seconds!
     double force_n = impulse_ns / 10.0;
@@ -193,14 +198,15 @@ int main() {
 // Expected output:
 // [BAD] Force: 10 N
 // [GOOD] Force: 44.4822 N
-
 ```
+
+With strong types, the line `adjust_trajectory_good(measured)` would not compile - the programmer is forced to write the explicit conversion and, in doing so, is forced to think about whether the conversion is correct.
 
 ---
 
 ## Notes
 
-- Strong typedefs have zero runtime overhead — the wrapper is optimized away.
+- Strong typedefs have zero runtime overhead - the wrapper is optimized away.
 - Libraries: Boost.StrongTypedef, `type_safe`, `NamedType`.
 - C++26 may standardize strong typedefs natively.
 - Use for: units, IDs, indices, coordinates, currency, timestamps.

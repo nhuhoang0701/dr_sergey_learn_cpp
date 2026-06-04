@@ -11,32 +11,34 @@
 
 Every `#include` copies the entire header file into every translation unit. Large headers (like `<iostream>`, `<algorithm>`, `<regex>`) can add thousands of lines, dramatically increasing compile time.
 
+The reason this matters more than people expect is the cascade effect: if your header includes `<map>`, `<string>`, and `<vector>`, then every file that includes *your* header pays all three of those costs - even if it never touches a map or vector directly.
+
 ### Header Inclusion Costs
 
-```cpp
+To get a feel for the scale, here are rough line counts for common standard headers:
 
-main.cpp includes <iostream>     →  ~27,000 lines of code parsed
-main.cpp includes <algorithm>    →  ~12,000 lines
-main.cpp includes <regex>        →  ~50,000 lines
-main.cpp includes "my_header.h"  →  depends on ITS includes!
+```cpp
+main.cpp includes <iostream>     ->  ~27,000 lines of code parsed
+main.cpp includes <algorithm>    ->  ~12,000 lines
+main.cpp includes <regex>        ->  ~50,000 lines
+main.cpp includes "my_header.h"  ->  depends on ITS includes!
 
 If my_header.h includes <map>, <string>, <vector>,
 then EVERY file that includes my_header.h pays that cost.
-
 ```
 
 ### The Include Graph Problem
 
-```cpp
+The compile-time problem compounds as the dependency graph deepens. A change anywhere in the tree forces recompilation of every file above it.
 
+```cpp
                 a.h
                / | \
              b.h c.h d.h
             / \   |   \
           e.h f.h g.h  h.h
 
-Changing e.h → recompiles everything that includes b.h → a.h
-
+Changing e.h -> recompiles everything that includes b.h -> a.h
 ```
 
 ---
@@ -45,8 +47,9 @@ Changing e.h → recompiles everything that includes b.h → a.h
 
 ### Q1: Use `-ftime-trace` in Clang to find the most expensive included headers
 
-```cpp
+Before you can fix a slow build, you need to see where the time is going. Clang's `-ftime-trace` flag produces a JSON trace you can load directly into a browser profiler.
 
+```cpp
 # Step 1: Compile with -ftime-trace
 $ clang++ -std=c++20 -O2 -ftime-trace main.cpp -o main
 
@@ -63,11 +66,11 @@ $ ClangBuildAnalyzer --analyze analysis.bin
 #   27439 ms: /usr/include/c++/13/regex
 #   12891 ms: /usr/include/c++/13/iostream
 #    8432 ms: /usr/include/c++/13/algorithm
-
 ```
 
-```cpp
+Here is what the problem looks like in a source file: `<regex>` alone adds about 200ms of parse time per translation unit, and you may not even be using it.
 
+```cpp
 // Example: measure include cost
 // heavy.cpp
 #include <regex>       // ~50,000 lines, ~200ms parse time
@@ -82,13 +85,13 @@ int main() {
 }
 // Only needs <string> and <iostream>, but <regex> and <algorithm>
 // add ~320ms of needless parse time per TU!
-
 ```
 
 ### Q2: Replace full includes with forward declarations
 
-```cpp
+The key insight is that the compiler only needs the full definition of a type when it needs to know its *size* or call its *methods*. A pointer or reference to a type requires only a forward declaration.
 
+```cpp
 // BAD: widget.h includes everything
 // widget_bad.h
 #include <string>     // full include (needed for member)
@@ -124,29 +127,30 @@ public:
     void process();
 };
 
-// widget_good.cpp — include the full headers HERE
+// widget_good.cpp -- include the full headers HERE
 // #include "widget_good.h"
 // #include "logger.h"     // now we need the full definition
 // #include "database.h"   // for calling methods
-
 ```
 
 **When you CAN use forward declarations:**
+
 | Usage of type T | Forward decl OK? |
 | --- | --- |
 | `T*`, `T&`, `const T&` | Yes |
 | `std::unique_ptr<T>` (in header) | Yes (if destructor in .cpp) |
-| `T` as member variable | **No** (need sizeof) |
-| `T` as base class | **No** |
-| Calling `T::method()` | **No** |
+| `T` as member variable | No (need sizeof) |
+| `T` as base class | No |
+| Calling `T::method()` | No |
 | `T` in template parameter | Depends |
 
 ### Q3: Explain how IWYU and module migration reduce cascading include costs
 
+Two tools attack different layers of the problem. IWYU (Include What You Use) is a static analysis pass that tells you which headers you can remove. C++20 modules are a language-level redesign that replaces textual inclusion entirely.
+
 **IWYU (Include What You Use):**
 
 ```cpp
-
 # Install and run:
 $ apt install iwyu
 $ iwyu_tool.py -p build/ main.cpp
@@ -157,15 +161,15 @@ main.cpp should add:
 main.cpp should remove:
   #include <algorithm>   // not directly used
   #include <map>         // not directly used
-
 ```
 
 IWYU ensures each file includes **only what it directly uses**, breaking unnecessary transitive dependencies.
 
 **C++20 Modules:**
 
-```cpp
+With modules, the compiler parses the interface once and stores a binary representation. Every subsequent import reads the binary - no text parsing, no macro leakage, no order-dependency problems.
 
+```cpp
 // math.cppm (module interface)
 export module math;
 
@@ -182,7 +186,6 @@ import math;  // only sees exported symbols
 int main() {
     return add(1, 2);
 }
-
 ```
 
 | Feature | `#include` | `import` (modules) |

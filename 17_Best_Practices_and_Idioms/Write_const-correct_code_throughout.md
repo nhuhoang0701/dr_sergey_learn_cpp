@@ -8,14 +8,14 @@
 
 ## Topic Overview
 
-**Const correctness** means marking everything `const` that doesn't need to change. It prevents bugs, enables compiler optimizations, and documents intent.
+**Const correctness** means marking everything `const` that doesn't need to change. It's not just style - it prevents a whole class of accidental mutation bugs, signals intent to the reader, and allows the compiler to make better optimization decisions.
+
+The practical rule is simple: start with `const` everywhere, then remove it only where you actually need to mutate.
 
 ```cpp
-
 void print(const std::string& s);     // won't modify s
 int Widget::size() const;              // won't modify *this
 const int MAX = 100;                   // immutable value
-
 ```
 
 ---
@@ -24,8 +24,9 @@ const int MAX = 100;                   // immutable value
 
 ### Q1: Audit a class and add `const` wherever possible
 
-```cpp
+Here's a fully const-correct class. Notice that every method that doesn't mutate state is marked `const`, the getter returns a `const` reference to avoid unnecessary copies, and the range-`for` loop uses `const int`. The non-`const` method `add_grade` is the single exception - it's the only one that actually changes anything.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -83,13 +84,15 @@ int main() {
 // Average: 89
 // Name: Alice
 // Avg: 89
-
 ```
+
+The commented-out `ref.add_grade(100)` line is key: because `ref` is a `const` reference, the compiler simply won't let you call a mutating method through it. That's the safety guarantee you get for free.
 
 ### Q2: Const correctness enables compiler optimizations
 
-```cpp
+Beyond safety, `const` gives the compiler information it can exploit. A `const` global can go into read-only memory. A `const` parameter tells the compiler the data won't be aliased away from under it. These aren't micro-optimizations - they affect whole loops.
 
+```cpp
 #include <iostream>
 
 // const global: compiler can place in .rodata (read-only memory)
@@ -125,19 +128,23 @@ int main() {
     std::cout << "Sum: " << sum_values(LOOKUP_TABLE, TABLE_SIZE) << '\n';
 
     constexpr int x = 42;
-    // Compiler replaces x with 42 everywhere — no memory access!
+    // Compiler replaces x with 42 everywhere - no memory access!
     std::cout << "x = " << x << '\n';
 }
 // Expected output:
 // Sum: 88
 // x = 42
-
 ```
+
+The aliasing comment in `sum_values_mut` is the subtle one: without `const`, the compiler has to assume some other pointer might point to the same memory, so it can't keep the array values in registers across iterations.
 
 ### Q3: Logical const vs physical const and `mutable`
 
-```cpp
+Here's where things get more nuanced. A method that modifies a cache or locks a mutex is not really changing the *observable* state of the object - it's changing internal bookkeeping. You want to declare that method `const` so callers can use it on a `const` object, but the compiler won't let you modify members inside a `const` method unless those members are marked `mutable`.
 
+The rule of thumb: `mutable` is appropriate for members that support the const interface without affecting observable state. The three classic uses are mutexes, caches, and debug counters.
+
+```cpp
 #include <iostream>
 #include <mutex>
 #include <unordered_map>
@@ -189,7 +196,6 @@ int main() {
 // y = 2
 // x = 1
 // Accesses: 3
-
 ```
 
 **Logical vs Physical const:**

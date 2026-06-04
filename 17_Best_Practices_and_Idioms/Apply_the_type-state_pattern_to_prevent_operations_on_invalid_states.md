@@ -10,34 +10,36 @@
 
 The **type-state pattern** encodes an object's state in the type system, so invalid operations are **compile-time errors** rather than runtime crashes.
 
+The core idea is deceptively simple: instead of one class with an internal state enum and runtime guards, you use *separate types* for each state. A `SocketClosed` type has `connect()` but no `send()`. A `SocketConnected` type has `send()` but no `listen()`. The compiler enforces valid state transitions for you - no runtime checks needed, no surprises in release builds.
+
+The reason this matters is that runtime state checks (assertions, exceptions) only fire when the bad code path is actually exercised. Compile-time state checks fire the moment you write the wrong call - even in code that's never run yet.
+
 ### Runtime vs Compile-Time State Checking
 
 ```cpp
-
 Runtime (enum + assert):            Compile-time (type-state):
 socket.send(data);                  // auto connected = socket.connect(addr);
 // throws if not connected!         connected.send(data);  // only exists on Connected!
 // discovered at runtime             // wrong state = compiler error
-
 ```
 
 ### Type-State Transition Diagram
 
 ```cpp
-
- SocketClosed  ─── connect() ───▶  SocketConnected
-                                    │
-                    send()/recv()   │  close()
-                    (available)     │
-                                    ▼
+ SocketClosed  --- connect() --->  SocketConnected
+                                    |
+                    send()/recv()   |  close()
+                    (available)     |
+                                    v
                                SocketClosed
 
- SocketClosed  ─── listen()  ───▶  SocketListening
-                                    │
-                    accept()        │
-                    (available)     │
-
+ SocketClosed  --- listen()  --->  SocketListening
+                                    |
+                    accept()        |
+                    (available)     |
 ```
+
+Each transition method returns a new type representing the next state. Once you transition, the old state object is gone - you work only with the new type.
 
 ---
 
@@ -45,8 +47,9 @@ socket.send(data);                  // auto connected = socket.connect(addr);
 
 ### Q1: Implement a Socket with different types for Unconnected, Connected, and Listening states
 
-```cpp
+Notice that the invalid operations simply don't exist on the wrong types. There's no runtime check - the compiler's type system is doing all the work:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -68,7 +71,7 @@ public:
     // Transitions to Listening state
     SocketListening listen(int port);
 
-    // send() and recv() do NOT exist here — compile error if called!
+    // send() and recv() do NOT exist here - compile error if called!
 };
 
 // State 2: Connected (can send/recv)
@@ -95,7 +98,7 @@ public:
         return SocketClosed(fd_);
     }
 
-    // listen() does NOT exist — compile error!
+    // listen() does NOT exist - compile error!
 };
 
 // State 3: Listening (can accept)
@@ -112,7 +115,7 @@ public:
         return SocketConnected(fd_, "client:" + std::to_string(port_));
     }
 
-    // send() and recv() do NOT exist — compile error!
+    // send() and recv() do NOT exist - compile error!
 };
 
 // Implementations
@@ -150,13 +153,15 @@ int main() {
 // Accepted connection on port 9090
 // Connected to client:9090
 // Sending 7 bytes to client:9090
-
 ```
+
+The `auto` variables are doing important work here: `auto connected` has type `SocketConnected`, so you can only call methods that `SocketConnected` provides. The state is encoded in the variable's type, not in a field you could forget to check.
 
 ### Q2: Show that calling `send()` on an Unconnected socket is a compile error
 
-```cpp
+These are the lines you *cannot* write. The compiler rejects them outright - there's nothing to run, nothing to test, no assert to disable:
 
+```cpp
 // These lines would NOT compile:
 
 // SocketClosed sock(1);
@@ -169,25 +174,21 @@ int main() {
 // The compiler catches invalid state transitions:
 // auto connected = sock.connect("addr");
 // connected.listen(80);  // ERROR: 'SocketConnected' has no member named 'listen'
-
 ```
 
 **Compiler errors (GCC):**
 
 ```cpp
-
 error: 'class SocketClosed' has no member named 'send'
 error: 'class SocketListening' has no member named 'send'
 error: 'class SocketConnected' has no member named 'listen'
-
 ```
 
-Every invalid operation is caught **at compile time**, not at runtime.
+Every invalid operation is caught **at compile time**, not at runtime. This means the bug is found the moment you write the wrong call - in your editor, before the program ever runs.
 
 ### Q3: Compare type-state encoding vs runtime state enum + assert
 
 ```cpp
-
 // RUNTIME approach (traditional)
 class RuntimeSocket {
     enum class State { Closed, Connected, Listening };
@@ -204,15 +205,16 @@ public:
 };
 // Problem: assert only fires in debug builds!
 // In release: UB or silent corruption
-
 ```
+
+The `assert` approach looks reasonable until you ship. In a release build, `NDEBUG` disables the assertion entirely - the check evaporates and you're left with unchecked undefined behaviour.
 
 **Comparison:**
 
 | Aspect | Type-State (compile-time) | Enum+Assert (runtime) |
 | --- | --- | --- |
 | Error detection | Compile error | Runtime crash (debug only) |
-| Release builds | Still safe | assert disabled (⚠️ UB) |
+| Release builds | Still safe | assert disabled (UB) |
 | Code verbosity | More types (3+ classes) | Simpler (1 class) |
 | Flexibility | Must know state at compile time | Can change state dynamically |
 | Polymorphism | Harder (different types) | Easy (one type) |
@@ -234,7 +236,7 @@ public:
 
 ## Notes
 
-- Type-state is a form of **making illegal states unrepresentable** — a key principle in reliable software.
+- Type-state is a form of **making illegal states unrepresentable** - a key principle in reliable software.
 - Consuming `this` (move semantics) prevents using the old state after transition.
 - C++ doesn't have Rust's `move` semantics for ownership transfer, so the moved-from object still exists (but is in a valid-but-unspecified state).
 - Combine with `[[nodiscard]]` on transition methods to prevent ignoring the new state.

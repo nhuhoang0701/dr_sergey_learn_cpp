@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-C++20 ranges algorithms accept a **projection** parameter — a callable that extracts the key to compare/process, eliminating the need for verbose comparator lambdas.
+C++20 ranges algorithms accept a **projection** parameter - a callable that extracts the key to compare or process. This eliminates the need for verbose comparator lambdas where you used to spell out both arguments just to reach a single field. The result is code that reads almost like a sentence.
 
 ### Before vs After
 
-```cpp
+Look at how much noise disappears when you switch from a hand-written comparator to a projection:
 
+```cpp
 // C++17: manual comparator lambda
 std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
     return a.name < b.name;
@@ -24,8 +25,9 @@ std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
 std::ranges::sort(v, {}, &Employee::name);
 //                     ^^  ^^^^^^^^^^^^^^^
 //                     default comparator  projection
-
 ```
+
+The `{}` means "use the default comparator" (`std::less`), and `&Employee::name` is the projection - the algorithm will extract `name` from each element before comparing.
 
 ---
 
@@ -33,8 +35,9 @@ std::ranges::sort(v, {}, &Employee::name);
 
 ### Q1: Replace `std::sort` with lambda with `std::ranges::sort` with projection
 
-```cpp
+This example shows the same sort expressed both ways. Pay attention to how the C++17 version has to name both parameters and manually extract the field from each one, while the C++20 version just points at the field.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -87,13 +90,15 @@ int main() {
 //   Alice $80000
 //   Diana $75000
 //   Charlie $60000
-
 ```
+
+Combining `std::greater{}` with a projection is particularly clean - it reads as "sort by salary, greatest first" without any comparator boilerplate.
 
 ### Q2: Show that projections reduce boilerplate and are more composable
 
-```cpp
+Projections are not limited to `sort`. Every `std::ranges::` algorithm supports them - `min`, `max`, `count_if`, `stable_partition`, and so on. Once you learn the pattern, it applies everywhere.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <numeric>
@@ -115,7 +120,7 @@ int main() {
         {"Doohickey", 4.99, 75},
     };
 
-    // Find min/max by price — projection
+    // Find min/max by price - projection
     auto cheapest = std::ranges::min(products, {}, &Product::price);
     auto priciest = std::ranges::max(products, {}, &Product::price);
     std::cout << "Cheapest: " << cheapest.name << " $" << cheapest.price << '\n';
@@ -143,13 +148,15 @@ int main() {
 // In stock > 60: 3
 // Stock range: 50 to 200
 // Products: Widget Gadget Gizmo Doohickey
-
 ```
+
+Notice the `count_if` call: the predicate receives the already-projected value (an `int`), not the full `Product`. This is an important subtlety - the projection runs first, then the predicate sees the result.
 
 ### Q3: Combine a custom comparator with a projection
 
-```cpp
+You can mix a custom comparator and a projection freely. The comparator receives the projected values, so you only have to think about the extracted key, not the whole struct.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <ranges>
@@ -216,8 +223,9 @@ int main() {
 //   Charlie 3.9
 //   Bob 3.5
 //   Diana 3.5
-
 ```
+
+The lambda projection in the case-insensitive sort is a good example of when you go beyond a simple member pointer - you can project to anything the comparator should see, including a computed value.
 
 ---
 
@@ -225,6 +233,6 @@ int main() {
 
 - The projection parameter is always the **last** parameter in ranges algorithms.
 - `{}` as comparator means "use the default" (`std::less{}` or `std::ranges::less{}`).
-- Member pointers (`&T::member`) are valid projections — `std::invoke` calls them.
+- Member pointers (`&T::member`) are valid projections - `std::invoke` calls them.
 - Projections compose with `views::transform` for pipelines.
 - All `std::ranges::` algorithms support projections; classic `std::` algorithms don't.

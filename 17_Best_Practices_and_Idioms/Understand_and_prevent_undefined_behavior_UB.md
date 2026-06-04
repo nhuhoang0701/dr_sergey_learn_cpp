@@ -8,11 +8,11 @@
 
 ## Topic Overview
 
-**Undefined Behavior (UB)** means the C++ standard imposes no requirements. The program may crash, produce wrong results, appear to work, or launch missiles.
+**Undefined Behavior (UB)** means the C++ standard imposes no requirements on what happens. The program may crash, produce wrong results, appear to work correctly, or do something completely unrelated to the bug. The "or launch missiles" joke from the early standards discussions exists because the standard literally makes no promise - any outcome is permitted.
 
 ### Why Compilers Care About UB
 
-Compilers **assume UB never happens** and use that assumption to optimize. This means UB doesn't just "not work" — it can make *other* code behave unexpectedly.
+Here is the part that trips people up most. Compilers **assume UB never happens** and use that assumption to optimize. This means UB does not just silently produce the wrong result in one place - it can make *other* code behave unexpectedly, because the compiler is allowed to restructure or delete code on the premise that you wrote a correct program. A UB in one function can corrupt logic in a completely different function after optimization.
 
 ### 10 Common Causes of UB
 
@@ -35,8 +35,9 @@ Compilers **assume UB never happens** and use that assumption to optimize. This 
 
 ### Q1: List 10 common causes of UB and show examples
 
-```cpp
+Each example below is commented out because running it would actually trigger UB - but the safe alternatives at the bottom show the correct patterns.
 
+```cpp
 #include <climits>
 #include <iostream>
 
@@ -100,13 +101,15 @@ int main() {
 // Unsigned wrap: 0
 // Caught: vector::_M_range_check: __n (which is 5) >= this->size() (which is 3)
 // Initialized: 0
-
 ```
+
+The key safe alternatives: use `uint32_t` when you want wrapping arithmetic, use `.at()` when you want a bounds-checked access that throws instead of corrupting memory, and always initialize your variables.
 
 ### Q2: Show how a compiler uses UB assumptions to generate surprising code
 
-```cpp
+This is the most important thing to understand about UB, and the reason it trips experienced programmers. The compiler does not just "do something wrong" - it actively uses the absence of UB as a reasoning tool, which can delete code you thought was protecting you.
 
+```cpp
 #include <iostream>
 
 // The compiler ASSUMES signed overflow never happens.
@@ -147,13 +150,15 @@ int main() {
 // Expected output (with -O2):
 // check_overflow(INT_MAX) = true
 // value: 42
-
 ```
+
+The null check elimination example is the one that surprises people most. You write `if (p == nullptr)` after already dereferencing `p`, and the compiler reasons: "if `p` were null, `*p` would be UB, and I'm allowed to assume that does not happen - therefore `p != nullptr`, therefore this whole `if` branch is dead code and I can remove it." Your safety check evaporates.
 
 ### Q3: Enable `-fsanitize=undefined` and catch UB
 
-```cpp
+You should run with sanitizers enabled in your development builds and CI. They catch UB at the point it occurs, with a precise error message and a line number - something the optimizer-mangled crash dump from a release build cannot give you.
 
+```cpp
 Compilation and usage:
 
 $ cat ub_example.cpp
@@ -176,8 +181,9 @@ ub_example.cpp:6:7: runtime error: signed integer overflow:
   2147483647 + 1 cannot be represented in type 'int'
 ub_example.cpp:9:18: runtime error: index 5 out of bounds
   for type 'int [3]'
-
 ```
+
+Each sanitizer covers a different category of problem. Use them in combination for the most thorough coverage:
 
 **Available sanitizers:**
 
@@ -194,6 +200,6 @@ ub_example.cpp:9:18: runtime error: index 5 out of bounds
 
 - UB is **not** implementation-defined behavior (which is defined by each compiler).
 - Use `-Wall -Wextra -Werror` to catch many UB sources at compile time.
-- Sanitizers have 2-5x runtime overhead — use in CI/testing, not production.
+- Sanitizers have 2-5x runtime overhead - use in CI/testing, not production.
 - `std::bit_cast` (C++20) is the safe alternative to type-punning through casts.
 - The compiler's UB assumptions enable optimizations like: dead code elimination, loop vectorization, constant propagation. Avoiding UB makes your code both correct AND fast.

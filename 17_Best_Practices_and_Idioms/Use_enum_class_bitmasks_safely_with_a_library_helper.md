@@ -9,26 +9,26 @@
 
 ## Topic Overview
 
-`enum class` prevents implicit conversion to `int`, which is great for type safety but makes bitwise operations verbose. A helper template or macro provides type-safe bitwise operations.
+`enum class` is strictly typed, which is exactly what you want - but that strictness means the compiler refuses to let you do bitwise operations on enum values, since it doesn't know whether your enum is meant to be used as a bitmask. The fix is to provide those operators explicitly, either through a template helper or a small macro that opts a specific enum in.
 
 ### The Problem
 
 ```cpp
-
 enum class Flags : uint32_t { Read = 1, Write = 2, Exec = 4 };
 // Flags f = Flags::Read | Flags::Write;  // ERROR: no operator|
-
 ```
+
+Without an `operator|`, combining flags requires ugly casts everywhere, which defeats the purpose of using an enum in the first place.
 
 ### The Solution: Enable bitwise ops for specific enums
 
 ```cpp
-
 // Option 1: Macro
 // Option 2: Template + trait
 // Option 3: Operator overloads per enum
-
 ```
+
+All three options produce the same result at runtime. The template-plus-trait approach (shown in Q1) is the most reusable because you write the operators once and just opt each enum in with a single line.
 
 ---
 
@@ -36,8 +36,9 @@ enum class Flags : uint32_t { Read = 1, Write = 2, Exec = 4 };
 
 ### Q1: Implement `operator|`, `operator&`, `operator~` for an enum class
 
-```cpp
+The pattern below uses a trait struct `EnableBitmask` that defaults to `false_type`. You specialize it to `true_type` for any enum that should support bitwise ops, and a set of constrained template operators becomes available for that enum and only that enum.
 
+```cpp
 #include <cstdint>
 #include <iostream>
 #include <type_traits>
@@ -109,17 +110,19 @@ int main() {
 // Has Write:   true
 // Has Execute: false
 // After adding Execute: true
-
 ```
+
+Because the operators require `EnableBitmask<E>::value` to be true, they simply don't exist for any other enum. You get strong type safety - a `Permissions` value can never accidentally be ORed with a `Color` value - while still writing the bitmask operations naturally.
 
 ### Q2: Show why raw enum bitmasks allow mixing unrelated types while enum class prevents it
 
-```cpp
+Here's why the old-style `enum` is risky for bitmask use: both your flags enum and an unrelated enum share `int` as their underlying type, so the compiler sees them as the same kind of thing. Mixing them is silently valid, even when the result is nonsensical.
 
+```cpp
 #include <cstdint>
 #include <iostream>
 
-// BAD: unscoped enums — can mix unrelated types!
+// BAD: unscoped enums - can mix unrelated types!
 enum OldPermission { OldRead = 1, OldWrite = 2 };
 enum OldColor { OldRed = 1, OldGreen = 2 };
 
@@ -130,7 +133,7 @@ void demonstrate_raw_enum_danger() {
     }
 }
 
-// GOOD: enum class — type-safe
+// GOOD: enum class - type-safe
 enum class Permission : uint8_t { Read = 1, Write = 2 };
 enum class Color : uint8_t { Red = 1, Green = 2 };
 
@@ -147,13 +150,15 @@ int main() {
 // Expected output:
 // BAD: Write == Green? Makes no sense!
 // GOOD: compiler prevents mixing Permission and Color
-
 ```
+
+The `enum class` version catches this at compile time. That's the fundamental trade-off: you give up implicit-to-int conversions and gain protection against this whole category of silent mixup bug.
 
 ### Q3: Custom enum reflection solution
 
-```cpp
+When you need to iterate over enum values or convert them to strings at runtime, a simple parallel array keyed on the underlying integer works well for small enums. The `COUNT` sentinel trick is a lightweight way to get the array size without any macros.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <string_view>
@@ -195,8 +200,9 @@ int main() {
 // For production use, consider magic_enum library:
 // auto name = magic_enum::enum_name(Color::Blue);  // "Blue"
 // auto val  = magic_enum::enum_cast<Color>("Blue"); // Color::Blue
-
 ```
+
+The manual approach works fine until the enum gets large or you have many enums to reflect. At that point the `magic_enum` library - referenced in the header - handles it with zero boilerplate using compiler-specific introspection tricks.
 
 ---
 
@@ -204,5 +210,5 @@ int main() {
 
 - The `ENABLE_BITMASK` macro approach is used by many codebases (Chromium, Qt).
 - `magic_enum` provides compile-time reflection over enum values using compiler-specific tricks.
-- C++23's `std::to_underlying()` replaces `static_cast<underlying_type_t<E>>(e)`.
-- Always use `enum class` over `enum` — the type safety is worth the extra operators.
+- C++23's `std::to_underlying()` replaces `static_cast<underlying_type_t<E>>(e)` - use it to reduce the cast noise in the operator implementations.
+- Always use `enum class` over `enum` - the type safety is worth the extra operators.

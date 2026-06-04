@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-*"Premature optimization is the root of all evil"* — Donald Knuth. **Always measure first, then optimize the measured hotspot.**
+*"Premature optimization is the root of all evil"* - Donald Knuth. The reason this quote has lasted fifty years is that programmers are reliably bad at guessing where the time actually goes. **Always measure first, then optimize the measured hotspot.** Time spent optimizing a function that accounts for 2% of runtime is almost always time wasted.
 
 ### The Optimization Workflow
 
-```cpp
+The discipline of data-driven optimization looks like this:
 
+```cpp
 1. Write correct code first
 2. Profile under realistic workload
 3. Identify the hotspot (top 1-3 functions)
@@ -21,8 +22,9 @@
 5. Implement change
 6. Re-profile to verify improvement
 7. If not faster, revert!
-
 ```
+
+Step 7 is the one people skip. If your change did not move the numbers, revert it - complexity without benefit is pure cost.
 
 ### Profiling Tools
 
@@ -41,8 +43,9 @@
 
 ### Q1: Profile a program and identify the hottest function
 
-```cpp
+This example uses `std::chrono` as a simple manual profiler. In real code you would reach for `perf` or VTune, but the principle is the same - time each function separately and let the numbers tell you where to focus.
 
+```cpp
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -93,13 +96,15 @@ int main() {
 //
 // Linux: perf record ./program && perf report
 // Shows: slow_function at top of profile
-
 ```
+
+Once you have the numbers, the decision of where to invest effort is obvious - not a guess.
 
 ### Q2: Show a premature optimization that hurt readability without measurable benefit
 
-```cpp
+The reason this trip-up is so common is that "clever" low-level tricks feel fast. But modern compilers are sophisticated enough to produce the same machine code from the readable version - so you pay the readability cost for nothing.
 
+```cpp
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -146,13 +151,15 @@ int main() {
 // Clever: ~25 ms
 // Simple: ~25 ms   <-- same speed! Compiler optimizes both.
 // Lesson: the compiler is smarter than you think.
-
 ```
+
+The modern C++20 answer (`std::popcount`) is both the most readable and likely the fastest - it can compile directly to a single hardware instruction. Start with the clearest version; only complicate it when profiling shows you need to.
 
 ### Q3: Apply a data-oriented refactoring to a hot loop and measure the speedup
 
-```cpp
+This is where profiling-driven optimization really pays off. The Array-of-Structs (AoS) layout scatters the hot data (positions and velocities) across large structs, which kills cache efficiency. Switching to Struct-of-Arrays (SoA) packs the hot fields together - the CPU's prefetcher loves it.
 
+```cpp
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -222,8 +229,9 @@ int main() {
 // AoS (slow): ~30 ms
 // SoA (fast): ~8 ms
 // Speedup: ~3.7x
-
 ```
+
+A nearly 4x speedup from a layout change, with no algorithmic change at all - this is exactly the kind of win that profiling reveals and that you would never find by guessing.
 
 ---
 

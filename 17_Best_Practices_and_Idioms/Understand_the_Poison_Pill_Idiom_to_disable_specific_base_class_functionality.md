@@ -10,10 +10,13 @@
 
 The **Poison Pill Idiom** uses `= delete` to prevent specific inherited or overloaded functions from being called. This is distinct from the "poison pill" in ranges/ADL (which uses `= delete` on free functions to prevent unwanted ADL).
 
+The idiom gives you a compile-time guardrail: rather than documenting "don't call this method on a derived object," you make the compiler enforce it outright.
+
 ### Two Forms
 
-```cpp
+The idiom appears in two contexts - in derived classes and as a free-function ADL blocker:
 
+```cpp
 1. Derived class disables an inherited method:
 
    class Derived : public Base {
@@ -23,7 +26,6 @@ The **Poison Pill Idiom** uses `= delete` to prevent specific inherited or overl
 2. ADL poison pill (ranges library):
 
    void begin(auto&&) = delete;  // prevent ADL from finding wrong begin()
-
 ```
 
 ---
@@ -32,8 +34,9 @@ The **Poison Pill Idiom** uses `= delete` to prevent specific inherited or overl
 
 ### Q1: Use `= delete` in a derived class to disable an inherited public method
 
-```cpp
+Suppose you have a general `Collection` class but want a derived type that only allows appending. You can declare the unwanted methods as deleted in the derived class - the compiler then turns any attempt to call them into a hard error.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -69,13 +72,15 @@ int main() {
 // Added: entry1
 // Added: entry2
 // Append-only enforced at compile time!
-
 ```
+
+The enforcement is purely at compile time and only applies when calling through the derived type's static type. That constraint is important - see Q2.
 
 ### Q2: Explain why deleting via derived doesn't work through a base pointer
 
-```cpp
+Here is the critical limitation you need to internalize: `= delete` only affects calls made through the *static* type. If you hold the derived object behind a base pointer, the deletion is invisible and the base version is called freely.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -93,7 +98,7 @@ public:
 
 int main() {
     AppendOnly log;
-    // log.remove("x");  // ERROR: deleted — good!
+    // log.remove("x");  // ERROR: deleted -- good!
 
     // BUT: through base pointer, it's still callable!
     Collection* base_ptr = &log;
@@ -109,13 +114,15 @@ int main() {
 // LESSON: = delete on a non-virtual function in derived class
 // only affects calls through the derived type.
 // Base pointer/reference still sees the base version.
-
 ```
+
+The reason this trips people up is that `= delete` sounds absolute - "deleted" implies "gone." But the function is only deleted from the derived class's name lookup. The base class function still exists, and a base pointer or reference finds it normally.
 
 ### Q3: Show the correct approach using private inheritance or composition
 
-```cpp
+When you genuinely need to prevent access - including through base pointers - the right tools are private inheritance or composition. Neither of these exposes an `is-a` relationship, so there is no base pointer to bypass.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -173,14 +180,15 @@ int main() {
 // Expected output:
 // a b
 // x y
-
 ```
+
+With composition (Approach 2) the restricted methods are not just disabled - they do not exist at all. There is no base type to cast to, no hidden base function to accidentally reach. This is the cleanest solution when your goal is truly restricting the interface.
 
 ---
 
 ## Notes
 
-- `= delete` is a compile-time mechanism — it only affects the static type.
+- `= delete` is a compile-time mechanism - it only affects the static type.
 - For true runtime restriction, use virtual methods with proper interface design.
 - Composition is almost always better than inheritance when you want to restrict the interface.
 - The ranges library uses "poison pills" differently: `void begin(auto&&) = delete;` prevents unwanted ADL matches.

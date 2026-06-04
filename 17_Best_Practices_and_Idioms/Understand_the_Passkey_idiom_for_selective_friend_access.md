@@ -10,28 +10,30 @@
 
 The **Passkey idiom** restricts who can call a public function by requiring a token object that only authorized classes can create.
 
+The problem with a plain `friend` declaration is that it is all-or-nothing: once you declare a class as a friend, it has access to everything private. The Passkey idiom gives you surgical precision - you keep the method public, but you add a parameter that acts as a key. Only the class that holds the matching key can actually call the function.
+
 ### The Problem
 
-```cpp
+Here is the blunt-instrument approach that many people reach for first:
 
+```cpp
 class Server {
     friend class Admin;  // gives Admin access to EVERYTHING private
 };
 // Too much power! Admin can access ALL private members.
-
 ```
 
 ### The Solution: Passkey
 
-```cpp
+With Passkey, `shutdown` and `restart` are public methods, but calling them requires a `Passkey<Admin>` token - which only `Admin` can construct:
 
+```cpp
 class Server {
 public:
     void shutdown(Passkey<Admin>);  // public, but only Admin can call it
     void restart(Passkey<Admin>);   // because only Admin can create Passkey<Admin>
     int status() const;             // anyone can call (no passkey needed)
 };
-
 ```
 
 ---
@@ -40,8 +42,9 @@ public:
 
 ### Q1: Implement a `Passkey<T>` that only `T` can construct
 
-```cpp
+The whole mechanism rests on one trick: `Passkey<T>` has a private constructor, and its only friend is `T`. So `T` can create the passkey, and nobody else can - not even types that know about `Passkey`.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -66,7 +69,7 @@ public:
         std::cout << "Server restarting...\n";
     }
 
-    std::string status() const {  // no passkey — anyone can call
+    std::string status() const {  // no passkey -- anyone can call
         return "running";
     }
 };
@@ -104,13 +107,15 @@ int main() {
 // User cannot shutdown. Status: running
 // Server shutting down...
 // Server restarting...
-
 ```
+
+Notice that `User` cannot even call `s.shutdown({})` with a brace-init - there is no implicit conversion path available. The enforcement is airtight at compile time.
 
 ### Q2: Show that Passkey prevents accidental access without fully private constructors
 
-```cpp
+You can also use Passkey to restrict *construction* of an object while keeping the constructor technically public. This is handy when `std::make_unique` or similar helpers need to call the constructor, but you don't want arbitrary code doing the same.
 
+```cpp
 #include <iostream>
 
 template<typename T>
@@ -154,15 +159,15 @@ int main() {
 // Widget 42 created
 // Using widget 42
 // Direct construction blocked!
-
 ```
+
+This is a common pattern when you want a factory to be the single point of creation but still need the constructor accessible for value-construction inside the factory itself.
 
 ### Q3: Compare Passkey with the Attorney-Client idiom
 
-**Attorney-Client idiom:** Uses an intermediate "Attorney" class to expose specific private members.
+There is another idiom that solves a related but different problem: the Attorney-Client idiom. It uses an intermediate class to expose *specific private members* to specific callers, rather than restricting who can call a *public* method.
 
 ```cpp
-
 #include <iostream>
 
 // Client has private internals
@@ -187,8 +192,9 @@ int main() {
 }
 // Expected output:
 // Secret: 42
-
 ```
+
+The Attorney approach requires a dedicated middleman class for each "client" you want to grant access to. Passkey scales more naturally - you just add a `Passkey<NewCaller>` parameter to each function you want to open up.
 
 **Comparison:**
 
@@ -205,7 +211,7 @@ int main() {
 
 ## Notes
 
-- Passkey is a zero-cost abstraction — the empty Passkey object is optimized away.
-- Can combine multiple passkeys: `void method(Passkey<A>, Passkey<B>)` — both A and B must authorize.
+- Passkey is a zero-cost abstraction - the empty Passkey object is optimized away.
+- Can combine multiple passkeys: `void method(Passkey<A>, Passkey<B>)` - both A and B must authorize.
 - In C++20, you can use concepts to constrain passkey construction even further.
 - Passkey is better than `friend` because `friend` grants access to ALL private members.

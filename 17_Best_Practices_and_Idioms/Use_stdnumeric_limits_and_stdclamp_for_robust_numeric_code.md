@@ -8,15 +8,13 @@
 
 ## Topic Overview
 
-`std::clamp(val, lo, hi)` constrains a value to `[lo, hi]`. `std::numeric_limits<T>` provides type-specific min/max/epsilon values. Together they make numeric code safe and portable.
+`std::clamp(val, lo, hi)` constrains a value to `[lo, hi]`. `std::numeric_limits<T>` provides type-specific min/max/epsilon values. Together they make numeric code safe and portable - no more hardcoded `255` magic numbers or platform-dependent `INT_MAX` macros.
 
 ```cpp
-
 #include <algorithm>
 #include <limits>
 int safe = std::clamp(input, 0, 255);  // pixel value: 0-255
 auto max_int = std::numeric_limits<int>::max();  // 2147483647
-
 ```
 
 ---
@@ -25,8 +23,9 @@ auto max_int = std::numeric_limits<int>::max();  // 2147483647
 
 ### Q1: Use `std::clamp` to constrain values
 
-```cpp
+`std::clamp` is the clean replacement for the common `std::min(hi, std::max(lo, val))` pattern. It is easier to read and has `constexpr` support, so it works in compile-time contexts too. The most important practical use is clamping before a narrowing conversion - always clamp first, then cast.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <cstdint>
@@ -62,13 +61,15 @@ int main() {
 // pct = 1
 // byte = 255
 // Clamped: 0 50 200 255 0 128
-
 ```
+
+Notice that `std::clamp` returns a reference to one of its arguments (the value, lo, or hi), so there is no copy overhead for cheap types. For expensive types, this matters.
 
 ### Q2: Show NaN problems with manual min/max
 
-```cpp
+Floating-point code has a subtle trap: `std::min` and `std::max` are not commutative when NaN is involved. Which argument is NaN changes whether you get NaN or the other value back, depending on how `operator<` propagates NaN. This makes the naive `max(lo, min(val, hi))` pattern unreliable for float inputs.
 
+```cpp
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -107,13 +108,15 @@ int main() {
 // safe_clamp(50)  = 50
 // epsilon = 2.22045e-16
 // inf     = inf
-
 ```
+
+The standard mandates that `std::clamp`'s behavior is undefined when the input is NaN, so wrapping it in an `isnan` check is the correct approach for any code that may receive floating-point values from user input or external data.
 
 ### Q3: Use `numeric_limits` for signed/unsigned overflow detection
 
-```cpp
+Signed integer overflow is undefined behavior in C++. The only safe way to check for it is before the addition happens - once you add and overflow, the compiler has already been given permission to assume it never occurred. `std::numeric_limits` gives you the portable way to get the exact boundary values for any type.
 
+```cpp
 #include <iostream>
 #include <limits>
 #include <type_traits>
@@ -165,15 +168,16 @@ int main() {
 // Type: unsigned, bits: 8, min: 0, max: 255
 // Overflow detected!
 // Unsigned overflow detected!
-
 ```
+
+The `if constexpr` branch on `is_signed` lets the same function template handle both signed and unsigned types correctly, since the overflow semantics differ between them.
 
 ---
 
 ## Notes
 
 - `std::clamp` is in `<algorithm>` since C++17, and `constexpr`.
-- `std::clamp` requires `lo <= hi` — violating this is UB.
+- `std::clamp` requires `lo <= hi` - violating this is UB.
 - `std::clamp` with NaN is undefined; always check `std::isnan` first for floats.
 - Prefer `std::numeric_limits<T>::max()` over macros like `INT_MAX`.
 - `numeric_limits` has `constexpr` members: usable in `static_assert` and `if constexpr`.

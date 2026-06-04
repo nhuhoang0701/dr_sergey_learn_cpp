@@ -10,8 +10,9 @@
 
 The **Named Constructor Idiom** uses static factory methods with descriptive names instead of overloaded constructors. This disambiguates constructors that would otherwise have identical parameter types.
 
-```cpp
+The problem it solves is a classic: you want to construct an object in multiple ways, but some of those ways look identical at the call site. Two constructors that both take a single `double` cannot coexist. Even when they can coexist, callers have no way to know what the argument means just by reading the code.
 
+```cpp
 // BAD: which constructor does what?
 Circle c1(5.0);   // radius? diameter? area?
 Circle c2(78.5);  // radius? diameter? area?
@@ -19,7 +20,6 @@ Circle c2(78.5);  // radius? diameter? area?
 // GOOD: self-documenting
 auto c1 = Circle::fromRadius(5.0);
 auto c2 = Circle::fromArea(78.5);
-
 ```
 
 ---
@@ -28,8 +28,9 @@ auto c2 = Circle::fromArea(78.5);
 
 ### Q1: Implement `Circle::fromRadius()` and `Circle::fromArea()` as named constructors
 
-```cpp
+The key move is making the real constructor `private`. That forces all callers through the named constructors, which also means the conversion logic lives in exactly one place per creation path.
 
+```cpp
 #include <cmath>
 #include <iostream>
 
@@ -82,17 +83,19 @@ int main() {
 // Circle(r=5, area=78.5398)
 // Circle(r=5, area=78.5398)
 // Circle(r=5, area=78.5398)
-
 ```
+
+All four paths converge on the same internal representation (radius), but callers get to work in whatever units make sense for them.
 
 ### Q2: Explain why named constructors beat overloaded constructors with same parameter types
 
-```cpp
+This is the situation where overloading simply cannot help you. Two constructors with identical signatures cannot both exist - the compiler has no way to choose between them. Named constructors sidestep that limitation entirely.
 
+```cpp
 #include <iostream>
 #include <string>
 
-// BAD: both constructors take a single double — ambiguous!
+// BAD: both constructors take a single double -- ambiguous!
 class TemperatureBad {
     double kelvin_;
 public:
@@ -130,13 +133,15 @@ int main() {
 // Boiling: 100 C, 373.15 K
 // Body: 37 C, 98.6 F
 // Abs zero: -273.15 C
-
 ```
+
+Notice that the internal representation is always Kelvin - the named constructors handle the unit conversion and the class never exposes that detail to callers.
 
 ### Q3: Show how Named Constructor Idiom interacts with CTAD and factory functions
 
-```cpp
+Named constructors are not limited to returning a plain `T` by value. They can return `std::optional<T>` for fallible construction, `std::unique_ptr<T>` for heap allocation, or anything else that makes sense - regular constructors cannot do that.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -197,14 +202,15 @@ int main() {
 // https://secure.com:443
 // https://api.example.com:443
 // ftp URL: invalid
-
 ```
+
+The `fromUrl` factory returns `std::nullopt` on bad input - something a constructor simply cannot do (it must either succeed or throw). This is one of the most practical advantages of the idiom.
 
 ---
 
 ## Notes
 
-- Named constructors are NRVO-friendly — the return is typically elided.
+- Named constructors are NRVO-friendly - the return is typically elided.
 - Make the actual constructor `private` to force use of named constructors.
 - The standard library uses this pattern: `std::optional::value()`, `std::filesystem::path::string()`.
 - `std::chrono` uses it extensively: `seconds(5)`, `milliseconds(100)`.

@@ -9,14 +9,16 @@
 
 ## Topic Overview
 
-**Structured logging** emits log entries as key-value pairs (often JSON) rather than free-form strings. This makes logs machine-parseable, searchable, and aggregatable.
+**Structured logging** means emitting log entries as key-value pairs - typically JSON - rather than free-form human-readable sentences. The benefit isn't readability for humans (though that's fine); it's that machines can query, filter, and aggregate your logs without fragile regex hacks.
+
+To see why it matters, compare these two representations of the same event:
 
 ```cpp
-
-Unstructured: "User alice logged in from 192.168.1.1 at 2024-01-15"
-Structured:   {"event":"login","user":"alice","ip":"192.168.1.1","time":"2024-01-15"}
-
+// Unstructured: "User alice logged in from 192.168.1.1 at 2024-01-15"
+// Structured:   {"event":"login","user":"alice","ip":"192.168.1.1","time":"2024-01-15"}
 ```
+
+With the unstructured version, finding all failed logins from a subnet requires grep patterns that break the moment someone rewrites the message. With the structured version, it's a straightforward query on the `event` and `ip` fields - no matter how the message text changes.
 
 ---
 
@@ -24,8 +26,9 @@ Structured:   {"event":"login","user":"alice","ip":"192.168.1.1","time":"2024-01
 
 ### Q1: Design a structured logging API with key-value pairs
 
-```cpp
+Here's a lightweight logger built on variadic templates that produces JSON output. The `Field` struct is just a key-value pair, and the variadic fold expression `(oss << ...), ...` writes all the fields in one shot.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -91,13 +94,15 @@ int main() {
 // {"level":"INFO","msg":"user_login","user":"alice","ip":"192.168.1.1","attempt":"1"}
 // {"level":"ERROR","msg":"db_connection_failed","host":"db.example.com","port":"5432","retries":"3"}
 // {"level":"WARN","msg":"high_memory_usage","usage_pct":"95","threshold":"90"}
-
 ```
+
+Notice that call sites read almost like configuration - you name exactly what context you're attaching to the log entry, and any fields you don't include simply don't appear.
 
 ### Q2: Compare structured vs unstructured logs for querying
 
-```cpp
+This example doesn't produce fancy output - its value is in the comments, which show what querying actually looks like for each approach. Read the `grep` and `SELECT` comments carefully.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -135,13 +140,15 @@ int main() {
 // === Structured (easy to query) ===
 // {"event":"login_failed","user":"alice","ip":"192.168.1.1"}
 // {"event":"login_ok","user":"bob","ip":"10.0.0.1"}
-
 ```
+
+The core problem with unstructured logs is that the structure is implicit - it's embedded in the sentence, not in the data format. Structured logs make that structure explicit so tools can work with it directly.
 
 ### Q3: Use `std::format` as a structured log backend
 
-```cpp
+C++20's `std::format` gives you a type-safe, readable way to build structured strings. The double braces `{{` and `}}` in the format string are literal `{` and `}` characters - you need to escape them because single braces are format placeholders.
 
+```cpp
 #include <iostream>
 #include <format>
 #include <string>
@@ -174,8 +181,9 @@ int main() {
 // Expected output:
 // {"level":"INFO","event":"request","path":"/api/users","status":"200"}
 // {"level":"ERROR","event":"timeout","service":"payment","ms":"5000"}
-
 ```
+
+`std::format` is a better foundation for this kind of work than `sprintf` or string concatenation: it's type-safe, doesn't overflow a buffer, and composes naturally with `auto` parameters for mixed-type fields.
 
 ---
 

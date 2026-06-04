@@ -9,28 +9,31 @@
 
 ## Topic Overview
 
-Range-based for loops internally bind the range expression to `auto&& __range`. Temporaries returned by **simple** expressions have their lifetime extended to cover the loop. However, temporaries created in **chained expressions** (like `get_obj().get_container()`) are destroyed before the loop body runs.
+Range-based for loops internally bind the range expression to `auto&& __range`. Temporaries returned by **simple** expressions have their lifetime extended to cover the loop. However, temporaries created in **chained expressions** (like `get_obj().get_container()`) are destroyed before the loop body runs - and that spells dangling reference.
 
 ### The Dangling Reference Problem (pre-C++23)
 
-```cpp
+Here is how the compiler desugars a range-based for and where the lifetime trap hides:
 
+```cpp
 for (auto& x : get_wrapper().data())       // PRE-C++23: DANGER!
-                │              │
-                │              └─ returns ref to member of temporary
-                └─ temporary wrapper created HERE
+                |              |
+                |              +- returns ref to member of temporary
+                +- temporary wrapper created HERE
                    destroyed BEFORE loop body!
                    data() reference is DANGLING
 
 C++23 fix (P2718R0): ALL temporaries in the range-init
 are lifetime-extended to cover the entire loop.
-
 ```
+
+The reason this trips people up is that simple cases - like `for (auto x : get_vec())` - work fine, so it feels safe. The danger only appears when you chain a method call on top of the temporary, returning a reference into it.
 
 ### Range-for Internal Expansion
 
-```cpp
+To understand why the lifetime matters, look at what the compiler actually generates. The range-for loop:
 
+```cpp
 // for (auto& x : expr) { body; }
 // becomes:
 {
@@ -42,8 +45,9 @@ are lifetime-extended to cover the entire loop.
         body;
     }
 }
-
 ```
+
+The temporary created by `expr` only lives until the end of the full expression that initializes `__range`. Pre-C++23, that means it is gone before `__begin` is even computed.
 
 ---
 
@@ -51,8 +55,9 @@ are lifetime-extended to cover the entire loop.
 
 ### Q1: Show the dangling reference pitfall with chained calls in range-for
 
-```cpp
+The dangerous pattern is calling a method on a temporary to get a reference, then iterating over that reference. The code below shows the problem and two safe alternatives.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -97,15 +102,15 @@ int main() {
 // Alice
 // Bob
 // Charlie
-
 ```
+
+Fix 1 is usually the right move - just name the temporary before the loop. Fix 2 copies the data so the loop owns it outright.
 
 ### Q2: Explain C++23 lifetime extension rules (P2718R0) and remaining edge cases
 
-C++23 (P2718R0) extends the lifetime of **all temporaries** in the range-for init expression to cover the entire loop:
+C++23 (P2718R0) extends the lifetime of **all temporaries** in the range-for init expression to cover the entire loop. That directly patches the pre-C++23 trap.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -131,13 +136,11 @@ int main() {
 }
 // Expected output:
 // 1 2 3 4 5
-
 ```
 
-**Where C++23 still does NOT help:**
+C++23 makes this pattern safe, but two situations are still not covered:
 
 ```cpp
-
 // Case 1: User stores reference manually (not in range-for init)
 const auto& ref = make_wrapper().data();  // STILL dangling!
 // The fix only applies to range-for, not general reference binding
@@ -145,13 +148,15 @@ const auto& ref = make_wrapper().data();  // STILL dangling!
 // Case 2: Coroutine suspension
 // If a coroutine suspends mid-loop, temporaries may be destroyed
 // at suspension point (implementation-defined)
-
 ```
+
+If you are on a pre-C++23 compiler, or writing coroutines, the old rule applies: name the temporary first.
 
 ### Q3: Show the C++23 fix in action with a practical example
 
-```cpp
+Here is a more realistic scenario: a config loader that returns a temporary object whose data you want to iterate over. This is exactly the kind of code that silently went wrong before C++23.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <vector>
@@ -193,8 +198,9 @@ int main() {
 // Key: host, Value: localhost
 // Key: port, Value: 8080
 // Key: debug, Value: true
-
 ```
+
+The pre-C++23 workaround shown here - storing the result of `get_loader().load()` into a named variable before the loop - is the pattern to reach for when you cannot rely on C++23.
 
 ---
 
@@ -202,5 +208,5 @@ int main() {
 
 - P2718R0 was adopted for C++23. Check your compiler version: GCC 13+, Clang 16+, MSVC 17.7+.
 - The rule of thumb pre-C++23: if the range expression contains a `.` (member access on a temporary), store it first.
-- Range-for with simple temporaries (`for (auto x : get_vec())`) was always safe — the vector itself gets lifetime-extended.
+- Range-for with simple temporaries (`for (auto x : get_vec())`) was always safe - the vector itself gets lifetime-extended.
 - Use `-Wdangling` (GCC/Clang) to catch some of these issues at compile time.

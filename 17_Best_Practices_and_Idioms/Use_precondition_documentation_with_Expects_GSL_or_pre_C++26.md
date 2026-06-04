@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-**Preconditions** document what must be true when a function is called. They shift error responsibility from defensive checks inside the function to documented contracts at the API boundary.
+**Preconditions** are the rules a caller must obey before invoking a function. Documenting them explicitly - rather than silently assuming them or defensively checking them everywhere - shifts responsibility to the right place: the caller, not the implementation. A function that documents "n must be positive" is cleaner, faster, and easier to reason about than one that checks `n > 0` internally and returns an error code.
 
 ### Precondition Mechanisms
+
+The table below shows what's available and what each option does for you. The key distinction is between mechanisms that actually check at runtime (catching bugs early) and those that only serve as optimizer hints (improving performance).
 
 | Mechanism | Available | Runtime check | Optimizer hint |
 | --- | --- | --- | --- |
@@ -27,8 +29,9 @@
 
 ### Q1: Add `Expects(n > 0)` and show it fires in debug builds
 
-```cpp
+`Expects` is a macro from the GSL (Guidelines Support Library) that behaves like a self-documenting `assert` - it fires in debug builds and disappears in release. The version below is a simplified implementation you can use without pulling in the full GSL. Notice the `Ensures` alias for postconditions: same mechanism, different semantics.
 
+```cpp
 #include <cassert>
 #include <iostream>
 #include <vector>
@@ -79,13 +82,15 @@ int main() {
 // Expected output:
 // avg({1,2,3}) = 2
 // 5! = 120
-
 ```
+
+By placing `Expects` at the very top of the function, you're telling every reader (and every future maintainer) exactly what must be true before the function can do its job. That's the documentation aspect. In debug builds you also get an immediate, informative abort if the caller violates the contract, rather than a mysterious crash deep inside the function body.
 
 ### Q2: Compare `Expects` with `static_assert` for compile-time vs runtime preconditions
 
-```cpp
+The reason both tools exist is that they operate in different worlds. `static_assert` runs during compilation, so it can only check things the compiler knows at compile time - types and constant expressions. `Expects`/`assert` runs at runtime, so it can check actual values that only exist when the program is executing.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -125,8 +130,9 @@ int main() {
 // 3
 // 3.33333
 // 5! = 120
-
 ```
+
+Use them together: `static_assert` for type-level contracts, `Expects`/`assert` for value-level contracts. They complement each other perfectly.
 
 | Check type | `static_assert` | `Expects`/`assert` |
 | --- | --- | --- |
@@ -137,10 +143,11 @@ int main() {
 
 ### Q3: Explain contract-based programming and the C++26 contracts proposal
 
-**Contract-based programming** says: instead of checking errors defensively everywhere, document what must be true (preconditions) and what will be true (postconditions) at function boundaries.
+**Contract-based programming** is a design philosophy: instead of sprinkling defensive checks throughout your implementation, you define clear obligations at function boundaries. The caller promises to satisfy the preconditions; the function promises to deliver the postconditions. If the caller's code is correct, the checks never fire. This is fundamentally different from defensive programming, where you check inputs because you distrust the caller.
+
+C++26 is bringing standardized syntax for this pattern directly into the language:
 
 ```cpp
-
 // C++26 contracts syntax (proposed):
 int factorial(int n)
     pre(n >= 0)
@@ -154,11 +161,12 @@ int factorial(int n)
 }
 
 // The contract attributes are:
-// pre(expr)      — precondition (caller's responsibility)
-// post(r: expr)  — postcondition (r is the return value)
-// assert(expr)   — assertion (mid-function check)
-
+// pre(expr)      - precondition (caller's responsibility)
+// post(r: expr)  - postcondition (r is the return value)
+// assert(expr)   - assertion (mid-function check)
 ```
+
+The reason this is better than the macro approach is that the compiler understands the contracts natively. It can use them as optimizer hints (like `[[assume]]`), pass them to static analysis tools, and handle violations through a customizable handler rather than a hard-coded `abort()`.
 
 **Three contract levels:**
 
@@ -170,16 +178,16 @@ int factorial(int n)
 
 **Benefits over `assert`/`Expects`:**
 
-1. Standardized syntax (not a macro)
-2. Compiler can use contracts as optimizer hints
-3. Contract violation handler is customizable
-4. Tools can statically analyze contracts
+1. Standardized syntax (not a macro).
+2. Compiler can use contracts as optimizer hints.
+3. Contract violation handler is customizable without modifying the function.
+4. Static analysis tools can reason about contracts across call boundaries.
 
 ---
 
 ## Notes
 
 - GSL `Expects`/`Ensures` is available today via Microsoft's GSL library (`#include <gsl/gsl>`).
-- Place `Expects` at the very beginning of the function, `Ensures` at the end.
-- Don't use `Expects` for user input validation — use proper error handling.
-- C++26 contracts are still being finalized. Use `assert()`/`Expects()` in the meantime.
+- Place `Expects` at the very beginning of the function and `Ensures` at the end - this mirrors the structure of a formal contract.
+- Don't use `Expects` for user input validation - that's a different concern and deserves proper error handling with return values, not contract assertions.
+- C++26 contracts are still being finalized. Use `assert()`/`Expects()` in the meantime, and the migration to native contract syntax should be straightforward when it arrives.

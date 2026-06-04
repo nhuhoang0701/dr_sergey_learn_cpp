@@ -9,10 +9,9 @@
 
 ## Topic Overview
 
-`std::unreachable()` tells the compiler that a code path will never be executed. The compiler can use this to optimize, but reaching it is **undefined behavior**.
+`std::unreachable()` tells the compiler that a code path will never be executed. The compiler can use this to optimize - for example, by eliminating the branch that handles a "default" case you know can never occur. The tradeoff is stark: if your invariant is wrong and execution actually reaches the call, the behavior is **undefined**.
 
 ```cpp
-
 #include <utility>
 switch (color) {
     case Red:   return "#FF0000";
@@ -20,7 +19,6 @@ switch (color) {
     case Blue:  return "#0000FF";
 }
 std::unreachable();  // "trust me, all cases are covered"
-
 ```
 
 ---
@@ -29,8 +27,9 @@ std::unreachable();  // "trust me, all cases are covered"
 
 ### Q1: Add `std::unreachable()` to a switch default and verify optimization
 
-```cpp
+Without `std::unreachable()`, a switch over an enum still has an implicit "fall through the bottom" path that the compiler must account for. With it, the compiler can prove that no code after the switch needs to be generated, which often produces tighter assembly for hot functions.
 
+```cpp
 #include <iostream>
 #include <utility>  // std::unreachable (C++23)
 
@@ -67,17 +66,15 @@ int main() {
 // East dx: 1
 // West dx: -1
 // North dx: 0
-
 ```
 
 **Optimization effect:** Without `unreachable()`, the compiler may generate a branch for the "after switch" path. With it, the compiler eliminates that branch entirely.
 
 ### Q2: UB semantics and security implications
 
-`std::unreachable()` invokes **undefined behavior** if actually reached. This means:
+The reason `std::unreachable()` is dangerous is exactly the reason it is powerful: the optimizer treats it as a proof that the path cannot be taken, not just as a hint. That means any checks the compiler could deduce are vacuous - because you said the situation is impossible - can be silently eliminated.
 
 ```cpp
-
 // DANGER: if the invariant is wrong, ANYTHING can happen!
 int get_value(int index) {
     // Assume index is 0, 1, or 2
@@ -90,8 +87,9 @@ int get_value(int index) {
     // If index==3: UB!
     // Compiler may: skip the switch, return garbage, crash, etc.
 }
-
 ```
+
+The security implication is real: if an attacker can craft an input that reaches the "unreachable" path, the optimizer may have already removed the bounds check that would have caught it.
 
 **Security implications:**
 
@@ -101,10 +99,9 @@ int get_value(int index) {
 | Memory corruption | UB can lead to arbitrary memory access |
 | Exploitation | Attackers can craft inputs that reach "unreachable" paths |
 
-**Safe pattern:**
+The safe pattern is to use `assert` in debug builds (which aborts instead of continuing with UB) and reserve `std::unreachable()` for release builds where the invariant has been thoroughly tested:
 
 ```cpp
-
 int get_value_safe(int index) {
     switch (index) {
         case 0: return 10;
@@ -117,20 +114,22 @@ int get_value_safe(int index) {
         assert(false && "should not reach here");  // debug: catch violations
     #endif
 }
-
 ```
+
+This pattern gives you both safety during development and maximum performance in production.
 
 ### Q3: Compare `std::unreachable` with alternatives
 
-```cpp
+Before C++23 standardized `std::unreachable()`, each major compiler had its own extension, and `assert(false)` was the portable but weaker alternative. Knowing the full landscape helps you choose the right option for your codebase and target standard.
 
+```cpp
 #include <iostream>
 #include <cassert>
 // #include <utility>  // for std::unreachable (C++23)
 
 enum class Color { Red, Green, Blue };
 
-// Option 1: __builtin_unreachable() — GCC/Clang extension
+// Option 1: __builtin_unreachable() - GCC/Clang extension
 const char* to_string_v1(Color c) {
     switch (c) {
         case Color::Red:   return "red";
@@ -140,7 +139,7 @@ const char* to_string_v1(Color c) {
     __builtin_unreachable();  // GCC/Clang only
 }
 
-// Option 2: assert(false) — debug check, no optimization hint
+// Option 2: assert(false) - debug check, no optimization hint
 const char* to_string_v2(Color c) {
     switch (c) {
         case Color::Red:   return "red";
@@ -151,7 +150,7 @@ const char* to_string_v2(Color c) {
     return "unknown";
 }
 
-// Option 3: std::unreachable() — C++23, portable, optimizer hint
+// Option 3: std::unreachable() - C++23, portable, optimizer hint
 // const char* to_string_v3(Color c) {
 //     switch (c) { ... }
 //     std::unreachable();
@@ -164,8 +163,9 @@ int main() {
 // Expected output:
 // red
 // green
-
 ```
+
+Here is how the three options compare:
 
 | Feature | `std::unreachable` | `__builtin_unreachable` | `assert(false)` |
 | --- | --- | --- | --- |
@@ -183,4 +183,4 @@ int main() {
 - MSVC equivalent: `__assume(false)`; GCC/Clang: `__builtin_unreachable()`.
 - Use only when you can **prove** the path is impossible (closed enums, validated inputs).
 - Combine with debug asserts: assert in debug, unreachable in release.
-- If unsure, prefer `assert(false)` — it's safer, even without optimization benefits.
+- If unsure, prefer `assert(false)` - it's safer, even without optimization benefits.

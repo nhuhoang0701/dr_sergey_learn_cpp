@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-**Dependency Inversion Principle (DIP):** High-level modules should not depend on low-level modules. Both should depend on abstractions.
+**Dependency Inversion Principle (DIP):** High-level modules should not depend on low-level modules. Both should depend on abstractions. In plain terms: your `Service` should not reach down and directly construct a `FileLogger`. Instead, it should ask for "something that logs" - and the actual logger type gets decided at the call site, not inside the service.
+
+The payoff is testability. When your high-level code depends on a concrete type, you cannot swap it out. When it depends on an abstraction, you can inject a mock in tests and a real implementation in production.
 
 ### Without DIP vs With DIP
 
 ```cpp
-
 WITHOUT DIP:                       WITH DIP:
 ┌──────────┐                       ┌──────────┐
 │ Service  │───depends on──>│      │ Service  │───depends on──>│ ILogger │
@@ -23,10 +24,11 @@ WITHOUT DIP:                       WITH DIP:
                     │FileLogger│                         │FileLogger│MockLogger│
                     └──────────┘                         └──────────┴──────────┘
 Hard to test!                      Easy to test with MockLogger
-
 ```
 
 ### Two Flavors in C++
+
+C++ gives you two distinct ways to apply DIP, with different tradeoffs:
 
 | Style | Mechanism | Overhead | When to use |
 | --- | --- | --- | --- |
@@ -39,8 +41,9 @@ Hard to test!                      Easy to test with MockLogger
 
 ### Q1: Refactor a class that directly instantiates a Logger to accept a Logger interface
 
-```cpp
+The bad version hard-codes `FileLogger` as a member. You cannot test `ServiceBad` without actually running the logger - and you cannot swap it for anything else without changing the class. The fix is to accept any `ILogger` by reference.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -112,13 +115,15 @@ int main() {
 // Result: 84
 // Mock received: Processing 42
 // Mock call count: 1
-
 ```
+
+Notice the testing section - `MockLogger` captures the messages instead of printing them, so you can assert on them in a test without any output or filesystem side effects. That is the direct benefit of DIP.
 
 ### Q2: Show how templates (static DIP) differ from virtual interfaces (dynamic DIP) in overhead
 
-```cpp
+The virtual dispatch path through `ILoggerDynamic` adds an indirect call - the CPU has to look up the function pointer in the vtable at runtime. With the template version, the call is resolved at compile time and the compiler can inline it entirely, leaving essentially nothing in the generated code.
 
+```cpp
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -187,13 +192,15 @@ int main() {
 // Dynamic DIP: ~50 ms  (vtable lookup prevents full inlining)
 // Static  DIP: ~0 ms   (call fully inlined away by compiler)
 // Speedup: huge
-
 ```
+
+The static version's call is completely optimized away because the compiler knows at compile time exactly which `log` will be called. Choose static DIP for performance-critical inner loops; use dynamic DIP when you need to swap implementations at runtime (plugins, configuration-driven behaviour).
 
 ### Q3: Inject dependencies via constructor parameters and verify testability improvement
 
-```cpp
+You do not always need a full virtual interface. For lightweight components, `std::function` provides a clean DIP mechanism without the ceremony of defining an abstract base class.
 
+```cpp
 #include <functional>
 #include <iostream>
 #include <string>
@@ -254,8 +261,9 @@ int main() {
 // [EMAIL] Order placed: Widget ($29.990000)
 // Test notification: Payment failed for Gadget
 // Result verified: payment failed as expected
-
 ```
+
+The test version injects lambdas that capture local variables - the payment always fails, and notifications go into a vector you can inspect. No mock framework, no interface hierarchy needed.
 
 ---
 

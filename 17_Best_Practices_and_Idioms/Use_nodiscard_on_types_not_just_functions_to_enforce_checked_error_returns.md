@@ -9,17 +9,17 @@
 
 ## Topic Overview
 
-`[[nodiscard]]` on a **type** means *every function that returns that type* gets an automatic warning if the return value is discarded. This is more powerful than marking individual functions.
+You've probably seen `[[nodiscard]]` on functions, but putting it on a **type** is more powerful: every function that returns that type automatically inherits the warning. You don't have to remember to annotate each function individually - you annotate the type once, and the compiler enforces checking everywhere that type is returned.
 
 ```cpp
-
 [[nodiscard]] struct Error { int code; };
 
 Error do_work();    // automatically [[nodiscard]]!
 Error validate();   // automatically [[nodiscard]]!
 // Every function returning Error must have its result checked.
-
 ```
+
+The nice part is that this scales: add one new function that returns `Error`, and the checking requirement comes along for free without any extra annotation on the function itself.
 
 ---
 
@@ -27,8 +27,9 @@ Error validate();   // automatically [[nodiscard]]!
 
 ### Q1: Mark a `Result<T,E>` type as `[[nodiscard]]` and show the warning
 
-```cpp
+Here's a practical use of the pattern. The `Result<T,E>` type carries either a success value or an error, and discarding it silently is almost always a bug - you're throwing away information about whether the operation worked. Putting `[[nodiscard]]` on the type turns that class of bug into a compile-time warning.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <variant>
@@ -76,13 +77,15 @@ int main() {
 // Expected output:
 // Parsed: 42
 // Error: parse failed: abc
-
 ```
+
+That commented-out line at the bottom is the important one. Calling `parse_number` and throwing away the result is now a compiler warning - and with `-Werror` it becomes an error - without you having to do anything more than put `[[nodiscard]]` on the type definition.
 
 ### Q2: Explain why `[[nodiscard("reason")]]` is better than plain `[[nodiscard]]`
 
-```cpp
+The plain `[[nodiscard]]` attribute generates a generic warning that just names the type. That's often enough to understand the problem, but when there are multiple `[[nodiscard]]` types in a codebase, a custom message tells the developer exactly why discarding is dangerous for this particular type.
 
+```cpp
 #include <iostream>
 
 // Without message:
@@ -132,13 +135,15 @@ int main() {
 // Expected output:
 // Connected
 // Allocated 100 ints
-
 ```
+
+The `Buffer` example shows a second reason to use a custom message: the warning text can tell you what the consequence of discarding actually is ("Memory leak"), which is much more actionable than "you ignored a return value."
 
 ### Q3: Show how to suppress a `[[nodiscard]]` warning with `(void)` cast
 
-```cpp
+Sometimes you genuinely want to call a function and discard the result - for example, a cleanup function where you've already handled the important work and the return value is advisory. The standard way to express "I know about this return value, I've decided to ignore it" is to cast to `void`.
 
+```cpp
 #include <iostream>
 
 [[nodiscard("Check the error code")]]
@@ -168,14 +173,15 @@ int main() {
 }
 // Expected output:
 // Done
-
 ```
+
+The `(void)` cast is the idiomatic choice. It's brief, universally understood, and serves as a signal to code reviewers that the discard is intentional rather than accidental. `[[maybe_unused]]` on a local variable is an alternative when you want to keep the value in scope for debugging purposes.
 
 ---
 
 ## Notes
 
 - `[[nodiscard]]` on types is available since C++17; the `("reason")` form since C++20.
-- Apply to: error types, RAII guards, allocation results, lock types.
+- Apply to: error types, RAII guards, allocation results, lock types - anything where silently discarding the return value is almost always a bug.
 - The standard library uses it: `std::expected`, `std::error_code`, `std::unique_lock`.
-- `[[nodiscard]]` on constructors (C++20) warns if a temporary is created and discarded.
+- `[[nodiscard]]` on constructors (C++20) warns if a temporary is created and immediately discarded.

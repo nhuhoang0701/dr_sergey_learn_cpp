@@ -8,20 +8,22 @@
 
 ## Topic Overview
 
-Free functions enable extension without modification, work with ADL, and can operate generically on types that share an interface but don't share a base class.
+Free functions enable extension without modification, work with ADL, and can operate generically on types that share an interface but don't share a base class. The key insight is that a free function can be added to any type - including ones you don't own - while a member function requires modifying the class itself.
 
 ### Member vs Free Function Discovery
 
-```cpp
+When you call a free function unqualified, the compiler casts a much wider net than it does for a member function call:
 
-obj.swap(other)    → compiler looks in obj's class only
-swap(obj, other)   → compiler looks in:
+```cpp
+obj.swap(other)    -> compiler looks in obj's class only
+swap(obj, other)   -> compiler looks in:
 
                      1. Current namespace
                      2. Namespace of obj's type (ADL)
                      3. using declarations
-
 ```
+
+That wider search is exactly what makes free functions so useful for generic code.
 
 ---
 
@@ -29,8 +31,9 @@ swap(obj, other)   → compiler looks in:
 
 ### Q1: Explain how a non-member `swap` extends the interface without changing the class
 
-```cpp
+Sometimes you are working with a third-party class you cannot modify. Free functions let you attach new behavior to it without touching the original source. Here `swap` is provided for a library type purely through a free function in the same translation unit.
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <utility>
@@ -72,13 +75,15 @@ int main() {
 // Expected output:
 // Custom swap called for widgets 2 and 1
 // After sort: 1, 2
-
 ```
+
+The `using std::swap;` line in the template is the standard pattern - it brings in the standard library fallback, and then the unqualified `swap(a, b)` call lets ADL pick a type-specific overload if one exists.
 
 ### Q2: Show how ADL finds the right free function for a type
 
-```cpp
+This example has two types in two different namespaces, each with its own free functions. No `using` declarations are needed anywhere - ADL finds the right function purely from the argument type.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -123,13 +128,15 @@ int main() {
 // Expected output:
 // (3, 4, 0) magnitude: 5
 // rgb(1, 0.5, 0) brightness: 0.5925
-
 ```
+
+The `magnitude` and `brightness` calls have no namespace prefix - they just work. If you had tried to write these as member functions and then call them generically, you would need a common base class or a template. Free functions with ADL give you the same flexibility for free.
 
 ### Q3: Compare `std::size()`, `std::begin()`, `std::end()` as free functions with `.size()`, `.begin()` as members
 
-```cpp
+This is one of the clearest arguments for free functions in the standard library. Member functions are tied to the type - C arrays have no members at all. Free functions can be overloaded for anything, including built-in types.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <iterator>
@@ -162,18 +169,19 @@ int main() {
 // Size: 5, First: 1
 // Size: 3, First: 10
 // Size: 4, First: 100
-
 ```
+
+The `print_info` template works uniformly for all three types because it uses the free function versions. If it used `.size()` and `.begin()`, it would fail to compile for raw arrays - even though arrays are perfectly valid sequences.
 
 **Comparison:**
 
 | Function | Member `.size()` | Free `std::size()` |
 | --- | --- | --- |
-| `vector<T>` | ✓ | ✓ |
-| `array<T,N>` | ✓ | ✓ |
-| `T arr[N]` (C-array) | ✗ | ✓ |
-| `string_view` | ✓ | ✓ |
-| `span<T>` | ✓ | ✓ |
+| `vector<T>` | Yes | Yes |
+| `array<T,N>` | Yes | Yes |
+| `T arr[N]` (C-array) | No | Yes |
+| `string_view` | Yes | Yes |
+| `span<T>` | Yes | Yes |
 | Generic code | Requires `.size()` method | Works with anything |
 
 ---

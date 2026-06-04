@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Static analysis and sanitizers catch bugs that compilers miss. They should be part of every CI pipeline.
+Static analysis and sanitizers catch bugs that compilers miss. Think of them as a second set of eyes - the compiler checks if your code is well-formed, but these tools look for patterns that compile just fine yet are almost certainly wrong (uninitialized reads, use-after-free, signed overflow, data races). They should be part of every CI pipeline.
 
 ### Tool Comparison
 
@@ -27,10 +27,11 @@ Static analysis and sanitizers catch bugs that compilers miss. They should be pa
 
 ### Q1: Run clang-tidy and fix modernize/readability warnings
 
+To appreciate what clang-tidy does for you, look at the kind of legacy code it flags. The issues here are real and common: no `explicit` on single-argument constructors, raw `new` without RAII, `NULL` instead of `nullptr`, `typedef` instead of `using`.
+
 **Before clang-tidy (legacy code):**
 
 ```cpp
-
 #include <vector>
 #include <iostream>
 using namespace std;
@@ -48,13 +49,11 @@ public:
         }
     }
 };
-
 ```
 
-**clang-tidy commands:**
+These are the clang-tidy commands to analyze and auto-fix the file:
 
 ```bash
-
 # Run with modernize checks
 clang-tidy source.cpp -checks='modernize-*,readability-*' --
 
@@ -70,13 +69,13 @@ clang-tidy source.cpp -checks='modernize-*,readability-*' --
 
 # Fix automatically:
 clang-tidy source.cpp -checks='modernize-*' -fix --
-
 ```
+
+After running with `-fix`, the same class looks like this - notice that `unique_ptr` eliminates the Rule-of-Five problem entirely:
 
 **After fix (modern C++):**
 
 ```cpp
-
 #include <array>
 #include <memory>
 #include <vector>
@@ -97,13 +96,15 @@ public:
         }
     }
 };
-
 ```
+
+Each mechanical problem is gone, and the resulting code is both safer and more readable.
 
 ### Q2: Enable AddressSanitizer and detect use-after-free
 
-```cpp
+AddressSanitizer (ASan) instruments your binary at compile time to track every heap allocation and deallocation. When you access memory that has already been freed - or go past the end of an array - it prints an exact stack trace pointing to the bad access and to where the memory was originally allocated and freed.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -140,13 +141,11 @@ int main() {
 // Expected output (without bugs):
 // Testing sanitizers...
 // No bugs triggered.
-
 ```
 
-**Build with AddressSanitizer:**
+Build with the `-fsanitize=address` flag - the `-g` and `-O1` combination keeps frames readable without losing too much information:
 
 ```bash
-
 # Compile with ASan
 g++ -std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1 test.cpp -o test
 
@@ -159,13 +158,15 @@ g++ -std=c++20 -fsanitize=address -fno-omit-frame-pointer -g -O1 test.cpp -o tes
 #     #0 operator new test.cpp:5
 # freed by thread T0 here:
 #     #0 operator delete test.cpp:6
-
 ```
+
+That diagnostic tells you exactly which line did the bad read, where the memory came from, and where it was freed. Finding this manually in a large codebase would take hours; ASan catches it in seconds.
 
 ### Q3: Use UndefinedBehaviorSanitizer to catch signed integer overflow
 
-```cpp
+Signed integer overflow is undefined behavior in C++. The compiler is allowed to assume it never happens, and it uses that assumption to perform optimizations. That means overflow can silently produce wrong results, or the compiler can eliminate the check that was supposed to prevent it. UBSan instruments the binary to trap at the exact instruction where overflow would occur.
 
+```cpp
 #include <iostream>
 #include <climits>
 
@@ -204,13 +205,11 @@ int main() {
 // Expected output:
 // INT_MAX = 2147483647
 // Safe: 2147483648
-
 ```
 
-**Build with UBSan:**
+Enabling UBSan is just one flag change, and it catches a whole class of silent bugs:
 
 ```bash
-
 # Compile with UBSan
 g++ -std=c++20 -fsanitize=undefined -g -O1 test.cpp -o test
 
@@ -225,14 +224,15 @@ g++ -std=c++20 -fsanitize=address,undefined -fno-omit-frame-pointer -g test.cpp 
 # -fsanitize=enum
 # -fsanitize=float-divide-by-zero
 # -fsanitize=shift
-
 ```
+
+You can combine ASan and UBSan in one build since they use compatible instrumentation. Note that TSan and ASan conflict with each other, so those need separate test builds.
 
 ---
 
 ## Notes
 
-- Run sanitizers in CI with every PR — they find bugs unit tests miss.
+- Run sanitizers in CI with every PR - they find bugs unit tests miss.
 - ASan has ~2x slowdown; UBSan has <10% slowdown.
 - ASan and TSan cannot be used together (conflicting instrumentation).
 - cppcheck can be run without building: `cppcheck --enable=all src/`.

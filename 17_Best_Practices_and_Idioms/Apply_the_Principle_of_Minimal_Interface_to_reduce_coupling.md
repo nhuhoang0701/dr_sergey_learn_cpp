@@ -10,10 +10,13 @@
 
 The **Principle of Minimal Interface** (Herb Sutter's GotW #84): *if a function can be written as a non-friend non-member using only the public interface, it should be.* This minimizes the number of functions that can break when the class internals change.
 
+The intuition is straightforward. Every function with private access is a function that breaks if you refactor the private data. If `area()` can compute its result through the public `radius()` getter, there's no reason to put it inside the class and make it sensitive to implementation changes. Move it out, and you've reduced the blast radius of any future refactoring.
+
 ### Core Idea
 
-```cpp
+The split looks like this. Only the functions that genuinely need private data stay inside the class:
 
+```cpp
 class Widget {                       // Member functions: MUST access privates
     int x_;
 public:
@@ -30,7 +33,6 @@ void print(const Widget& w) {        // Only calls w.x(), w.is_valid()
 bool operator==(const Widget& a, const Widget& b) {
     return a.x() == b.x();           // Only public API
 }
-
 ```
 
 ### What to keep as member vs free function
@@ -48,8 +50,9 @@ bool operator==(const Widget& a, const Widget& b) {
 
 ### Q1: Factor out methods that can be non-member functions
 
-```cpp
+The before/after below shows how `CircleBloated` stuffs five functions into the class that don't need private access. `Circle` strips it down to just the getter and setter - the only two functions that actually touch `radius_`:
 
+```cpp
 #include <cmath>
 #include <iostream>
 #include <string>
@@ -110,8 +113,9 @@ int main() {
 // Area: 78.5398
 // Circumference: 31.4159
 // c is larger
-
 ```
+
+Now if you decide to store `radius_` as a `float` instead of a `double`, you only need to update two functions - the getter and setter. All the computation in the free functions goes untouched.
 
 ### Q2: Explain why Herb Sutter argues that non-friend non-member functions are preferred
 
@@ -126,21 +130,22 @@ int main() {
 4. **Genericity:** Free functions can be templatized to work with any type that has `radius()`:
 
 ```cpp
-
 template<typename Shape>
 double area(const Shape& s) requires requires { s.radius(); } {
     return M_PI * s.radius() * s.radius();
 }
 // Works for Circle, Sphere, or any type with radius()
-
 ```
 
-5. **Recompilation:** Adding a non-member function in a new header doesn't require recompiling users of the class.
+1. **Recompilation:** Adding a non-member function in a new header doesn't require recompiling users of the class.
+
+Point 5 matters in large codebases. If every new utility function goes into the class definition, every file that includes the class header gets recompiled whenever someone adds one more helper. Moving those helpers to separate headers breaks that dependency.
 
 ### Q3: Show how a smaller member set enables extensibility without recompilation
 
-```cpp
+Here the `Sensor` class is a stable library type - it has minimal members and nothing that isn't strictly necessary. All the application-specific logic (`is_valid_reading`, `normalize`, `print_report`) lives in separate translation units and can evolve freely without touching `Sensor` at all:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -188,8 +193,9 @@ int main() {
 // Value: 30 Valid: 0
 // Value: 42 Valid: 1
 // Valid: 2 / 4
-
 ```
+
+Notice also that `is_valid_reading` works directly as a predicate to `std::count_if` - no wrapper needed. That's the ADL + free function story in practice: the function is in the same namespace as `Sensor`, callable without qualification, and compatible with standard algorithms.
 
 ---
 

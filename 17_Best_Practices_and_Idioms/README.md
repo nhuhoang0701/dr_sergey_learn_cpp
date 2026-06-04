@@ -64,15 +64,13 @@ Core Guidelines, naming conventions, const-correctness, API design, and proven C
 
 ## Notes
 
-- Follow the Rule of Zero: let compiler-generated special members handle resource management
-- Use RAII for all resources — files, locks, sockets, memory
-- Prefer const by default — const references, const member functions, const variables
-- Apply the Single Responsibility Principle — each class/function should do one thing well
-- Use [[nodiscard]] on functions where ignoring the return value is likely a bug
-- Prefer std::string_view parameters over const std::string& when you don't need ownership
-- Use enum class (scoped enums) to prevent implicit conversions and namespace pollution
-- Name types and functions to express intent — code is read far more than it is written
-- Avoid raw 
-ew/delete — use smart pointers and containers exclusively
-- Write 
-oexcept on move constructors/assignment operators — it enables container optimizations
+- Follow the Rule of Zero: let compiler-generated special members handle resource management wherever possible - the less destructor/copy/move boilerplate you write, the less there is to get wrong.
+- Use RAII for all resources - files, locks, sockets, memory. If you're writing manual cleanup code, there's almost certainly a wrapper type that should be doing that for you.
+- Prefer `const` by default - const references, const member functions, const local variables. Add mutation only where you actually need it.
+- Apply the Single Responsibility Principle - each class and function should do one thing well. If you're struggling to name something, it's often because it's doing too many things.
+- Use `[[nodiscard]]` on functions where ignoring the return value is likely a bug - error codes and resource handles are the classic cases.
+- Prefer `std::string_view` parameters over `const std::string&` when you don't need ownership. It works with string literals, `std::string`, and any other contiguous character sequence without copying.
+- Use `enum class` (scoped enums) to prevent implicit conversions and namespace pollution. Unscoped enums leak their enumerators into the enclosing scope and convert silently to `int`.
+- Name types and functions to express intent - code is read far more than it is written, and a well-chosen name is the cheapest form of documentation you have.
+- Avoid raw `new`/`delete` - use smart pointers and containers exclusively. Raw owning pointers are exception-unsafe and easy to leak.
+- Write `noexcept` on move constructors and move assignment operators - containers like `std::vector` use this information to decide whether they can move elements during reallocation, and getting it wrong means copies where you expect moves.

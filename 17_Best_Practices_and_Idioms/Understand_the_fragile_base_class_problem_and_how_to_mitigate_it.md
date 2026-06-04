@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-The **fragile base class problem** means that changes to a base class can break derived classes in subtle, unpredictable ways — even without changing the derived class source code.
+The **fragile base class problem** means that changes to a base class can break derived classes in subtle, unpredictable ways - even without changing the derived class source code.
+
+The reason this trips people up is that it is not an obvious compile error. Often the derived class still compiles fine; it just silently does the wrong thing at runtime. Name hiding, changed semantics, and ABI breakage can all arrive as soon as you update the base.
 
 ### How It Happens
 
-```cpp
+The chain of causality is short and brutal:
 
+```cpp
 Base class author adds/changes a method
         |
         v
@@ -22,10 +25,11 @@ Derived class silently inherits the change
         v
 Derived class behavior breaks!
 (name hiding, changed semantics, ABI break)
-
 ```
 
 ### Common Manifestations
+
+Here is a concrete look at the kinds of changes that cause trouble:
 
 | Change in Base | Problem in Derived |
 | --- | --- |
@@ -41,8 +45,9 @@ Derived class behavior breaks!
 
 ### Q1: Show how adding a non-virtual method to a base class breaks derived classes
 
-```cpp
+Name hiding is the most common surprise. When the base gains a new overload of a name the derived class already uses, the derived class's version gets hidden - callers can no longer reach it through an unqualified call.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -60,7 +65,7 @@ public:
     }
 };
 
-// Version 2: Base author adds foo(int) — BREAKS Derived!
+// Version 2: Base author adds foo(int) -- BREAKS Derived!
 class BaseV2 {
 public:
     virtual ~BaseV2() = default;
@@ -94,20 +99,22 @@ int main() {
 // Derived::foo(string): hello
 // Base::foo(int): 42
 // Base method hidden by derived!
-
 ```
+
+The `DerivedV2` author changed nothing - yet their class now has broken name lookup. That is the fragile base class problem in its purest form.
 
 ### Q2: Show how the NVI (Non-Virtual Interface) pattern reduces the fragile base class problem
 
-```cpp
+The Non-Virtual Interface (NVI) pattern puts a stable, non-virtual public interface on the base class and confines all customization to private virtual methods. This means base class authors can add pre/post logic, validation, or logging without ever touching derived classes.
 
+```cpp
 #include <iostream>
 #include <string>
 
 // NVI Pattern: public non-virtual interface, private virtual implementation
 class Shape {
 public:
-    // Non-virtual public interface — STABLE, never changes
+    // Non-virtual public interface -- STABLE, never changes
     void draw() const {
         pre_draw();      // invariant: setup
         do_draw();       // customization point
@@ -121,11 +128,11 @@ public:
     virtual ~Shape() = default;
 
 private:
-    // Private virtual — derived classes customize ONLY these
+    // Private virtual -- derived classes customize ONLY these
     virtual void do_draw() const = 0;
     virtual double do_area() const = 0;
 
-    // Non-virtual helpers — base controls the framework
+    // Non-virtual helpers -- base controls the framework
     void pre_draw() const { std::cout << "[begin draw] "; }
     void post_draw() const { std::cout << " [end draw]\n"; }
 };
@@ -168,15 +175,15 @@ int main() {
 // [begin draw] Square(s=4) [end draw]
 // Circle area: 78.5398
 // Square area: 16
-
 ```
 
 **Why NVI helps:** Base class author can add pre/post steps, logging, validation WITHOUT affecting any derived class.
 
 ### Q3: Use composition to eliminate the fragile base class problem
 
-```cpp
+The deepest mitigation is to avoid public inheritance for implementation sharing altogether. If a `Widget` *uses* drawing behavior rather than *is* a drawable thing, there is no base class relationship to break. Changes to `CircleDraw` cannot accidentally affect `SquareDraw` or `Widget`.
 
+```cpp
 #include <functional>
 #include <iostream>
 #include <string>
@@ -205,7 +212,7 @@ public:
     }
 };
 
-// Widget COMPOSES drawing behavior — no fragile base class!
+// Widget COMPOSES drawing behavior -- no fragile base class!
 class Widget {
     std::string name_;
     std::unique_ptr<DrawBehavior> drawer_;  // has-a, not is-a
@@ -234,8 +241,9 @@ int main() {
 // Expected output:
 // Widget 'MyWidget': Drawing circle r=3
 // Widget 'MyWidget': Drawing square s=5
-
 ```
+
+As a bonus, composition lets you swap the behavior at runtime - something a static inheritance hierarchy cannot do at all.
 
 ---
 

@@ -8,18 +8,20 @@
 
 ## Topic Overview
 
-**Tag types** are empty structs used to select overloads or policies at compile time. They produce zero-overhead code because the empty struct is optimized away completely.
+**Tag types** are empty structs whose entire job is to select an overload or policy at compile time. Because they're empty, the compiler optimizes them away completely - you get different behavior at different call sites with zero runtime cost and, more importantly, with call sites that read like plain English rather than `func<true>(x)`.
 
 ### Standard Library Examples
 
-```cpp
+The standard library uses this pattern extensively. You've probably seen these without thinking about why they exist:
 
+```cpp
 std::piecewise_construct_t   // tag for std::pair
 std::in_place_t              // tag for std::optional, std::variant
 std::allocator_arg_t         // tag for allocator-aware types
 std::defer_lock_t            // tag for std::unique_lock
-
 ```
+
+Each of these is an empty struct. Passing an instance of one as an argument tells the constructor which overload to use - compile-time dispatch with no runtime overhead.
 
 ---
 
@@ -27,8 +29,9 @@ std::defer_lock_t            // tag for std::unique_lock
 
 ### Q1: Define policy tags and overload on them
 
-```cpp
+Here's how to build your own version of the pattern. Two empty structs - `check_bounds_t` and `no_check_t` - let callers choose between a bounds-checking overload and an unchecked one. The tag argument disappears in optimized builds; all that's left is the right code for the chosen policy.
 
+```cpp
 #include <cstddef>
 #include <iostream>
 #include <stdexcept>
@@ -82,13 +85,15 @@ int main() {
 // 30
 // 50
 // Caught: index 10
-
 ```
+
+The two overloads are completely separate functions. There's no `if` statement branching at runtime; the decision is made when the compiler resolves the call. The `check_bounds` and `no_check` arguments are just the mechanism for making that choice readable.
 
 ### Q2: Show that policy tags generate separate code paths with zero runtime branching
 
-```cpp
+This example makes the "zero runtime branching" point explicit by selecting entirely different algorithms - binary search vs. linear search - based on the tag. The caller's choice of `sorted` or `unsorted` is resolved at compile time.
 
+```cpp
 #include <iostream>
 
 // Policy tags
@@ -100,7 +105,7 @@ inline constexpr unsorted_t unsorted{};
 // Two completely different algorithms, selected at compile time
 template<typename Iter>
 bool find(Iter begin, Iter end, int value, sorted_t) {
-    // Binary search for sorted data — O(log n)
+    // Binary search for sorted data - O(log n)
     std::cout << "[binary search] ";
     auto it = std::lower_bound(begin, end, value);
     return it != end && *it == value;
@@ -108,7 +113,7 @@ bool find(Iter begin, Iter end, int value, sorted_t) {
 
 template<typename Iter>
 bool find(Iter begin, Iter end, int value, unsorted_t) {
-    // Linear search for unsorted data — O(n)
+    // Linear search for unsorted data - O(n)
     std::cout << "[linear search] ";
     return std::find(begin, end, value) != end;
 }
@@ -130,13 +135,15 @@ int main() {
 // Expected output:
 // [binary search] true
 // [linear search] true
-
 ```
+
+Each `find` instantiation compiles to a completely different function body. The tag is not stored anywhere - it's an empty struct used purely as a compile-time signal. This is what "zero-cost" means here.
 
 ### Q3: Compare policy tags with template boolean parameters
 
-```cpp
+The alternative to tag types for compile-time switching is a `template<bool>` parameter. Both achieve zero runtime cost, but the readability is quite different at the call site. `access_v1<true>(v, i)` tells you nothing without looking up the template; `access_v2(v, i, checked)` is self-explanatory.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -174,12 +181,13 @@ int main() {
 }
 // Expected output:
 // 20
-
 ```
+
+There's also a practical extensibility advantage: if you later need a third option (say, `clamped_t` that clamps the index instead of throwing), you add a tag and an overload. With the boolean parameter you'd have to change the template to something more complex.
 
 | Feature | `template<bool B>` | Tag types |
 | --- | --- | --- |
-| Readability | `func<true>(x)` — unclear | `func(x, checked)` — clear |
+| Readability | `func<true>(x)` - unclear | `func(x, checked)` - clear |
 | Can mix with overloads | Awkward | Natural |
 | Runtime overhead | Zero | Zero |
 | Extensible | No (only true/false) | Yes (add new tags) |
@@ -189,7 +197,7 @@ int main() {
 
 ## Notes
 
-- Tag types cost zero bytes at runtime — they're empty structs, optimized away.
-- Use `inline constexpr` tag instances in headers for ODR safety.
-- The STL uses tags extensively: `std::piecewise_construct`, `std::in_place`, `std::defer_lock`.
-- Combine with concepts for even better error messages in C++20.
+- Tag types cost zero bytes at runtime - they're empty structs, optimized away completely by the compiler.
+- Use `inline constexpr` tag instances in headers for ODR safety when the tags are used across translation units.
+- The STL uses tags extensively: `std::piecewise_construct`, `std::in_place`, `std::defer_lock` are all real examples you can study.
+- Combine with concepts for even better error messages in C++20 - a `requires` clause on the overload tells the caller exactly what's expected.

@@ -9,18 +9,14 @@
 
 ## Topic Overview
 
-`static_assert` + `constexpr` functions create **compile-time tests** that:
-
-- Run at every compilation (never skipped)
-- Fail with clear error messages
-- Serve as executable documentation that can't go stale
+`static_assert` combined with `constexpr` functions gives you **compile-time tests** that are impossible to skip. They run on every build, fail with clear error messages, and double as executable documentation - a specification that the compiler enforces for you. Unlike a comment saying "this function returns 120 for input 5," a `static_assert` actually verifies it.
 
 ```cpp
-
 constexpr int factorial(int n) { return n <= 1 ? 1 : n * factorial(n-1); }
 static_assert(factorial(5) == 120);  // test + documentation in one line
-
 ```
+
+The really nice part is that `static_assert` has zero runtime cost. It exists only at compile time. If it passes, it disappears.
 
 ---
 
@@ -28,12 +24,13 @@ static_assert(factorial(5) == 120);  // test + documentation in one line
 
 ### Q1: Enforce struct sizes with `static_assert`
 
-```cpp
+This is one of the most practical uses: locking down the layout of a struct that has to match an external format. If anyone adds a field or removes `#pragma pack`, the build fails immediately - you don't discover the problem at runtime when the protocol starts misbehaving.
 
+```cpp
 #include <cstdint>
 #include <iostream>
 
-// Network protocol header — must match wire format exactly!
+// Network protocol header - must match wire format exactly!
 #pragma pack(push, 1)
 struct NetworkHeader {
     uint8_t  version;      // 1 byte
@@ -46,7 +43,7 @@ struct NetworkHeader {
 };  // total: 20 bytes
 #pragma pack(pop)
 
-// Compile-time enforcement — if someone adds a field, this FAILS
+// Compile-time enforcement - if someone adds a field, this FAILS
 static_assert(sizeof(NetworkHeader) == 20,
     "NetworkHeader must be exactly 20 bytes for protocol compliance");
 
@@ -70,18 +67,20 @@ int main() {
 // Expected output:
 // Header size: 20 bytes
 // Version: 1
-
 ```
+
+The platform assumptions at the bottom (`sizeof(void*) == 8`, etc.) are especially useful in cross-platform code. They fail loudly on a platform that doesn't match your assumptions, instead of silently producing wrong results.
 
 ### Q2: Document algorithm invariants with `constexpr` + `static_assert`
 
-```cpp
+The idea here is to treat your `static_assert` lines as an executable specification. Each one says: "for these inputs, the function produces this output." That's more useful than a comment because it can never go out of date - if you change the algorithm and break an invariant, the build tells you.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <cstddef>
 
-// constexpr algorithms — testable at compile time!
+// constexpr algorithms - testable at compile time!
 constexpr int gcd(int a, int b) {
     while (b != 0) {
         int t = b;
@@ -109,7 +108,7 @@ constexpr int fibonacci(int n) {
     return b;
 }
 
-// Executable specifications — these ARE the tests AND the docs!
+// Executable specifications - these ARE the tests AND the docs!
 static_assert(gcd(12, 8) == 4);
 static_assert(gcd(17, 13) == 1);   // coprime
 static_assert(gcd(100, 0) == 100); // edge case
@@ -139,13 +138,15 @@ int main() {
 // gcd(12,8) = 4
 // fib(10)   = 55
 // All compile-time tests passed!
-
 ```
+
+The edge cases are particularly valuable here: `gcd(100, 0) == 100` and `!is_prime(1)` document behavior that's easy to get wrong and easy to forget to test in a separate unit test suite.
 
 ### Q3: `static_assert` as executable comments that never go stale
 
-```cpp
+Regular comments become lies over time - someone writes "Widget is always 8 bytes," then later adds a field, and nobody updates the comment. A `static_assert` on `sizeof(Widget)` can't become a lie: if `Widget` changes size, the build fails and you have to update it consciously.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 #include <string>
@@ -154,7 +155,7 @@ int main() {
 // Regular comments can become stale:
 // "Widget is always 8 bytes"  <-- maybe it was once, but is it still?
 
-// static_assert can't go stale — compiler checks it every build!
+// static_assert can't go stale - compiler checks it every build!
 struct Widget {
     int id;
     float weight;
@@ -194,8 +195,9 @@ int main() {
 // Expected output:
 // Cache size: 1
 // All static assertions verified at compile time.
-
 ```
+
+The `Cache` template assertions are especially useful: they give whoever instantiates `Cache<T>` an immediate, readable error if their type doesn't satisfy the requirements - instead of a wall of cryptic template substitution failures deeper in the implementation.
 
 ---
 

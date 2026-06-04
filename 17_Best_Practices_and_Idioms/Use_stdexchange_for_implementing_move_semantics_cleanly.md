@@ -8,13 +8,11 @@
 
 ## Topic Overview
 
-`std::exchange(obj, new_val)` replaces `obj` with `new_val` and returns the **old** value of `obj` — all in one expression. This makes move constructors and move assignment operators much cleaner.
+`std::exchange(obj, new_val)` replaces `obj` with `new_val` and returns the **old** value of `obj` - all in one expression. This makes move constructors and move assignment operators much cleaner because the two steps of a move (take the value, then null out the source) collapse into a single readable expression.
 
 ```cpp
-
 #include <utility>
 int old = std::exchange(x, 0);  // old = x, then x = 0
-
 ```
 
 ---
@@ -23,8 +21,9 @@ int old = std::exchange(x, 0);  // old = x, then x = 0
 
 ### Q1: Implement a move constructor using `std::exchange`
 
-```cpp
+A move constructor needs to do two things: take ownership of the source's resources, and leave the source in a valid-but-empty state. Without `std::exchange`, that means writing the take and the null-out as two separate statements for every member. With `std::exchange`, both happen together in the initializer list.
 
+```cpp
 #include <iostream>
 #include <utility>
 #include <cstddef>
@@ -38,7 +37,7 @@ public:
 
     ~Buffer() { delete[] data_; }
 
-    // Move constructor — clean with std::exchange
+    // Move constructor - clean with std::exchange
     Buffer(Buffer&& other) noexcept
         : data_(std::exchange(other.data_, nullptr))  // take pointer, set source to null
         , size_(std::exchange(other.size_, 0))         // take size, set source to 0
@@ -76,13 +75,15 @@ int main() {
 // After move:
 // a.size = 0, empty = 1
 // b.size = 100, empty = 0
-
 ```
+
+After the move, `a` is left in a valid state (size 0, null pointer), so its destructor can safely call `delete[] nullptr`, which is a no-op. That is exactly the postcondition a moved-from object needs.
 
 ### Q2: Show that `std::exchange` returns the old value
 
-```cpp
+`std::exchange` is not limited to move semantics. Any time you need to swap a value in place and also use the old value in the same expression, it fits. Here are a few patterns where it shines:
 
+```cpp
 #include <iostream>
 #include <string>
 #include <utility>
@@ -119,13 +120,15 @@ int main() {
 // prev=Alice name=Bob
 // 2 3 1
 // 1 2
-
 ```
+
+The linked-list traversal pattern is worth noticing: `std::exchange(curr->next, nullptr)` advances `curr` while simultaneously disconnecting the node from the rest of the list - both in one expression. This pattern appears in move constructors and destructors for intrusive data structures.
 
 ### Q3: Compare `std::exchange` with manual temp variable pattern
 
-```cpp
+The reason `std::exchange` reduces bug risk is subtle: it forces you to name the new value at the same time you read the old one. With the manual three-step approach you can forget the reset step, especially when adding a new member to a class later. The `std::exchange` form makes the reset structurally impossible to omit.
 
+```cpp
 #include <iostream>
 #include <utility>
 
@@ -139,7 +142,7 @@ public:
     Handle(Handle&& other) noexcept {
         fd_ = other.fd_;        // take
         other.fd_ = -1;         // reset source
-        // Two separate steps — easy to forget the reset!
+        // Two separate steps - easy to forget the reset!
     }
 
     // WITH std::exchange (one-liner, atomic intent)
@@ -166,8 +169,9 @@ int main() {
 // Expected output:
 // h1=-1 h2=42
 // close(42)
-
 ```
+
+Comparing the two styles side by side:
 
 | Pattern | Lines | Clarity | Bug risk |
 | --- | --- | --- | --- |
@@ -181,4 +185,4 @@ int main() {
 - `std::exchange` is in `<utility>` since C++14.
 - It's `constexpr` since C++20.
 - Use it in move constructors, move assignment, linked-list iteration, state machines.
-- It does NOT do an atomic exchange — use `std::atomic::exchange` for that.
+- It does NOT do an atomic exchange - use `std::atomic::exchange` for that.

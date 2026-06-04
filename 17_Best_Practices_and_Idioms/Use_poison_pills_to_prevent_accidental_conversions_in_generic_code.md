@@ -8,15 +8,15 @@
 
 ## Topic Overview
 
-**Poison pills** use `= delete` to prevent unwanted implicit conversions and block specific template instantiations. They turn silent bugs into compile errors.
+**Poison pills** use `= delete` to close off implicit conversion paths that the compiler would otherwise silently use. Instead of getting a quietly wrong result at runtime, the caller gets a compile error right at the call site - which is exactly where you want to catch the problem.
 
 ```cpp
-
 void process(int n);              // intended
 void process(double) = delete;    // poison: prevents process(3.14)
 void process(bool) = delete;      // poison: prevents process(true)
-
 ```
+
+The reason this matters is that C++ will happily convert `true` to `1`, `3.14` to `3`, and a single char to its ASCII value when looking for a matching overload. Deleted overloads participate in overload resolution and lose - so the compiler picks the deleted version, sees it's deleted, and issues an error instead of silently converting.
 
 ---
 
@@ -24,8 +24,9 @@ void process(bool) = delete;      // poison: prevents process(true)
 
 ### Q1: Delete a constructor overload to prevent implicit conversion
 
-```cpp
+Here's the pattern applied to constructors. `UserId` wraps an `int`, but you don't want someone accidentally passing `true` or `3.14` and getting a valid-looking but wrong ID. Each deleted constructor blocks one specific implicit conversion path.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -76,13 +77,15 @@ int main() {
 // Expected output:
 // UserId: 42
 // String: hello
-
 ```
+
+The reason you need to explicitly delete `bool`, `char`, `double`, and so on is that they can all implicitly convert to `int`. Without the deleted overloads, `UserId(true)` would compile successfully and silently produce `UserId(1)`.
 
 ### Q2: Use `= delete` on a template specialization to block specific types
 
-```cpp
+The same technique works for function templates. You can delete a specific specialization to block one type, or use a constrained primary template to block an entire category of types.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -118,17 +121,19 @@ int main() {
 // Serializing: hello
 // Serializing: 3.14
 // Done
-
 ```
+
+The constrained `requires std::is_pointer_v<T>` version is more powerful than a single specialization because it covers every pointer type without having to enumerate them individually.
 
 ### Q3: Show how deleted overloads give better error messages than `static_assert`
 
-```cpp
+Both `= delete` and `static_assert` can block undesired instantiations, but they fail at different points and produce different quality error messages. The deleted overload fails at overload resolution - before the function body is even examined - so the error points right at the call site. A `static_assert` fails inside the template body, which typically gives you a longer, more confusing error trace.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
-// Approach 1: static_assert — compiles body then fails
+// Approach 1: static_assert - compiles body then fails
 template<typename T>
 void process_v1(T val) {
     static_assert(!std::is_same_v<T, bool>,
@@ -136,7 +141,7 @@ void process_v1(T val) {
     std::cout << "Processing: " << val << '\n';
 }
 
-// Approach 2: deleted overload — fails at overload resolution
+// Approach 2: deleted overload - fails at overload resolution
 void process_v2(int val) {
     std::cout << "Processing int: " << val << '\n';
 }
@@ -159,15 +164,16 @@ int main() {
 // Processing int: 42
 // Processing double: 3.14
 // Processing: 42
-
 ```
+
+The table below summarizes when each technique has an advantage. In short: use `= delete` when you want a clean call-site error and SFINAE-friendliness; use `static_assert` when you want a custom diagnostic message.
 
 **Comparison:**
 
 | Feature | `= delete` | `static_assert` |
 | --- | --- | --- |
 | Error location | Call site | Template body |
-| Error quality | "deleted function" — clear | Sometimes cryptic |
+| Error quality | "deleted function" - clear | Sometimes cryptic |
 | Works in overload resolution | Yes (participates) | No (selected, then fails) |
 | SFINAE-friendly | Yes | No |
 | Can provide message | No (but error is clear) | Yes |
@@ -176,7 +182,7 @@ int main() {
 
 ## Notes
 
-- `= delete` participates in overload resolution — it's a better match than a conversion.
-- The ranges library uses `void begin(auto&&) = delete;` as an ADL poison pill.
+- `= delete` participates in overload resolution - it's a better match than a conversion, so the compiler selects it and then reports the deletion rather than silently doing the conversion.
+- The ranges library uses `void begin(auto&&) = delete;` as an ADL poison pill to prevent certain customization points from being found by accident.
 - Combine with `explicit` constructors for maximum type safety.
-- C++20 concepts can replace many poison pill patterns: `requires std::integral<T>`.
+- C++20 concepts can replace many poison pill patterns more elegantly: `requires std::integral<T>` expresses intent more clearly than a list of deleted overloads.

@@ -8,10 +8,9 @@
 
 ## Topic Overview
 
-**Designated initializers** (C++20) let you name each field in aggregate initialization, giving named-parameter ergonomics without a builder class. Unspecified fields are zero-initialized.
+**Designated initializers** (C++20) let you name each field when you initialize an aggregate. This gives you the ergonomics of named parameters - self-documenting call sites, easy defaults for unspecified fields - without writing a builder class. Any field you leave out is zero-initialized (or uses its default member initializer if it has one).
 
 ```cpp
-
 struct Config {
     int timeout = 30;
     int retries = 3;
@@ -19,8 +18,9 @@ struct Config {
 };
 
 auto cfg = Config{.timeout = 60, .verbose = true};  // retries = 3 (default)
-
 ```
+
+It's a small syntactic feature, but it completely changes how readable configuration-style code looks at the call site.
 
 ---
 
@@ -28,8 +28,9 @@ auto cfg = Config{.timeout = 60, .verbose = true};  // retries = 3 (default)
 
 ### Q1: Designated initializers vs positional constructors
 
-```cpp
+The problem with positional constructors is that the reader has to count arguments and cross-reference the declaration to understand what each value means. That's not a theoretical concern - it's a real bug source when someone passes two booleans in the wrong order and the compiler can't tell.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -42,13 +43,13 @@ struct ServerConfig {
     bool verbose = false;
 };
 
-// BAD: positional constructor — what does each number mean?
+// BAD: positional constructor - what does each number mean?
 void start_server_bad(std::string host, int port, int max_conn,
                       int timeout, bool tls, bool verbose) {
     std::cout << "[BAD] " << host << ":" << port << '\n';
 }
 
-// GOOD: designated initializers — self-documenting!
+// GOOD: designated initializers - self-documenting!
 void start_server(const ServerConfig& cfg) {
     std::cout << "Server: " << cfg.host << ":" << cfg.port
               << " (max=" << cfg.max_connections
@@ -77,13 +78,15 @@ int main() {
 // [BAD] example.com:443
 // Server: example.com:443 (max=200, timeout=3000ms, tls=1, verbose=0)
 // Server: localhost:9090 (max=100, timeout=5000ms, tls=0, verbose=1)
-
 ```
+
+The third call is the most telling: `{.port = 9090, .verbose = true}` leaves four fields at their defaults without the reader needing to know what those defaults are or count positional slots.
 
 ### Q2: Named-parameter ergonomics without a builder class
 
-```cpp
+The classic builder pattern requires a whole class with a setter for each field and a terminating method. That's a lot of boilerplate for something whose only job is to name the parameters. Designated initializers give you the same call-site clarity for free.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -137,13 +140,15 @@ int main() {
 // POST https://api.example.com (timeout=10)
 // POST https://api.example.com (timeout=10, redirect=1)
 // GET https://example.com (timeout=30, redirect=1)
-
 ```
+
+The builder version needs a separate class, `return *this` chains, and a terminating `.send()`. The designated-initializer version just needs a struct. If you don't need validation logic in the construction step, the struct approach wins on every dimension.
 
 ### Q3: Unspecified fields get zero/default-initialized
 
-```cpp
+This is worth testing concretely because people sometimes worry that unspecified fields contain garbage. They don't - they get either the default member initializer if there is one, or zero-initialization otherwise.
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -188,8 +193,9 @@ int main() {
 // factor: 0
 // Zero mass: 1
 // Zero x: 0
-
 ```
+
+Notice `id=-1` even though we didn't specify it - that comes from the default member initializer `int id = -1`. Fields without a default member initializer, like `RawData::factor`, get zero-initialized instead.
 
 ---
 

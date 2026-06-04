@@ -8,16 +8,14 @@
 
 ## Topic Overview
 
-`std::as_const(x)` returns a `const` reference to `x`, letting you force a const overload without modifying the variable. `const_cast` removes const — it's safe only when the original object was non-const.
+`std::as_const(x)` returns a `const` reference to `x`, letting you force a const overload without modifying the variable. It is the clean, self-documenting way to say "treat this as read-only right here." `const_cast` does the opposite - it removes const - and it is safe only when the original object was non-const to begin with.
 
 ```cpp
-
 std::string s = "hello";
 const std::string& cs = std::as_const(s);  // safe const view
 
 // const_cast: safe ONLY if original was non-const
 std::string& back = const_cast<std::string&>(cs);  // OK: s is non-const
-
 ```
 
 ---
@@ -26,8 +24,9 @@ std::string& back = const_cast<std::string&>(cs);  // OK: s is non-const
 
 ### Q1: Use `std::as_const` to call a const overload
 
-```cpp
+When a class has both a const and a non-const overload of a member function, calling through a non-const object always picks the non-const version - even if you just want to read. `std::as_const` gives you a way to explicitly request the const overload without making the variable itself const.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <utility>  // std::as_const
@@ -69,13 +68,15 @@ int main() {
 // [const overload]
 // [const overload]
 // 10 20 30
-
 ```
+
+The `std::as_const` call in the range-for is especially useful: without it, iterating over `c.items()` would call the non-const overload and return a reference you could accidentally modify. Wrapping it in `std::as_const` makes your intent - read-only iteration - visible right at the call site.
 
 ### Q2: When is `const_cast` safe vs UB
 
-```cpp
+This is one of those cases where the rule sounds simple but trips people up in practice. The critical distinction is not whether the pointer or reference is `const` - it is whether the **original object** was declared `const`. You can safely cast away const on a const reference to a non-const object, because the object's underlying storage is writable. But if the object itself was declared `const`, modifying it through a `const_cast` is undefined behavior, regardless of what the type system says the pointer is.
 
+```cpp
 #include <iostream>
 #include <cstring>
 
@@ -117,20 +118,22 @@ int main() {
 // Safe: 100
 // UB avoided (didn't modify)
 // Legacy: hello
-
 ```
+
+The reason the UB case is so dangerous is that compilers use `const` declarations to propagate constant values into the generated code. If you tell the compiler `x` is `const int`, it may emit `42` directly as an immediate value everywhere `x` is used and never generate a memory load at all. Modifying `x` through a cast has no effect on those already-embedded constants.
 
 | Scenario | Safe? |
 | --- | --- |
 | Cast away const, original was non-const | Yes |
-| Cast away const, original was const | **UB** if modified |
+| Cast away const, original was const | UB if modified |
 | Cast away const to call legacy C API | Safe if API doesn't modify |
 | Adding const (const_cast<const T&>) | Always safe |
 
 ### Q3: Show a design flaw where `const_cast` hints at a needed refactor
 
-```cpp
+When you find yourself reaching for `const_cast<SomeClass*>(this)` inside a `const` member function, that is almost always a signal that the design needs work. The right solution is almost always to mark the member `mutable` - which is C++'s way of saying "this data is not part of the logical value of the object."
 
+```cpp
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -176,8 +179,9 @@ int main() {
 // 210
 // 210
 // 210
-
 ```
+
+`mutable` is not a hack - it is the intended tool for exactly this pattern. A cache, a mutex, a lazy-initialized value, a debug counter: these are all things that change without affecting the observable value of the object, and `mutable` communicates that intent clearly.
 
 **When you see `const_cast`, ask:**
 

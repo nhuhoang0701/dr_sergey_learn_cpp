@@ -9,22 +9,22 @@
 
 ## Topic Overview
 
-**Pimpl** (Pointer to Implementation) hides a class's private members behind a forward-declared pointer. Clients only see the public interface — changing the implementation doesn't recompile clients.
+**Pimpl** (Pointer to Implementation) is an idiom that hides a class's private members behind a forward-declared pointer. Clients only see the public interface in the header - all the messy private fields and their heavy includes live exclusively in the `.cpp` file. The payoff is that changing anything in the implementation doesn't recompile the clients.
 
 ```cpp
-
-+------------------+     +-------------------+
-| Widget.h (public)|     | Widget.cpp        |
-| class Widget {   |     | struct Widget::Impl {
-|   struct Impl;   |     |   std::string name;
-|   unique_ptr<>   |---->|   std::vector data;
-|   void doWork(); |     |   Database db;
-| };               |     | };                |
-+------------------+     +-------------------+
-
+// +------------------+     +-------------------+
+// | Widget.h (public)|     | Widget.cpp        |
+// | class Widget {   |     | struct Widget::Impl {
+// |   struct Impl;   |     |   std::string name;
+// |   unique_ptr<>   |---->|   std::vector data;
+// |   void doWork(); |     |   Database db;
+// | };               |     | };                |
+// +------------------+     +-------------------+
 ```
 
-Clients include `Widget.h` — they never see `string`, `vector`, or `Database` headers.
+Clients include `Widget.h` - they never see `string`, `vector`, or `Database` headers.
+
+The reason this matters in large projects is that C++ recompiles every translation unit that transitively includes a changed header. If `Widget.h` mentions `Database.h`, every file using `Widget` gets recompiled whenever `Database.h` changes. Pimpl breaks that chain.
 
 ---
 
@@ -32,10 +32,11 @@ Clients include `Widget.h` — they never see `string`, `vector`, or `Database` 
 
 ### Q1: Implement a class with Pimpl
 
+This is split across three files the way it would look in a real project. Pay attention to where the destructor and move operations are defined - they *must* be in the `.cpp` file, not the header, because `unique_ptr`'s deleter needs the complete `Impl` type.
+
 **widget.h:**
 
 ```cpp
-
 #pragma once
 #include <memory>
 #include <string>
@@ -60,13 +61,11 @@ private:
     struct Impl;                  // forward declaration only!
     std::unique_ptr<Impl> pImpl_; // pointer to implementation
 };
-
 ```
 
 **widget.cpp:**
 
 ```cpp
-
 #include "widget.h"
 #include <iostream>
 #include <vector>
@@ -98,13 +97,11 @@ Widget& Widget::operator=(Widget&& other) noexcept = default;
 
 void Widget::doWork() { pImpl_->process(); }
 std::string Widget::name() const { return pImpl_->name; }
-
 ```
 
 **main.cpp:**
 
 ```cpp
-
 #include "widget.h"
 #include <iostream>
 // Note: we did NOT include <vector>, <algorithm>, etc.!
@@ -119,10 +116,13 @@ int main() {
 // MyWidget: processed (count=1)
 // MyWidget: processed (count=2)
 // Name: MyWidget
-
 ```
 
+`main.cpp` has no idea that `vector` or `algorithm` are involved. If you later swap the `vector` for a different data structure, `main.cpp` doesn't recompile.
+
 ### Q2: Pimpl tradeoffs
+
+Pimpl isn't free - you're trading compilation speed and interface stability for a heap allocation and a pointer indirection on every call. Here's the full picture:
 
 | Benefit | Cost |
 | --- | --- |
@@ -145,8 +145,9 @@ int main() {
 
 ### Q3: Pimpl with `unique_ptr` and forward-declared incomplete type
 
-```cpp
+This example condenses the full pattern into a single file to make the mechanics easier to study. In a real project the `// Implementation` section would live in a separate `.cpp`. The key rules at the bottom of the code are worth committing to memory - violating any of them produces confusing compiler errors about incomplete types.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <string>
@@ -195,7 +196,6 @@ int main() {
 // Expected output:
 // Connected: 1
 // [localhost:5432] SELECT * FROM users
-
 ```
 
 **Key rules for unique_ptr + Pimpl:**

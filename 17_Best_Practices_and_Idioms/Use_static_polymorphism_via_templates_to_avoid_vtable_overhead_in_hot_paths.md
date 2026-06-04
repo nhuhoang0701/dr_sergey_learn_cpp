@@ -8,20 +8,18 @@
 
 ## Topic Overview
 
-**Static polymorphism** uses templates to select behavior at compile time, eliminating virtual dispatch overhead. The compiler can inline the calls and optimize aggressively.
+**Static polymorphism** uses templates to select behavior at compile time, eliminating virtual dispatch overhead. The compiler can inline the calls and optimize aggressively. This is most valuable in tight inner loops where each virtual call costs 3-5 cycles plus a potential instruction-cache miss.
 
-### Virtual vs Static Dispatch
+The contrast with virtual dispatch comes down to when the decision is made:
 
 ```cpp
-
 Virtual dispatch (runtime):         Static dispatch (compile-time):
   obj->render()                       renderAll<OpenGL>(renderer)
     |                                   |
     v                                   v
-  vtable lookup → jump                Direct call (inlined!)
+  vtable lookup -> jump                Direct call (inlined!)
     |                                   |
   ~3-5 cycles + cache miss            0 cycles overhead
-
 ```
 
 ---
@@ -30,8 +28,9 @@ Virtual dispatch (runtime):         Static dispatch (compile-time):
 
 ### Q1: Replace a virtual interface with template-based static polymorphism
 
-```cpp
+This example times both approaches over a million iterations. The empty function bodies make the benchmark synthetic, but they demonstrate the structural difference - and in real code with small function bodies the template version often lets the compiler completely inline the call.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -100,13 +99,15 @@ int main() {
 // Virtual: ~3000 us
 // Static:  ~600 us
 // (Static is typically 2-5x faster in hot loops)
-
 ```
+
+The template version is faster primarily because the call can be inlined: the compiler sees the full body of `drawPixel` at the call site and can optimize across the loop boundary.
 
 ### Q2: CRTP as a static polymorphism pattern
 
-```cpp
+The **Curiously Recurring Template Pattern (CRTP)** is the classic way to get polymorphic behavior through inheritance without a vtable. The trick is that the base class takes the derived class as a template parameter, which lets it call derived methods via a `static_cast` - resolved entirely at compile time.
 
+```cpp
 #include <iostream>
 
 // CRTP: Curiously Recurring Template Pattern
@@ -139,7 +140,7 @@ public:
     double areaImpl() const { return side_ * side_; }
 };
 
-// Works with ANY Shape<T> — no vtable needed
+// Works with ANY Shape<T> - no vtable needed
 template<typename T>
 void printInfo(const Shape<T>& shape) {
     shape.draw();
@@ -158,13 +159,15 @@ int main() {
 // Area: 78.5398
 // Drawing square s=3
 // Area: 9
-
 ```
+
+Notice that `printInfo` takes a `Shape<T>&` - it works for any concrete type that inherits from `Shape<T>`, but you get a separate instantiation for each `T`. The compiler sees the exact derived type and can inline everything. The tradeoff is that you cannot store a `Circle` and a `Square` in the same container through their base - for that, you need virtual dispatch (see Q3).
 
 ### Q3: When is runtime polymorphism still necessary
 
-```cpp
+Static polymorphism is not a universal replacement. If you need to store objects of different concrete types together and operate on them uniformly at runtime, you need virtual dispatch. Templates cannot help you here because the type must be known at instantiation time.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -192,21 +195,22 @@ public:
 };
 
 int main() {
-    // CANNOT use templates here — types decided at runtime!
+    // CANNOT use templates here - types decided at runtime!
     std::vector<std::unique_ptr<Animal>> zoo;
     zoo.push_back(std::make_unique<Dog>());
     zoo.push_back(std::make_unique<Cat>());
     zoo.push_back(std::make_unique<Dog>());
 
     for (const auto& a : zoo)
-        a->speak();  // must be virtual — type varies per element
+        a->speak();  // must be virtual - type varies per element
 }
 // Expected output:
 // Woof!
 // Meow!
 // Woof!
-
 ```
+
+Use the right tool for the job. A quick decision guide:
 
 **Decision Guide:**
 

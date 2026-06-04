@@ -9,17 +9,17 @@
 
 ## Topic Overview
 
-**RAII test fixtures** acquire resources in the constructor and release them in the destructor. This guarantees cleanup even when tests throw or fail — no manual `setUp`/`tearDown` needed.
+**RAII test fixtures** acquire resources in the constructor and release them in the destructor. The guarantee is unconditional: even if the test throws an exception, the destructor still runs. With the traditional `setUp`/`tearDown` approach, if the test body throws, `tearDown` never executes and you leak resources.
 
 ```cpp
-
-Traditional:                    RAII:
- setUp() { open(db); }          TestFixture() { open(db); }
- test()  { use(db); throw! }    ~TestFixture() { close(db); }
- tearDown() { close(db); }      // destructor ALWAYS runs
- // tearDown SKIPPED on throw!  // cleanup guaranteed!
-
+// Traditional:                    RAII:
+//  setUp() { open(db); }          TestFixture() { open(db); }
+//  test()  { use(db); throw! }    ~TestFixture() { close(db); }
+//  tearDown() { close(db); }      // destructor ALWAYS runs
+//  // tearDown SKIPPED on throw!  // cleanup guaranteed!
 ```
+
+The reason this matters more in tests than in production code is that tests are expected to exercise failure paths. If your fixture leaks a temp file or an open connection on failure, you end up with broken state that corrupts subsequent tests.
 
 ---
 
@@ -27,8 +27,9 @@ Traditional:                    RAII:
 
 ### Q1: Replace manual setUp/tearDown with RAII constructor/destructor
 
-```cpp
+Here you can see both approaches side by side. The critical flaw in `BadTestFixture` is that if `test()` throws, `tearDown()` is never called. The `GoodTestFixture` doesn't have this problem - cleanup is in the destructor, which C++ always calls when the object goes out of scope.
 
+```cpp
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -97,13 +98,15 @@ int main() {
 // [test] Assertions passed
 // [dtor] File cleaned up
 // File exists: 0
-
 ```
+
+The braces around `fixture` are deliberate - they create a scope so the destructor runs before the `file_exists` check, demonstrating that cleanup happened.
 
 ### Q2: RAII fixtures guarantee cleanup even when tests throw
 
-```cpp
+This is the scenario the traditional approach fails at. The fixture acquires two database connections in the constructor. When `run_test()` throws, stack unwinding destroys the fixture and the destructor cleans up both connections - in reverse order of construction, as always with C++ destructors.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -160,13 +163,15 @@ int main() {
 // [main_db] DB disconnected (cleanup!)
 // Test failed: assertion failed!
 // Resources cleaned up despite exception
-
 ```
+
+Notice that `cache_db` disconnects before `main_db` - that's reverse-construction order, which is the standard C++ rule. Also note that the disconnection messages appear *before* the "Test failed" output, confirming that cleanup runs during stack unwinding, not after catching the exception.
 
 ### Q3: Scope exit guard for integration test cleanup
 
-```cpp
+Sometimes you don't want a full fixture class - you just need a guaranteed cleanup for something ad-hoc. A `ScopeExit` guard captures a cleanup lambda and runs it in the destructor, giving you RAII without writing a whole class. This is especially handy for one-off test helpers.
 
+```cpp
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -215,8 +220,9 @@ int main() {
 // Test passed
 // Cleaned up: integration_test_data.json
 // File exists: 0
-
 ```
+
+The copy operations are explicitly deleted because a `ScopeExit` that runs its action twice (once per copy) would be a nasty bug. C++26 may standardize `std::scope_exit` with similar semantics.
 
 ---
 
@@ -226,4 +232,4 @@ int main() {
 - Google Test uses `TEST_F` which creates the fixture on the stack (RAII-compatible).
 - Stack unwinding during exceptions destroys local objects in reverse order.
 - Use `ScopeExit`/`scope_guard` for ad-hoc cleanup (C++26 may standardize `std::scope_exit`).
-- Never do important cleanup in a `tearDown()` method — put it in the destructor.
+- Never do important cleanup in a `tearDown()` method - put it in the destructor.

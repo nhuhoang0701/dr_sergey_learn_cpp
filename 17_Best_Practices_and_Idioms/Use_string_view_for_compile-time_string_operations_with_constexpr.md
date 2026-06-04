@@ -9,15 +9,13 @@
 
 ## Topic Overview
 
-`std::string_view` is `constexpr`-friendly since C++17, allowing string parsing, splitting, and comparisons at compile time. Unlike `std::string`, it never allocates.
+`std::string_view` is `constexpr`-friendly since C++17, allowing string parsing, splitting, and comparisons at compile time. Unlike `std::string`, it never allocates - it is just a pointer and a length into existing storage. That zero-allocation property is what makes it usable in `constexpr` contexts where heap allocation is forbidden.
 
 ```cpp
-
 constexpr std::string_view greeting = "Hello, World!";
 constexpr auto comma_pos = greeting.find(',');        // 5 (at compile time!)
 constexpr auto hello = greeting.substr(0, comma_pos); // "Hello"
 static_assert(hello == "Hello");
-
 ```
 
 ---
@@ -26,8 +24,9 @@ static_assert(hello == "Hello");
 
 ### Q1: Write a constexpr function that splits a `string_view` at a delimiter
 
-```cpp
+The template parameter `N` tells the function how many pieces to split into, which lets the result fit in a `std::array` - also a compile-time-friendly container. The whole function executes at compile time when called with a string literal, which means errors in your format strings can become compile errors.
 
+```cpp
 #include <array>
 #include <iostream>
 #include <string_view>
@@ -74,13 +73,15 @@ int main() {
 // Expected output:
 // [one] [two] [three] [four]
 // /usr/local/bin
-
 ```
+
+The `static_assert` calls confirm the splits are correct at compile time - the program would not even compile if any assertion failed. There is zero runtime cost for the parsing itself.
 
 ### Q2: Use `string_view` comparisons in `static_assert`
 
-```cpp
+`string_view` comparisons are `constexpr`, which means you can validate configuration values, version strings, and build settings at compile time rather than discovering bad values at startup.
 
+```cpp
 #include <iostream>
 #include <string_view>
 
@@ -120,13 +121,15 @@ int main() {
 }
 // Expected output:
 // MyApp v2.5.1 (Release)
-
 ```
+
+Note that C++20 added `starts_with` and `ends_with` as member functions directly on `string_view`, so the helper functions above would be unnecessary in C++20. The pattern of using `static_assert` with `string_view` comparisons is still valuable in both standards.
 
 ### Q3: Compile-time state machine with `constexpr string_view` parsing
 
-```cpp
+This example pushes `constexpr` string processing to its logical limit: a full state machine that validates whether a string looks like a float literal. Every `static_assert` in `main` runs at compile time. If you wrote `is_valid_float("3.")` expecting true, the build would fail with a clear message before you ever run the program.
 
+```cpp
 #include <iostream>
 #include <string_view>
 
@@ -180,8 +183,9 @@ int main() {
 }
 // Expected output:
 // 42.0 is a valid float literal
-
 ```
+
+The state machine runs entirely at compile time - no runtime cost, no runtime failure, and invalid inputs become build errors rather than runtime surprises.
 
 ---
 
@@ -189,5 +193,5 @@ int main() {
 
 - `std::string_view` is `constexpr` since C++17; more operations added in C++20 (`starts_with`, `ends_with`).
 - `constexpr std::string` is available since C++20, but `string_view` is preferred when no allocation is needed.
-- `string_view` doesn't own data — ensure the underlying string outlives the view.
+- `string_view` doesn't own data - ensure the underlying string outlives the view.
 - Use compile-time parsing for config validation, protocol checking, DSL processing.

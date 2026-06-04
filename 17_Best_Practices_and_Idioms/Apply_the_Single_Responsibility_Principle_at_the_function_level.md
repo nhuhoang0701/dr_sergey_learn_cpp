@@ -11,19 +11,23 @@
 
 The **Single Responsibility Principle (SRP)** at function level: *a function should do one thing, do it well, and do it only.* If you need the word "and" to describe what a function does, it likely violates SRP.
 
+This matters for the same reason any decomposition principle matters: when a function does one thing, you know exactly where to go when that thing breaks. When a function does four things, a failure anywhere sends you hunting through the whole body.
+
 ### The "And" Smell
 
+The naming pattern is a reliable signal. If you find yourself writing - or reading - a function name with "and" in it, that's almost always two functions pretending to be one. Splitting the name tells you exactly what to split the code into:
+
 ```cpp
+// BAD: Two responsibilities
+parse_and_validate(input)
+read_and_transform(file)
+calculate_and_display(data)
 
-❌ parse_and_validate(input)       → Two responsibilities
-❌ read_and_transform(file)        → Two responsibilities
-❌ calculate_and_display(data)     → Two responsibilities
-
-✅ parse(input)                    → One responsibility
-✅ validate(parsed)                → One responsibility
-✅ calculate(data)                 → One responsibility
-✅ display(result)                 → One responsibility
-
+// GOOD: One responsibility each
+parse(input)
+validate(parsed)
+calculate(data)
+display(result)
 ```
 
 ---
@@ -32,8 +36,9 @@ The **Single Responsibility Principle (SRP)** at function level: *a function sho
 
 ### Q1: Split a monolithic function into single-purpose functions
 
-```cpp
+The "before" version below does four distinct things in one function body: parse, validate, transform, and format. Any change to any of those four concerns forces you into this one function. The "after" version separates them cleanly, then composes them in a pipeline:
 
+```cpp
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -108,13 +113,15 @@ int main() {
 }
 // Expected output:
 // 10, 20, 30, 40, 50
-
 ```
+
+The pipeline version of `process_csv` is essentially documentation: you can read it top to bottom and understand the entire transformation without digging into any implementation details.
 
 ### Q2: Show that testing becomes simpler when each function has one reason to change
 
-```cpp
+When every function has a single responsibility, you can test each one in complete isolation. A failure in `test_parse_csv` tells you exactly which code to look at - you don't need to reason about sorting or formatting:
 
+```cpp
 #include <cassert>
 #include <iostream>
 #include <stdexcept>
@@ -163,12 +170,11 @@ int main() {
 }
 // Expected output:
 // All tests passed!
-
 ```
 
 **Why this is better:**
 
-- If parsing breaks, only `test_parse_csv` fails — immediate diagnosis.
+- If parsing breaks, only `test_parse_csv` fails - immediate diagnosis.
 - Validation logic changes? Only `test_validate` is affected.
 - With the monolithic function, ANY failure requires debugging 30+ lines.
 
@@ -177,7 +183,6 @@ int main() {
 **Red flags in function names:**
 
 ```cpp
-
 // BAD: "and" in the description = multiple responsibilities
 void load_and_parse_config(const std::string& path);
 void validate_and_save_user(User& u);
@@ -193,24 +198,25 @@ std::vector<int> read_values(std::istream& is);
 int    sum(const std::vector<int>& values);
 void   connect(const std::string& host);
 void   authenticate(Connection& conn);
-
 ```
+
+The good versions have another benefit beyond clarity: they're independently reusable. If you later need to load a config without parsing it (say, to check its timestamp), `load_config` is right there. The monolithic `load_and_parse_config` forces you to do both or refactor.
 
 **Guidelines for function size:**
 
 | Metric | Guideline |
 | --- | --- |
-| Lines of code | ≤20 (ideally ≤10) |
-| Parameters | ≤4 |
-| Nesting depth | ≤2 levels |
-| Cyclomatic complexity | ≤5 |
+| Lines of code | 20 (ideally 10) |
+| Parameters | 4 |
+| Nesting depth | 2 levels |
+| Cyclomatic complexity | 5 |
 | Can describe without "and" | Yes |
 
 ---
 
 ## Notes
 
-- SRP doesn't mean "one line per function" — it means one **reason to change**.
+- SRP doesn't mean "one line per function" - it means one **reason to change**.
 - Extracting functions enables composition: `pipeline = parse | validate | transform | format`.
 - C++ Core Guideline F.2: "A function should perform a single logical operation."
 - Use concepts/templates to make extracted functions generic and reusable.
