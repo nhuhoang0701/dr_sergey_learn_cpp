@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Leaf senders are the starting points of every sender pipeline. They carry values, errors, or cancellation signals without doing any async work.
+Every sender pipeline has to start somewhere. Leaf senders are those starting points. They don't depend on any predecessor - they simply inject a value, an error, or a cancellation signal into the pipeline. Think of them as the `return`, `throw`, and `cancel` of the sender world, respectively.
 
 | Factory | Completes via | Carries |
 | --- | --- | --- |
@@ -18,15 +18,13 @@ Leaf senders are the starting points of every sender pipeline. They carry values
 | `just_stopped()` | `set_stopped()` | Cancellation signal |
 
 ```cpp
-
 Leaf senders (no predecessor):
 
-  just(42, "hi")  ───→  set_value(42, "hi")
-  just_error(ep)  ───→  set_error(ep)
-  just_stopped()  ───→  set_stopped()
+  just(42, "hi")  --->  set_value(42, "hi")
+  just_error(ep)  --->  set_error(ep)
+  just_stopped()  --->  set_stopped()
 
 They are the "return" / "throw" / "cancel" of the sender world.
-
 ```
 
 ---
@@ -35,8 +33,9 @@ They are the "return" / "throw" / "cancel" of the sender world.
 
 ### Q1: `just(42)` creates a sender that produces a value
 
-```cpp
+`just` can carry any number of values, including zero. When you pass multiple values they all travel together as a bundle to the next step in the pipeline:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -74,13 +73,15 @@ int main() {
 // 42, hello, 3.14
 // Void sender completed
 // Sum: 30
-
 ```
+
+The multi-value case (`just(10, 20)`) is worth noting - both values arrive at the `then` callback together as separate arguments. This is different from wrapping them in a `pair` or `tuple`; the values are genuinely separate and the callback receives them as individual parameters.
 
 ### Q2: `just_error` creates a sender that completes with an error
 
-```cpp
+`just_error` is how you inject a pre-known failure into a pipeline. You'll use it in tests, in mock implementations, and in `let_error` recovery handlers that want to re-signal an error of a different type. The error type is not restricted to `exception_ptr` - it can be a `std::error_code`, a custom enum, or anything the pipeline is prepared to handle:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <stdexcept>
@@ -125,23 +126,25 @@ int main() {
 // Recovering from error
 // Recovered: 0
 // Sender was stopped (nullopt)
-
 ```
 
+Notice how `just_stopped()` produces `nullopt` from `sync_wait`. The stopped channel is the sender world's cancellation signal - it's neither a value nor an error, it's a distinct third outcome meaning "the operation was cancelled."
+
 ### Q3: `just` is the async equivalent of a completed `future<T>`
+
+If you've used `std::future`, this comparison can help anchor your mental model. `just` is like a `future` that's already resolved - except it's lazy, composable, and capable of carrying multiple values:
 
 | Concept | `std::future<T>` | `just(value)` |
 | --- | --- | --- |
 | Represents | An eventually-available value | An immediately-available sender |
 | Blocking? | `get()` blocks | `sync_wait` blocks |
-| Composable? | No (no `then`) | Yes (`| then(...)`) |
+| Composable? | No (no `then`) | Yes (`\| then(...)`) |
 | Lazy? | No (work starts immediately) | Yes (no work until connected) |
 | Multiple values? | No (single T) | Yes (`just(a, b, c)`) |
 | Error channel? | Exception only | `just_error` for typed errors |
 | Cancel? | No standard cancel | `just_stopped()` |
 
 ```cpp
-
 // future world:
 std::future<int> f = std::async([] { return 42; });  // starts immediately
 int val = f.get();  // blocks, extracts value
@@ -152,16 +155,17 @@ auto [val2] = stdexec::sync_wait(
     s | stdexec::then([](int x) { return x * 2; })
 ).value();  // blocks, drives pipeline
 
-// just(42) is like make_ready_future(42) — already completed,
+// just(42) is like make_ready_future(42) -- already completed,
 // but unlike future, it composes into pipelines.
 
 // The equivalences:
 //   just(v)           ~  make_ready_future(v)
 //   just_error(e)     ~  make_exceptional_future(e)
 //   just_stopped()    ~  (no future equivalent)
-//   just(a, b, c)     ~  (no future equivalent — futures carry one value)
-
+//   just(a, b, c)     ~  (no future equivalent -- futures carry one value)
 ```
+
+The fact that `just` is lazy even though its value is known immediately might seem odd at first. The reason is uniformity: the entire sender framework is lazy. `just` follows the same protocol as every other sender, which means you can slot it into any pipeline without special cases.
 
 ---
 

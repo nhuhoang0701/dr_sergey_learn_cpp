@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-The `let_*` family handles all three completion channels, each returning a sender for the next async step:
+A sender pipeline has three possible completion channels: it can deliver a value, signal an error, or signal cancellation (stopped). The `let_*` family gives you a way to intercept any of those channels and replace the outcome with a new sender. This is how you build async decision trees - logic that runs different async work depending on what happened upstream.
 
 | Adaptor | Triggered by | Callback signature | Returns |
 | --- | --- | --- | --- |
@@ -18,23 +18,22 @@ The `let_*` family handles all three completion channels, each returning a sende
 | `let_stopped(f)` | `set_stopped()` | `f()` | sender |
 
 ```cpp
-
 Completion channels:
 
-  sender ─┬─ set_value  ─→ let_value(f)  ─→ f(vals...) ─→ sender
-         ├─ set_error  ─→ let_error(f)  ─→ f(err)     ─→ sender
-         └─ set_stopped ─→ let_stopped(f) ─→ f()       ─→ sender
-
+  sender -+- set_value  -> let_value(f)  -> f(vals...) -> sender
+         +- set_error  -> let_error(f)  -> f(err)     -> sender
+         +- set_stopped -> let_stopped(f) -> f()       -> sender
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: `let_value` — type-dependent chaining
+### Q1: `let_value` - type-dependent chaining
+
+The key thing `let_value` gives you that `then` cannot: the sender you return can be chosen at runtime based on the incoming value. Different branches, different async work, all expressed in one pipeline:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -81,13 +80,15 @@ int main() {
     auto [r] = stdexec::sync_wait(std::move(deep)).value();
     std::cout << "Deep: " << r << '\n';  // 25
 }
-
 ```
+
+The nested `let_value` at the end is worth studying. Each inner `let_value` creates a sub-pipeline from scratch. This nesting is how you express complex multi-stage async logic without coroutines.
 
 ### Q2: `let_value` is monadic bind (flatMap)
 
-```cpp
+If you've worked with functional programming, `let_value` is exactly monadic bind - the operation that lets you chain computations that each return a wrapped value. The reason this trips people up: `then` does a simple transform (`A -> B`), but `let_value` does a flatMap (`A -> Sender<B>`, and the framework unwraps the outer sender). Without that unwrapping step, you'd end up with a `Sender<Sender<B>>` which is useless.
 
+```cpp
 Monad parallel:
 
   Haskell:    m a >>= (\a -> m b)       // bind
@@ -102,11 +103,11 @@ Laws:
   3. Associativity:  (s|let_value(f)) | let_value(g)
 
                      === s | let_value([](x){ return f(x)|let_value(g); })
-
 ```
 
-```cpp
+Here's the practical version - what goes wrong with `then` and why `let_value` fixes it:
 
+```cpp
 // Why "monadic"?
 // then(f):       Sender<A> -> (A -> B) -> Sender<B>           // functor map
 // let_value(f):  Sender<A> -> (A -> Sender<B>) -> Sender<B>   // monad bind
@@ -133,13 +134,15 @@ int main() {
     auto [val] = stdexec::sync_wait(std::move(good)).value();
     std::cout << val << '\n';  // 42
 }
-
 ```
+
+The commented-out `then(double_async)` line doesn't compile for this reason: `double_async` returns a sender, and `then` would try to wrap that sender in *another* sender, creating a type the pipeline doesn't know how to execute. `let_value` is the correct tool whenever your transformation naturally returns a sender.
 
 ### Q3: `let_error` for retry on failure
 
-```cpp
+`let_error` fires only when the upstream signals an error. You can use it to build a retry combinator - each retry attempt is just another `let_error` layered on top of the previous one:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <atomic>
@@ -185,20 +188,21 @@ int main() {
 // Retrying after: Attempt 2 failed
 // Success: 42
 // Total attempts: 3
-
 ```
+
+Once `unreliable_operation()` succeeds on attempt 3, its value flows through the remaining `let_error` nodes without triggering any of them - they only react to errors. This is the "pass-through" property of the `let_*` adaptors: each one only intercepts its own completion channel and lets the others through unchanged.
 
 **`let_stopped` for cancellation recovery:**
 
 ```cpp
-
 auto pipeline = some_cancellable_sender()
     | stdexec::let_stopped([]() {
         std::cout << "Operation was cancelled, using fallback...\n";
         return stdexec::just(default_value);  // recover from cancel
     });
-
 ```
+
+`let_stopped` gives you the same pattern for the cancellation channel. When the upstream signals stopped (cancelled), you can substitute a fallback sender and continue the pipeline as if the cancellation never happened.
 
 ---
 

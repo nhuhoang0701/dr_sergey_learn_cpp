@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-Schedulers decouple **what** to compute from **where** to compute it. You obtain a scheduler from an execution context and use it to direct senders onto that context.
+Schedulers are how the sender/receiver model separates "what to compute" from "where to compute it." A scheduler is a lightweight, copyable handle to an execution context - a thread pool, a GPU dispatch queue, an I/O event loop, or anything else that can run work. You obtain a scheduler from the context and use it to direct senders onto that context without changing the sender's logic at all.
+
+Here is the core API:
 
 | API | Purpose |
 | --- | --- |
@@ -23,8 +25,9 @@ Schedulers decouple **what** to compute from **where** to compute it. You obtain
 
 ### Q1: Use `continues_on` (transfer) to move execution onto a scheduler
 
-```cpp
+`continues_on` is useful when you want to begin work on the current thread and then hand off to a different context. The pipeline below starts on the calling thread, prints the thread ID, then transfers to the thread pool and prints again. The result value flows through the transfer unchanged:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -56,13 +59,15 @@ int main() {
 // Before transfer, thread: 140000001 (main)
 // After transfer, thread: 140000050 (pool)
 // Result: 84
-
 ```
+
+The thread IDs show exactly where each `then` ran. Everything before `continues_on` ran on the main thread; everything after ran on a pool thread. The value `42` was carried across the transfer automatically.
 
 ### Q2: `schedule()` creates a sender on a specific scheduler
 
-```cpp
+`schedule(sched)` is the most direct way to start execution on a scheduler. It produces a sender that emits no value - it just "enters" the scheduler's context. Every `then` after it will run on that context unless you explicitly transfer away:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -99,10 +104,13 @@ int main() {
         | stdexec::continues_on(io_sched)
         | stdexec::then([](auto result) { write_to_disk(result); });
 }
-
 ```
 
+The two-scheduler pattern at the bottom - compute on a CPU pool, then transfer to a single-threaded I/O pool to write the result - is a common real-world pattern. It keeps CPU-bound work off the I/O thread and I/O-bound work off the CPU pool.
+
 ### Q3: Scheduler (where) vs Sender (what)
+
+The table below captures the design distinction. Schedulers are handles, not containers - they are cheap to copy and do not own the execution context themselves. Senders are lazy descriptions that can be moved through a pipeline:
 
 | Concept | Scheduler (Where) | Sender (What) |
 | --- | --- | --- |
@@ -112,8 +120,9 @@ int main() {
 | Copyable | Yes (cheap) | Movable (owns state) |
 | Lifetime tied to | Execution context | Pipeline composition |
 
-```cpp
+The diagram below shows how `starts_on` wires the two together:
 
+```cpp
 Separation:
                     Sender (WHAT)
                     ┌─────────────────┐
@@ -130,13 +139,11 @@ Separation:
                     │ GPU context     │
                     │ io_context      │
                     └─────────────────┘
-
 ```
 
-The same sender can run on any scheduler:
+Because the scheduler is plugged in at the call site rather than baked into the sender, the same sender description can run anywhere. Here is that portability shown in three lines:
 
 ```cpp
-
 auto work = stdexec::just(42) | stdexec::then([](int x) { return x * 2; });
 
 // Run on thread pool:
@@ -147,15 +154,16 @@ auto [r2] = stdexec::sync_wait(stdexec::starts_on(gpu_sched, work)).value();
 
 // Run inline:
 auto [r3] = stdexec::sync_wait(work).value();
-
 ```
+
+All three produce the same result (`84`), but they run in completely different execution contexts. The `work` sender is not modified between uses - it is just connected to different schedulers.
 
 ---
 
 ## Notes
 
-- `continues_on` was previously called `transfer` in P2300 drafts.
-- `starts_on` is equivalent to `schedule(sched) | let_value([s]{ return s; })`.
-- A scheduler is equality-comparable: `pool.get_scheduler() == pool.get_scheduler()` is true.
-- You can create custom schedulers for specialized contexts (FPGA, RDMA, etc.).
-- The separation of what/where is what makes P2300 senders truly portable.
+- `continues_on` was previously called `transfer` in earlier P2300 drafts, so you may see both names in older code and documentation.
+- `starts_on(sched, s)` is semantically equivalent to `schedule(sched) | let_value([s]{ return s; })` - it schedules an entry point and then runs the sender from there.
+- A scheduler is equality-comparable: two schedulers obtained from the same pool compare equal (`pool.get_scheduler() == pool.get_scheduler()` is `true`).
+- You can write custom schedulers for specialized contexts - FPGAs, RDMA networks, or any domain-specific dispatch mechanism - by conforming to the scheduler concept.
+- The separation of what/where is what makes P2300 senders genuinely portable across hardware and execution models, not just a syntactic improvement over raw threads.

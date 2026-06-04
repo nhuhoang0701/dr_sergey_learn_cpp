@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`just(values...)` is the simplest sender — it completes immediately with the given values. It is the entry point of nearly every sender pipeline.
+`just(values...)` is the simplest sender you'll write. It completes immediately with whatever values you give it, does no async work at all, and requires no scheduler. It's the entry point of nearly every sender pipeline you'll build - the place where you inject the initial data that the rest of the chain will transform.
 
 | Variant | Channel | Carries |
 | --- | --- | --- |
@@ -17,16 +17,16 @@
 | `just_error(e)` | error | One error value |
 | `just_stopped()` | stopped | Nothing (cancellation signal) |
 
-```cpp
+Under the hood, `just` is about as simple as a sender gets. When you call `connect` on it and then `start` the resulting operation state, it immediately calls `set_value` on your receiver:
 
+```cpp
 just(42) internals:
 
   connect(just(42), receiver)
-        │
-        ▼
+        |
+        v
   operation_state:
     start() { receiver.set_value(42); }  // immediate
-
 ```
 
 ---
@@ -35,8 +35,9 @@ just(42) internals:
 
 ### Q1: Create `just(42)` and connect it to a receiver
 
-```cpp
+Most of the time you'll use `sync_wait` to drive a pipeline, but it's worth seeing the low-level `connect` + `start` API at least once. It shows exactly what `sync_wait` is doing for you under the hood:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -78,13 +79,15 @@ int main() {
     ).value();
     std::cout << a << ", " << b << ", " << c << '\n';  // 1, 2, three
 }
-
 ```
+
+The manual `connect` + `start` path shows that `set_value(42)` is called synchronously inside `start()`. There's no thread switch, no suspension - `just` really does complete inline.
 
 ### Q2: Chain `just()` with `then()` to transform values
 
-```cpp
+In practice you'll almost never use `just` in isolation. Its purpose is to seed the pipeline with an initial value so that the `then` steps have something to work with:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -121,13 +124,15 @@ int main() {
     auto [v] = stdexec::sync_wait(std::move(trigger)).value();
     std::cout << "Triggered: " << v << '\n';  // 42
 }
-
 ```
+
+The void `just()` at the end is a useful pattern when you want a pipeline that starts with no input data - for example, a background task that creates its own data. The `then` after it conjures a value from thin air.
 
 ### Q3: `just()` as a building block in larger pipelines
 
-```cpp
+Because `just` carries no scheduler dependency, it's the cleanest way to inject constants or configuration values into a pipeline. You can also use it inside `let_value` to create sub-senders, or pair it with `when_all` for simple fan-out:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -167,15 +172,16 @@ int main() {
     auto [a, b, c] = stdexec::sync_wait(std::move(parallel)).value();
     std::cout << a << ", " << b << ", " << c << '\n';  // 100, 400, 900
 }
-
 ```
+
+The `when_all` example shows three independent pipelines, each seeded by their own `just`, running concurrently. The results arrive together once all three are done. This is the canonical fan-out pattern with senders.
 
 ---
 
 ## Notes
 
 - `just()` copies its arguments into the sender. Use `std::move` for move-only types.
-- `just()` completes synchronously — the receiver's `set_value` is called inside `start()`.
+- `just()` completes synchronously - the receiver's `set_value` is called inside `start()`.
 - `just()` is to senders what `return` is to coroutines.
 - Use `just()` to inject constants, configuration, or mock data into pipelines.
 - Combine with `when_all` for parallel fan-out patterns.

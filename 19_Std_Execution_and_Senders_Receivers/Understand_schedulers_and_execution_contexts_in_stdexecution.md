@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-In P2300, a **scheduler** is a lightweight handle to an **execution context** (where work runs). `schedule(sched)` produces a sender that completes on that context.
+In P2300, a **scheduler** is a lightweight handle to an **execution context** - the place where work actually runs. The execution context owns real resources (threads, a GPU, an event loop); the scheduler is just a cheap token you pass around to say "I want work to run on this context." Calling `schedule(sched)` produces a sender that, when started, completes on that context.
 
 | Concept | Description | Example |
 | --- | --- | --- |
@@ -19,20 +19,20 @@ In P2300, a **scheduler** is a lightweight handle to an **execution context** (w
 | `starts_on(sched, sndr)` | Run sender on a specific scheduler | Replace context |
 | `continues_on(sched)` | Transfer subsequent work to another scheduler | Mid-pipeline context switch |
 
-```cpp
+The relationship between the two is worth drawing out clearly:
 
+```cpp
 Scheduler vs Execution Context:
 
 ┌───────────────────────────────────────┐
 │ Execution Context (thread pool)     │
-│ [█Thread 1█] [█Thread 2█] [█Thread 3█]│
+│ [Thread 1] [Thread 2] [Thread 3]    │
 └───────────────────┬───────────────────┘
-                    │
+                    |
             ┌───────┴──────┐
-            │  Scheduler    │  ← lightweight handle
-            │  schedule()   │  ← produces senders
+            │  Scheduler    │  <- lightweight handle
+            │  schedule()   │  <- produces senders
             └──────────────┘
-
 ```
 
 ---
@@ -40,6 +40,8 @@ Scheduler vs Execution Context:
 ## Self-Assessment
 
 ### Q1: Difference between a scheduler and a thread pool
+
+This is the distinction that catches people off guard. The thread pool is the expensive thing - it owns threads and work queues and has a lifetime you must manage. The scheduler is just a copyable, cheaply movable handle that tells the framework where to send work. You can freely copy a scheduler and pass it around without spawning any threads.
 
 | Thread Pool | Scheduler |
 | --- | --- |
@@ -49,8 +51,9 @@ Scheduler vs Execution Context:
 | One pool can have multiple schedulers | One scheduler refers to one context |
 | `pool.get_scheduler()` creates one | `schedule(sched)` creates senders |
 
-```cpp
+The code below shows both in action. Notice how `sched` is created from the pool and then used to build a pipeline - it is just a value:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -78,13 +81,13 @@ int main() {
 // Output:
 // Running on pool thread: 140234567890 (some pool thread ID)
 // Result: 42
-
 ```
 
 ### Q2: Use `schedule()` to start work on a context
 
-```cpp
+`schedule(sched)` is your entry point. It returns a sender that does nothing by itself - it just positions the next `then` to run on the target context. The pipeline example below also shows `starts_on`, which is a more explicit alternative for routing an existing sender to a specific scheduler.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -121,13 +124,13 @@ int main() {
     auto [val] = stdexec::sync_wait(std::move(on_pool)).value();
     std::cout << "starts_on result: " << val << '\n';  // 200
 }
-
 ```
 
 ### Q3: Transfer work mid-pipeline with `continues_on`
 
-```cpp
+`continues_on` is the adaptor you reach for when you want to run different stages of a pipeline on different contexts - for example, CPU-heavy work on a compute pool and file writes on an I/O pool. It inserts a context switch in the middle of the pipeline without breaking the composition.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -169,19 +172,18 @@ int main() {
 // I/O on: 140050
 // Back on compute: 140002
 // Final: 84
-
 ```
 
-```cpp
+The entire pipeline is assembled at compile time. The context switches happen at runtime when the `continues_on` senders complete and re-enqueue work on the new context:
 
+```cpp
 Pipeline context transitions:
 
   schedule(compute)  then(heavy_work)  continues_on(io)  then(save)
   [compute pool]     [compute pool]    [io pool]         [io pool]
-       │                  │                │                 │
+       |                  |                |                 |
        └─────────────────┴────────────────┴────────────────┘
        all connected at compile time, context switches at runtime
-
 ```
 
 ---

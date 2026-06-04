@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Boost.Asio and P2300 (std::execution) are complementary: Asio provides async I/O, while P2300 provides composable async pipelines. Bridging them lets you use Asio's io_context as a P2300 scheduler.
+Boost.Asio and P2300 (`std::execution`) are complementary: Asio provides mature, battle-tested async I/O, while P2300 provides composable async pipelines. They have different mental models for the same underlying idea, which means bridging them takes a small amount of adapter code - but once that adapter exists, you can use Asio's `io_context` as a P2300 scheduler and wrap Asio async operations as first-class senders.
 
 | Concept | Asio | P2300 |
 | --- | --- | --- |
@@ -24,9 +24,10 @@ Boost.Asio and P2300 (std::execution) are complementary: Asio provides async I/O
 
 ### Q1: Wrap Asio `async_read_some` into a P2300 sender
 
-```cpp
+The key insight here is that an Asio completion handler and a P2300 receiver carry the same information. The completion handler gets `(error_code, result)` - you just need to map that to the right completion signal. `operation_aborted` maps to `set_stopped`, any other error maps to `set_error`, and success maps to `set_value`.
 
-// asio_sender.cpp — wrapping Asio async_read into a sender
+```cpp
+// asio_sender.cpp - wrapping Asio async_read into a sender
 #include <stdexec/execution.hpp>
 #include <boost/asio.hpp>
 #include <iostream>
@@ -102,14 +103,16 @@ void example(tcp::socket& sock) {
         });
     // Drive with io_context::run() instead of sync_wait
 }
-
 ```
+
+Once the wrapper is written, the pipeline composition above looks exactly like any other P2300 pipeline. The bridge code is confined to the `start()` lambda.
 
 ### Q2: Asio `io_context` as a P2300 scheduler
 
-```cpp
+Making an `io_context` behave as a P2300 scheduler lets you use `starts_on` and `continues_on` to route work through Asio's event loop, just like you would route work through a thread pool. The adapter uses `asio::post` to enqueue work, and signals `set_value()` when the posted function actually runs.
 
-// asio_scheduler.cpp — adapt io_context to P2300 scheduler concept
+```cpp
+// asio_scheduler.cpp - adapt io_context to P2300 scheduler concept
 #include <stdexec/execution.hpp>
 #include <boost/asio.hpp>
 #include <iostream>
@@ -175,10 +178,11 @@ int main() {
     // In practice, integrate with io.run() event loop.
     io_thread.join();
 }
-
 ```
 
 ### Q3: Compatibility between Asio executors and P2300 schedulers
+
+The two models are close but not identical. The table below maps the most common Asio patterns to their P2300 equivalents. The biggest mismatch is the event loop: Asio uses `io_context::run()` to drive work, while P2300 uses `sync_wait()`. In practice this means you typically need to pick one as the "outer" driver and bridge the other into it.
 
 | Asio Executor Model | P2300 Scheduler Model |
 | --- | --- |
@@ -188,22 +192,20 @@ int main() {
 | `io_context::run()` | `sync_wait()` or event loop on main thread |
 | `any_io_executor` | Type-erased scheduler |
 
-Bridging strategy:
+Here is the bridging strategy at a glance:
 
 ```cpp
-
 Asio world:                         P2300 world:
 ┌──────────────────┐              ┌──────────────────┐
-│  io_context      │─── adapt ──→│ P2300 scheduler   │
-│  async_read()    │─── wrap  ──→│ sender            │
-│  completion hdlr │─── map   ──→│ receiver signals  │
+│  io_context      │─── adapt ──->│ P2300 scheduler   │
+│  async_read()    │─── wrap  ──->│ sender            │
+│  completion hdlr │─── map   ──->│ receiver signals  │
 └──────────────────┘              └──────────────────┘
 
 Key mapping:
-  ec == operation_aborted  →  set_stopped()
-  ec (other error)         →  set_error(exception_ptr)
-  success                  →  set_value(result)
-
+  ec == operation_aborted  ->  set_stopped()
+  ec (other error)         ->  set_error(exception_ptr)
+  success                  ->  set_value(result)
 ```
 
 ---
@@ -213,5 +215,5 @@ Key mapping:
 - Asio's `deferred` completion token returns sender-like objects natively.
 - Asio 1.30+ has experimental support for P2300-compatible senders via `asio::experimental::use_sender`.
 - The main challenge is event loop ownership: Asio uses `io_context::run()`, P2300 uses `sync_wait()`.
-- Strands don't map directly to P2300 — but you can create a serializing sender adapter.
+- Strands don't map directly to P2300 - but you can create a serializing sender adapter.
 - Consider `asio::co_spawn` for coroutine-based bridging as an alternative.

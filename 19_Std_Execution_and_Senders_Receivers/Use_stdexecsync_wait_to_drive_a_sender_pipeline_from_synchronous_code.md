@@ -9,33 +9,35 @@
 
 ## Topic Overview
 
-`sync_wait` is the **bridge** between the lazy, async sender world and normal synchronous code. It blocks the calling thread until the entire sender pipeline completes.
+Sender pipelines are lazy - nothing happens until something drives them. In a fully async program that something might be a coroutine scheduler or an event loop. But if you're writing a `main()` function, a test, or any synchronous context, you need a way to say "run this pipeline and give me the result right now." That's what `sync_wait` is for. It's the **bridge** between the lazy, async sender world and normal synchronous code.
 
 | Behavior | Detail |
 | --- | --- |
-| Blocks? | Yes — blocks current thread |
+| Blocks? | Yes - blocks current thread |
 | Return type | `std::optional<std::tuple<Values...>>` |
 | On value | Returns `optional(tuple(values...))` |
 | On error | Rethrows the exception |
 | On stopped | Returns `std::nullopt` |
 | Execution context | Internal `run_loop` (unless sender specifies another) |
 
-```cpp
+Here's a simple picture of what happens at the boundary:
 
+```cpp
 sync_wait flow:
 
   Synchronous code          Async sender world
-  ┌──────────────┐      ┌──────────────────┐
-  │ auto result =  │ ───▶│ connect(sender,  │
-  │  sync_wait(s)  │      │   receiver)     │
-  │              │      │ start(op_state) │
-  │ // blocked   │      │ ... work ...    │
-  │              │ ◀───│ set_value(42)   │
-  │ // unblocked │      └──────────────────┘
-  │ result = 42  │
-  └──────────────┘
-
+  +--------------+      +------------------+
+  | auto result =  | --->| connect(sender,  |
+  |  sync_wait(s)  |      |   receiver)     |
+  |              |      | start(op_state) |
+  | // blocked   |      | ... work ...    |
+  |              | <---| set_value(42)   |
+  | // unblocked |      +------------------+
+  | result = 42  |
+  +--------------+
 ```
+
+`sync_wait` calls `connect`, then `start`, then sits and waits until the receiver signals completion. When the result arrives, `sync_wait` unblocks and hands you the value wrapped in an `optional<tuple<...>>`.
 
 ---
 
@@ -43,8 +45,9 @@ sync_wait flow:
 
 ### Q1: `sync_wait` blocks until the pipeline completes
 
-```cpp
+Let's see the blocking behavior in concrete terms. The pipeline runs on the thread pool, but the calling thread waits - and you can see that by observing the thread IDs:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -82,13 +85,15 @@ int main() {
 // Working on thread: 140000050
 // After sync_wait
 // Result: 84
-
 ```
 
-### Q2: Return type is `optional<tuple<...>>` — `nullopt` means stopped
+The thread IDs show that the computation ran on a pool thread while main was blocked. Execution of the lines after `sync_wait` only resumed once the pool thread delivered the result.
+
+### Q2: Return type is `optional<tuple<...>>` - `nullopt` means stopped
+
+The return type feels a bit verbose at first, but it covers all three completion channels cleanly. A value arrives as `optional(tuple(values...))`, an error is rethrown as an exception, and cancellation produces `nullopt`. Here's each case in one place:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <optional>
@@ -144,8 +149,9 @@ int main() {
 // Caught: oops
 // Stopped (nullopt)
 // Void sender completed
-
 ```
+
+The reason errors are rethrown rather than returned is that `sync_wait` is the boundary where the async world meets synchronous exception-handling idioms. If you want to inspect the error without catching an exception, you need `let_error` inside the pipeline before the `sync_wait` call.
 
 ### Q3: `sync_wait` is the bridge between async and sync
 
@@ -156,8 +162,9 @@ int main() {
 | Result | Inaccessible | Returned as optional<tuple> |
 | Use case | Composition | Entry/exit point |
 
-```cpp
+The most important rule about `sync_wait` is where *not* to use it. Calling it from inside a sender callback can deadlock - if the callback is running on the same thread pool that the inner pipeline needs to make progress, you've created a situation where the outer thread is blocked waiting for the inner pipeline, but the inner pipeline can't run because the thread is blocked.
 
+```cpp
 // sync_wait is typically used only at the "edge" of your program:
 
 int main() {
@@ -175,13 +182,12 @@ int main() {
 
     return result;
 }
-
 ```
 
 **Key rules:**
 
 - Use `sync_wait` only at program boundaries (`main`, test functions, thread entry points).
-- Never call `sync_wait` from within a sender callback — it can deadlock.
+- Never call `sync_wait` from within a sender callback - it can deadlock.
 - For nested async work, use `let_value` to return a sender instead.
 - `sync_wait` provides its own `run_loop` execution context unless the sender specifies one via `starts_on`.
 

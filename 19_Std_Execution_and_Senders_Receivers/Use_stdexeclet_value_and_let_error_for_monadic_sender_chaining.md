@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`let_value` and `let_error` enable **dependent** sender chaining — where the next async step depends on the result of the previous one.
+`let_value` and `let_error` are the adaptors you reach for when the next step in your async pipeline needs to launch another async operation - not just transform a value, but kick off new async work whose shape depends on the previous result. The distinction from `then` is critical: `then` maps a value to another value, while `let_value` maps a value to a whole new sender that gets connected and started.
 
 | Adaptor | Input | Callback returns | Purpose |
 | --- | --- | --- | --- |
@@ -18,12 +18,14 @@
 | `let_error(f)` | error | **sender** | Error recovery with async work |
 | `let_stopped(f)` | stopped | **sender** | Cancellation recovery |
 
+The flow looks like this:
+
 ```cpp
-
-then(f):       value ─→ f(value) ─→ new_value
-let_value(f):  value ─→ f(value) ─→ sender ─→ (execute sender) ─→ result
-
+then(f):       value -> f(value) -> new_value
+let_value(f):  value -> f(value) -> sender -> (execute sender) -> result
 ```
+
+If you have ever used `flatMap` in a functional language or `>>=` (bind) in Haskell, `let_value` is exactly that operation applied to async senders.
 
 ---
 
@@ -31,8 +33,9 @@ let_value(f):  value ─→ f(value) ─→ sender ─→ (execute sender) ─�
 
 ### Q1: `let_value` for dependent sender chaining
 
-```cpp
+The classic use case is an async request chain where each step needs the result of the previous step to decide what to fetch next. You cannot use `then` here because each function returns a sender, not a plain value:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -80,15 +83,15 @@ int main() {
 // Username: Alice
 // Posts: 10
 // Final: 10
-
 ```
 
-**Why not `then`?** `then` expects `f(value)` to return a **value**. But `fetch_user_id` returns a **sender**. `let_value` unwraps the sender and executes it.
+**Why not `then`?** `then` expects `f(value)` to return a **value**. But `fetch_user_id` returns a **sender**. If you tried to use `then`, you would get a sender-of-sender, which is not what you want. `let_value` unwraps the returned sender and connects it into the pipeline, so the final result is the value the returned sender produces.
 
 ### Q2: `let_error` for error recovery with a fallback sender
 
-```cpp
+`let_error` is the same idea applied to the error channel. When an error arrives, your callback can return a new sender that represents a recovery operation - which could itself be an async operation like fetching from a backup server:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -127,18 +130,20 @@ int main() {
 // Primary failed: primary down, trying backup...
 // Got: data from backup
 // Result: data from backup
-
 ```
 
 **`upon_error` vs `let_error`:**
 
-- `upon_error(f)`: `f` returns a **value** (simple transformation).
-- `let_error(f)`: `f` returns a **sender** (can do async recovery).
+- `upon_error(f)`: `f` returns a **value** (simple transformation - you know the fallback at compile time).
+- `let_error(f)`: `f` returns a **sender** (you need to do async work to recover, like calling a backup service).
+
+The pattern here - try primary, fall back to backup asynchronously if it fails - is a real pattern in distributed systems and `let_error` expresses it cleanly without blocking.
 
 ### Q3: `let_value` vs coroutine `co_await`
 
-```cpp
+Both `let_value` and coroutines can express sequential async steps. Here they are side by side solving the same problem:
 
+```cpp
 // With coroutines (sequential, readable):
 exec::task<int> coroutine_version() {
     auto token = co_await get_auth_token();
@@ -160,7 +165,6 @@ auto sender_version() {
             return profile.post_count;
         });
 }
-
 ```
 
 | Aspect | `co_await` (Coroutines) | `let_value` (Senders) |
@@ -172,8 +176,9 @@ auto sender_version() {
 | Error handling | try/catch + co_await | `let_error` + error channel |
 | Cancellation | Manual stop_token | Automatic via stopped channel |
 
-```cpp
+The best approach for complex programs is often to combine both, using each where it shines. Here is a concrete example that does exactly that - the sequential parts are a coroutine, and the parallel fan-out part uses `when_all`:
 
+```cpp
 // Best of both: combine them!
 exec::task<int> combined() {
     // Sequential part (coroutine):
@@ -188,15 +193,16 @@ exec::task<int> combined() {
     // Sequential again:
     co_return merge(a, b);
 }
-
 ```
+
+The sequential sections read like ordinary code while the parallel fan-out uses `when_all` to run two requests concurrently. This hybrid style is idiomatic in codebases that use P2300.
 
 ---
 
 ## Notes
 
-- `let_value` is the sender equivalent of monadic `flatMap` / `>>=` (bind).
-- The callback's return value MUST be a sender. Returning a non-sender is a compile error.
-- `let_value` keeps the value alive for the lifetime of the returned sender.
-- Use `then` for simple transforms; use `let_value` only when you need to return a sender.
-- `let_stopped` is available for cancellation recovery returning a sender.
+- `let_value` is the sender equivalent of monadic `flatMap` / `>>=` (bind) from functional programming - if that framing helps, the mental model is exact.
+- The callback you pass to `let_value` MUST return a sender. Returning a non-sender is a compile error, which is the model catching your mistake at the earliest possible moment.
+- `let_value` keeps the incoming value alive for the full lifetime of the sender your callback returns, so it is safe to capture the value by reference inside the returned sender.
+- Use `then` for simple synchronous transforms and reserve `let_value` for cases where you genuinely need to return a sender - overusing `let_value` for simple transforms adds unnecessary complexity.
+- `let_stopped` is the third member of this family, handling the cancellation channel and allowing cancellation recovery to itself be async work.

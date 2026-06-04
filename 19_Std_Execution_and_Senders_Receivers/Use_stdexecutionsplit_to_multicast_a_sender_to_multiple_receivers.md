@@ -9,16 +9,16 @@
 
 ## Topic Overview
 
-`split()` converts a single-shot sender into a multi-shot sender by caching (memoizing) the result. The upstream computation runs exactly once, and any number of downstream consumers share the cached result.
+By default, a sender is single-shot - you can connect it to exactly one receiver and start it exactly once. That works fine for a simple pipeline, but what if several downstream steps all need the same upstream result? That is where `split()` comes in.
+
+`split()` converts a single-shot sender into a multi-shot sender by caching (memoizing) the result. The upstream computation runs exactly once, and any number of downstream consumers share the cached result. Think of it like a shared future: the work happens once, and everyone waiting on it gets the same answer.
 
 ```cpp
-
 Without split:                With split:
-  sender ─→ one consumer       sender | split() ─┬─→ consumer A
-                                              ├─→ consumer B
-                                              └─→ consumer C
+  sender -> one consumer       sender | split() -+-> consumer A
+                                              +-> consumer B
+                                              +-> consumer C
                                (runs ONCE, result shared)
-
 ```
 
 ---
@@ -27,8 +27,9 @@ Without split:                With split:
 
 ### Q1: Share an expensive computation with two downstream consumers
 
-```cpp
+Here the expensive work runs once on the thread pool. After `split()`, the resulting sender can be copied and piped into multiple downstream chains. Both consumers receive the same cached value 42 without re-triggering the upstream work:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -74,13 +75,15 @@ int main() {
 // Consumer A: 84
 // Consumer B: 142
 // A=84, B=142
-
 ```
 
-### Q2: `split()` caches the result — computation runs only once
+Notice that `[expensive]` only appears once in the output even though two consumers depend on it. That is the whole value of `split()`.
+
+### Q2: `split()` caches the result - computation runs only once
+
+This example makes the memoization explicit by counting invocations with an atomic counter. Three consumers all connect to the same split sender, but the underlying lambda only fires once:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <atomic>
@@ -112,20 +115,20 @@ int main() {
 // Executed (count: 1)    <-- only ONCE despite 3 consumers
 // Results: 43, 44, 45
 // Executions: 1
-
 ```
 
-**How caching works internally:**
+The reason this works is that `split()` allocates a shared heap-allocated state that all consumers point to. Here is what happens under the hood:
 
-- First `start()` triggers the upstream sender
-- Result is stored in shared heap-allocated state
-- Subsequent consumers receive the cached result immediately
-- Error and stopped channels are also cached
+- The first `start()` triggers the upstream sender.
+- The result is stored in the shared heap-allocated state.
+- Subsequent consumers receive the cached result immediately.
+- Error and stopped channels are also cached - if the upstream fails, every consumer sees the same error.
 
-### Q3: Practical use case — compute hash once, use in cache lookup + logging
+### Q3: Practical use case - compute hash once, use in cache lookup + logging
+
+A common real-world pattern is computing something expensive (a hash, a network result, a file parse) and then feeding that single result into several independent downstream steps. Here three operations - cache lookup, audit logging, and integrity verification - all consume the same hash without recomputing it:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -189,15 +192,16 @@ int main() {
 // Audit log: document hash = 12345
 // Integrity check with hash: 12345
 // Cached: 0, Logged: 1, Valid: 1
-
 ```
+
+Without `split()` you would either have to compute the hash three times or manually coordinate the result with a shared variable. `split()` gives you the clean composable version.
 
 ---
 
 ## Notes
 
 - `split()` is the only standard sender adaptor that uses heap allocation.
-- The split sender is **copyable** (shared_ptr-like semantics).
+- The split sender is copyable (shared_ptr-like semantics).
 - `ensure_started()` is like `split()` but eagerly starts the upstream.
 - Error results are also cached and delivered to all consumers.
-- Avoid `split()` when only one consumer exists — unnecessary overhead.
+- Avoid `split()` when only one consumer exists - unnecessary overhead.

@@ -9,25 +9,27 @@
 
 ## Topic Overview
 
-A **sender** is a lazy description of async work. A **receiver** is the consumer that handles the three possible outcomes.
+The sender/receiver model splits async work into two cleanly separated halves. A **sender** is the description side - it knows what to compute but has not started yet. A **receiver** is the consumption side - it knows what to do with the result once the work is done. The two are kept apart until you deliberately connect them.
 
 ```cpp
-
 Sender (describes):                Receiver (consumes):
 ┌─────────────────────┐          ┌───────────────────────┐
 │ What to compute       │          │ set_value(args...)     │
-│ Completion signatures │─connect─→│ set_error(err)         │
+│ Completion signatures │─connect─>│ set_error(err)         │
 │ No execution yet      │          │ set_stopped()          │
 └─────────────────────┘          │ Environment (stop_tok) │
                                    └───────────────────────┘
-
 ```
+
+The reason this split matters is that it lets you compose, inspect, and redirect the description before a single byte of work happens. You can build a pipeline, attach it to different schedulers, analyze its completion signatures at compile time, and only run it when you are ready. None of that is possible when work is eager.
 
 ---
 
 ## Self-Assessment
 
 ### Q1: Sender = description, Receiver = callback with 3 channels
+
+Let's nail down what each role actually means in code.
 
 **Sender:**
 
@@ -40,16 +42,17 @@ Sender (describes):                Receiver (consumes):
 
 - A receiver is the **callback** that processes the result.
 - It has three methods (one must be called exactly once):
-  - `set_value(recv, args...)` — success path
-  - `set_error(recv, err)` — error path
-  - `set_stopped(recv)` — cancellation path
+  - `set_value(recv, args...)` - success path
+  - `set_error(recv, err)` - error path
+  - `set_stopped(recv)` - cancellation path
 - It also provides an **environment** via `get_env(recv)` containing:
   - Stop token for cancellation
   - Current scheduler
   - Allocator
 
-```cpp
+Here is a minimal example. The computation is pure description until `sync_wait` runs it. Notice that `make_computation()` returns without doing any work - the lambda inside `then` never runs at that point:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -67,22 +70,24 @@ int main() {
     // sender is just a description — zero side effects
 
     // sync_wait creates a receiver internally:
-    //   set_value(recv, 30)  → stores 30
-    //   set_error(recv, err) → stores exception
-    //   set_stopped(recv)    → returns nullopt
+    //   set_value(recv, 30)  -> stores 30
+    //   set_error(recv, err) -> stores exception
+    //   set_stopped(recv)    -> returns nullopt
     auto result = stdexec::sync_wait(std::move(sender));
     if (result) {
         auto [val] = *result;
         std::cout << val << '\n';  // 30
     }
 }
-
 ```
 
-### Q2: Senders are lazy — no work until connected+started
+`sync_wait` is the bridge that makes the description execute. It creates its own receiver internally, connects it to your sender, calls `start`, and blocks until one of the three completion methods fires.
+
+### Q2: Senders are lazy - no work until connected+started
+
+Laziness is one of those properties that is easy to state but easy to forget when you are writing code. This example makes it concrete with a global counter that only increments when the sender actually runs:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -118,16 +123,17 @@ int main() {
 // Executing!
 // After sync_wait. Counter: 1
 // Result: 84
-
 ```
 
-**Key insight:** This laziness enables:
+**Key insight:** This laziness enables three important things:
 
-- The scheduler to decide WHERE work runs.
-- The compiler to optimize the entire pipeline at once.
-- Multiple pipelines to be composed before any execution.
+- The scheduler to decide WHERE work runs, because the work has not been dispatched yet.
+- The compiler to optimize the entire pipeline at once, because the whole graph is visible as a value.
+- Multiple pipelines to be composed before any execution, enabling patterns like `when_all` where all branches are assembled first and then started together.
 
 ### Q3: Sender/receiver vs future vs callbacks vs coroutines
+
+Here is how the four major async models in C++ compare. The table is dense but each row tells a story:
 
 | Model | Eager/Lazy | Composable | Cancellation | Error Handling | Allocation |
 | --- | --- | --- | --- | --- | --- |
@@ -136,8 +142,9 @@ int main() {
 | **Coroutines** | Lazy | Sequential (co_await) | Manual (stop_token) | co_await + try/catch | Coroutine frame |
 | **Senders** | Lazy | Yes (pipe `\|`) | Built-in (stopped channel) | Typed error channel | Stack (op_state) |
 
-```cpp
+The code examples below show the same logical operation written in each style, so you can feel the ergonomic difference:
 
+```cpp
 // Callback style:
 async_read(fd, buffer, [](int bytes, error_code ec) {
     if (ec) { handle_error(ec); return; }
@@ -163,15 +170,16 @@ auto pipeline = async_read_sender(fd, buffer)
     | let_value([&](auto buf) { return async_write_sender(out, buf); })
     | upon_error([](auto err) { log(err); });
 sync_wait(std::move(pipeline));
-
 ```
+
+The coroutine style is the most readable for purely sequential logic, and senders win for parallel fan-out and explicit scheduler control. The reason this trips people up is that coroutines and senders are not competitors - they are designed to interoperate, and many real programs use both. Use coroutines where sequential flow reads naturally, and reach for senders when you need `when_all`, custom schedulers, or explicit cancellation wiring.
 
 ---
 
 ## Notes
 
-- Senders unify all async patterns: I/O, timers, thread pools, GPU dispatch.
-- The three-channel model (value/error/stopped) is inspired by Reactive Extensions (Rx).
-- Receivers are usually created by library code (sync_wait, then, when_all), not by users.
-- `completion_signatures` enable zero-cost type checking at compile time.
-- Sender/receiver is MORE powerful than coroutines for parallel fan-out and scheduler control.
+- Senders unify all async patterns under one model: I/O, timers, thread pools, GPU dispatch - all expressed as composable lazy descriptions.
+- The three-channel model (value/error/stopped) is inspired by Reactive Extensions (Rx), which proved the pattern at scale in the functional programming world.
+- Receivers are normally created by library code (`sync_wait`, `then`, `when_all`) rather than by you directly - you write senders and the adaptors handle the receiver plumbing.
+- `completion_signatures` enable zero-cost type checking at compile time: the compiler knows exactly what types can emerge from each channel before any work starts.
+- Sender/receiver is more powerful than coroutines alone when it comes to parallel fan-out and fine-grained scheduler control, but the two models compose well together so you do not have to choose one exclusively.

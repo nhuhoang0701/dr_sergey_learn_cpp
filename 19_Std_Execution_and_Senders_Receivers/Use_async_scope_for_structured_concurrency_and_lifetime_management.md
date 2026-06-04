@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-`async_scope` is the P2300 mechanism for fire-and-forget tasks with guaranteed lifetime safety. It tracks all spawned work and ensures completion before destruction.
+`async_scope` is the P2300 answer to a very specific problem: how do you do fire-and-forget work without creating a lifetime disaster? Detached threads feel convenient until something goes wrong - and "something goes wrong" usually means a task outlives the locals it captured, or an exception terminates the process, or a task runs forever with no way to cancel it. `async_scope` solves all three by tracking every spawned task and giving you a clean way to wait for them all.
+
+Here is a quick reference for the operations you will use:
 
 | Operation | Purpose |
 | --- | --- |
@@ -23,8 +25,9 @@
 
 ### Q1: Spawn fire-and-forget work and join before scope exits
 
-```cpp
+The pattern is: create the scope, spawn as many tasks as you need, then call `on_empty()` and wait. The scope internally counts in-flight tasks, and `on_empty()` produces a sender that does not complete until that count reaches zero. Here is a full example with a mutex-protected accumulator:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <exec/async_scope.hpp>
@@ -57,13 +60,15 @@ int main() {
     // Safe to read total — all tasks done:
     std::cout << "Total: " << total << '\n';  // 190 (0+1+...+19)
 }
-
 ```
+
+The read of `total` after `on_empty()` returns needs no additional synchronization. The scope's completion guarantee establishes a happens-before relationship: every write inside the spawned tasks is visible to code that runs after `on_empty()`.
 
 ### Q2: Why unstructured spawn (detach) causes bugs
 
-```cpp
+It is easy to dismiss "detach is dangerous" as a stylistic preference, but the bugs it causes are real and reproducible. Here are three distinct failure modes, each in its own function:
 
+```cpp
 #include <thread>
 #include <iostream>
 #include <vector>
@@ -103,13 +108,15 @@ void exception_bug() {
 // 1. Lifetime: on_empty() guarantees all tasks complete before locals die
 // 2. Cancellation: request_stop() cancels all spawned tasks via stop_token
 // 3. Exceptions: errors propagate via error channel, not terminate
-
 ```
+
+The reason these bugs are insidious is that they often do not surface in tests. A fast machine with little contention will frequently let the detached thread finish before the stack frame is destroyed - until it does not, and the failure is non-deterministic and hard to reproduce.
 
 ### Q3: `async_scope` propagates cancellation on destruction
 
-```cpp
+You can cancel all outstanding work by calling `request_stop()` on the scope. This does not terminate tasks immediately - cancellation is cooperative. It sets the stop token that each spawned task can check. Tasks that are well-behaved (that is, they check the stop token periodically) will complete with `set_stopped`. Tasks that are already running to completion will finish normally. Either way, `on_empty()` will eventually complete:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <exec/async_scope.hpp>
@@ -156,15 +163,16 @@ int main() {
 // 4. Well-behaved senders call set_stopped(receiver)
 // 5. scope tracks all completions (value, error, or stopped)
 // 6. on_empty() completes when count reaches zero
-
 ```
+
+The comment block at the bottom lays out the full cancellation flow. The key word in step 4 is "well-behaved" - the scope cannot force a task to stop, it can only signal the intent. It is the task's responsibility to check and honour that signal.
 
 ---
 
 ## Notes
 
-- `async_scope` is proposed in P3149 (counting_scope) for C++26.
-- `spawn()` is fire-and-forget; `spawn_future()` returns a sender for the result.
-- Always call `on_empty()` or let the scope destructor handle cleanup.
-- `request_stop()` is cooperative — senders must check stop_token to actually cancel.
-- Think of `async_scope` as a `WaitGroup` (Go) or `TaskGroup` (Swift) for C++.
+- `async_scope` is proposed in P3149 (counting_scope) for C++26; the current implementation is `exec::async_scope` in the `stdexec` library.
+- `spawn()` is fire-and-forget and discards the task's result. If you need the result, use `spawn_future()` which returns a sender you can connect to later.
+- Always call `on_empty()` before the scope's locals go out of scope, or let the scope destructor handle cleanup - but relying on the destructor is less explicit and harder to reason about.
+- `request_stop()` is cooperative: senders must actively check their stop token to actually cancel. A sender that ignores the stop token will run to completion regardless.
+- Think of `async_scope` as a `WaitGroup` (Go) or `TaskGroup` (Swift) for C++ - the concept is well-established in other languages with structured concurrency, and the C++ version follows the same mental model.

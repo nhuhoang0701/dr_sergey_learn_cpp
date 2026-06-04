@@ -9,21 +9,23 @@
 
 ## Topic Overview
 
-To satisfy the `sender` concept, a type must advertise its completion signatures and support `connect()` with any compatible receiver.
+To satisfy the `sender` concept, a type must do two things: advertise which completion channels it can produce, and support `connect()` with any compatible receiver. The compiler uses these pieces to type-check entire pipelines at compile time - if your downstream `then` expects an `int` but the sender emits a `std::string`, you get a hard error before anything runs.
+
+Here is the minimal contract:
 
 ```cpp
-
 Requirements for sender concept:
 
-1. sender_concept tag type alias     → identifies as a sender
-2. completion_signatures type alias   → what channels it can complete on
-3. connect(receiver) → operation_state
+1. sender_concept tag type alias     -> identifies as a sender
+2. completion_signatures type alias   -> what channels it can complete on
+3. connect(receiver) -> operation_state
    - operation_state must have start()
    - start() eventually calls one of:
 
      set_value(recv, args...) | set_error(recv, err) | set_stopped(recv)
-
 ```
+
+The `completion_signatures` type is how you declare what your sender can emit. Think of it as a compile-time function signature for your async operation:
 
 | Completion Signature | Meaning |
 | --- | --- |
@@ -38,9 +40,10 @@ Requirements for sender concept:
 
 ### Q1: Async file descriptor read sender
 
-```cpp
+This is a realistic example of a custom sender that wraps a platform I/O operation. The key insight is that `start()` submits the actual work and then signals the receiver when it is done. In production you would use io_uring or epoll here; the example uses blocking `read()` to keep the focus on the sender protocol.
 
-// async_read_sender.cpp — a sender that reads from a file descriptor
+```cpp
+// async_read_sender.cpp - a sender that reads from a file descriptor
 // Simplified example using POSIX read(); real implementation would use io_uring/epoll
 #include <stdexec/execution.hpp>
 #include <iostream>
@@ -102,7 +105,7 @@ auto async_read(int fd, std::size_t max_bytes) {
 }
 
 int main() {
-    // Read from stdin (fd 0) — pipe some data:
+    // Read from stdin (fd 0) - pipe some data:
     // echo "hello" | ./async_read_sender
     auto pipeline = async_read(STDIN_FILENO, 1024)
         | stdexec::then([](std::vector<char> data) {
@@ -121,19 +124,19 @@ int main() {
     auto [bytes] = stdexec::sync_wait(std::move(pipeline)).value();
     std::cout << "Total bytes: " << bytes << '\n';
 }
-
 ```
 
 ### Q2: Implement `completion_signatures` for a custom sender
 
-```cpp
+The `completion_signatures` declaration is the part most people under-think when writing their first custom sender. It is worth getting right because the compiler uses it to validate your entire pipeline at compile time. The examples below show common patterns - from the trivial single-value case all the way to signatures that depend on the receiver's environment.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <system_error>
 #include <string>
 #include <variant>
 
-// Example 1: Simple sender — only value channel
+// Example 1: Simple sender - only value channel
 struct simple_sender {
     using sender_concept = stdexec::sender_t;
     using completion_signatures = stdexec::completion_signatures<
@@ -187,28 +190,28 @@ int main() {
     static_assert(stdexec::sender<fallible_sender>);
     static_assert(stdexec::sender<complex_sender>);
 }
-
 ```
+
+Notice that a sender can emit more than one *shape* of value (like `complex_sender` with both `int` and `double + string`). The framework handles the resulting variant at the pipeline level, and downstream adaptors need to be able to handle all of the declared shapes.
 
 ### Q3: How `connect()` binds a sender to a receiver
 
-```cpp
+The best way to understand the `connect()` protocol is to watch it happen step by step. The diagram below shows the call sequence, and the code below that instruments a custom sender so you can see each step print at runtime.
 
+```cpp
 connect() protocol:
 
-  Sender + Receiver ──→ connect() ──→ Operation State
-                                           │
+  Sender + Receiver ──-> connect() ──-> Operation State
+                                           |
                                        start()
-                                           │
+                                           |
                               ┌────────────┼────────────┐
-                              ▼            ▼            ▼
+                              v            v            v
                       set_value(recv)  set_error(recv) set_stopped(recv)
                         (success)       (failure)     (cancelled)
-
 ```
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -241,7 +244,7 @@ struct my_sender {
 int main() {
     // What happens inside sync_wait(my_sender{42}):
     // 1. sync_wait creates an internal receiver
-    // 2. connect(sender, internal_receiver) → op_state
+    // 2. connect(sender, internal_receiver) -> op_state
     //    (our connect() prints "connect() called")
     // 3. start(op_state)
     //    (our start() prints and calls set_value)
@@ -254,12 +257,13 @@ int main() {
 // connect() called
 // start() called, delivering 42
 // Got: 42
-
 ```
+
+Watching the output in order makes the three-phase protocol concrete: connect, start, signal.
 
 **Summary:**
 
-- `connect(sender, receiver)` produces an `operation_state` — no work starts yet.
+- `connect(sender, receiver)` produces an `operation_state` - no work starts yet.
 - `start(op_state)` kicks off execution.
 - The operation state owns all resources needed for the async operation.
 - When done, it signals the receiver via exactly one of: `set_value`, `set_error`, or `set_stopped`.
@@ -272,4 +276,4 @@ int main() {
 - If signatures depend on the receiver's environment, use the `get_completion_signatures(env)` overload.
 - `stdexec::sender_of<S, int>` checks if sender S can produce an int value.
 - Custom senders are the integration point for platform-specific async (io_uring, IOCP).
-- Always call exactly one completion function — calling zero or more than one is UB.
+- Always call exactly one completion function - calling zero or more than one is UB.

@@ -9,29 +9,29 @@
 
 ## Topic Overview
 
-A sender is an object that describes asynchronous work. To implement one from scratch, you need three pieces:
+A sender is an object that describes asynchronous work. It does not *do* the work - it just describes it. To build one from scratch you need three pieces working together. The anatomy below shows how they relate:
 
 ```cpp
-
 Sender anatomy:
 
 ┌──────────────────────────────────────────────┐
 │ Sender (describes work)                      │
 │  - completion_signatures: what it can emit   │
-│  - connect(receiver) → operation_state       │
+│  - connect(receiver) -> operation_state      │
 ├──────────────────────────────────────────────┤
 │ Operation State (holds live work)            │
-│  - start() → begins execution               │
+│  - start() -> begins execution              │
 │  - Stores receiver + any state               │
 │  - MUST live until completion signal fires   │
 ├──────────────────────────────────────────────┤
 │ Receiver (consumer)                          │
-│  - set_value(args...)  → success             │
-│  - set_error(err)      → failure             │
-│  - set_stopped()       → cancellation        │
+│  - set_value(args...)  -> success            │
+│  - set_error(err)      -> failure            │
+│  - set_stopped()       -> cancellation       │
 └──────────────────────────────────────────────┘
-
 ```
+
+The reason this trips people up is that the sender itself is inert. All it does is hold a description of the work and implement `connect()`. The operation state is what actually *runs* - and it only runs when `start()` is called on it.
 
 ---
 
@@ -39,9 +39,10 @@ Sender anatomy:
 
 ### Q1: Write a `just_on(scheduler, value)` sender
 
-```cpp
+This example shows two approaches to the same idea: a sender that delivers a value on a specific scheduler. The first version sketches the full hand-rolled anatomy; the second shows how to achieve the same thing by composing existing senders - which is usually what you want in practice.
 
-// just_on_sender.cpp — schedules delivery of a value on a given scheduler
+```cpp
+// just_on_sender.cpp - schedules delivery of a value on a given scheduler
 // Using stdexec for concepts and utilities
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
@@ -127,13 +128,13 @@ int main() {
     auto [result] = stdexec::sync_wait(std::move(s)).value();
     std::cout << "Result: " << result << '\n';  // 84
 }
-
 ```
 
 ### Q2: Implement `connect` returning an operation state with `start()`
 
-```cpp
+Here is the minimal version - just a sender that emits a single `int`. It shows the three required pieces at their absolute smallest, which makes it a good template to copy when you need to write a custom sender.
 
+```cpp
 // Minimal custom sender with explicit connect/start
 #include <stdexec/execution.hpp>
 #include <iostream>
@@ -148,7 +149,7 @@ struct my_just_int {
 
     int value;
 
-    // Operation state — created by connect(), started by start()
+    // Operation state - created by connect(), started by start()
     template <typename Receiver>
     struct op_state {
         using operation_state_concept = stdexec::operation_state_t;
@@ -183,33 +184,32 @@ int main() {
 // Output:
 // Received: 42
 // Result: 42
-
 ```
 
-**The protocol:**
+The protocol is always the same three steps, no matter how complex the sender:
 
-1. `connect(sender, receiver)` → returns `operation_state` object
-2. `start(op_state)` → begins execution
+1. `connect(sender, receiver)` -> returns `operation_state` object
+2. `start(op_state)` -> begins execution
 3. When done, op_state calls one of: `set_value(recv, ...)`, `set_error(recv, ...)`, or `set_stopped(recv)`
 
 ### Q3: Operation state lifetime rules
 
-```cpp
+This is where custom senders most often go wrong. The operation state holds everything the async operation needs - the receiver, any buffers, any child operation states. If you destroy it before the completion signal fires, you have undefined behavior. The rules are strict:
 
+```cpp
 Lifetime diagram:
 
 auto op = connect(sender, receiver);  // op_state created
-         │
-         ▼
+         |
+         v
      start(op);                        // execution begins
-         │
-         ▼ (work happens asynchronously)
-         │
+         |
+         v (work happens asynchronously)
+         |
      set_value(recv, result);          // completion signal fires
-         │
-         ▼
+         |
+         v
      op can now be destroyed           // ONLY after completion!
-
 ```
 
 **Rules:**
@@ -219,33 +219,33 @@ auto op = connect(sender, receiver);  // op_state created
 3. You may NOT call `start()` more than once.
 4. The operation state typically stores: the receiver, intermediate buffers, child operation states.
 
-```cpp
+The "bad" example below shows exactly the kind of mistake that is easy to write and hard to spot. The "good" examples show the two correct patterns - either let `sync_wait` manage lifetime for you, or keep the operation state on the stack and make sure the sender is synchronous:
 
-// WRONG — dangling operation state:
+```cpp
+// BAD - dangling operation state:
 void bad() {
     auto s = stdexec::just(42) | stdexec::then([](int x) { return x; });
     {
         auto op = stdexec::connect(std::move(s), my_receiver{});
         stdexec::start(op);
-    }  // op destroyed here — but completion may not have fired!
+    }  // op destroyed here - but completion may not have fired!
     // UNDEFINED BEHAVIOR if the work is asynchronous
 }
 
-// CORRECT — sync_wait manages lifetime:
+// GOOD - sync_wait manages lifetime:
 void good() {
     auto s = stdexec::just(42) | stdexec::then([](int x) { return x; });
     auto [result] = stdexec::sync_wait(std::move(s)).value();
     // sync_wait keeps op_state alive until completion
 }
 
-// CORRECT — manual lifetime management:
+// GOOD - manual lifetime management:
 void manual() {
     auto s = stdexec::just(42);
     auto op = stdexec::connect(std::move(s), my_receiver{});
     stdexec::start(op);
     // op stays alive on the stack; synchronous sender completes before return
 }
-
 ```
 
 ---
@@ -255,5 +255,5 @@ void manual() {
 - In practice, compose from existing senders (`just`, `then`, `schedule`) rather than writing from scratch.
 - Custom senders are needed for integrating async I/O (epoll, io_uring, IOCP).
 - The `tag_invoke` CPO (customization point object) pattern is used for `connect` in stdexec.
-- Operation states are typically non-movable after `start()` — use `std::optional` or heap if needed.
+- Operation states are typically non-movable after `start()` - use `std::optional` or heap if needed.
 - `stdexec::connect` is the CPO that calls your sender's `connect` method.

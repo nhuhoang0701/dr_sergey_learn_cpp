@@ -9,17 +9,17 @@
 
 ## Topic Overview
 
-By default, senders are single-shot: they can only be connected to one receiver. `split()` makes a sender multi-shot by memoizing the result and sharing it with multiple downstream consumers.
+By default, senders are single-shot: they can only be connected to one receiver. If you try to use the same sender in two places - say, feed its result into two different downstream pipelines - you'd normally have to run the upstream work twice. `split()` breaks that limitation. It makes a sender multi-shot by memoizing the result the first time and sharing that memoized result with every downstream consumer.
+
+The reason this is useful: imagine the upstream sender does something expensive - a database query, a file read, an HTTP request. You want multiple parts of your program to react to that result, but you only want the expensive work to happen once. That's exactly what `split()` is for.
 
 ```cpp
-
 Without split:              With split:
 
-sender ─→ one consumer      sender ── split() ─┬─→ consumer A
-                                              ├─→ consumer B
-                                              └─→ consumer C
+sender -> one consumer      sender -- split() -+-> consumer A
+                                              +-> consumer B
+                                              +-> consumer C
                              executes ONCE, result shared
-
 ```
 
 ---
@@ -28,8 +28,9 @@ sender ─→ one consumer      sender ── split() ─┬─→ consumer A
 
 ### Q1: Share an expensive result with two pipelines
 
-```cpp
+Here, `heavy_computation` should only execute once even though two independent pipelines consume its result. Calling `split()` after the expensive step is the key:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -78,13 +79,15 @@ int main() {
 // Consumer A: 84
 // Consumer B: 52
 // A=84, B=52
-
 ```
 
-### Q2: `split` memoizes — upstream runs only once
+Notice that the `[expensive]` line prints only once, even though two separate `then` steps depend on the result. That single execution is the whole purpose of `split()`.
+
+### Q2: `split` memoizes - upstream runs only once
+
+This example makes the single-execution guarantee explicit by counting invocations with an atomic counter. No matter how many consumers you attach, the count stays at 1:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <atomic>
@@ -118,38 +121,37 @@ int main() {
 // Executed! Count: 1           <-- only ONCE
 // Results: 43, 44, 45
 // Call count: 1
-
 ```
+
+Three consumers, three different results based on 42, but the upstream lambda ran exactly once. That's memoization at work.
 
 ### Q3: Reference counting in `split`
 
-`split()` creates a shared state with reference counting:
+Understanding *how* `split()` works under the hood helps you reason about its cost and lifetime guarantees. `split()` is the only standard sender adaptor that performs heap allocation - it has to, because the memoized result needs to outlive any individual consumer.
 
 ```cpp
-
 Internal mechanics:
 
   split() creates:
-  ┌─────────────────────────────────┐
-  │ Shared State (heap-allocated)    │
-  │  - upstream_op_state             │
-  │  - memoized_value (or error)     │
-  │  - ref_count: atomic<int>        │
-  │  - completion_status              │
-  │  - list of waiting receivers      │
-  └────────────────┬────────────────┘
-                 │
-  ┌─────────────┼─────────────┐
-  ▼              ▼              ▼
+  +---------------------------------+
+  | Shared State (heap-allocated)    |
+  |  - upstream_op_state             |
+  |  - memoized_value (or error)     |
+  |  - ref_count: atomic<int>        |
+  |  - completion_status              |
+  |  - list of waiting receivers      |
+  +----------------+----------------+
+                 |
+  +-------------+-+-------------+
+  v              v              v
   copy 1         copy 2         copy 3
   (ref_count=3)  (ref_count=3)  (ref_count=3)
-  │              │              │
+  |              |              |
   connect(A)     connect(B)     connect(C)
-  │              │              │
-  start(A)  ── triggers upstream start (first one)
-  start(B)  ── waits for memoized result
-  start(C)  ── waits for memoized result
-
+  |              |              |
+  start(A)  -- triggers upstream start (first one)
+  start(B)  -- waits for memoized result
+  start(C)  -- waits for memoized result
 ```
 
 **Lifecycle:**
@@ -161,8 +163,9 @@ Internal mechanics:
 5. All waiting receivers get the memoized result.
 6. When last receiver completes and last copy is destroyed, shared state is freed.
 
-```cpp
+The reason this allocation is unavoidable is that multiple receivers may be waiting on different threads - they all need access to the same result, and that result has to live somewhere with shared ownership. `split()` uses reference counting (similar to `shared_ptr`) to manage that lifetime safely.
 
+```cpp
 // split() is the ONLY sender adaptor that allocates heap memory.
 // This is necessary because:
 // 1. Multiple receivers need the same result
@@ -171,7 +174,6 @@ Internal mechanics:
 
 // Without split, copying a sender and connecting it twice
 // would execute the upstream work TWICE.
-
 ```
 
 ---
@@ -182,4 +184,4 @@ Internal mechanics:
 - The split sender is copyable (shared_ptr-like semantics).
 - `ensure_started()` is similar but starts the upstream sender eagerly.
 - Use `split()` when multiple consumers need the same expensive result.
-- If you only need one consumer, avoid `split()` — unnecessary overhead.
+- If you only need one consumer, avoid `split()` - unnecessary overhead.

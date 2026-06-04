@@ -45,13 +45,13 @@ The execution model for async work: schedulers, senders, receivers, and structur
 
 ## Notes
 
-- std::execution (P2300) provides a structured concurrency model for C++26
-- Senders represent lazy asynchronous work — they describe what to do, not when to do it
-- Receivers consume the result of a sender (value, error, or stopped signal)
-- std::execution::then chains async operations, similar to continuations
-- Operation states hold the state of an in-flight async operation — they must remain stable in memory
-- Schedulers represent execution contexts (thread pools, event loops, GPU queues)
-- std::execution::when_all composes concurrent senders into a single awaitable
-- Structured concurrency ensures child operations complete before their parent scope exits
-- stdexec (from NVIDIA) is the reference implementation ahead of standardization
-- The sender/receiver model replaces callbacks, futures, and coroutines for high-performance async
+- `std::execution` (P2300) provides a structured concurrency model for C++26. It is a significant shift from older async patterns, so the learning curve is real - but the payoff is composability, type safety, and built-in cancellation.
+- Senders represent lazy asynchronous work - they describe what to do, not when to do it. Nothing runs until you connect and start them.
+- Receivers consume the result of a sender via one of three channels: value, error, or stopped. Every sender must notify its receiver on exactly one of those channels.
+- `std::execution::then` chains async operations in a style similar to continuations. Each step transforms the value type, and the entire type chain is checked at compile time.
+- Operation states hold the state of an in-flight async operation. They must remain stable in memory from the point `start()` is called until the receiver is notified - do not move them.
+- Schedulers represent execution contexts such as thread pools, event loops, and GPU queues. They are the answer to the question "where should this work run?"
+- `std::execution::when_all` composes multiple concurrent senders into a single awaitable that delivers all results together.
+- Structured concurrency ensures child operations complete before their parent scope exits - there are no "fire and forget" leaks.
+- stdexec (from NVIDIA) is the reference implementation ahead of standardization. The namespace is `stdexec::` rather than `std::execution::` in current code.
+- The sender/receiver model is designed to replace callbacks, futures, and ad-hoc coroutine wiring for high-performance async code.

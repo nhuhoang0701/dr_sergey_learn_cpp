@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`then` is the most fundamental sender adaptor. It transforms the value produced by a sender through a callable, returning a new sender. No work executes until the pipeline is started.
+`then` is the most fundamental sender adaptor - it's the `|>` of the sender world. It takes the value produced by the previous sender, passes it through a callable, and packages the callable's return value into a new sender. Crucially, nothing executes when you call `then`. You're just describing what to do with the value when it eventually arrives.
 
 | Property | Detail |
 | --- | --- |
@@ -19,14 +19,14 @@
 | Laziness | No work until `connect` + `start` |
 | Exception | If `callable` throws, error propagates via `set_error` |
 
-```cpp
+The laziness is the reason you can build up a long chain of transformations before anything actually runs. Think of it as assembling a recipe, not cooking:
 
+```cpp
 just(42) | then(double_it) | then(add_one)
 
-Pipeline (lazy):   42  ───→  84  ───→  85
+Pipeline (lazy):   42  --->  84  --->  85
                         then       then
 No work until sync_wait/start triggers it.
-
 ```
 
 ---
@@ -35,8 +35,9 @@ No work until sync_wait/start triggers it.
 
 ### Q1: Build a simple `then` pipeline
 
-```cpp
+Here's the basics: you build the pipeline first, then drive it with `sync_wait`. Notice the explicit "no work done yet" message - it's not just commentary, it's verifiable by the order of printed output:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -81,13 +82,15 @@ int main() {
 // Result: 85
 // Sum: 30
 // Logging: 42
-
 ```
 
-### Q2: `then` returns a new sender — no work until started
+The output order confirms that "Pipeline built" prints before either step executes. The `then` calls recorded the work to do; `sync_wait` triggered it.
+
+### Q2: `then` returns a new sender - no work until started
+
+This laziness model is easy to describe but worth really internalizing, because it's different from how most C++ code works. Here's the lifecycle spelled out step by step:
 
 ```cpp
-
 Laziness model:
 
   auto s1 = just(42);                    // creates sender (no work)
@@ -101,11 +104,11 @@ Laziness model:
   start(op);                             // NOW work begins!
   //
   // sync_wait does connect + start internally.
-
 ```
 
-```cpp
+And here's the same idea expressed in runnable code, using a call counter to prove that no lambdas run at construction time:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -133,13 +136,15 @@ int main() {
     auto [r2] = stdexec::sync_wait(std::move(pipeline2)).value();
     std::cout << "Calls after second run: " << call_count << '\n';  // 2
 }
-
 ```
+
+The call count stays at zero until `sync_wait` is called. Senders are move-only by default, so to run a pipeline more than once you need to rebuild it (or use `split()` for a shared multi-shot sender).
 
 ### Q3: `then` propagates exceptions via the error channel
 
-```cpp
+Here's the reason this trips people up: if a `then` callback throws, the exception does not propagate to the *next* `then`. Instead it jumps straight to the error channel, bypassing all remaining `then` nodes. The pipeline short-circuits. The downstream `then` lambdas simply never run.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <stdexcept>
@@ -184,22 +189,23 @@ int main() {
 // Caught: boom!
 // Recovered from: fail
 // Recovered value: -1
-
 ```
+
+The flow diagram shows this bypass clearly:
 
 ```cpp
-
 Error propagation flow:
 
-  just(42) ─→ then(f1) ──── then(f2) ──── sync_wait
-                │                              │
-               throws              set_error ─→ rethrow
+  just(42) -> then(f1) ---- then(f2) ---- sync_wait
+                |                              |
+               throws              set_error ->rethrow
               exception                         as exception
-                │
-                └─── skips f2 ────────────┘
+                |
+                +--- skips f2 ------------+
                      (error channel)
-
 ```
+
+If you want to intercept errors mid-pipeline, use `upon_error` (for simple recovery that returns a plain value) or `let_error` (for recovery that returns a new sender).
 
 ---
 
@@ -209,5 +215,5 @@ Error propagation flow:
 - `then` only operates on the value channel. Errors skip `then` nodes.
 - `upon_error` is the error-channel equivalent of `then`.
 - `upon_stopped` is the stopped-channel equivalent of `then`.
-- `then` returns a move-only sender — use `split()` to share.
+- `then` returns a move-only sender - use `split()` to share.
 - Prefer `then` for synchronous transforms; use `let_value` when you need to return another sender.

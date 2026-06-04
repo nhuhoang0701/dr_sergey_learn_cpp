@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`when_all` is the primary way to run multiple senders concurrently and collect all their results. It is the sender equivalent of `std::async` + `future::get`, but composable and cancellation-aware.
+`when_all` is the primary way to run multiple senders concurrently and collect all their results. If you have used `std::async` + `future::get` before, think of `when_all` as the composable, cancellation-aware, scheduler-controlled replacement for that pattern.
+
+The key properties you need to remember:
 
 | Property | Detail |
 | --- | --- |
@@ -24,8 +26,9 @@
 
 ### Q1: Join two independent computations with `when_all`
 
-```cpp
+This is the bread-and-butter use case. Two tasks run concurrently on a thread pool, and `when_all` waits for both before returning the results. Structured bindings let you unpack the tuple immediately:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -68,13 +71,15 @@ int main() {
     ).value();
     std::cout << x << ", " << y << ", " << z << '\n';  // 1, 2, 3
 }
-
 ```
+
+Notice that `[A]` and `[B]` will print on different thread IDs - they really do run in parallel. The result tuple is `(100, 200)` regardless of which task finished first.
 
 ### Q2: Error/cancellation propagation in `when_all`
 
-```cpp
+When any child fails, `when_all` sends a stop signal to the remaining children and then propagates the error. Crucially, it still waits for all children to acknowledge the cancellation before completing - there are no dangling operations. The diagram after the code makes the priority ordering clear:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -114,25 +119,25 @@ int main() {
 // Output:
 // Caught: task failed
 // when_all stopped (nullopt)
-
 ```
 
-```cpp
+The priority ordering that governs the final completion signal is: error beats stopped, which beats value. If you mix one error and one stopped, you get the error.
 
+```cpp
 Error propagation in when_all:
 
-  sender A (ok)  ──┬── when_all ──→ error (from B)
-  sender B (err) ──┘        │
-                            └─→ cancels A (stop token)
+  sender A (ok)  --+-- when_all --> error (from B)
+  sender B (err) --+        |
+                            +-> cancels A (stop token)
 
 Priority: error > stopped > value
-
 ```
 
 ### Q3: `when_all` vs `std::async` + `future::get`
 
-```cpp
+It is worth seeing the two approaches side by side because the advantages of `when_all` are not just theoretical. The old `std::async` approach has no cancellation, no scheduler control, and composes poorly. `when_all` solves all of those:
 
+```cpp
 // OLD way: std::async + future::get
 auto f1 = std::async(std::launch::async, compute_a);
 auto f2 = std::async(std::launch::async, compute_b);
@@ -147,8 +152,9 @@ auto [a2, b2] = stdexec::sync_wait(
         stdexec::starts_on(sched, stdexec::just() | stdexec::then(compute_b))
     )
 ).value();
-
 ```
+
+The comparison table lays out every dimension:
 
 | Feature | `std::async` + `get()` | `when_all` |
 | --- | --- | --- |

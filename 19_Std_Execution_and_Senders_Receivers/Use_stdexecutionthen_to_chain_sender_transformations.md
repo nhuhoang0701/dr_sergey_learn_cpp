@@ -9,17 +9,17 @@
 
 ## Topic Overview
 
-`then()` transforms the **value** produced by a sender through a callable, producing a new sender with the transformed type. The pipeline is lazy — no work happens until connected and started.
+`then()` is the workhorse of sender pipelines. It transforms the value produced by a sender through a callable, producing a new sender with the transformed type. You can think of it as the async equivalent of calling a function on the result - each `then()` in a chain is one transformation step.
+
+The pipeline is lazy - no work happens until the sender is connected to a receiver and started. Building the chain is just describing what to do; nothing runs yet.
 
 ```cpp
-
 Type flow through then():
 
-  just(42)        → sender<int>
-  | then(to_str)  → sender<string>      (int → string)
-  | then(length)  → sender<size_t>      (string → size_t)
-  | then(double)  → sender<size_t>      (size_t → size_t)
-
+  just(42)        -> sender<int>
+  | then(to_str)  -> sender<string>      (int -> string)
+  | then(length)  -> sender<size_t>      (string -> size_t)
+  | then(double)  -> sender<size_t>      (size_t -> size_t)
 ```
 
 ---
@@ -28,8 +28,9 @@ Type flow through then():
 
 ### Q1: Pipe through `then` and verify the value reaches the receiver
 
-```cpp
+Here is the simplest pipeline you can write: a single `just` producing a value, piped into a `then` that transforms it, and `sync_wait` to get the result back. Notice the multi-value example at the end - when the predecessor produces multiple values, the `then` callable receives them all as separate arguments:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -57,13 +58,15 @@ int main() {
     // stdexec::start(op);  // triggers the pipeline
     // sync_wait does this internally.
 }
-
 ```
 
-### Q2: `then()` is lazy — no work until connected and started
+The comment about `connect` and `start` is worth noting. `sync_wait` is just a convenience wrapper that does those two things and then blocks. Understanding that it delegates to `connect` + `start` helps when you need to do lower-level work later.
+
+### Q2: `then()` is lazy - no work until connected and started
+
+This is the property that makes pipelines composable and storage-safe. When you write `just(42) | then(f)` you are constructing a description of work, not performing it. The counter stays at zero until `sync_wait` actually triggers execution:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -93,20 +96,20 @@ int main() {
 // After build:  counter = 0
 // After run:    counter = 2
 // Result: 85
-
 ```
 
-**Laziness enables:**
+Laziness is not just a technicality - it enables a whole set of practical capabilities:
 
 - Building pipelines without side effects
 - Storing pipelines in data structures
 - Choosing when/where to execute
 - Inspecting completion signatures at compile time
 
-### Q3: Chain three `then()` — type changes at each step
+### Q3: Chain three `then()` - type changes at each step
+
+One of the nicest things about `then()` is that the type can change at every step. The compiler tracks the full type chain at compile time, which means type errors are caught before any code runs. This example walks through three type transformations - `int` to `double`, `double` to `string`, `string` to `size_t`:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -134,24 +137,23 @@ int main() {
 // Output:
 // sqrt = 6.480741
 // String length: 15
-
 ```
 
-```cpp
+The diagram below shows the compile-time type flow. If you accidentally pass the wrong lambda signature at any step, the compiler will tell you immediately - it knows the expected type at each stage before a single byte of the executable is generated:
 
+```cpp
 Type transformation at each then():
 
-  just(42)                  │ completion_signatures<set_value(int)>
-     │                       │
-  then([](int) -> double)  │ completion_signatures<set_value(double)>
-     │                       │
-  then([](double) -> str)  │ completion_signatures<set_value(string)>
-     │                       │
-  then([](str) -> size_t)  │ completion_signatures<set_value(size_t)>
+  just(42)                  | completion_signatures<set_value(int)>
+     |                       |
+  then([](int) -> double)  | completion_signatures<set_value(double)>
+     |                       |
+  then([](double) -> str)  | completion_signatures<set_value(string)>
+     |                       |
+  then([](str) -> size_t)  | completion_signatures<set_value(size_t)>
 
 All type deduction happens at COMPILE TIME.
 The compiler knows the full type chain before any code runs.
-
 ```
 
 ---

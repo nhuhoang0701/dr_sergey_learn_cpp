@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Coroutines (C++20) and senders/receivers (P2300/C++26) are complementary async models. Coroutines give sequential-looking code; senders give composable pipelines.
+Coroutines (C++20) and senders/receivers (P2300/C++26) are complementary async models. They are not competing alternatives - they solve slightly different problems and are often best used together. Coroutines give you sequential-looking code that is easy to read; senders give you composable pipelines that are easy to run in parallel and easy to route to specific execution contexts.
 
 | Aspect | Coroutines | Senders/Receivers |
 | --- | --- | --- |
@@ -21,16 +21,18 @@ Coroutines (C++20) and senders/receivers (P2300/C++26) are complementary async m
 | Structured concurrency | Library-provided | First-class (async_scope) |
 | Best for | Sequential async logic | Parallel pipelines, scheduler control |
 
-```cpp
+Here is what each model looks like at a glance, side by side:
 
+```cpp
 Coroutine:                    Sender pipeline:
 task<int> foo() {             auto s = just(42)
   auto x = co_await bar();      | then([](int x) {
   auto y = co_await baz(x);         return x * 2;
   co_return x + y;               })
 }                               | then(to_string);
-
 ```
+
+The coroutine reads like ordinary sequential code; the sender pipeline reads like a data transformation chain. The good news is you do not have to choose one or the other.
 
 ---
 
@@ -38,8 +40,9 @@ task<int> foo() {             auto s = just(42)
 
 ### Q1: Make a sender awaitable in a coroutine with `co_await`
 
-```cpp
+The bridge between the two worlds is `co_await`. When you have a coroutine type that understands senders (like `exec::task`), you can `co_await` any sender directly - the coroutine suspends, the sender runs, and when it completes the coroutine resumes with the value. The example below also shows the other direction: a coroutine is itself a sender and can be dropped into a pipeline with `|`.
 
+```cpp
 // Using stdexec (NVIDIA P2300 reference implementation)
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
@@ -48,7 +51,7 @@ task<int> foo() {             auto s = just(42)
 
 // exec::task is a coroutine type that can co_await senders:
 exec::task<int> compute_async() {
-    // co_await a sender → suspends until the sender completes,
+    // co_await a sender -> suspends until the sender completes,
     // then resumes with the value:
     int x = co_await stdexec::just(21);
     std::cout << "Got: " << x << '\n';
@@ -67,7 +70,7 @@ int main() {
     exec::static_thread_pool pool(4);
     auto sched = pool.get_scheduler();
 
-    // The coroutine itself IS a sender — can be used in pipelines:
+    // The coroutine itself IS a sender - can be used in pipelines:
     auto pipeline =
         stdexec::starts_on(sched, compute_async())
         | stdexec::then([](int result) {
@@ -83,8 +86,9 @@ int main() {
 // Doubled: 42
 // Pipeline got: 42
 // Final: 42
-
 ```
+
+The coroutine `compute_async()` uses `co_await` to suspend and receive values from senders, and is then itself composed into a sender pipeline using `starts_on` and `|`. Both directions work seamlessly.
 
 **How it works:**
 
@@ -93,6 +97,8 @@ int main() {
 - The coroutine can be composed into sender pipelines via `|`.
 
 ### Q2: When to prefer senders vs coroutines
+
+The decision usually comes down to the shape of the work. Here is a practical guide:
 
 Use **senders** when:
 
@@ -112,8 +118,9 @@ Use **both** when:
 - Sequential coroutine logic needs to co_await parallel sender work.
 - A sender pipeline needs a complex step best written as a coroutine.
 
-```cpp
+This combined pattern is the real sweet spot. The coroutine handles the "narrative" of what happens, while the parallel fan-out within it is expressed as senders:
 
+```cpp
 // Combining both: coroutine with parallel sender fan-out
 exec::task<double> process_data() {
     // Sequential part (coroutine is natural):
@@ -130,15 +137,13 @@ exec::task<double> process_data() {
     // Sequential again:
     co_return merge_results(a, b, c);
 }
-
 ```
 
 ### Q3: The `as_awaitable` adaptor
 
-`execution::as_awaitable(sender, promise)` bridges any sender into a coroutine:
+The reason `co_await sender` works inside `exec::task` at all is the `as_awaitable` customization point. It converts any sender into an awaiter that the coroutine machinery understands. This happens automatically when you `co_await` a sender inside a task - you rarely call it yourself, but understanding what it does helps demystify the bridge.
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/task.hpp>
 #include <iostream>
@@ -173,22 +178,21 @@ exec::task<void> example() {
 
     std::cout << x << '\n';  // 42
 }
-
 ```
 
-```cpp
+The bridge diagram below shows how the two worlds connect at runtime. The coroutine suspends at `co_await`, the sender runs in sender-world, and when `set_value` fires the coroutine's handle is resumed:
 
+```cpp
 Bridge diagram:
 
   Coroutine world          Bridge              Sender world
 ┌─────────────────┐                        ┌──────────────────┐
-│ co_await sender  │──→ as_awaitable() ──→  │ connect(s, recv)  │
+│ co_await sender  │──-> as_awaitable() ──>  │ connect(s, recv)  │
 │                  │                        │ start(op_state)   │
 │ ...suspended...  │                        │ ...running...     │
-│                  │←── resume handle ←──── │ set_value(42)     │
+│                  │<── resume handle <──── │ set_value(42)     │
 │ int x = 42      │                        └──────────────────┘
 └─────────────────┘
-
 ```
 
 ---
@@ -197,6 +201,6 @@ Bridge diagram:
 
 - `exec::task<T>` from stdexec is the recommended coroutine type for P2300 interop.
 - Coroutines that co_await senders get **automatic cancellation** via stop tokens.
-- Senders avoid coroutine frame heap allocations — better for latency-sensitive code.
+- Senders avoid coroutine frame heap allocations - better for latency-sensitive code.
 - The `as_awaitable` customization point is ADL-discovered via `tag_invoke`.
 - In C++26, `std::execution::task` will be the standard coroutine-sender bridge.

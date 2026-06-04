@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-P2300 defines three core roles that separate concerns in async programming:
+P2300 is the proposal that defines how async work is modeled in modern C++. The central insight is a clean separation into three roles. If you have ever felt that async code in C++ was messy - threads scattered everywhere, futures that do not chain, callbacks you cannot cancel - P2300 addresses each of those problems with a unified design.
 
 | Role | Responsibility | Analogy |
 | --- | --- | --- |
@@ -17,11 +17,12 @@ P2300 defines three core roles that separate concerns in async programming:
 | **Receiver** | Handles the result/error/cancellation | A callback with 3 channels |
 | **Operation State** | Running work binding sender+receiver | A cooking session |
 
-```cpp
+The protocol that connects them is deliberately minimal. You call `connect` to bind a sender to a receiver, which produces an operation state. You call `start` on the operation state to begin execution. When the work finishes, exactly one of three completion signals fires:
 
+```cpp
 P2300 protocol:
 
-  Sender + Receiver ────connect()────→ Operation State
+  Sender + Receiver ────connect()────-> Operation State
                                           │
                                       start()
                                           │
@@ -30,14 +31,17 @@ P2300 protocol:
                      ┌────────────┼────────────┐
                      ▼            ▼            ▼
              set_value(recv)  set_error(recv)  set_stopped(recv)
-
 ```
+
+The three completion channels correspond to success, failure, and cancellation. Every sender must declare up front which channels it can use via `completion_signatures`, so the compiler can verify the entire pipeline at compile time before a single line executes.
 
 ---
 
 ## Self-Assessment
 
 ### Q1: Three roles in P2300
+
+Let's walk through each role so the mental model is concrete.
 
 **Sender** (describes work):
 
@@ -48,9 +52,9 @@ P2300 protocol:
 **Receiver** (handles completion):
 
 - A receiver is the "continuation" that processes the result. It has three methods:
-  - `set_value(args...)` — success
-  - `set_error(err)` — failure
-  - `set_stopped()` — cancellation
+  - `set_value(args...)` - success
+  - `set_error(err)` - failure
+  - `set_stopped()` - cancellation
 - Also carries an **environment** (stop_token, scheduler, allocator).
 
 **Operation State** (running work):
@@ -60,8 +64,9 @@ P2300 protocol:
 - Must remain alive until one completion signal fires.
 - Non-movable after `start()`.
 
-```cpp
+Here is the smallest possible custom sender that shows all three roles in one place. It is deliberately trivial so you can focus on the structure rather than the work:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -93,13 +98,15 @@ int main() {
     auto [result] = stdexec::sync_wait(my_sender{42}).value();
     std::cout << result << '\n';  // 42
 }
-
 ```
+
+`my_sender` is the sender. `op_state` is the operation state. The `Receiver` template parameter represents the receiver role - in this case `sync_wait` supplies its own internal receiver that captures the result and hands it back to you.
 
 ### Q2: Separation of what/where/result
 
-```cpp
+One of the most useful properties of P2300 is that you can write a computation once and run it anywhere. The computation does not know or care whether it runs on a thread pool, a GPU, or inline. That decision belongs to the scheduler:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -123,11 +130,11 @@ int main() {
     // Key insight: the SAME computation can run on DIFFERENT schedulers
     // without changing the computation code!
 }
-
 ```
 
-```cpp
+This separation is not just a design nicety. It means you can test your computation logic using the inline scheduler (no threads, fully deterministic) and then deploy it with a thread pool or GPU scheduler without touching the computation code.
 
+```cpp
 Separation of concerns:
 
   WHAT to do          WHERE to run       WHAT to do with result
@@ -138,10 +145,11 @@ Separation of concerns:
   │ | then(g)     │    │ io_context  │    │ | store(var)   │
   └─────────────┘    └───────────┘    └──────────────┘
   Independent!       Independent!       Independent!
-
 ```
 
 ### Q3: P2300 vs `std::async` vs raw threads
+
+Here is how P2300 compares to the older approaches you may already be familiar with. The differences are not cosmetic - each row represents a class of bugs that P2300 eliminates by design:
 
 | Aspect | Raw threads | `std::async` | P2300 senders |
 | --- | --- | --- | --- |
@@ -152,8 +160,9 @@ Separation of concerns:
 | Resource management | Manual | Future owns result | Operation state RAII |
 | Structured lifetime | No (detach is UB-prone) | Blocking `get()` | `async_scope` |
 
-```cpp
+The code comparison shows the progression from the most manual approach to the most structured:
 
+```cpp
 // Raw threads: manual, error-prone
 std::thread t([] { return heavy_work(); });
 t.join(); // must not forget!
@@ -168,15 +177,16 @@ auto pipeline = stdexec::schedule(sched)
     | stdexec::then(process_result)
     | stdexec::upon_error(handle_error);
 auto [result] = stdexec::sync_wait(std::move(pipeline)).value();
-
 ```
+
+The P2300 version is longer on the page, but each piece has a clear role and the compiler can check the whole thing end to end.
 
 ---
 
 ## Notes
 
-- P2300 is the biggest addition to C++ async since coroutines in C++20.
-- The reference implementation is `stdexec` from NVIDIA (open source, MIT license).
-- Key design goals: no allocations, no type erasure, zero-overhead abstraction.
-- `sync_wait` is the only blocking primitive — the rest is fully lazy.
-- Think of senders as `std::ranges` for async: lazy, composable, and value-semantic.
+- P2300 is the biggest addition to C++ async since coroutines landed in C++20, and it complements coroutines rather than competing with them.
+- The reference implementation is `stdexec` from NVIDIA, which is open source under the MIT license and available at github.com/NVIDIA/stdexec.
+- The key design goals are zero allocations, zero type erasure, and zero-overhead abstraction - pipelines that compile down to the same code as hand-written async state machines.
+- `sync_wait` is the only blocking primitive in the model; everything else is fully lazy and non-blocking.
+- A useful mental model: think of senders as `std::ranges` for async work - lazy, composable, value-semantic, and verifiable at compile time.

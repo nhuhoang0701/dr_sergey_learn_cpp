@@ -9,7 +9,11 @@
 
 ## Topic Overview
 
-Stop tokens flow through sender pipelines via the receiver's environment. Operations can poll for cancellation or register callbacks.
+Cancellation in the sender/receiver model works through a mechanism called stop tokens. A stop token is a small, cheap-to-copy object that answers one question: "has cancellation been requested?" Every receiver carries an environment, and that environment is where the stop token lives. When the framework wires your pipeline together, it automatically threads the stop token from the outermost consumer all the way down to each individual sender stage - you do not have to pass it manually.
+
+There are two ways a sender can react to cancellation: it can poll the token at convenient checkpoints, or it can register a callback that fires the moment a cancellation request arrives. Once a sender decides to honour the cancellation, it calls `set_stopped` on its receiver instead of `set_value` or `set_error`. That signal then propagates outward through the rest of the pipeline.
+
+Here is a quick reference for the key APIs you will encounter:
 
 | API | Purpose |
 | --- | --- |
@@ -26,8 +30,9 @@ Stop tokens flow through sender pipelines via the receiver's environment. Operat
 
 ### Q1: Thread a stop_token through a sender pipeline
 
-```cpp
+The first thing to understand is that you do not thread the stop token through explicitly - the pipeline infrastructure does it for you. What you do is reach into the receiver's environment to read the token, then use it to decide whether to keep working or bail out. Here is a custom sender that does exactly that:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -92,13 +97,15 @@ int main() {
     std::cout << "Result: " << result << '\n';
 }
 // Output: Sum: 499500  Result: 499500
-
 ```
+
+Notice the two-step pattern inside `start()`: first pull the environment out of the receiver, then pull the stop token out of the environment. Checking `stop_requested()` at the top of each iteration is the polling approach - it is simple and predictable. When cancellation has not been requested (which is the common case), the work completes normally and `set_value` fires. If the token is tripped, we call `set_stopped` instead and return immediately. The `upon_stopped` adaptor at the end of the pipeline catches that signal and produces a fallback value so `sync_wait` always gets something.
 
 ### Q2: Bulk operation with cooperative cancellation
 
-```cpp
+For work that fans out across many items, the same principle applies. Here `bulk` runs a function once per index. In production you would add a token check inside the body; the comments below show where that guard would go:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -132,13 +139,11 @@ int main() {
 // Output:
 // data[0] = 3
 // data[999] = 3
-
 ```
 
-For cancellation in bulk:
+When you need cancellation inside a `bulk` body but you cannot access the token directly, wrapping the work in a `let_value` that builds an inner sender lets you recover the token from the inner receiver's environment:
 
 ```cpp
-
 // Pattern: check stop_token every N iterations
 auto pipeline = stdexec::schedule(sched)
     | stdexec::let_value([&data]() {
@@ -151,13 +156,13 @@ auto pipeline = stdexec::schedule(sched)
                 }
             });
     });
-
 ```
 
-### Q3: `stopped_as_optional` — convert cancellation to `std::nullopt`
+### Q3: `stopped_as_optional` - convert cancellation to `std::nullopt`
+
+Sometimes the caller does not want cancellation to be a hard stop. It just wants to know "did I get a value or not?" That is exactly what `stopped_as_optional` is for - it absorbs the stopped channel and emits an `optional` instead:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <optional>
@@ -193,15 +198,16 @@ int main() {
 //   upon_stopped([] { return default; })  -- provides fallback value
 //   stopped_as_optional()                 -- wraps in optional
 //   stopped_as_error(err)                 -- converts to error channel
-
 ```
+
+The key design decision is which channel you want cancellation to arrive on. If you want it to look like a missing value, use `stopped_as_optional`. If you want it to look like a failure you can recover from with `let_error`, use `stopped_as_error`. If you just want a hardcoded fallback value, `upon_stopped` is the simplest choice.
 
 ---
 
 ## Notes
 
-- Stop tokens propagate automatically through all P2300 adaptors (`then`, `when_all`, `bulk`, etc.).
-- `stopped_as_optional` is useful in `when_all` where one branch might cancel.
-- Stop callbacks run on the thread calling `request_stop()` — keep them fast.
-- `in_place_stop_token` (stdexec) is the default; `std::stop_token` (C++20) can also be used.
-- Never ignore the stopped channel — unhandled cancellation propagates outward.
+- Stop tokens propagate automatically through all P2300 adaptors (`then`, `when_all`, `bulk`, etc.), so you never need to forward them by hand.
+- `stopped_as_optional` is particularly handy inside `when_all` where one branch might cancel without wanting to abort the whole fan-out.
+- Stop callbacks run on the thread that calls `request_stop()`, so keep them short and non-blocking.
+- `in_place_stop_token` (stdexec) is the default token type; `std::stop_token` from C++20 can also be used with the same pattern.
+- Never silently discard the stopped channel - if a sender can produce `set_stopped`, callers downstream must be ready to handle it, otherwise the unhandled cancellation will propagate outward and may surprise you.

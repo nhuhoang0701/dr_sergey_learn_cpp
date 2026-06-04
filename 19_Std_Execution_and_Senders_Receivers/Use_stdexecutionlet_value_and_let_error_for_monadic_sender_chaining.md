@@ -9,26 +9,25 @@
 
 ## Topic Overview
 
-`let_value` and `let_error` enable **monadic** sender chaining, where each step returns a new sender that depends on the previous result.
+`then` is great when you know the transformation at the time you write the pipeline. But sometimes the *next step* of the pipeline depends on the *result* of the previous step - not just the value passed through, but which sender you use next. That's what `let_value` and `let_error` are for. They enable **monadic** sender chaining: the callback you provide doesn't return a value, it returns a whole new sender.
 
 ```cpp
-
-then(f):       value ──→ f(value) ──→ direct_result
-let_value(f):  value ──→ f(value) ──→ sender ──→ (execute) ──→ result
-let_error(f):  error ──→ f(error) ──→ sender ──→ (execute) ──→ recovery
-
+then(f):       value --> f(value) --> direct_result
+let_value(f):  value --> f(value) --> sender --> (execute) --> result
+let_error(f):  error --> f(error) --> sender --> (execute) --> recovery
 ```
 
-The callback returns a **sender**, not a value. This allows dynamic async decisions at each step.
+The callback returns a **sender**, not a value. This allows dynamic async decisions at each step - you can choose completely different pipelines based on what arrived, including pipelines that run on different schedulers or do further async I/O.
 
 ---
 
 ## Self-Assessment
 
-### Q1: `let_value` — create a new sender based on the previous result
+### Q1: `let_value` - create a new sender based on the previous result
+
+Here's a realistic example: a two-step lookup where each step depends on the result of the previous one. Each lookup function returns a sender - and that's exactly what `let_value` expects:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -68,13 +67,15 @@ int main() {
 // Looking up user 42
 // Looking up permissions for User_42
 // Permissions: 0xff
-
 ```
 
-### Q2: `let_error` — recover from an error with a fallback sender
+Notice how the username from the first `let_value` is passed directly into the second `let_value` callback. The framework keeps it alive for the entire duration of the inner sender's execution. This is one of the things `let_value` manages that `then` simply cannot: the predecessor's value stays in scope until the returned sender completes.
+
+### Q2: `let_error` - recover from an error with a fallback sender
+
+`let_error` is the error-channel counterpart. When the upstream sender signals an error, `let_error` gives you a chance to replace it with a recovery sender. This is the pattern for fallback logic and retry strategies:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <iostream>
 #include <string>
@@ -116,13 +117,15 @@ int main() {
 
     stdexec::sync_wait(std::move(with_retries));
 }
-
 ```
+
+The chained retry pattern at the bottom is particularly useful. Each `let_error` in the chain only fires if the upstream produced an error - if a retry succeeds, its value flows through the remaining `let_error` nodes untouched (since those only react to errors, not values).
 
 ### Q3: `let_value`/`let_error` vs coroutine `co_await`
 
-```cpp
+If you've used coroutines, you'll notice that `let_value` chains read similarly to a sequence of `co_await` calls. Both express "run this async step, then when it finishes, run the next one." The tradeoffs are real though:
 
+```cpp
 // Coroutine approach (if using exec::task):
 exec::task<std::string> coro_pipeline(int user_id) {
     auto username = co_await lookup_user(user_id);
@@ -143,7 +146,6 @@ auto sender_pipeline(int user_id) {
             return std::to_string(perms);
         });
 }
-
 ```
 
 | Aspect | `co_await` (Coroutines) | `let_value` (Senders) |

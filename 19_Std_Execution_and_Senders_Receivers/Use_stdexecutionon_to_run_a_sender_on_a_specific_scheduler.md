@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Scheduler APIs control **where** sender work executes:
+One of the most important questions in async programming is not *what* runs, but *where* it runs. The scheduler APIs in P2300 answer exactly that question. Here is a quick map of the four tools and what each one controls:
 
 | API | Meaning |
 | --- | --- |
@@ -18,14 +18,14 @@ Scheduler APIs control **where** sender work executes:
 | `on(sched, sender)` | Run on `sched`, then return to original context |
 | `schedule(sched)` | Create an entry-point sender on `sched` |
 
-```cpp
+The difference between `on`, `starts_on`, and `continues_on` trips people up, so here is a plain-language restatement. `starts_on` says "launch this work on that scheduler and keep running there." `continues_on` says "from this point in the pipeline, switch over to that scheduler." `on` is a round-trip - it switches in and then back out again. The diagram below makes this concrete:
 
+```cpp
 on(sched, sender):
-  original_ctx ─→ [switch to sched] ─→ run sender ─→ [switch back] ─→ original_ctx
+  original_ctx -> [switch to sched] -> run sender -> [switch back] -> original_ctx
 
 starts_on(sched, sender):
-  [run on sched] ─→ stay on sched
-
+  [run on sched] -> stay on sched
 ```
 
 ---
@@ -34,8 +34,9 @@ starts_on(sched, sender):
 
 ### Q1: `starts_on` (formerly `on`) to force execution on a pool thread
 
-```cpp
+This example uses `starts_on` to pin work onto a thread pool. Notice how `work` is built first as a plain pipeline, and then `starts_on` wraps it to say "execute this pipeline on the pool." The second half of the example shows two pipelines running on the same pool and collected with `when_all`.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -70,10 +71,13 @@ int main() {
     ).value();
     std::cout << ra << ", " << rb << '\n';  // 11, 22
 }
-
 ```
 
+The thread ID printed in the first lambda will not match `main`'s thread - that is the whole point. The work genuinely runs on the pool.
+
 ### Q2: `starts_on` vs `continues_on` (transfer)
+
+The table makes the differences concrete, but the key mental model is: `starts_on` sets the launch context, while `continues_on` changes context mid-flight. You can think of `continues_on` as a lane-change on a highway - you are already moving, and you just switch lanes at a specific point.
 
 | Aspect | `starts_on(sched, sender)` | `continues_on(sched)` |
 | --- | --- | --- |
@@ -83,8 +87,9 @@ int main() {
 | Returns to original? | No | No |
 | Use case | "Run this work there" | "Continue the rest there" |
 
-```cpp
+The code below shows both patterns side by side - `p1` uses `starts_on` so everything stays on pool A, while `p2` uses `continues_on` to cross from pool A to pool B halfway through the pipeline:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -124,13 +129,15 @@ int main() {
     stdexec::sync_wait(std::move(p1));
     stdexec::sync_wait(std::move(p2));
 }
-
 ```
 
-### Q3: Full pipeline: pool → I/O → pool
+Watch the thread IDs in the output. In `p1` both lambdas print an `[A]` thread. In `p2` the second lambda prints a `[B]` thread - that is the context switch happening at `continues_on(sched_b)`.
+
+### Q3: Full pipeline: pool -> I/O -> pool
+
+Real systems often need to move work between different execution contexts - compute work goes to a CPU thread pool, I/O goes to a dedicated I/O pool, and then the result callback bounces back to the compute pool. This pipeline demonstrates that three-phase pattern:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -174,20 +181,19 @@ int main() {
 // [io] Writing 'processed_data' on 14000050
 // [compute] Wrote 14 bytes, callback on 14000002
 // Done: 14 bytes
-
 ```
 
-```cpp
+The execution flow makes it clear where each step lives - and crucially, each `continues_on` is the only thing you need to change if you want to redirect a phase to a different context later:
 
+```cpp
 Execution flow:
 
   Compute pool        I/O pool          Compute pool
 ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│ Prepare     │──→│ Write       │──→│ Callback    │
+│ Prepare     │-->│ Write       │-->│ Callback    │
 │ data        │   │ to disk     │   │ (notify)    │
 └─────────────┘   └─────────────┘   └─────────────┘
   schedule()    continues_on()   continues_on()
-
 ```
 
 ---
@@ -198,4 +204,4 @@ Execution flow:
 - `on(sched, sender)` means `starts_on(sched, sender) | continues_on(original)`.
 - `continues_on` was previously called `transfer`.
 - `schedule(sched)` creates an empty sender on the scheduler (alternative to `starts_on`).
-- Never nest `sync_wait` calls — use `let_value` for nested async work.
+- Never nest `sync_wait` calls - use `let_value` for nested async work.

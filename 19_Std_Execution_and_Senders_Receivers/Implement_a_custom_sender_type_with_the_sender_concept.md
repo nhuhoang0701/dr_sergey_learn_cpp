@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-This topic focuses on building a practical `timer_sender` that completes after a delay, demonstrating the full sender protocol.
+This topic builds a practical `timer_sender` that completes after a delay. A timer is a good teaching example because it involves all three completion channels (value, error, and stopped) and requires checking for cancellation at meaningful points in the operation. It demonstrates the full sender protocol in a setting that feels realistic.
 
 | Concept | Role |
 | --- | --- |
@@ -25,8 +25,9 @@ This topic focuses on building a practical `timer_sender` that completes after a
 
 ### Q1: Write a `timer_sender` that completes after a delay
 
-```cpp
+The trick with a timer sender is that you need to check for cancellation *before* sleeping and *after* waking up - the stop token might have been requested in either window. Also notice that `start()` is marked `noexcept`, so all exceptions must be caught internally and routed through the error channel.
 
+```cpp
 // timer_sender.cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
@@ -107,13 +108,13 @@ int main() {
 // Output:
 // Timer fired!
 // Result: 42
-
 ```
 
 ### Q2: Implement `completion_signatures` for channel advertising
 
-```cpp
+`completion_signatures` is the compile-time contract that lets the framework type-check your whole pipeline before anything runs. The example below shows both the static typedef form and the dynamic `get_completion_signatures(env)` form - the latter is useful when you need the signatures to vary depending on what execution context you are running on.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <string>
 #include <system_error>
@@ -162,13 +163,15 @@ struct env_dependent_sender {
         >{};
     }
 };
-
 ```
+
+Notice the commented-out error case - the compiler catches the type mismatch at pipeline assembly time, not at runtime. This is one of the key benefits of declaring signatures explicitly.
 
 ### Q3: The `connect()` CPO and resulting `operation_state`
 
-```cpp
+The `debug_sender` below adds print statements to `connect()` and `start()` so you can see the exact sequence of events when `sync_wait` drives a pipeline. This kind of instrumentation is genuinely useful when you are debugging a custom sender for the first time.
 
+```cpp
 // connect() is the bridge between description (sender) and execution (operation_state)
 
 #include <stdexec/execution.hpp>
@@ -223,8 +226,9 @@ int main() {
 // [debug_op] receiver signaled
 // [then] got 42
 // Final: 42
-
 ```
+
+The output confirms the three-phase ordering: connect first, start second, then the completion signal flows downstream. The `[then] got 42` line shows the value reaching the next stage in the pipeline.
 
 ---
 
@@ -232,6 +236,6 @@ int main() {
 
 - `completion_signatures` is the key type-level contract between senders and receivers.
 - The `sender` concept checks for either a `completion_signatures` typedef or a `get_completion_signatures` method.
-- `connect()` is a CPO (customization point object) — it calls your member `connect` via `tag_invoke` in stdexec.
+- `connect()` is a CPO (customization point object) - it calls your member `connect` via `tag_invoke` in stdexec.
 - Operation states are typically stored in variant-like structures when composed.
 - Real timer senders would use platform timers (timerfd, WaitableTimer) instead of sleep.

@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-This topic focuses on practical patterns with `async_scope`: spawning child senders, preventing dangling work, and the comparison with detached threads. `async_scope` enforces that parent outlives children.
+This topic focuses on practical patterns with `async_scope`: spawning child senders, preventing dangling work, and comparing the approach with detached threads. The core guarantee is simple but powerful - the parent always outlives its children. `async_scope` enforces this by counting in-flight tasks and giving you a way to wait until that count reaches zero.
+
+The lifecycle looks like this:
 
 ```cpp
-
 async_scope lifecycle:
 
   scope created
@@ -21,11 +22,12 @@ async_scope lifecycle:
        │               │               │
        └───────────────┼───────────────┘
                        │
-               on_empty() → waits until ALL done
+               on_empty() -> waits until ALL done
                        │
                scope destroyed safely
-
 ```
+
+Every sender you pass to `spawn` is tracked. The scope will not let you leave until all of them have finished - whether they completed with a value, an error, or a cancellation signal.
 
 ---
 
@@ -33,8 +35,9 @@ async_scope lifecycle:
 
 ### Q1: Spawn child senders and wait before scope destruction
 
-```cpp
+The atomic counter here is just a way to verify that all five tasks actually ran. The important thing to watch is the output order - tasks complete in reverse order because each one sleeps for a duration proportional to `(5 - i)`, so child 4 sleeps the least and finishes first:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <exec/async_scope.hpp>
@@ -80,13 +83,15 @@ int main() {
 // Child 1 done
 // Child 0 done
 // Counter: 5
-
 ```
+
+After `on_empty()` returns, you can access `counter` without any synchronization beyond what the scope already provided. That guarantee is the whole point.
 
 ### Q2: Scope prevents dangling: work completes before scope exits
 
-```cpp
+A `unique_ptr` is a good illustration here because its destructor is visible in the output. You can see that `~Resource(database)` appears only after both tasks have printed their messages - the scope's `on_empty()` acts as the sequencing fence that makes this deterministic:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <exec/async_scope.hpp>
@@ -136,13 +141,15 @@ int main() {
     process(pool);
     std::cout << "Done\n";
 }
-
 ```
+
+If you removed the `on_empty()` call, the `unique_ptr` could be destroyed while a task is still inside `resource->name`, which is a use-after-free. The scope makes the safe version the only version you can accidentally write.
 
 ### Q3: `async_scope` vs detached `std::thread`
 
-```cpp
+The first code block shows the unsafe pattern. Even though this particular example uses a sleep to make the bug more likely to manifest, the underlying problem is structural - the thread captures a reference to a local variable, and `detach` gives you no guarantee about ordering:
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -175,34 +182,35 @@ void bad_pattern() {
 //     stdexec::sync_wait(scope.on_empty());
 //     // data destroyed here -> AFTER task completes, SAFE
 // }
-
 ```
+
+Here is the side-by-side comparison of the key properties:
 
 | Problem | `thread::detach()` | `async_scope` |
 | --- | --- | --- |
-| Dangling references | Yes! No lifetime tracking | No — scope joins first |
+| Dangling references | Yes - no lifetime tracking | No - scope joins first |
 | Resource leaks | Thread runs after cleanup | Tasks complete before cleanup |
 | Unhandled exceptions | `std::terminate` | Error channel propagation |
 | Cancellation | Ad-hoc, manual | Built-in stop_token |
 | Debugging | Hard (no ownership) | Clear parent-child relationship |
 
+The rule-of-thumb summary for choosing between these options:
+
 ```cpp
-
 Rule of thumb:
-  ✘ Never use thread::detach()
-  ✘ Never use raw new + callback (same problem)
-  ✔ Use jthread (C++20) for simple cases
-  ✔ Use async_scope for fire-and-forget in sender pipelines
-  ✔ Use when_all for fan-out with results
-
+  // BAD: Never use thread::detach()
+  // BAD: Never use raw new + callback (same problem)
+  // GOOD: Use jthread (C++20) for simple cases
+  // GOOD: Use async_scope for fire-and-forget in sender pipelines
+  // GOOD: Use when_all for fan-out with results
 ```
 
 ---
 
 ## Notes
 
-- `async_scope::spawn()` takes ownership of the sender and manages the operation state.
-- `on_empty()` is idempotent — can be called multiple times safely.
-- `request_stop()` cancels all spawned-but-not-yet-completed tasks.
-- In stdexec, `exec::async_scope` is the implementation; C++26 aims for `std::execution::async_scope`.
-- Structured concurrency is a paradigm shift: ALL async work has clear ownership.
+- `async_scope::spawn()` takes full ownership of the sender and manages the operation state internally - you hand it off and the scope handles the rest.
+- `on_empty()` is idempotent and can be called multiple times safely, making it convenient to check progress at multiple points.
+- `request_stop()` sends a cooperative cancellation signal to all spawned-but-not-yet-completed tasks via the stop token mechanism.
+- In `stdexec`, the type is `exec::async_scope`; the C++26 standard aims to provide `std::execution::async_scope` once P3149 is accepted.
+- Structured concurrency is a paradigm shift worth internalizing: every piece of async work has a clear owner, a clear lifetime, and a clear place where you wait for it. That clarity is what makes large async codebases maintainable.

@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-Scheduler affinity APIs control which execution context runs each part of a pipeline.
+One of the most important things the senders/receivers model gives you is explicit control over *where* work runs. You can say "this part of the pipeline belongs on the thread pool" and "this other part belongs on the I/O pool," and the framework enforces that for you. The three tools for doing this are:
 
 | API | Purpose | Direction |
 | --- | --- | --- |
@@ -17,14 +17,17 @@ Scheduler affinity APIs control which execution context runs each part of a pipe
 | `continues_on(sched)` | Transfer subsequent work to scheduler | Mid-pipeline switch |
 | `schedule(sched)` | Create entry-point sender on scheduler | Pipeline start |
 
+Think of `starts_on` as "launch this whole thing on scheduler X" and `continues_on` as "from this point forward, keep going on scheduler Y." Together they give you clean, composable control over which execution context handles each stage of work.
+
 ---
 
 ## Self-Assessment
 
-### Q1: `starts_on` — ensure a pipeline begins on a specific scheduler
+### Q1: `starts_on` - ensure a pipeline begins on a specific scheduler
+
+Without `starts_on`, `sync_wait` uses its own internal `run_loop` to drive the pipeline - usually the calling thread. With `starts_on`, you hand the work off to a real scheduler before it even begins. Here's what that looks like:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -51,13 +54,15 @@ int main() {
     // Without starts_on, sync_wait runs it on its internal run_loop.
     // With starts_on, it runs on the thread pool.
 }
-
 ```
 
-### Q2: `continues_on` — move continuations to a different scheduler
+Notice that the thread ID printed inside the lambda will be one of the pool's threads, not the main thread. That's the whole point - `starts_on` redirects execution before any callback runs.
+
+### Q2: `continues_on` - move continuations to a different scheduler
+
+Once a pipeline is running, you may want to hand off to a different context part-way through. For example, heavy CPU work belongs on a compute pool, but writing results to disk or a socket belongs on an I/O pool. `continues_on` inserts that handoff directly in the pipeline chain:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -91,13 +96,15 @@ int main() {
     std::cout << "Result: " << result << '\n';  // 84
 }
 // Thread IDs show the context switches between pools
-
 ```
 
-### Q3: Full pipeline: compute → I/O → compute
+The thread IDs in the output will change at each `continues_on` call. That's the scheduler switch happening in real time. Each `then` after a `continues_on` runs on the new scheduler.
+
+### Q3: Full pipeline: compute -> I/O -> compute
+
+Here's a more realistic example - an image processing pipeline that deliberately assigns each phase to the right kind of resource. Reading and writing are I/O-bound, so they go on the I/O pool. The pixel transformation is CPU-bound, so it goes on the compute pool:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -147,21 +154,22 @@ int main() {
 // [Compute] Processing 1024 bytes on 14000001
 // [IO] Saving 1024 bytes on 14000051
 // Saved 1024 bytes
-
 ```
 
-```cpp
+The diagram below shows the scheduler transitions at a glance:
 
+```cpp
 Pipeline scheduler flow:
 
   IO pool          Compute pool        IO pool
-┌──────────┐    ┌──────────────┐    ┌──────────┐
-│ Load     │───→│ Process      │───→│ Save     │
-│ image    │    │ (invert)     │    │ result   │
-└──────────┘    └──────────────┘    └──────────┘
++----------+    +--------------+    +----------+
+| Load     |-->| Process      |-->| Save     |
+| image    |    | (invert)     |    | result   |
++----------+    +--------------+    +----------+
   starts_on    continues_on       continues_on
-
 ```
+
+Each phase runs on exactly the resource it needs. The pipeline expresses the entire scheduling policy in one readable chain of operators.
 
 ---
 
@@ -171,4 +179,4 @@ Pipeline scheduler flow:
 - `continues_on` was called `transfer` in earlier P2300 drafts.
 - `on(sched, sender)` is a shorthand for `starts_on(sched, sender) | continues_on(original_scheduler)`.
 - Use I/O schedulers for file/network operations and compute schedulers for CPU-heavy work.
-- Scheduler affinity is a zero-cost abstraction — the pipeline compiles to direct task submissions.
+- Scheduler affinity is a zero-cost abstraction - the pipeline compiles to direct task submissions.

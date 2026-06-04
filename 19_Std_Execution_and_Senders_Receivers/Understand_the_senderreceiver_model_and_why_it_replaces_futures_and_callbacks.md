@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-P2300 replaces `std::future` and raw callbacks with a structured model of three primitives:
+P2300 replaces `std::future` and raw callbacks with a structured model of three primitives. Before looking at each primitive, it is worth understanding why `std::future` needed replacing at all - because the problems are not superficial.
 
 | Primitive | Role | Lifetime |
 | --- | --- | --- |
@@ -17,12 +17,14 @@ P2300 replaces `std::future` and raw callbacks with a structured model of three 
 | **Receiver** | Continuation that handles result | Part of operation state |
 | **Operation State** | Live work binding sender+receiver | Until completion signal |
 
-Why replace futures?
+Here is the honest list of what `std::future` gets wrong:
 
-- `std::future` requires heap allocation for shared state.
-- `std::future` has no built-in chaining (no `.then()` in standard C++).
-- `std::future` has no cancellation.
-- `std::future` forces eager execution.
+- `std::future` requires heap allocation for shared state - the shared state is reference-counted and allocated every time, even for trivial tasks.
+- `std::future` has no built-in chaining: there is no `.then()` in standard C++, so you cannot express "when this finishes, do that" without blocking.
+- `std::future` has no cancellation - once you have started a `std::async` task, there is no standard way to stop it.
+- `std::future` forces eager execution - work starts immediately when you call `std::async`, which means you cannot compose operations before running them.
+
+The sender/receiver model fixes all four of these at the design level, not as add-ons.
 
 ---
 
@@ -30,8 +32,9 @@ Why replace futures?
 
 ### Q1: Three async primitives
 
-```cpp
+The best way to see the three primitives working together is to look at what `sync_wait` does internally. You hand it a sender, and it quietly creates a receiver, connects them, starts the operation, and waits. Here is the full picture:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <iostream>
 
@@ -59,13 +62,15 @@ int main() {
 // 3. start(op)                              // runs the work
 // 4. Blocks until receiver is signaled
 // 5. Returns the stored result
-
 ```
+
+The thing to notice is that `sender` is just a value. After the `| then(...)` line, no computation has happened at all. The transformation is described but not executed. That laziness is not a quirk - it is intentional, and it is what makes composition possible.
 
 ### Q2: Why `std::future::then()` is not composable but sender pipelines are
 
-```cpp
+The code below shows the `std::future` approach and its problems, followed by the sender alternative. The problems with futures are not bugs in your code - they are fundamental limitations of the design:
 
+```cpp
 // std::future problems:
 #include <future>
 #include <iostream>
@@ -101,7 +106,6 @@ void sender_solution() {
     auto [result] = stdexec::sync_wait(std::move(pipeline)).value();
     // result = 94
 }
-
 ```
 
 | Feature | `std::future` | Sender Pipeline |
@@ -113,10 +117,13 @@ void sender_solution() {
 | Cancellation | None | Stop tokens |
 | Parallel fan-out | Manual | `when_all(s1, s2, s3)` |
 
+The allocation difference is worth slowing down on. Every `std::async` call allocates a control block on the heap to hold the shared state between the future and the promise. Sender pipelines store their operation state inline - if you connect a sender to a receiver on the stack, the whole pipeline lives on the stack with zero heap allocation. For hot loops or embedded systems this matters enormously.
+
 ### Q3: Separating algorithm from execution context
 
-```cpp
+This is one of the most practical benefits of the model. You write the algorithm once, and the scheduler determines where it runs. The algorithm code does not even need to know whether it is running on a thread pool, a GPU, or the calling thread:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -151,15 +158,16 @@ int main() {
     // Only the scheduler changes where it runs.
     std::cout << r1 << " == " << r2 << '\n';  // 25 == 25
 }
-
 ```
+
+The thread ID in the output will differ between the two runs, but the result will be identical. That is the promise of the model: computation is portable across execution contexts because the "where" is plugged in at the call site, not baked into the algorithm.
 
 ---
 
 ## Notes
 
-- Senders are to async what ranges are to synchronous sequences: lazy, composable, value-semantic.
-- The P2300 model is inspired by Facebook's Folly executors and libunifex.
-- `std::future` is not deprecated but is considered insufficient for modern async.
-- Sender pipelines enable the compiler to see the entire computation graph for optimization.
-- C++26 will include `std::execution` in the standard library.
+- Senders are to async what ranges are to synchronous sequences: lazy, composable, and value-semantic. If you are comfortable with ranges, the mental model transfers directly.
+- The P2300 model is inspired by Facebook's Folly executors and libunifex, both of which explored similar ideas in production before the standard proposal was written.
+- `std::future` is not deprecated and will continue to work, but it is now considered the low-level, manually-managed option rather than the recommended approach for new async code.
+- Because sender pipelines express the entire computation graph as a value, the compiler can see and optimize the whole graph at once - something impossible with callbacks or futures.
+- C++26 is the target for `std::execution` to land in the standard library; until then, `stdexec` from NVIDIA is the reference implementation you can use today.

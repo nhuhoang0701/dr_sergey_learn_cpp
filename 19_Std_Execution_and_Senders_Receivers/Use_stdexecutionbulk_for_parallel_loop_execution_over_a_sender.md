@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-`bulk(shape, f)` is the sender equivalent of a parallel for-loop. It invokes `f(index, values...)` for each index in `[0, shape)`, potentially concurrently, using the scheduler's thread pool.
+`bulk` is the sender equivalent of a parallel for-loop. Instead of launching threads manually or reaching for `std::for_each` with a parallel policy, you describe the loop as a step in your sender pipeline and let the scheduler decide how to distribute the work across its thread pool.
 
 | Property | Detail |
 | --- | --- |
@@ -19,32 +19,33 @@
 | Shared state | Passed through from predecessor sender |
 | Ordering | No guaranteed order between indices |
 
-```cpp
+The mental model is straightforward: `bulk(N, f)` says "call `f(0, ...)` through `f(N-1, ...)`, as concurrently as the scheduler wants." The scheduler maps those index calls onto its threads. After all `N` invocations finish, the pipeline continues:
 
+```cpp
 bulk(N, f) execution:
 
   predecessor sender
-        │
-        ▼
-  ┌───────────────────────┐
-  │  f(0, data)  │ f(1, data)  │
-  │  f(2, data)  │ f(3, data)  │  (concurrent)
-  │  ...         │ f(N-1,data) │
-  └───────────────────────┘
-        │
-        ▼
+        |
+        v
+  +-----------------------+
+  |  f(0, data)  | f(1, data)  |
+  |  f(2, data)  | f(3, data)  |  (concurrent)
+  |  ...         | f(N-1,data) |
+  +-----------------------+
+        |
+        v
   data (passed through unchanged)
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: `bulk(n, f)` — execute `f(index, data)` for each index
+### Q1: `bulk(n, f)` - execute `f(index, data)` for each index
+
+Here's a concrete example - fill a vector with squares in parallel, then sum the results:
 
 ```cpp
-
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <iostream>
@@ -84,29 +85,30 @@ int main() {
 // index 1 on thread 14000001
 // ...
 // Sum of squares: 140
-
 ```
+
+The output order of the index lines is non-deterministic - that's the parallel execution showing through. But the final sum is always 140 because `bulk` waits for all indices to complete before the next `then` step runs.
 
 ### Q2: `bulk` maps onto a scheduler's thread pool
 
-```cpp
+The scheduler decides how to assign indices to threads. A 4-thread pool with 8 items might process them in two waves, or via work-stealing, or any other strategy it sees fit:
 
+```cpp
 Scheduler thread pool mapping:
 
   Thread pool (4 threads):
-  ┌──────────┬──────────┬──────────┬──────────┐
-  │ Thread 0 │ Thread 1 │ Thread 2 │ Thread 3 │
-  ├──────────┼──────────┼──────────┼──────────┤
-  │ f(0)     │ f(1)     │ f(2)     │ f(3)     │  <- wave 1
-  │ f(4)     │ f(5)     │ f(6)     │ f(7)     │  <- wave 2
-  └──────────┴──────────┴──────────┴──────────┘
+  +----------+----------+----------+----------+
+  | Thread 0 | Thread 1 | Thread 2 | Thread 3 |
+  +----------+----------+----------+----------+
+  | f(0)     | f(1)     | f(2)     | f(3)     |  <- wave 1
+  | f(4)     | f(5)     | f(6)     | f(7)     |  <- wave 2
+  +----------+----------+----------+----------+
 
   bulk(8, f) with 4-thread pool: scheduler decides how to map
   indices to threads. May use work-stealing, round-robin, etc.
-
 ```
 
-**Key advantages over manual threading:**
+Compare this to doing it manually with threads or `std::for_each`:
 
 | Manual threads | `bulk` |
 | --- | --- |
@@ -116,8 +118,9 @@ Scheduler thread pool mapping:
 | Cannot compose | Pipeline-composable |
 | Thread affinity = your problem | Scheduler handles it |
 
-```cpp
+The composability point is worth emphasizing. Because `bulk` is just another sender adaptor, you can chain multiple parallel passes back to back in the same pipeline:
 
+```cpp
 // bulk is composable in a pipeline:
 auto pipeline = stdexec::schedule(sched)
     | stdexec::then([]() { return std::vector<float>(1000, 1.0f); })
@@ -130,13 +133,15 @@ auto pipeline = stdexec::schedule(sched)
     | stdexec::then([](std::vector<float>& v) {
         return v;  // all elements are 3.0f
     });
-
 ```
+
+Two independent parallel passes, each complete before the next begins, all in one readable chain.
 
 ### Q3: `bulk` vs `std::for_each` with parallel policy
 
-```cpp
+Let's compare `bulk` directly against the classic parallel STL approach to see why the extra machinery is worth it for async-heavy code:
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <algorithm>
@@ -174,7 +179,6 @@ int main() {
 
     auto [result] = stdexec::sync_wait(std::move(sender_work)).value();
 }
-
 ```
 
 | Feature | `std::for_each(par, ...)` | `bulk(N, f)` |
@@ -185,6 +189,8 @@ int main() {
 | Error propagation | Exception only | Error channel |
 | Async I/O integration | No | Yes |
 | Index-based | No (iterator) | Yes (0..N-1) |
+
+The parallel STL approach is fine for isolated data transformation with no async dependencies. Once you need to mix parallel CPU work with async I/O, or thread pool control, or cancellation, `bulk` in a sender pipeline is the cleaner solution.
 
 ---
 
