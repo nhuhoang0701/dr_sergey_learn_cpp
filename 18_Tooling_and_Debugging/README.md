@@ -57,13 +57,13 @@ Compilers, sanitizers, profilers, debuggers, static analysis, and development to
 
 ## Notes
 
-- AddressSanitizer (ASan) catches buffer overflows, use-after-free, and leaks at runtime
-- UndefinedBehaviorSanitizer (UBSan) detects signed overflow, null dereference, and misaligned access
-- ThreadSanitizer (TSan) finds data races — essential for concurrent code development
-- Clang-Tidy applies hundreds of static analysis checks and auto-fixes — integrate it in CI
-- clang-format enforces consistent code style — define a .clang-format file per project
-- Compile with -Wall -Wextra -Wpedantic -Werror (GCC/Clang) to catch issues early
-- Use Compiler Explorer (godbolt.org) to inspect assembly output and verify optimizations
-- Valgrind/Memcheck detects memory errors but runs 10-50x slower than sanitizers
-- Core dumps + GDB/LLDB are essential for post-mortem debugging — learn t, rame, print
-- ccache and sccache dramatically reduce rebuild times by caching compilation results
+- AddressSanitizer (ASan) catches buffer overflows, use-after-free, and leaks at runtime.
+- UndefinedBehaviorSanitizer (UBSan) detects signed overflow, null dereference, and misaligned access.
+- ThreadSanitizer (TSan) finds data races - essential for concurrent code development.
+- Clang-Tidy applies hundreds of static analysis checks and auto-fixes - integrate it in CI.
+- clang-format enforces consistent code style - define a .clang-format file per project.
+- Compile with -Wall -Wextra -Wpedantic -Werror (GCC/Clang) to catch issues early.
+- Use Compiler Explorer (godbolt.org) to inspect assembly output and verify optimizations.
+- Valgrind/Memcheck detects memory errors but runs 10-50x slower than sanitizers.
+- Core dumps + GDB/LLDB are essential for post-mortem debugging - learn bt, frame, print.
+- ccache and sccache dramatically reduce rebuild times by caching compilation results.

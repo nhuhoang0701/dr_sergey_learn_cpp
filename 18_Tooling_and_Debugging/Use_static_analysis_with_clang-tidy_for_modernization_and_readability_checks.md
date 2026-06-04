@@ -9,7 +9,11 @@
 
 ## Topic Overview
 
-clang-tidy is a linter and static analyzer that catches bugs, enforces style, and modernizes C++ code.
+clang-tidy is both a linter and a light static analyzer. Think of it as an automated code reviewer that catches common bugs, flags opportunities to use modern C++ idioms, and enforces naming conventions - all without you having to remember to check these things manually.
+
+What makes clang-tidy different from a simple text-based linter is that it parses your code the same way the compiler does, so it understands types, overloads, and templates. It can therefore diagnose things a grep-based tool would miss, and it can apply fixes automatically in many cases.
+
+The checks are organized into named categories, which makes it easy to enable only the kinds of feedback you want:
 
 | Check Category | What It Does | Examples |
 | --- | --- | --- |
@@ -25,9 +29,10 @@ clang-tidy is a linter and static analyzer that catches bugs, enforces style, an
 
 ### Q1: Run clang-tidy and interpret the output
 
-```cpp
+Here's some code written in an older C++ style. It has no `override` keywords, uses `NULL` instead of `nullptr`, creates objects with raw `new`, and uses iterator-based loops. clang-tidy will flag all of these.
 
-// old_code.cpp — has modernization opportunities
+```cpp
+// old_code.cpp - has modernization opportunities
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -59,11 +64,11 @@ void old_style() {
 }
 
 int main() { old_style(); }
-
 ```
 
-```bash
+Running clang-tidy with `modernize-*` and `readability-*` checks produces detailed diagnostics with the exact location, the problem, and often a suggested fix right in the output.
 
+```bash
 # Run with modernize and readability checks:
 $ clang-tidy old_code.cpp \
     --checks='modernize-*,readability-*' \
@@ -90,13 +95,15 @@ $ clang-tidy old_code.cpp \
 # old_code.cpp:26:5: warning: use 'using' instead of 'typedef' [modernize-use-using]
 #     typedef int MyInt;
 #     ^~~~~~~~~~~~~~~~~  using MyInt = int;
-
 ```
+
+Each warning tells you the check that fired (in square brackets), so you can look up the full documentation for that check if you want to understand the rationale.
 
 ### Q2: Auto-fix with `--fix`
 
-```bash
+One of the most useful features is `--fix`. For many of the modernization checks, clang-tidy can apply the fix directly to the source file. You can be selective about which checks to auto-fix - it's usually safest to fix one category at a time and review the diff before committing.
 
+```bash
 # Auto-fix specific checks:
 $ clang-tidy old_code.cpp \
     --checks='modernize-use-nullptr,modernize-use-override' \
@@ -106,13 +113,11 @@ $ clang-tidy old_code.cpp \
 # Applied fixes:
 # - NULL -> nullptr
 # - Added 'override' to Derived::process() and ~Derived()
-
 ```
 
-After auto-fix:
+After running the auto-fix, the affected code looks like this. The changes are minimal and safe - the meaning is identical, just expressed in modern C++.
 
 ```cpp
-
 class Derived : public Base {
 public:
     void process() override { std::cout << "Derived\n"; }  // fixed!
@@ -123,11 +128,9 @@ void old_style() {
     int* p = nullptr;  // fixed!
     // ...
 }
-
 ```
 
 ```bash
-
 # Fix all modernize checks at once:
 $ clang-tidy old_code.cpp --checks='modernize-*' --fix -- -std=c++20
 
@@ -136,14 +139,14 @@ $ clang-tidy old_code.cpp --checks='modernize-*' --fix-notes -- -std=c++20
 
 # Fix across entire project (with compile_commands.json):
 $ run-clang-tidy -p build/ -checks='modernize-*' -fix
-
 ```
 
 ### Q3: Configure `.clang-tidy` file
 
-```yaml
+Rather than specifying checks on the command line every time, you put a `.clang-tidy` file in your project root. clang-tidy auto-detects it. This also lets you tune individual check parameters - for example, you can configure the exact naming convention your project uses rather than accepting the defaults.
 
-# .clang-tidy — project root configuration
+```yaml
+# .clang-tidy - project root configuration
 ---
 Checks: >
   -*,
@@ -162,35 +165,23 @@ WarningsAsErrors: >
 HeaderFilterRegex: 'src/.*\.h$'
 
 CheckOptions:
-
   - key: readability-identifier-naming.ClassCase
-
     value: CamelCase
-
   - key: readability-identifier-naming.FunctionCase
-
     value: camelBack
-
   - key: readability-identifier-naming.VariableCase
-
     value: lower_case
-
   - key: readability-identifier-naming.ConstantCase
-
     value: UPPER_CASE
-
   - key: modernize-use-auto.MinTypeNameLength
-
     value: 10
-
   - key: readability-function-cognitive-complexity.Threshold
-
     value: 25
-
 ```
 
-```bash
+The `WarningsAsErrors` section is what gives you CI enforcement: bug-prone patterns become hard errors, while style suggestions stay as warnings. The `HeaderFilterRegex` prevents clang-tidy from flooding you with warnings from third-party headers you don't control.
 
+```bash
 # Run using .clang-tidy config (auto-detected from file):
 $ clang-tidy src/*.cpp -- -std=c++20
 
@@ -203,8 +194,9 @@ set(CMAKE_CXX_CLANG_TIDY
     clang-tidy
     --config-file=${CMAKE_SOURCE_DIR}/.clang-tidy
 )
-
 ```
+
+The CMake integration runs clang-tidy automatically on every compilation unit during the build, which means you catch issues immediately instead of needing a separate lint step.
 
 ---
 

@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Modern CPUs have **hardware performance counters** that track cache misses, branch mispredictions, instructions retired, and more. `perf stat` reads these counters with near-zero overhead.
+Modern CPUs contain dedicated hardware performance counters - small registers that the CPU increments as it executes instructions. These counters can track events like cache misses, branch mispredictions, instructions retired, and CPU cycles with near-zero overhead. The `perf stat` tool on Linux reads these counters and gives you a precise picture of what is happening at the hardware level while your program runs.
+
+This matters because the difference between fast and slow C++ code often has nothing to do with the number of instructions and everything to do with whether those instructions are waiting for data to arrive from memory or waiting for a mispredicted branch to be resolved. Profiling tools like Valgrind simulate this behavior; `perf stat` measures the real hardware events directly.
 
 | Counter | What It Measures | Bad Sign |
 | --- | --- | --- |
@@ -24,9 +26,10 @@ Modern CPUs have **hardware performance counters** that track cache misses, bran
 
 ### Q1: Run `perf stat` and interpret the output
 
-```cpp
+Start with a simple sequential memory access pattern - this is the cache-friendly case, and the numbers should reflect that.
 
-// cache_test.cpp — compile: g++ -O2 -std=c++20 cache_test.cpp -o cache_test
+```cpp
+// cache_test.cpp - compile: g++ -O2 -std=c++20 cache_test.cpp -o cache_test
 #include <vector>
 #include <numeric>
 #include <iostream>
@@ -44,11 +47,11 @@ int main() {
 
     std::cout << "sum = " << sum << '\n';
 }
-
 ```
 
-```bash
+Running `perf stat` against this program and reading the output:
 
+```bash
 # Basic perf stat:
 $ perf stat ./cache_test
 #  Performance counter stats for './cache_test':
@@ -74,20 +77,22 @@ L1-dcache-load-misses,L1-dcache-loads ./cache_test
 # - Very low cache miss rate (0.02%) = sequential access is cache-friendly
 # - Very low branch miss rate (0.01%) = predictable loop pattern
 # - IPC of 0.60 suggests memory latency isn't a bottleneck
-
 ```
+
+The key metric to develop an intuition for is the cache miss rate percentage. A rate under 1% is generally healthy. Once you start seeing 5-10% or higher, your workload is likely spending significant time waiting for data to travel from main memory to the CPU - and that is where data layout improvements pay off.
 
 ### Q2: Data layout change that halves cache misses
 
-```cpp
+This is the AoS (Array of Structures) vs SoA (Structure of Arrays) comparison. The source code makes the same calculation either way, but the memory access pattern is completely different, and `perf stat` can measure that difference precisely.
 
+```cpp
 // sos_vs_aos.cpp
 #include <vector>
 #include <chrono>
 #include <iostream>
 #include <random>
 
-// Array of Structures (AoS) — poor cache utilization
+// Array of Structures (AoS) - poor cache utilization
 struct ParticleAoS {
     float x, y, z;          // position (used in update)
     float r, g, b, a;       // color (NOT used in update)
@@ -95,7 +100,7 @@ struct ParticleAoS {
     int id;                 // metadata
 };
 
-// Structure of Arrays (SoA) — cache-friendly
+// Structure of Arrays (SoA) - cache-friendly
 struct ParticlesSoA {
     std::vector<float> x, y, z;       // positions together
     std::vector<float> r, g, b, a;    // colors together
@@ -141,11 +146,9 @@ int main() {
     std::cout << "AoS: " << ms_aos << " ms\n";
     std::cout << "SoA: " << ms_soa << " ms\n";
 }
-
 ```
 
 ```bash
-
 # Measure with perf:
 $ perf stat -e L1-dcache-load-misses ./aos_benchmark
 # AoS: ~850,000 L1 misses
@@ -153,13 +156,15 @@ $ perf stat -e L1-dcache-load-misses ./aos_benchmark
 
 # Why: AoS loads 40 bytes per particle but only reads 12
 # SoA stores x/y/z contiguously, so cache lines are fully utilized
-
 ```
+
+The reason for the difference is that a CPU cache line is typically 64 bytes. With AoS, each particle struct is 40 bytes and we only care about the first 12 of them - but the CPU has to load the entire cache line anyway. With SoA, the x values for many consecutive particles sit in the same memory region, so each cache line we load is fully useful. That is why `perf stat` shows roughly 60% fewer L1 misses for the SoA version.
 
 ### Q3: Use `perf record` + `perf report` to find cache-miss hotspots
 
-```bash
+`perf stat` gives you aggregate numbers for the whole program. When you want to know which specific functions or lines of code are responsible for most of the cache misses, you use `perf record` to sample the events over time and then `perf report` to view the results broken down by function.
 
+```bash
 # Record cache-miss events with call graphs:
 $ perf record -e cache-misses -g ./cache_test
 # [ perf record: Captured 12345 samples ]
@@ -171,7 +176,7 @@ $ perf report
 #   72.3%    cache_test  cache_test     update_positions_aos
 #    15.1%   cache_test  libc.so        __memcpy
 #     8.2%   cache_test  cache_test     main
-#     4.4%   cache_test  [kernel]       
+#     4.4%   cache_test  [kernel]
 
 # Annotate source (needs -g debug info):
 $ perf annotate update_positions_aos
@@ -187,15 +192,16 @@ $ perf record -e L1-dcache-load-misses:u -g ./cache_test
 
 # Flamegraph from perf data:
 $ perf script | stackcollapse-perf.pl | flamegraph.pl > cache_misses.svg
-
 ```
+
+The `perf annotate` output is particularly valuable: it shows you a percentage next to each source line indicating how many of the sampled cache-miss events happened at that instruction. This takes you from "my program is missing cache a lot" all the way to "line 45 of `update_positions_aos` is responsible for nearly half of those misses." That is an actionable diagnosis.
 
 ---
 
 ## Notes
 
-- `perf stat` has near-zero overhead (reads HW counters, no sampling).
-- `perf record` has overhead proportional to sampling frequency.
-- Use `-e` to select specific events; `perf list` shows all available events.
-- On WSL2/Docker, you may need `--privileged` or `perf_event_paranoid=0`.
-- Intel VTune and AMD uProf provide richer analysis on their respective CPUs.
+- `perf stat` has near-zero overhead because it only reads hardware counter registers at the start and end of the program run.
+- `perf record` has overhead proportional to the sampling frequency because it interrupts the program at each sampled event to capture a stack trace.
+- Use `-e` to select specific hardware events; run `perf list` to see all events available on your CPU.
+- On WSL2 or inside Docker containers, you may need `--privileged` mode or need to set `perf_event_paranoid=0` in the kernel to access hardware counters.
+- Intel VTune and AMD uProf provide richer, platform-specific analysis with additional counters and visualizations that go beyond what the generic `perf` interface exposes.

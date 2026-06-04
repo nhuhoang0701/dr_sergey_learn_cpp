@@ -8,6 +8,8 @@
 
 ## Topic Overview
 
+All three major C++ unit testing frameworks are solid choices. The main differences come down to setup overhead, compilation speed, and which features matter to you. Here is a quick side-by-side to help you pick:
+
 | Framework | Header-only? | Macros | Speed | Notable Feature |
 | --- | --- | --- | --- | --- |
 | Catch2 v3 | No (lib) | `TEST_CASE`, `REQUIRE` | Fast | Sections, BDD style |
@@ -20,10 +22,13 @@
 
 ### Q1: Parameterized test with a table of inputs
 
+Each framework has its own syntax for running the same test logic against multiple inputs. Here is how to do it in all three.
+
 **Catch2 v3:**
 
-```cpp
+Catch2 gives you two useful approaches: `SECTION` for grouping related checks, and `GENERATE` for driving the same test body with a table of values.
 
+```cpp
 // test_math.cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -54,13 +59,13 @@ TEST_CASE("Square root of perfect squares", "[math]") {
 
     REQUIRE(static_cast<int>(std::sqrt(input)) == expected);
 }
-
 ```
 
 **Google Test:**
 
-```cpp
+Google Test's parameterized approach is more verbose but very explicit. You define a test fixture, write the parameterized test body, then separately instantiate it with your value table.
 
+```cpp
 #include <gtest/gtest.h>
 #include <cmath>
 
@@ -80,13 +85,13 @@ INSTANTIATE_TEST_SUITE_P(Math, SqrtTest, testing::Values(
     SqrtParam{0, 0}, SqrtParam{1, 1}, SqrtParam{4, 2},
     SqrtParam{9, 3}, SqrtParam{16, 4}, SqrtParam{25, 5}
 ));
-
 ```
 
 **doctest:**
 
-```cpp
+doctest is the simplest to integrate - it is header-only and compiles faster than the other two. The parameterization is manual but perfectly readable:
 
+```cpp
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 #include <cmath>
@@ -100,13 +105,13 @@ TEST_CASE("sqrt of perfect squares") {
         CHECK(static_cast<int>(std::sqrt(inputs[i])) == expected[i]);
     }
 }
-
 ```
 
 ### Q2: REQUIRE vs CHECK in Catch2
 
-```cpp
+The distinction between `REQUIRE` and `CHECK` is one of the most practical things to know about Catch2. The rule of thumb is simple: use `REQUIRE` when a failure would make subsequent assertions meaningless or dangerous, and use `CHECK` when assertions are independent and you want to see all the failures at once.
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
 
@@ -130,13 +135,15 @@ TEST_CASE("REQUIRE vs CHECK demonstration") {
 // Rule of thumb:
 //   REQUIRE for preconditions (would crash/UB if false)
 //   CHECK for independent assertions (want to see all failures)
-
 ```
+
+The reason this distinction matters: if you use `REQUIRE` everywhere, the first failing assertion stops the entire test and you might miss several other failures that could have helped you diagnose the root cause. If you use `CHECK` everywhere, you risk a null pointer dereference or out-of-bounds access on a line that only makes sense if an earlier check passed.
 
 ### Q3: Code coverage with CMake + gcov/llvm-cov
 
-```cmake
+Knowing which lines your tests actually exercise is important for finding gaps. Coverage is enabled at the compiler level with special instrumentation flags, and CMake makes it easy to turn on via a build option.
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(CoverageDemo LANGUAGES CXX)
@@ -162,11 +169,11 @@ target_link_libraries(tests mylib)
 
 enable_testing()
 add_test(NAME unit_tests COMMAND tests)
-
 ```
 
-```bash
+With GCC you run `gcovr` after the tests execute; with Clang you merge profile data first:
 
+```bash
 # GCC + gcov workflow:
 cmake -B build -DENABLE_COVERAGE=ON -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
@@ -181,7 +188,6 @@ cd build && LLVM_PROFILE_FILE="coverage.profraw" ctest
 llvm-profdata merge -sparse coverage.profraw -o coverage.profdata
 llvm-cov report ./tests -instr-profile=coverage.profdata
 llvm-cov show ./tests -instr-profile=coverage.profdata --format=html > coverage.html
-
 ```
 
 ---
@@ -189,7 +195,7 @@ llvm-cov show ./tests -instr-profile=coverage.profdata --format=html > coverage.
 ## Notes
 
 - Catch2 v3 requires CMake `FetchContent` or package manager; v2 was header-only.
-- doctest compiles ~10x faster than Catch2/gtest — great for TDD workflows.
+- doctest compiles ~10x faster than Catch2/gtest - great for TDD workflows.
 - Google Test has the best mocking support (gmock).
 - All three integrate with CTest: `add_test(NAME ... COMMAND ...)`.
 - Target 80%+ line coverage; 100% is usually not cost-effective.

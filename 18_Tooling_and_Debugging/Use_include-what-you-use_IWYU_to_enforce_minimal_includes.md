@@ -8,13 +8,9 @@
 
 ## Topic Overview
 
-IWYU analyzes your `#include` directives and reports:
-
-- Headers you include but don't need (remove them).
-- Headers you use transitively but should include directly.
+Include-what-you-use (IWYU) is a static analysis tool built on Clang that answers two questions about every source file: which headers are you including but not actually using, and which headers are you relying on without including them directly? The first category should be removed. The second category is a latent bug waiting to surface when you upgrade your compiler or switch standard library implementations.
 
 ```cpp
-
 Before IWYU:                       After IWYU:
 #include <algorithm>               #include <algorithm>  // for std::sort
 #include <iostream>                #include <vector>     // for std::vector
@@ -23,8 +19,9 @@ Before IWYU:                       After IWYU:
 #include <functional>  // UNUSED!
 // std::string used but not        // <iostream> removed (unused)
 // directly included!              // <map>, <functional> removed
-
 ```
+
+The goal is that every symbol you use in a translation unit is backed by a header you include explicitly. This makes your code portable across compilers, robust against library implementation changes, and faster to compile because the compiler only processes headers that are actually needed.
 
 ---
 
@@ -32,9 +29,10 @@ Before IWYU:                       After IWYU:
 
 ### Q1: Run IWYU and remove transitive includes
 
-```cpp
+Here is a file that looks like it works but is actually relying on implementation-specific behavior - specifically, the fact that `<algorithm>` on GCC happens to pull in headers for `std::string` and `std::vector`.
 
-// bad_includes.cpp — relies on transitive includes
+```cpp
+// bad_includes.cpp - relies on transitive includes
 #include <algorithm>   // pulls in <utility> on some implementations
 #include <map>         // not used at all!
 
@@ -50,11 +48,11 @@ void greet(const std::string& name) {
 int main() {
     greet("World");
 }
-
 ```
 
-```bash
+Running IWYU produces a clear prescription:
 
+```bash
 # Run IWYU:
 $ include-what-you-use -std=c++20 bad_includes.cpp
 
@@ -73,14 +71,12 @@ $ include-what-you-use -std=c++20 bad_includes.cpp
 
 # Auto-apply fixes:
 $ include-what-you-use -std=c++20 bad_includes.cpp 2>&1 | fix_includes.py
-
 ```
 
-Fixed version:
+After applying the fixes, the file is explicit about everything it uses:
 
 ```cpp
-
-// bad_includes.cpp — after IWYU
+// bad_includes.cpp - after IWYU
 #include <algorithm>   // for std::sort
 #include <string>      // for std::string
 #include <vector>      // for std::vector
@@ -93,13 +89,15 @@ void greet(const std::string& name) {
 int main() {
     greet("World");
 }
-
 ```
+
+Notice that the comments now document why each header is there. This is a convention IWYU encourages and one that makes the include block informative rather than mysterious.
 
 ### Q2: Why transitive includes are fragile
 
-```cpp
+The reason transitive includes are a problem is that they are not part of the C++ standard. Standard headers are only required to declare the symbols they document. Whether `<algorithm>` happens to include `<string>` internally is an implementation detail that can change at any time.
 
+```cpp
 // This code compiles on GCC 12 but FAILS on GCC 13:
 #include <algorithm>
 // GCC 12: <algorithm> includes <string> internally
@@ -108,20 +106,19 @@ int main() {
 void process(const std::string& s) {  // ERROR on GCC 13!
     // std::string not declared
 }
-
 ```
 
-```cpp
+The problem is not just theoretical - GCC 13 actually removed several transitive includes that projects had been relying on for years:
 
+```cpp
 Transitive include fragility:
 
 GCC 12:                              GCC 13:
 <algorithm>                          <algorithm>
   └─> <utility>                        └─> <utility>
-        └─> <string>  ✓ works!               (no <string>)  ✗ breaks!
+        └─> <string>  works!               (no <string>)  breaks!
 
 The fix: always #include what you directly use.
-
 ```
 
 Real-world examples of broken transitive includes:
@@ -130,11 +127,14 @@ Real-world examples of broken transitive includes:
 - libc++ (Clang) has always been stricter than libstdc++ about transitive includes.
 - Upgrading compilers without IWYU frequently breaks builds.
 
+The pattern of "it works on my machine" followed by "CI is broken after the compiler upgrade" is almost always a transitive include problem. Running IWYU in CI prevents this class of regression entirely.
+
 ### Q3: Configure IWYU mappings for custom libraries
 
-```yaml
+For your own libraries, IWYU needs to know which internal headers correspond to which public API headers. Without this information, IWYU might suggest that users include internal implementation files directly, which is not what you want. Mapping files solve this.
 
-# my_library.imp — IWYU mapping file
+```yaml
+# my_library.imp - IWYU mapping file
 [
   # Map internal headers to public headers:
   { include: ["\"mylib/internal/impl.h\"", private,
@@ -153,11 +153,11 @@ Real-world examples of broken transitive includes:
   # Reference an existing mapping file:
   { ref: "third_party/boost.imp" }
 ]
-
 ```
 
-```bash
+Once you have a mapping file, you can use it from the command line or integrate it directly into your CMake build:
 
+```bash
 # Use mapping file:
 $ include-what-you-use -Xiwyu --mapping_file=my_library.imp -std=c++20 main.cpp
 
@@ -172,15 +172,16 @@ set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE
 )
 
 add_executable(myapp main.cpp)
-
 ```
+
+Setting `CMAKE_CXX_INCLUDE_WHAT_YOU_USE` causes CMake to run IWYU as a linting step alongside every compilation, which means you get include hygiene feedback continuously as you build rather than in a separate pass.
 
 ---
 
 ## Notes
 
-- IWYU uses Clang's frontend; pass Clang-compatible flags.
-- `--no_fwd_decls` disables forward declaration suggestions (sometimes too aggressive).
-- Mapping files handle internal/public header distinctions.
-- Run IWYU in CI to prevent transitive include regressions.
-- IWYU may not support the very latest C++23/26 features yet.
+- IWYU uses Clang's frontend under the hood, so you pass it Clang-compatible flags rather than GCC flags.
+- `--no_fwd_decls` disables forward declaration suggestions, which can sometimes be overly aggressive about replacing full includes with declarations.
+- Mapping files handle the distinction between internal implementation headers and the public API headers that library consumers should include.
+- Running IWYU in CI is the best way to prevent transitive include regressions from sneaking in over time.
+- IWYU may not fully support the very latest C++23 or C++26 features yet - check the project's release notes before relying on it for cutting-edge code.

@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-clangd is a **language server** that provides IDE features (completion, diagnostics, navigation) based on the actual Clang compiler. It uses `compile_commands.json` to know the exact flags for each file.
+clangd is a language server that provides IDE features - code completion, inline diagnostics, go-to-definition, rename, and more - by running the actual Clang compiler on your code. The key difference from simpler syntax-highlighting tools is that clangd understands your code at the same depth as the compiler does. It knows the types, it resolves overloads, and it evaluates concept constraints. That means the errors it shows you are real compiler errors, not guesses.
+
+To work correctly, clangd needs to know the exact compiler flags for each file. That information comes from a `compile_commands.json` file, which is a list of every compilation command in your project. CMake can generate this file automatically.
 
 ```cpp
-
 Editor (VS Code/Vim/Emacs)
        │ LSP protocol
     clangd
@@ -22,7 +23,6 @@ Editor (VS Code/Vim/Emacs)
       "command": "g++ -std=c++20 -I/usr/include ...",
       "directory": "/project/build" }
   ]
-
 ```
 
 ---
@@ -31,8 +31,9 @@ Editor (VS Code/Vim/Emacs)
 
 ### Q1: Generate `compile_commands.json` with CMake
 
-```cmake
+One line in your `CMakeLists.txt` is all it takes. When `CMAKE_EXPORT_COMPILE_COMMANDS` is on, CMake writes `compile_commands.json` into the build directory during configuration:
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(MyProject LANGUAGES CXX)
@@ -43,24 +44,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 20)
 add_executable(app src/main.cpp src/engine.cpp src/renderer.cpp)
 target_include_directories(app PRIVATE include)
-
 ```
 
 ```bash
-
 # Generate compile_commands.json:
 cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # The file is in build/compile_commands.json
 # Symlink it to project root for clangd to find:
 ln -s build/compile_commands.json .
-
 ```
 
-Generated `compile_commands.json`:
+clangd looks for `compile_commands.json` by walking up from each source file, so symlinking it to the project root makes it visible to the whole project. The generated file has one entry per source file, each with the full compiler invocation:
 
 ```json
-
 [
   {
     "directory": "/home/user/project/build",
@@ -73,15 +70,15 @@ Generated `compile_commands.json`:
     "file": "/home/user/project/src/engine.cpp"
   }
 ]
-
 ```
+
+Every include path, every `-D` flag, every `-std` flag - clangd sees exactly what the compiler would see.
 
 ### Q2: clangd template and concept diagnostics
 
-clangd uses the **full Clang parser**, so it can show errors that simple editors miss:
+This is where clangd really earns its place. Template errors in C++ are notoriously verbose and hard to read when they come from the command line. clangd shows them inline in your editor at the exact call site, with a readable explanation of why the constraint failed.
 
 ```cpp
-
 // clangd shows this error INLINE in the editor:
 #include <concepts>
 #include <iostream>
@@ -97,10 +94,9 @@ int main() {
     //                // "candidate template ignored: constraints not satisfied"
     //                // "because 'std::integral<double>' evaluated to false"
 }
-
 ```
 
-clangd advantages over basic syntax highlighting:
+Compare what basic syntax highlighting can do versus what clangd provides:
 
 | Feature | Basic Syntax | clangd |
 | --- | --- | --- |
@@ -112,15 +108,17 @@ clangd advantages over basic syntax highlighting:
 | Auto-complete | Keyword-based | Context-aware (types, scopes) |
 | Rename | Text replace | Semantic (all references) |
 
+The go-to-definition difference is important in practice. A text-based tool takes you to the first file that contains the name. clangd takes you to the specific overload that the compiler actually selected for that call.
+
 ### Q3: Configure `.clangd` for custom include paths
 
-```yaml
+Sometimes your project has unusual include paths, or you want clangd to apply different settings to test files versus production files. The `.clangd` config file handles this. Place it in the project root alongside your `compile_commands.json`:
 
+```yaml
 # .clangd (place in project root)
 
 CompileFlags:
   Add:
-
     - "-std=c++20"
     - "-I/opt/custom-lib/include"
     - "-I../third_party/json/include"
@@ -128,7 +126,6 @@ CompileFlags:
     - "-Wextra"
 
   Remove:
-
     - "-W*"           # remove all warning flags from compile_commands.json
 
   Compiler: clang++    # use clang++ for analysis even if project uses g++
@@ -136,13 +133,11 @@ CompileFlags:
 Diagnostics:
   ClangTidy:
     Add:
-
       - modernize-*
       - performance-*
       - bugprone-*
 
     Remove:
-
       - modernize-use-trailing-return-type  # too noisy
 
 Index:
@@ -154,26 +149,26 @@ If:
   PathMatch: tests/.*
 CompileFlags:
   Add:
-
     - "-I../third_party/catch2/include"
-
 ```
 
-```bash
+The conditional `If: PathMatch:` section at the bottom is what makes this powerful for larger projects. Test files often need extra include paths that do not belong in the production compile commands, and this lets you add them selectively.
 
+Verify your configuration is taking effect with:
+
+```bash
 # Verify clangd sees your configuration:
 clangd --check=src/main.cpp
 # Shows: flags used, errors found, time taken
-
 ```
 
 ---
 
 ## Notes
 
-- Always symlink `compile_commands.json` to the project root.
-- For non-CMake builds: use Bear (`bear -- make`) to generate compile_commands.json.
-- VS Code: install "clangd" extension (disable Microsoft C/C++ IntelliSense).
-- clangd indexes the project in the background for fast go-to-definition.
-- Use `clangd --query-driver=/usr/bin/g++*` if using GCC system headers.
-- `.clangd` config is YAML; use `---` separator for conditional sections.
+- Always symlink `compile_commands.json` to the project root so clangd can find it regardless of which source file it is analyzing.
+- For non-CMake builds, use Bear (`bear -- make`) to record compiler invocations and produce a `compile_commands.json`.
+- In VS Code, install the "clangd" extension and disable the Microsoft C/C++ IntelliSense extension - running both simultaneously causes conflicts.
+- clangd indexes the entire project in the background after the first open, which is what enables fast go-to-definition across the whole codebase.
+- Use `clangd --query-driver=/usr/bin/g++*` when using GCC so clangd can detect the correct GCC system headers.
+- The `.clangd` config file is YAML; use `---` as a separator between conditional sections (one per `If:` block).

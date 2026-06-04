@@ -8,26 +8,26 @@
 
 ## Topic Overview
 
-Inspecting compiled binaries helps understand what the compiler produced, debug linking issues, and track binary size.
+Understanding what ended up in your binary - and why - is one of the most useful debugging skills in C++ development. Compiled binaries are not just a bag of machine code; they are organized into sections with specific purposes, each with its own size and memory characteristics. Inspecting those sections lets you diagnose linking issues, catch binary size regressions, and understand exactly what the compiler chose to emit.
 
 ```cpp
-
 ELF binary structure:
 ┌────────────────────────┐
 │  ELF Header            │
 ├────────────────────────┤
-│  .text (code)          │  ← executable instructions
+│  .text (code)          │  <- executable instructions
 ├────────────────────────┤
-│  .rodata (read-only)   │  ← string literals, const data
+│  .rodata (read-only)   │  <- string literals, const data
 ├────────────────────────┤
-│  .data (initialized)   │  ← global/static initialized vars
+│  .data (initialized)   │  <- global/static initialized vars
 ├────────────────────────┤
-│  .bss (uninitialized)  │  ← zero-initialized globals (no file space)
+│  .bss (uninitialized)  │  <- zero-initialized globals (no file space)
 ├────────────────────────┤
-│  .symtab (symbols)     │  ← function/variable names + sizes
+│  .symtab (symbols)     │  <- function/variable names + sizes
 └────────────────────────┘
-
 ```
+
+One non-obvious detail worth remembering: `.bss` contains zero-initialized global and static variables, but it takes up no space in the file on disk. The OS knows to allocate zeroed memory for it at load time. That is why you can have a large `.bss` section without a correspondingly large binary file.
 
 ---
 
@@ -35,8 +35,9 @@ ELF binary structure:
 
 ### Q1: Find which symbols contribute most to binary size
 
-```bash
+The `nm` tool lists all symbols in a binary along with their sizes. Sorting by size with `--size-sort` immediately shows you where your binary bytes are coming from.
 
+```bash
 # nm: list all symbols with sizes, sorted largest first
 $ nm --size-sort --reverse-sort --demangle myapp | head -15
 # 00000000000045a0 0000089c T void std::__introsort_loop<...>(...)
@@ -57,13 +58,15 @@ $ objdump -h myapp
 #   2 .rodata       00001234  000000000040bc00
 #   3 .data         00000100  000000000060d000
 #   4 .bss          00000200  000000000060d100
-
 ```
+
+When a binary is larger than you expected, this output usually reveals the culprit quickly. Common surprises include large template instantiations from the standard library, unexpectedly large functions that defeated inlining, or symbol duplication from header-only libraries.
 
 ### Q2: Measure text/data/bss with `llvm-size`
 
-```bash
+`llvm-size` provides a compact, structured summary of the section sizes in a binary or a set of object files. The Berkeley format (the default) gives you the four key categories in a single line.
 
+```bash
 # Basic section sizes:
 $ llvm-size myapp
 #    text    data     bss     dec     hex filename
@@ -88,14 +91,16 @@ $ llvm-size *.o
 
 # GNU size equivalent:
 $ size myapp
-
 ```
+
+Comparing individual object files is handy during a build where you are trying to understand which translation unit is contributing the most code. If `math.o` is unexpectedly large, that is where you start investigating for template instantiation bloat or missing `inline` keywords.
 
 ### Q3: Detect template instantiation explosion
 
-```cpp
+Templates are one of the most powerful features in C++, but they come with a cost: each unique combination of template arguments generates a separate instantiation of the template body. In a large codebase with many template parameters, this can silently cause the binary to grow much larger than expected. `nm` can surface this directly.
 
-// bloat.cpp — generates many template instantiations
+```cpp
+// bloat.cpp - generates many template instantiations
 #include <vector>
 #include <list>
 #include <deque>
@@ -124,11 +129,11 @@ int main() {
     process(l1); process(l2);
     process(d1); process(m1); process(s1);
 }
-
 ```
 
-```bash
+Running `nm` and filtering for the template instantiations reveals the cost of each one:
 
+```bash
 # Find template bloat by sorting symbols by size:
 $ nm --size-sort --demangle bloat | grep 'process<' | sort -rn
 # 00000345 T void process<std::map<int, std::string>>(std::map<...>&)
@@ -146,15 +151,16 @@ $ nm --size-sort -t d --demangle bloat | grep 'process<' | awk '{sum+=$1} END{pr
 # 2345 bytes just for process<> variants
 
 # Fix: use type erasure or explicit instantiation to reduce bloat
-
 ```
+
+Each call to `process` with a different container type generates a completely separate copy of the function body in the binary. For a small function like this the cost is modest, but in real codebases with complex template bodies called with many type combinations, this multiplication can easily add hundreds of kilobytes to the binary. Identifying and quantifying the bloat with `nm` is the first step toward addressing it.
 
 ---
 
 ## Notes
 
-- `c++filt` demangles symbol names: `echo _Z7processi | c++filt` → `process(int)`.
-- `.bss` doesn't take file space but occupies memory at runtime.
-- `strip --strip-all` removes symbols, reducing file size (~30-50%).
-- On macOS, use `otool -l` for section info and `otool -tV` for disassembly.
-- Template instantiation bloat is the #1 cause of large C++ binaries.
+- `c++filt` demangles symbol names at the command line: `echo _Z7processi | c++filt` produces `process(int)`. Useful when `--demangle` is not available.
+- `.bss` takes no space in the binary file but occupies memory at runtime - a distinction that matters when comparing file size against runtime memory usage.
+- `strip --strip-all` removes the symbol table from a binary, reducing file size by 30-50%. The trade-off is that you lose the ability to demangle names and get meaningful stack traces in crash reports.
+- On macOS, use `otool -l` for section information and `otool -tV` for disassembly, since macOS uses the Mach-O binary format rather than ELF.
+- Template instantiation bloat is the most common cause of unexpectedly large C++ binaries. The fix is usually type erasure (erasing the type and using a virtual interface), explicit instantiation control, or redesigning to reduce the number of unique type arguments.

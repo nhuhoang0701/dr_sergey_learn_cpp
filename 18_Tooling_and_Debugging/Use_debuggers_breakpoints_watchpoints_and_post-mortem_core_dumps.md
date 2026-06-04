@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Debuggers (GDB, LLDB, WinDbg) let you inspect program state at runtime. Three essential features:
+A debugger is the most direct way to understand what your program is actually doing at runtime. GDB, LLDB, and WinDbg all let you pause a running program, inspect its state, and step through its execution one instruction at a time. The three features you will reach for most often are:
 
 | Feature | What It Does |
 | --- | --- |
@@ -17,16 +17,18 @@ Debuggers (GDB, LLDB, WinDbg) let you inspect program state at runtime. Three es
 | **Watchpoint** | Pauses when a memory location is read or written |
 | **Core dump** | Snapshot of crashed process for post-mortem analysis |
 
-```cpp
+The mental model for breakpoints and watchpoints looks like this:
 
+```cpp
 Program flow with breakpoint:
   main() -> init() -> process() ->  [BREAKPOINT]  -> process() -> finish()
                                     |                ^
                                     v                |
                                     (inspect vars,   |
                                      step, continue)--
-
 ```
+
+You freeze time at a point of interest, look around, and then let the program continue.
 
 ---
 
@@ -34,8 +36,9 @@ Program flow with breakpoint:
 
 ### Q1: Set a conditional breakpoint that triggers only when a variable exceeds a threshold
 
-```cpp
+A plain breakpoint on a loop body will pause on every iteration. That is fine for small loops, but for a loop that runs millions of times you want the debugger to stop only when something interesting happens. That is what conditional breakpoints are for.
 
+```cpp
 // compile: g++ -g -O0 -std=c++20 breakpoint_demo.cpp -o breakpoint_demo
 #include <iostream>
 #include <vector>
@@ -51,11 +54,11 @@ int main() {
     std::vector<int> data = {10, 20, 50, 80, 120, 5, 200};
     process(data);
 }
-
 ```
 
-```bash
+Setting up and running the conditional breakpoint looks like this:
 
+```bash
 # GDB session:
 $ gdb ./breakpoint_demo
 (gdb) break breakpoint_demo.cpp:7 if value > 100
@@ -83,13 +86,15 @@ $ gdb ./breakpoint_demo
 $ lldb ./breakpoint_demo
 (lldb) breakpoint set -f breakpoint_demo.cpp -l 7 -c 'value > 100'
 (lldb) run
-
 ```
+
+Notice that the debugger ran through the first three iterations without pausing - it only stopped when `value` actually exceeded 100. When you are hunting a bug that only manifests under specific conditions, this is far more useful than stepping through thousands of normal iterations.
 
 ### Q2: Use a watchpoint to catch a write to a specific variable
 
-```cpp
+Sometimes you know a variable is being corrupted but you do not know where. That is the scenario where a watchpoint earns its keep. Instead of pausing at a location in code, it pauses whenever a particular memory address is written (or read).
 
+```cpp
 // compile: g++ -g -O0 -std=c++20 watchpoint_demo.cpp -o watchpoint_demo
 #include <iostream>
 
@@ -112,11 +117,11 @@ int main() {
     std::cout << "counter = " << global_counter << '\n';
     // Expected: 3, Actual: 1000 -- who modified it?
 }
-
 ```
 
-```bash
+Setting a watchpoint and following the writes shows you exactly where the corruption happens:
 
+```bash
 # GDB: find who writes to global_counter
 $ gdb ./watchpoint_demo
 (gdb) break main
@@ -144,13 +149,15 @@ $ gdb ./watchpoint_demo
 (lldb) watchpoint set variable global_counter
 # Watch types: write (default), read, read_write
 (lldb) watchpoint set variable -w read_write global_counter
-
 ```
+
+The watchpoint catches every single write to `global_counter` in order. When the value jumps from 2 to 999, you get the exact source location and a full backtrace. That combination of "what changed" and "who did it" is usually everything you need to fix the bug.
 
 ### Q3: Load a core dump and identify the crash location
 
-```cpp
+When a program crashes in production - or in a test environment without a debugger attached - the OS can write a core dump: a snapshot of the process's memory, registers, and call stack at the moment of the crash. You can load that snapshot into GDB after the fact and debug it as if you had been attached all along.
 
+```cpp
 // compile: g++ -g -O0 -std=c++20 crash_demo.cpp -o crash_demo
 #include <iostream>
 #include <vector>
@@ -169,11 +176,11 @@ int main() {
     middle_function();
     std::cout << "Done\n";  // Never reached
 }
-
 ```
 
-```bash
+The post-mortem workflow has three steps - enable core dumps, let the program crash, and then load the dump:
 
+```bash
 # Step 1: Enable core dumps
 $ ulimit -c unlimited
 
@@ -209,16 +216,17 @@ $ lldb --core core ./crash_demo
 
 # On Linux, configure core pattern:
 # echo "/tmp/cores/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
-
 ```
+
+The backtrace tells you the exact call chain at the moment of the crash. `frame 0` puts you at the innermost frame, where `ptr` is shown to be `0x0` - a null pointer, confirming the crash cause without any guesswork.
 
 ---
 
 ## Notes
 
-- Always compile with `-g -O0` for debugging (symbols + no optimization).
-- Hardware watchpoints are limited (typically 4 on x86). Software watchpoints are much slower.
-- Use `rwatch` for read watchpoints, `awatch` for access (read+write) watchpoints.
-- On macOS, use `lldb` (GDB is unsupported on modern macOS with SIP).
-- VS Code integrates with both GDB and LLDB via the C/C++ extension.
-- Core dumps can be large; use `gcore <pid>` to capture from a running process.
+- Always compile with `-g -O0` for debugging. Without `-g` you lose line number information; without `-O0` the optimizer may reorder or eliminate variables in ways that make the debugger output confusing.
+- Hardware watchpoints are limited in number - typically 4 on x86. If you need more, GDB will fall back to software watchpoints, which check the condition at every instruction and are much slower.
+- Use `rwatch` for read watchpoints and `awatch` for access (read + write) watchpoints in GDB.
+- On macOS, use `lldb` rather than GDB. Apple's system integrity protection makes it difficult to attach GDB to processes on modern macOS.
+- VS Code integrates with both GDB and LLDB via the C/C++ extension, so you can do all of this from a GUI if you prefer.
+- Core dumps can be large on memory-intensive programs. Use `gcore <pid>` to capture a core dump from a running process without killing it - useful for investigating a live but misbehaving process.

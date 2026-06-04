@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Real-time profilers provide timeline visualization of CPU/GPU activity with live streaming.
+When you have found a performance problem and need to understand exactly where time is going, a real-time profiler gives you a timeline view of your application's CPU activity as it runs. These tools are different from simple benchmarks: instead of measuring a single function in isolation, they show you the whole picture - which functions overlap, how long each frame took, where threads are waiting on each other, and how memory usage evolves.
+
+The landscape of real-time profilers for C++ breaks down by platform and approach:
 
 | Tool | Platform | Type | License |
 | --- | --- | --- | --- |
@@ -18,14 +20,17 @@ Real-time profilers provide timeline visualization of CPU/GPU activity with live
 | **perf** | Linux | Sampling | GPL |
 | **Intel VTune** | Cross-platform | HW counters + sampling | Free |
 
+The distinction between sampling and instrumentation matters in practice. Sampling profilers interrupt the process periodically and record the call stack - they need no code changes and see everything, including third-party libraries. Instrumentation profilers require you to mark regions of code explicitly, but they give you exact timing for those regions and can show you a detailed timeline. In practice, you often want both: sample to find the hotspot, then instrument it for precise measurement.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Instrument with Tracy zones and visualize
 
-```cpp
+Tracy's API is built around "zones" - regions of code that you explicitly mark with macros. When you add `ZoneScoped` at the top of a function, Tracy records the entry and exit times and sends them to the UI over a network connection. The UI then renders a real-time flame chart. The macro-based approach means the overhead is nearly zero when a zone is not being recorded.
 
+```cpp
 // tracy_demo.cpp
 // Link with Tracy: add tracy as a dependency or include TracyClient.cpp
 #include <tracy/Tracy.hpp>
@@ -70,11 +75,11 @@ int main() {
         process_frame(i);
     }
 }
-
 ```
 
-```cmake
+Integrate Tracy into your build system like this:
 
+```cmake
 # CMake integration:
 find_package(Tracy CONFIG REQUIRED)
 target_link_libraries(myapp PRIVATE Tracy::TracyClient)
@@ -82,11 +87,11 @@ target_compile_definitions(myapp PRIVATE TRACY_ENABLE)
 
 # Or via vcpkg:
 # vcpkg install tracy
-
 ```
 
-```cpp
+Once running, the Tracy UI streams data in real time and shows a timeline like this:
 
+```cpp
 Tracy profiler UI shows:
 ┌─────────────────────────────────────────────────┐
 │ Timeline (horizontal = time)                    │
@@ -97,13 +102,15 @@ Tracy profiler UI shows:
 │ Frame: 42  Duration: 2.3ms                      │
 │ Zones: 4  CPU: 98%                              │
 └─────────────────────────────────────────────────┘
-
 ```
+
+You can click on any zone to see its exact duration and which child zones contributed most. The `FrameMark` call tells Tracy where one game/simulation frame ends and the next begins, which enables per-frame statistics.
 
 ### Q2: Detect lock contention with a profiler
 
-```cpp
+Lock contention is one of the most common causes of multi-threaded performance problems, and it is almost impossible to spot by just reading code. When eight threads all need the same lock, seven of them spend most of their time waiting. Tracy can track this directly.
 
+```cpp
 // contention.cpp
 #include <tracy/Tracy.hpp>
 #include <mutex>
@@ -139,11 +146,11 @@ int main() {
 // - Total lock contention as percentage of wall time
 //
 // Fix: shard the data, use lock-free queue, reduce critical section
-
 ```
 
-```cpp
+For more detailed tracking, you can wrap your mutex type itself with Tracy's annotation:
 
+```cpp
 // Tracy lock tracking (advanced):
 #include <tracy/Tracy.hpp>
 
@@ -154,10 +161,13 @@ void worker() {
     std::lock_guard<LockableBase(std::mutex)> lock(my_mutex);
     // Tracy now tracks: wait time, hold time, contention count
 }
-
 ```
 
+The wrapped mutex records acquisition and release times automatically, so the timeline shows exactly how long each thread spent waiting versus working.
+
 ### Q3: Sampling vs instrumentation profilers
+
+The reason this trips people up is that both types of profiler have compelling advantages, and neither is strictly better. Understanding the trade-offs helps you pick the right tool for the job.
 
 | Aspect | Sampling (perf, VTune) | Instrumentation (Tracy, Orbit) |
 | --- | --- | --- |
@@ -170,23 +180,25 @@ void worker() {
 | **Best for** | Finding unknown hotspots | Understanding known hot paths |
 | **Frame-based** | Not natively | Yes (Tracy FrameMark) |
 
-```cpp
+The typical workflow that gets the best of both is a two-pass approach:
 
+```cpp
 Typical workflow:
 
 1. Use sampling profiler (perf) to FIND the hotspot
 2. Instrument the hotspot with Tracy for DETAILED analysis
 3. Optimize based on Tracy's precise timing
 4. Verify with perf that overall time decreased
-
 ```
+
+Start with sampling because it shows you everything without any code changes. Once you know which function is slow, add Tracy zones to understand the internal structure. Then verify your optimization actually helped by going back to the sampling profiler for a before/after comparison.
 
 ---
 
 ## Notes
 
-- Tracy has near-zero overhead for non-active zones (~1ns per zone entry).
-- Tracy supports GPU profiling (Vulkan, OpenGL, D3D12).
-- Orbit (Google) can attach to running processes without recompilation.
-- Superluminal excels at context switch and thread migration analysis.
-- Use `TracyAllocS`/`TracyFreeS` to track memory allocations in timeline.
+- Tracy has near-zero overhead for non-active zones (roughly 1 ns per zone entry).
+- Tracy supports GPU profiling for Vulkan, OpenGL, and D3D12.
+- Orbit (Google) can attach to running processes without recompilation, which is useful for profiling production builds.
+- Superluminal excels at context switch and thread migration analysis on Windows.
+- Use `TracyAllocS`/`TracyFreeS` to track memory allocations in the timeline alongside CPU work.

@@ -8,19 +8,19 @@
 
 ## Topic Overview
 
-Modern CMake (3.0+) is **target-based**: properties are attached to targets, not directories. This ensures correct dependency propagation.
+The single most important thing to know about modern CMake (3.0 and later) is that it is **target-based**, not directory-based. Properties like include paths, compile definitions, and link libraries are attached to specific targets - not to the directory you happen to be in when you call a command. This distinction matters enormously once your project has more than one target or depends on any third-party libraries.
+
+The old-style, directory-level commands affect every target in the current CMakeLists.txt scope. The modern, target-level commands are precise and propagate dependencies correctly through the build graph:
 
 ```cpp
-
 OLD (directory-level):           MODERN (target-level):
   include_directories(...)         target_include_directories(lib PUBLIC ...)
   add_definitions(...)             target_compile_definitions(lib PRIVATE ...)
   add_compile_options(...)         target_compile_options(lib PRIVATE ...)
   link_libraries(...)              target_link_libraries(app PRIVATE lib)
 
-  ✗ Affects ALL targets             ✓ Only affects specified target
-  ✗ No dependency propagation       ✓ PUBLIC/PRIVATE/INTERFACE propagation
-
+  // BAD: Affects ALL targets       // GOOD: Only affects specified target
+  // BAD: No dependency propagation // GOOD: PUBLIC/PRIVATE/INTERFACE propagation
 ```
 
 ---
@@ -29,8 +29,9 @@ OLD (directory-level):           MODERN (target-level):
 
 ### Q1: Target-based CMakeLists.txt with PRIVATE/PUBLIC/INTERFACE
 
-```cmake
+The three visibility keywords - `PRIVATE`, `PUBLIC`, and `INTERFACE` - are the heart of modern CMake. They control whether a property stays inside a target, propagates to consumers, or exists only for consumers. Here is a realistic project structure that demonstrates all three:
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(ModernCMakeDemo LANGUAGES CXX)
@@ -71,10 +72,9 @@ target_compile_options(app PRIVATE -Wall -Wextra -Wpedantic)
 add_library(concepts_lib INTERFACE)
 target_include_directories(concepts_lib INTERFACE include/concepts)
 target_compile_features(concepts_lib INTERFACE cxx_std_20)
-
 ```
 
-**Propagation rules:**
+The propagation rules are worth memorizing. If you get them wrong, consumers of your library will either fail to compile (missing includes) or pick up settings they should not see (your internal compile flags):
 
 | Keyword | Compiling target | Consumers of target |
 | --- | --- | --- |
@@ -84,14 +84,17 @@ target_compile_features(concepts_lib INTERFACE cxx_std_20)
 
 ### Q2: Why `target_compile_options()` is better than `add_compile_options()`
 
-```cmake
+The reason this matters in practice is third-party code. If you use `add_compile_options(-Werror)` in your root `CMakeLists.txt` and then pull in a third-party library with `add_subdirectory`, that library will also be compiled with `-Werror`. If it has any warnings - and many do - your build breaks, even though the problem is not in your code.
 
-# BAD: directory-level — affects EVERY target in this directory
+With target-level commands, the flags stay exactly where you put them:
+
+```cmake
+# BAD: directory-level - affects EVERY target in this directory
 add_compile_options(-Wall -Wextra -Werror)
 # Problem: third-party subdirectories also get -Werror
 # add_subdirectory(third_party/noisy_lib)  # fails to compile
 
-# GOOD: target-level — only your targets get strict warnings
+# GOOD: target-level - only your targets get strict warnings
 target_compile_options(mylib PRIVATE -Wall -Wextra -Werror)
 target_compile_options(myapp PRIVATE -Wall -Wextra -Werror)
 # third_party/noisy_lib is unaffected
@@ -102,8 +105,9 @@ target_compile_options(mylib PUBLIC -Werror)  # Don't do this!
 
 # GOOD: keep strictness PRIVATE
 target_compile_options(mylib PRIVATE -Werror)
-
 ```
+
+The last two entries are particularly important for library authors. Publishing a library with `PUBLIC -Werror` is considered impolite - you are forcing every consumer of your library to also have zero warnings under your compiler version, which may not be achievable for them.
 
 | Approach | Scope | Third-party safe? | Recommendation |
 | --- | --- | --- | --- |
@@ -113,8 +117,11 @@ target_compile_options(mylib PRIVATE -Werror)
 
 ### Q3: Proper `install()` rules and export sets
 
-```cmake
+Once you want other projects to consume your library via `find_package()`, you need to set up export sets. This is the mechanism that lets downstream projects write `find_package(MyProject REQUIRED)` and immediately get the right include paths, compile flags, and link targets - without knowing anything about where you installed the files.
 
+Here is a complete install setup:
+
+```cmake
 # CMakeLists.txt (continued)
 include(GNUInstallDirs)
 
@@ -149,27 +156,24 @@ install(FILES
     ${CMAKE_CURRENT_BINARY_DIR}/MyProjectConfig.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/MyProject
 )
-
 ```
 
-```cmake
+The config template that goes with this is minimal:
 
+```cmake
 # cmake/MyProjectConfig.cmake.in
 @PACKAGE_INIT@
 include("${CMAKE_CURRENT_LIST_DIR}/MyProjectTargets.cmake")
 check_required_components(MyProject)
-
 ```
 
-Downstream consumer:
+Once installed, a downstream consumer gets everything they need automatically:
 
 ```cmake
-
 # Consumer's CMakeLists.txt
 find_package(MyProject REQUIRED)
 target_link_libraries(consumer_app PRIVATE MyProject::mathlib)
 # Automatically gets: include dirs, compile defs, link flags
-
 ```
 
 ---

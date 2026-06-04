@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Warning flags catch bugs **at compile time** with zero runtime cost. Each flag enables a group of warnings:
+Warning flags are one of the cheapest tools available to you - they catch bugs at compile time with zero runtime cost. The reason to use all three of `-Wall`, `-Wextra`, and `-Wpedantic` together is that they cover different ground, and each one catches real bugs that the others miss.
 
 | Flag | Catches | Example |
 | --- | --- | --- |
@@ -17,12 +17,14 @@ Warning flags catch bugs **at compile time** with zero runtime cost. Each flag e
 | `-Wpedantic` | Standard conformance | GNU extensions, trailing commas |
 | `-Werror` | Treat all warnings as errors | Forces clean builds in CI |
 
-```cpp
+One thing that surprises new users: `-Wall` does **not** enable all warnings. The name is historical. It enables a curated set of about 40 widely-agreed-upon checks, but there are many more that GCC/Clang know about:
 
+```cpp
 -Wall         ⊂  -Wextra       ⊂  -Wpedantic
 (~40 warnings)  (~20 more)       (~10 more)
-
 ```
+
+Adding `-Werror` in CI converts any remaining warning into a build failure, which forces the codebase to stay clean. You typically use `-Werror` only in CI (not developer builds), with targeted `-Wno-error=...` exclusions for specific warnings you want to see but not block on.
 
 ---
 
@@ -30,8 +32,9 @@ Warning flags catch bugs **at compile time** with zero runtime cost. Each flag e
 
 ### Q1: Enable all three flags and fix every warning
 
-```cpp
+The best way to understand these flags is to see what each one flags and how to silence it correctly. Here is a file with one problem per warning group, shown before and after the fix:
 
+```cpp
 // warnings_demo.cpp
 // Compile: g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror warnings_demo.cpp
 
@@ -79,13 +82,15 @@ int main() {
 // 42
 // 10
 // Color: 0
-
 ```
+
+The missing-return-value warning is particularly important. Without it, a function that falls off the end of a non-void function exhibits undefined behavior - the compiler is allowed to assume that code path is never taken, which can lead to bizarre optimizations and crashes that appear nowhere near the actual bug.
 
 ### Q2: `-Werror` in CI with false-positive suppression workflow
 
-```cmake
+In CI you want warnings to be hard errors. But there are legitimate situations where you need to silence specific warnings - for example, a third-party callback API that forces an unused parameter signature, or code that deliberately uses deprecated APIs during a migration. The key is to suppress surgically rather than globally:
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(MyProject LANGUAGES CXX)
@@ -102,13 +107,11 @@ add_library(third_party_wrapper wrapper.cpp)
 target_compile_options(third_party_wrapper PRIVATE
     -Wno-unused-parameter      # third-party callback signature
 )
-
 ```
 
-Suppressing a single warning inline:
+There are three clean techniques for suppressing a warning at the source level when you cannot change the problematic code:
 
 ```cpp
-
 #include <iostream>
 
 void callback(int event_id, void* /*user_data*/) {
@@ -136,13 +139,15 @@ int main() {
 // Expected output:
 // Event: 1
 // 42
-
 ```
+
+Method 1 (commenting out the parameter name) is the most portable and the most obvious to a reader. Method 2 uses a standard C++17 attribute, which is the right tool when the parameter must remain named for documentation. Method 3 is the escape hatch when you need to suppress a warning in a block of code you do not own.
 
 ### Q3: Warnings caught by -Wextra but not -Wall, and -Wpedantic only
 
-```cpp
+These are the ones people most often miss because they assume `-Wall` handles everything:
 
+```cpp
 #include <iostream>
 
 // ====== -Wextra catches (but -Wall misses) ======
@@ -179,8 +184,9 @@ int main() {
 // Compile: g++ -std=c++20 -Wall -Wextra -Wpedantic warnings.cpp
 // Expected output:
 // p = {1, 2, 0}
-
 ```
+
+The missing-field-initializer case is particularly sneaky. The struct member `z` is zero-initialized when you write `{1, 2}` - that is well-defined in C++. But if you refactored and added `z` later without updating all initializers, `-Wextra` will remind you that you may have forgotten to set something intentionally. Without `-Wextra`, that refactor silently "works" while leaving a latent bug.
 
 ---
 

@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-Google Benchmark provides a framework for writing accurate micro-benchmarks. Quick Bench (quick-bench.com) is an online front-end.
+If you have ever wondered "is `emplace_back` actually faster than `push_back` for my type?", Google Benchmark is the right tool for getting a real answer. It provides a framework for writing accurate micro-benchmarks - small, focused measurements of individual operations. Quick Bench at quick-bench.com is a browser-based front-end that runs Google Benchmark online, which is great when you just want a fast sanity check without a local setup.
+
+The key thing micro-benchmarking gets right that a simple `std::chrono` loop gets wrong is statistical stability. Google Benchmark automatically runs each test for enough iterations to get a meaningful average, reports both wall-clock time and CPU time, and gives you the raw iteration count so you can judge confidence.
+
+Here is what a typical benchmark output looks like:
 
 ```text
-
 Benchmark output:
 -----------------------------------------------------------
 Benchmark               Time             CPU   Iterations
@@ -20,8 +23,9 @@ BM_push_back          12.3 ns         12.2 ns    56000000
 BM_emplace_back       10.1 ns         10.0 ns    68000000
                       ^^^^^^          ^^^^^^
                     wall clock       CPU time
-
 ```
+
+The framework ran each variant millions of times to arrive at those stable numbers. Notice that wall-clock time and CPU time are reported separately - if they diverge, it often means the OS was competing for resources during the run.
 
 ---
 
@@ -29,8 +33,9 @@ BM_emplace_back       10.1 ns         10.0 ns    68000000
 
 ### Q1: Benchmark `push_back` vs `emplace_back`
 
-```cpp
+The key thing to understand about this benchmark is the structure: each function receives a `benchmark::State&` loop that the framework drives. Everything inside `for (auto _ : state)` is timed, and anything outside that loop is setup that runs only once. The `benchmark::DoNotOptimize` call at the end is essential - without it, the compiler may decide the vector is never read and silently delete the whole loop.
 
+```cpp
 // bench.cpp — compile:
 // g++ -O2 -std=c++20 bench.cpp -lbenchmark -lpthread -o bench
 #include <benchmark/benchmark.h>
@@ -74,11 +79,11 @@ static void BM_push_back_n(benchmark::State& state) {
 BENCHMARK(BM_push_back_n)->Range(8, 8 << 10);
 
 BENCHMARK_MAIN();
-
 ```
 
-```bash
+Build and run it, and the output will look something like this:
 
+```bash
 # Build and run:
 $ g++ -O2 -std=c++20 bench.cpp -lbenchmark -lpthread -o bench
 $ ./bench
@@ -92,13 +97,15 @@ $ ./bench
 # BM_push_back_n/64     320 ns         319 ns       2100000
 # BM_push_back_n/512   2890 ns        2880 ns        240000
 # BM_push_back_n/4096 24500 ns       24400 ns         28000
-
 ```
+
+The parameterized variant is useful for spotting when a performance difference is size-dependent. Here you can see the cost per element stays roughly linear, which is what you would expect.
 
 ### Q2: `DoNotOptimize` prevents dead code elimination
 
-```cpp
+This is the part that trips people up the most when they first write benchmarks. An optimizing compiler is allowed to remove any computation whose result is never observed - and a `for` loop that adds numbers to a local variable that nothing reads afterward is a perfect candidate for deletion. If you omit `DoNotOptimize`, your benchmark may report 0 ns because there is literally nothing left to measure.
 
+```cpp
 #include <benchmark/benchmark.h>
 
 // WITHOUT DoNotOptimize — compiler eliminates the work:
@@ -134,26 +141,26 @@ static void BM_container(benchmark::State& state) {
 BENCHMARK(BM_container);
 
 BENCHMARK_MAIN();
-
 ```
 
-How `DoNotOptimize` works:
+The reason `DoNotOptimize` works is that it uses an inline assembly constraint to tell the compiler "this value has been seen by something outside your control." Here is the simplified implementation:
 
 ```cpp
-
 // Simplified implementation:
 template <class T>
 void DoNotOptimize(T& value) {
     asm volatile("" : "+r"(value));  // value in register, compiler can't eliminate
 }
 // The asm volatile is a barrier: compiler must compute 'value' but the asm does nothing.
-
 ```
+
+The assembly instruction itself does nothing at runtime. The `volatile` keyword is what prevents the compiler from reasoning past it. Use `DoNotOptimize` for scalar results and `ClobberMemory` when you are writing to a container and want to ensure those writes are not skipped.
 
 ### Q3: Filter and interpret benchmark output
 
-```bash
+Once you have multiple benchmarks, you do not always want to run all of them. Google Benchmark provides filtering and several output formats that make it easy to compare runs over time.
 
+```bash
 # Run only benchmarks matching a regex:
 $ ./bench --benchmark_filter="emplace"
 # Runs only BM_emplace_back
@@ -184,15 +191,16 @@ $ python3 -m google_benchmark.compare baseline.json improved.json
 # Statistical analysis (multiple runs):
 $ ./bench --benchmark_repetitions=10 --benchmark_report_aggregates_only=true
 # Shows mean, median, stddev
-
 ```
+
+The comparison script is particularly valuable in CI workflows - you can catch performance regressions the same way you catch test failures.
 
 ---
 
 ## Notes
 
-- Quick Bench (quick-bench.com) runs Google Benchmark online — great for quick tests.
-- Always benchmark with `-O2` or `-O3`; `-O0` results are meaningless.
-- Use `benchmark::ClobberMemory()` for container modifications.
-- `SetItemsProcessed()` and `SetBytesProcessed()` add throughput metrics.
-- Install: `vcpkg install benchmark` or `apt install libbenchmark-dev`.
+- Quick Bench at quick-bench.com runs Google Benchmark online - great for quick tests.
+- Always benchmark with `-O2` or `-O3`; `-O0` results are meaningless for real-world comparisons.
+- Use `benchmark::ClobberMemory()` when your benchmark mutates a container and you need those writes to be treated as observable.
+- `SetItemsProcessed()` and `SetBytesProcessed()` add throughput metrics to the output.
+- Install via: `vcpkg install benchmark` or `apt install libbenchmark-dev`.

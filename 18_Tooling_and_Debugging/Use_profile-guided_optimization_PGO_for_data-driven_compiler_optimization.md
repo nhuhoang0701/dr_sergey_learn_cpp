@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-PGO uses runtime profiling data to guide compiler optimizations. The compiler makes better decisions about inlining, branch layout, and code placement based on real execution patterns.
+Compilers are clever, but they're working with incomplete information at compile time. They don't know whether a particular branch is taken 1% of the time or 99% of the time. They don't know which functions are called billions of times and which are called once during startup. This limits how well static optimization can work.
+
+Profile-Guided Optimization (PGO) fixes this by running your actual program on representative input, collecting data about what really happens at runtime, and then feeding that data back to the compiler. With PGO, the compiler can lay out likely branches first so the CPU branch predictor wins more often, inline only the hot functions (not every function it could inline), allocate registers more carefully in the loops that matter, and group hot code together so the instruction cache stays warm. The result is typically 10-30% faster code for programs with complex branching.
+
+The workflow is always three steps. First, build an instrumented binary. Second, run it on real or representative data. Third, compile again using the profile to guide optimization.
 
 ```cpp
-
 PGO workflow (3 steps):
 
 1. INSTRUMENT           2. PROFILE              3. OPTIMIZE
@@ -20,8 +23,9 @@ PGO workflow (3 steps):
    -> app (instrumented)    -> *.gcda files         -> app (optimized)
    (slower, collects data)  (run representative     (uses profile to
                              workload)               optimize hot paths)
-
 ```
+
+Here's a quick summary of what the compiler does with that data:
 
 | PGO Benefit | How |
 | --- | --- |
@@ -36,9 +40,10 @@ PGO workflow (3 steps):
 
 ### Q1: Run the three PGO steps
 
-```cpp
+This program has a `classify()` function whose branches have very different likelihoods. Without PGO, the compiler has no idea which case dominates; with PGO, it knows case 3 covers 50% of inputs and can order the checks accordingly.
 
-// workload.cpp — a CPU-bound program to optimize with PGO
+```cpp
+// workload.cpp - a CPU-bound program to optimize with PGO
 #include <vector>
 #include <algorithm>
 #include <numeric>
@@ -76,11 +81,11 @@ int main() {
     auto result = process(data);
     std::cout << "Result: " << result << '\n';
 }
-
 ```
 
-```bash
+The commands below show both GCC and Clang workflows. The key difference is that Clang's IR-based PGO (the `-fprofile-instr-*` flags) operates at the LLVM intermediate representation level, which gives the optimizer more precise information than GCC's frontend-level instrumentation.
 
+```bash
 # === GCC PGO ===
 # Step 1: Instrument build
 g++ -O2 -std=c++20 -fprofile-generate -o app_instr workload.cpp
@@ -109,13 +114,15 @@ clang++ -O2 -std=c++20 -fprofile-instr-use=workload.profdata -o app_pgo workload
 # cmake --build build-instr && ./build-instr/app
 # cmake -DCMAKE_CXX_FLAGS="-fprofile-use" -B build-pgo
 # cmake --build build-pgo
-
 ```
+
+Note the extra `llvm-profdata merge` step in the Clang workflow. Raw profile files can be split across multiple runs (useful for averaging over different workloads), and `llvm-profdata merge` combines them into one `.profdata` file before the final compilation.
 
 ### Q2: Measure PGO performance improvement
 
-```bash
+After running both builds, measure with `time` and verify with `perf stat`. The branch-miss numbers are especially telling because they confirm the compiler actually reordered the checks.
 
+```bash
 # Compare execution times:
 $ time ./app_nopgo     # regular -O2 build
 # real 0m1.82s
@@ -134,14 +141,16 @@ $ perf stat ./app_nopgo
 #  5,200,000  branch-misses  (4.2% of branches)
 
 $ perf stat ./app_pgo
-#  1,100,000  branch-misses  (0.9% of branches)  ← 4x fewer
-
+#  1,100,000  branch-misses  (0.9% of branches)  <- 4x fewer
 ```
+
+A 4x reduction in branch misses is substantial. Each branch miss on a modern CPU can cost 10-20 cycles as the pipeline is flushed and refilled. Across ten million iterations, that adds up fast.
 
 ### Q3: Risks of stale profiles
 
-```cpp
+PGO is data-driven, which means it's only as good as the data. If the code changes significantly after you collect a profile - new branches, different hot paths, functions that got renamed or inlined - the profile no longer matches the code. The compiler may still use it, but it'll be optimizing for a workload that no longer exists. The result can actually be slower than a plain `-O2` build in some cases.
 
+```cpp
 Stale profile problem:
 
 v1.0 code:                  v2.0 code (changed control flow):
@@ -150,8 +159,9 @@ v1.0 code:                  v2.0 code (changed control flow):
   }                           }
   Profile says: hot_path=90%  Profile: hot_path=90%... but it's gone!
   Compiler trusts this.       Compiler misoptimizes based on stale data.
-
 ```
+
+The good news is that both GCC and Clang will warn you when the profile data no longer matches the source. Make it a habit to treat these warnings seriously.
 
 When to regenerate profiles:
 
@@ -161,7 +171,6 @@ When to regenerate profiles:
 - **NOT needed for:** comment changes, formatting, adding new cold paths
 
 ```bash
-
 # Clang: detect stale profiles
 clang++ -fprofile-instr-use=old.profdata \
         -Wprofile-instr-out-of-date \
@@ -179,8 +188,9 @@ g++ -fprofile-use -Wmissing-profile workload_v2.cpp
 # 3. Build optimized binary with fresh profile
 # 4. Run tests on optimized binary
 # 5. Deploy
-
 ```
+
+Automating the full three-step PGO process in CI ensures you always ship with a fresh, accurate profile.
 
 ---
 

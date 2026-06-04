@@ -10,8 +10,11 @@
 
 This is an extended guide on libFuzzer with advanced techniques: custom mutators, structured fuzzing, and CI integration.
 
-```cpp
+Fuzz testing works by generating a flood of random or semi-random inputs and feeding them to your code as fast as possible, looking for crashes, assertion failures, or sanitizer violations. What makes modern fuzzers like libFuzzer particularly effective is the coverage feedback loop. The fuzzer instruments your binary to detect when a new input exercises a previously unseen code path. When that happens, it saves the input to the corpus and uses it as a basis for further mutations. Over time, the corpus grows to cover more and more of your code, and the fuzzer naturally finds its way into the deep, unexpected cases that manual testing rarely reaches.
 
+The architecture looks like this:
+
+```cpp
 Advanced fuzzing architecture:
 
   Corpus        libFuzzer Engine       Target
@@ -26,8 +29,9 @@ Advanced fuzzing architecture:
                               │ ASan/UBSan/MSan│
                               │ detects bug    │
                               └───────────────┘
-
 ```
+
+The corpus starts small (often just a few seed inputs) and grows automatically as the fuzzer discovers new paths. When a crash occurs, the sanitizer layer - AddressSanitizer, UBSan, or MemorySanitizer - diagnoses exactly what went wrong and where.
 
 ---
 
@@ -35,9 +39,12 @@ Advanced fuzzing architecture:
 
 ### Q1: Set up a fuzz target with structured input
 
-```cpp
+A fuzz target is just a function with a specific signature: `LLVMFuzzerTestOneInput`. libFuzzer calls it repeatedly with mutated byte buffers. The function should return 0 in all cases - the way you signal a bug is by crashing or triggering a sanitizer violation, not by returning an error code.
 
-// fuzz_json.cpp — fuzz a JSON-like parser
+The parser below has two intentional bugs planted in it. The comments identify them. Part of the exercise is letting the fuzzer find them automatically.
+
+```cpp
+// fuzz_json.cpp - fuzz a JSON-like parser
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -80,11 +87,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
     return 0;
 }
-
 ```
 
-```bash
+A dictionary file gives the fuzzer hints about tokens the parser cares about. Without it, the fuzzer is purely random. With it, the fuzzer quickly learns that `:` is a meaningful separator and starts generating inputs around it - which is exactly where the bugs are.
 
+```bash
 # Compile with dictionary for better exploration:
 $ clang++ -std=c++20 -g -O1 -fsanitize=fuzzer,address fuzz_json.cpp -o fuzz_json
 
@@ -104,13 +111,13 @@ $ mkdir -p corpus
 $ echo -n 'key:value' > corpus/seed1
 $ echo -n 'name:John' > corpus/seed2
 $ ./fuzz_json -dict=json.dict corpus/
-
 ```
 
 ### Q2: Interpret crash artifacts and reproduce
 
-```bash
+When libFuzzer finds a crash, it writes the triggering input to a file named something like `crash-abc123`. This is valuable because you can reproduce the crash deterministically at any time - no need to rerun the fuzzer and hope for the same input.
 
+```bash
 # When fuzzer finds a crash:
 # ==ERROR: AddressSanitizer:
 # artifact_prefix='./'; Test unit written to ./crash-abc123
@@ -136,13 +143,15 @@ $ ./fuzz_json -print_coverage=1 corpus/ 2>&1 | head -20
 $ mkdir corpus_merged
 $ ./fuzz_json -merge=1 corpus_merged/ corpus/
 # Merged 500 inputs -> 42 unique coverage inputs
-
 ```
+
+The crash input `3a` - a single colon character - is exactly the edge case the code failed to handle. The crashing input is always minimal enough to add to a regression test suite directly.
 
 ### Q3: Combine fuzzing with multiple sanitizers
 
-```bash
+libFuzzer becomes especially powerful when combined with a sanitizer. Each sanitizer detects a different class of bug, so you typically run separate fuzz binaries for each one. You cannot combine ASan and MSan in the same binary because they both intercept the same memory allocation calls.
 
+```bash
 # ASan + fuzzer (most common):
 $ clang++ -fsanitize=fuzzer,address -g -O1 fuzz.cpp -o fuzz_asan
 # Detects: heap overflow, use-after-free, double-free, stack overflow
@@ -157,55 +166,45 @@ $ clang++ -fsanitize=fuzzer,memory -g -O1 fuzz.cpp -o fuzz_msan
 # NOTE: requires all dependencies compiled with MSan
 
 # CI integration (GitHub Actions):
-
 ```
 
-```yaml
+Running fuzz tests in CI on a schedule - rather than only on every commit - is the recommended pattern because the fuzzer needs time to explore deeply. A five-minute nightly run consistently outperforms a thirty-second per-commit run.
 
+```yaml
 # .github/workflows/fuzz.yml
 name: Fuzz Tests
 on:
   schedule:
-
     - cron: '0 2 * * *'  # nightly
-
   workflow_dispatch:
 
 jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v4
-
       - name: Build fuzz targets
-
         run: |
           clang++ -std=c++20 -g -O1 \
             -fsanitize=fuzzer,address \
             fuzz_parser.cpp -o fuzz_parser
-
       - name: Download corpus
-
         uses: actions/download-artifact@v4
         with:
           name: fuzz-corpus
         continue-on-error: true
-
       - name: Run fuzzer (5 minutes)
-
         run: |
           mkdir -p corpus
           timeout 300 ./fuzz_parser corpus/ || true
-
       - name: Upload corpus
-
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-corpus
           path: corpus/
-
 ```
+
+Uploading the corpus as an artifact and downloading it at the start of the next run is the key to making CI fuzzing effective. The fuzzer picks up where it left off each night, steadily accumulating coverage over time rather than restarting from scratch every run.
 
 ---
 

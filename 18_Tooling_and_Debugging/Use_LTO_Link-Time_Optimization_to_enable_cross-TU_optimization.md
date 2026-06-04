@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-LTO allows the compiler to optimize across translation unit boundaries by deferring optimization to link time. This enables **cross-TU inlining**, **dead code elimination**, and **ODR violation detection**.
+The fundamental problem LTO solves is that the compiler normally works one translation unit at a time. By the time it finishes compiling `main.cpp`, it has already discarded everything it knew about `util.cpp`. The linker then patches addresses between object files, but it cannot inline a function across that boundary because `util.o` is already machine code - there is nothing left to analyze.
+
+LTO defers that final optimization step. Instead of emitting machine code, the compiler emits its intermediate representation (LLVM IR for Clang, GIMPLE for GCC). The linker then invokes the optimizer on the combined IR from all translation units together, which enables **cross-TU inlining**, **dead code elimination**, and as a bonus, **ODR violation detection**.
 
 ```cpp
-
 Normal compilation:          LTO compilation:
 a.cpp -> a.o (machine code)  a.cpp -> a.o (LLVM IR / GIMPLE)
 b.cpp -> b.o (machine code)  b.cpp -> b.o (LLVM IR / GIMPLE)
@@ -19,7 +20,6 @@ b.cpp -> b.o (machine code)  b.cpp -> b.o (LLVM IR / GIMPLE)
    linker                     LTO optimizer
      |                             |
    binary                       binary (optimized across TUs)
-
 ```
 
 ---
@@ -28,8 +28,9 @@ b.cpp -> b.o (machine code)  b.cpp -> b.o (LLVM IR / GIMPLE)
 
 ### Q1: Enable LTO in CMake and measure the effect
 
-```cmake
+The cleanest way to enable LTO in CMake is through the `INTERPROCEDURAL_OPTIMIZATION` target property, combined with a check that the toolchain actually supports it:
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.20)
 project(LTOExample LANGUAGES CXX)
@@ -46,11 +47,11 @@ if(supported)
         INTERPROCEDURAL_OPTIMIZATION TRUE
     )
 endif()
-
 ```
 
-```cpp
+Here is the example code that demonstrates the benefit. `main.cpp` calls two functions defined in `util.cpp` - without LTO the calls cannot be inlined; with LTO the entire computation collapses to a constant:
 
+```cpp
 // util.h
 #pragma once
 int compute(int x);
@@ -72,22 +73,24 @@ int main() {
                                               // With LTO: cout << 36
 }
 // Expected output: 36
-
 ```
 
-```bash
+Build both variants and compare the resulting binary sizes:
 
+```bash
 # Compare:
 g++ -O2       main.cpp util.cpp -o app_nolto && ls -la app_nolto
 g++ -O2 -flto main.cpp util.cpp -o app_lto   && ls -la app_lto
 # LTO version: smaller binary, compute() and is_valid() inlined into main()
-
 ```
 
 ### Q2: Why LTO enables cross-TU inlining
 
-```cpp
+The reason this trips people up is the question: "why can't the linker just inline things?" The answer is that the linker traditionally works only at the address-patching level. It sees two blobs of machine code and connects them. There is no way to inline machine code into other machine code after the fact. LTO sidesteps this by never generating machine code until the very end.
 
+Here is the transformation visualized at the IR level:
+
+```cpp
 Without LTO:
   main.o: call compute   ; linker resolves to address, but no inlining
   util.o: compute: ...   ; already compiled to machine code
@@ -106,8 +109,9 @@ With LTO:
       %result = 36                 ; compute inlined + constant-folded
       call cout << %result
     }
-
 ```
+
+The optimizer sees the whole picture at once and can apply constant folding, dead code elimination, and devirtualization that would be impossible with the per-TU model:
 
 | Without LTO | With LTO |
 | --- | --- |
@@ -119,8 +123,11 @@ With LTO:
 
 ### Q3: ODR violation detected only with LTO
 
-```cpp
+The One Definition Rule says that if a type or function is defined in multiple translation units, all definitions must be identical. Violations are undefined behavior, and the normal linker cannot detect them because it only sees symbol names, not type layouts. LTO can detect at least some violations because it processes the full IR and can compare type definitions across TUs.
 
+Here is a classic example of an ODR violation that silently compiles and links without LTO:
+
+```cpp
 // === a.cpp ===
 struct Config {
     int timeout = 30;    // timeout in seconds
@@ -150,17 +157,15 @@ int main() {
     std::cout << get_timeout() << '\n';
     std::cout << get_default() << '\n';
 }
-
 ```
 
 ```bash
-
-# Without LTO — links fine, silent undefined behavior:
+# Without LTO - links fine, silent undefined behavior:
 g++ -O2 a.cpp b.cpp main.cpp -o app
 ./app
 # Output: 30 and 5 (appears to work, but UB!)
 
-# With LTO — detects the conflict:
+# With LTO - detects the conflict:
 g++ -O2 -flto a.cpp b.cpp main.cpp -o app
 # warning: type 'struct Config' has incompatible definitions in different
 #          translation units
@@ -169,7 +174,6 @@ g++ -O2 -flto a.cpp b.cpp main.cpp -o app
 # Clang with LTO:
 clang++ -O2 -flto a.cpp b.cpp main.cpp -o app
 # Similar ODR diagnostic
-
 ```
 
 Why normal linking misses it:
@@ -177,6 +181,8 @@ Why normal linking misses it:
 - The linker only sees machine code in `.o` files.
 - Both `Config` types are local (no external linkage symbol conflict).
 - LTO sees the full IR and can compare type definitions.
+
+The fact that the non-LTO build "appears to work" is exactly the problem with silent UB. The two `Config` types have different sizes and different member types, so depending on which definition the linker uses for any given call, you might read garbage.
 
 ---
 

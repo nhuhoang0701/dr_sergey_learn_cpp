@@ -8,6 +8,8 @@
 
 ## Topic Overview
 
+Optimization levels are a dial you turn between "easy to debug" and "as fast as possible." The compiler uses the level you choose to decide which transformations are worth doing - more aggressive levels spend more compile time looking for ways to make the binary smaller or faster. Here is the full spectrum:
+
 | Level | Goal | Key Features |
 | --- | --- | --- |
 | `-O0` | Debug | No optimization, fast compile, 1:1 with source |
@@ -17,11 +19,15 @@
 | `-Os` | Size | Like `-O2` but prefers smaller code |
 | `-Oz` | Min size | Clang: aggressive size reduction (no inlining) |
 
+For most projects, `-O2` is the right default. You choose `-O3` when you have benchmarked and confirmed the extra optimizations help your specific workload. You reach for `-Oz` when binary size is a hard constraint, such as firmware or WebAssembly targets.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Five optimizations enabled at -O3 but not -O2
+
+These are the headline features that `-O3` unlocks. Each one can dramatically help certain workloads and do little or nothing for others - which is exactly why they are not on by default:
 
 | Optimization | GCC Flag | Effect |
 | --- | --- | --- |
@@ -31,10 +37,9 @@
 | Loop interchange | `-floop-interchange` | Swaps nested loop order for cache locality |
 | Predictive commoning | `-fpredictive-commoning` | Reuses values from previous iterations |
 
-Demonstration:
+Auto-vectorization is the one you feel most often. When you have a tight loop over an array, `-O3` will try to rewrite it to process multiple elements at once using SIMD instructions. The following loop is a perfect candidate:
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -64,13 +69,15 @@ int main() {
 // Check vectorization: g++ -O3 -ftree-vectorizer-verbose=1 prog.cpp
 // Or: g++ -O3 -fopt-info-vec-optimized prog.cpp
 //   -> "loop vectorized using 128 bit vectors"
-
 ```
+
+The speedup here is real - roughly 4x for a workload that maps cleanly onto SIMD. Use `-fopt-info-vec-optimized` to confirm the compiler actually vectorized the loop; sometimes data alignment or aliasing concerns prevent it.
 
 ### Q2: `-O3` and floating-point reordering
 
-```cpp
+Here is a subtlety that trips people up: `-O3` by itself does **not** reorder floating-point operations. The dangerous flag is `-ffast-math`, which is bundled into `-Ofast`. The distinction matters because floating-point arithmetic is not associative - `(a + b) + c` and `a + (b + c)` can produce different results when the magnitudes differ by many orders of magnitude.
 
+```cpp
 #include <iostream>
 #include <iomanip>
 #include <cmath>
@@ -119,13 +126,15 @@ int main() {
 //   g++ -Ofast           -> enables -ffast-math
 //   g++ -O3 -ffast-math  -> allows FP reassociation
 // Use -fno-fast-math to disable, or -ffp-contract=off for specific control.
-
 ```
+
+If you ever need maximum performance on floating-point heavy code and you are considering `-ffast-math`, benchmark both with and without it and run your numerical validation suite. Some algorithms like Kahan summation are specifically designed to fight floating-point rounding loss - `-ffast-math` can silently break them.
 
 ### Q3: `-Oz` for minimum binary size
 
-```cpp
+`-Oz` is Clang's most aggressive size-reduction mode. The main lever it pulls is disabling inlining almost entirely - instead of duplicating a function's body at each call site, it emits a real call instruction. That saves code size at the cost of one extra function call per site. For IoT firmware or WebAssembly targets where every kilobyte matters, this trade-off is usually acceptable:
 
+```cpp
 #include <iostream>
 
 // At -Oz, this function will NOT be inlined (saves code size)
@@ -143,11 +152,11 @@ int main() {
 }
 // Expected output:
 // Sum: 338350
-
 ```
 
-```bash
+You can measure the size impact directly:
 
+```bash
 # Compare binary sizes:
 clang++ -O2 -o prog_O2 prog.cpp && ls -la prog_O2  # ~17KB
 clang++ -O3 -o prog_O3 prog.cpp && ls -la prog_O3  # ~18KB (larger: unrolled/inlined)
@@ -156,8 +165,9 @@ clang++ -Oz -o prog_Oz prog.cpp && ls -la prog_Oz  # ~15KB (aggressive: no inlin
 
 # Strip symbols for production:
 strip prog_Oz && ls -la prog_Oz  # ~10KB
-
 ```
+
+The summary for choosing an optimization level in practice:
 
 | Level | Binary Size | Performance | Use Case |
 | --- | --- | --- | --- |
@@ -173,6 +183,6 @@ strip prog_Oz && ls -la prog_Oz  # ~10KB
 - `-O2` is the **recommended default** for production code.
 - `-O3` can occasionally be **slower** than `-O2` due to cache pressure from code bloat.
 - `-Oz` is Clang-only; GCC uses `-Os` as the minimum-size option.
-- `-Ofast` = `-O3` + `-ffast-math` — dangerous for numeric code.
+- `-Ofast` = `-O3` + `-ffast-math` - dangerous for numeric code.
 - Always benchmark with your actual workload; micro-benchmarks can be misleading.
 - Use `-march=native` with `-O3` for maximum vectorization on your specific CPU.

@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Bloaty can drill down to individual **symbols** and **compilation units** to pinpoint template instantiation bloat, the #1 cause of large C++ binaries.
+Once you know your binary is large, the next question is: which symbols and which compilation units are responsible? Bloaty can drill all the way down to individual symbols and compilation units, and that level of detail is essential for tracking down the number-one cause of large C++ binaries: template instantiation bloat.
+
+The three most useful invocations for this kind of investigation are:
 
 ```bash
-
 # Show top symbols:
 bloaty -d symbols -n 20 ./myapp
 
@@ -20,8 +21,9 @@ bloaty -d compileunits -n 10 ./myapp
 
 # Two-level: symbols within compilation units:
 bloaty -d compileunits,symbols -n 10 ./myapp
-
 ```
+
+The two-level form is particularly revealing - it tells you not just what is large, but which `.cpp` file is responsible for generating it.
 
 ---
 
@@ -29,16 +31,15 @@ bloaty -d compileunits,symbols -n 10 ./myapp
 
 ### Q1: Identify which symbols consume the most space
 
+Run Bloaty with the `-d symbols` flag and ask for the top 15 results:
+
 ```bash
-
 bloaty -d symbols -n 15 ./myapp
-
 ```
 
-Typical output:
+You will typically see output like this:
 
 ```text
-
     FILE SIZE        VM SIZE
  --------------  --------------
   15.3%   180Ki  15.3%   180Ki   std::__cxx11::basic_string<char, ...>
@@ -46,19 +47,21 @@ Typical output:
    7.2%    85Ki   7.2%    85Ki   std::sort<__gnu_cxx::__normal_iterator<...>>
    5.1%    60Ki   5.1%    60Ki   nlohmann::json::parse(...)
    4.3%    51Ki   4.3%    51Ki   MyApp::processData()
-
 ```
 
-Key patterns to look for:
+Your own code (`MyApp::processData`) is usually near the bottom of this list. The real culprits are standard library and third-party template instantiations. There are three patterns to watch for:
 
-- **STL symbols** (string, vector, map): template instantiations for each type
-- **Third-party libraries**: JSON, logging, etc.
-- **Exception handling**: `__cxa_throw`, `.eh_frame`, `.gcc_except_table`
+- **STL symbols** (string, vector, map): each concrete type you use generates a full copy of the template body.
+- **Third-party libraries**: JSON parsers, logging frameworks, and similar header-heavy libraries can pull in surprising amounts of code.
+- **Exception handling**: `__cxa_throw`, `.eh_frame`, and `.gcc_except_table` can together add tens of kilobytes even when you rarely throw.
 
 ### Q2: Find and eliminate template instantiation bloat
 
-```cpp
+The reason template bloat is so common is subtle: every time you use a template function with a new type, the compiler generates a complete, independent copy of the entire function body. If that body is 50 lines long and you use it with `int`, `double`, `string`, and `Widget`, you get four full copies. The fix is to factor out the type-independent logic into a non-template implementation and keep only the tiny type-conversion wrapper as a template.
 
+Here is what that looks like:
+
+```cpp
 // BEFORE: Each type creates a full copy of the entire function
 // -> log<int>, log<double>, log<string>, log<Widget> = 4 copies!
 
@@ -66,7 +69,7 @@ Key patterns to look for:
 #include <string>
 #include <typeinfo>
 
-// BAD: full template — entire body duplicated per instantiation
+// BAD: full template - entire body duplicated per instantiation
 template<typename T>
 void log_value_bad(const std::string& label, const T& value) {
     std::cout << "[" << __FILE__ << ":" << __LINE__ << "] "
@@ -100,13 +103,11 @@ int main() {
 // count = 42
 // ratio = 3.140000
 // name = Alice
-
 ```
 
-Verify with Bloaty:
+You can confirm the improvement with Bloaty's diff mode. Before the refactor, you see three equally-sized template instantiations; after, you see one shared implementation and three tiny wrappers:
 
 ```bash
-
 # Before (full template):
 bloaty -d symbols ./before | grep log_value
 #   log_value<int>    2.1Ki
@@ -118,13 +119,17 @@ bloaty -d symbols ./after | grep log
 #   log_impl          2.1Ki  (shared)
 #   log_value<int>    0.1Ki  (tiny wrapper)
 #   log_value<double> 0.1Ki
-
 ```
+
+That is a significant reduction - and it scales up quickly when the template body is large or when there are many distinct instantiations.
 
 ### Q3: `std::function` vs template parameter binary size comparison
 
-```cpp
+Another common source of size growth is using a template parameter for every callable. Each distinct lambda type produces a separate instantiation of the entire function. `std::function` solves this by using type erasure - all callables go through one shared code path. The cost is a virtual-dispatch-like indirection at runtime.
 
+Here is a side-by-side comparison:
+
+```cpp
 #include <iostream>
 #include <functional>
 #include <vector>
@@ -161,13 +166,16 @@ int main() {
 // 11 12 13 14 15
 // 2 4 6 8 10
 // 11 12 13 14 15
-
 ```
+
+The trade-off is a classic size-vs-speed choice:
 
 | Approach | Code Size | Runtime Speed | Use When |
 | --- | --- | --- | --- |
 | `std::function` | Smaller (1 instantiation) | Slower (indirect call) | Binary size matters, many callers |
 | Template | Larger (N instantiations) | Faster (inlined) | Hot path, few distinct callers |
+
+The right answer depends on the context. For a function called from a hundred different places across a large codebase, `std::function` can be a significant win. For a hot inner loop with a single caller, a template is better.
 
 ---
 
