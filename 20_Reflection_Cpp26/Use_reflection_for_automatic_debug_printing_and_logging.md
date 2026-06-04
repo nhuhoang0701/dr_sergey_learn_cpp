@@ -10,10 +10,11 @@
 
 ### The Problem
 
-In C++, printing/logging structs for debugging requires manual boilerplate:
+One of the most tedious parts of C++ is writing `operator<<` overloads for structs just so you can print them during debugging. Every time you add a field you have to update the printer. Every time you rename a field you have to find and fix all the string literals. With reflection, all of that boilerplate disappears.
+
+Here is what the old way looks like:
 
 ```cpp
-
 struct Config {
     std::string host;
     int port;
@@ -26,15 +27,15 @@ std::ostream& operator<<(std::ostream& os, const Config& c) {
               << ", port=" << c.port
               << ", tls=" << c.tls << "}";
 }
-
 ```
 
 With reflection, this becomes automatic.
 
 ### Automatic `operator<<` with Reflection
 
-```cpp
+The `auto_print` function below works for any aggregate type. It uses `template for` to expand over the members at compile time, printing each one's name and value. You never write a single field name yourself.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -67,13 +68,15 @@ int main() {
     auto_print(std::cout, c);
     // Output: Config{host=localhost, port=8080, tls=1}
 }
-
 ```
+
+The `requires std::is_aggregate_v<T>` constraint is worth noting - it limits the function to aggregates (plain structs and arrays with no user-provided constructors), which are the types where `nonstatic_data_members_of` gives you a clean, predictable list of fields.
 
 ### Generic Debug Logger
 
-```cpp
+This version adds `std::format`-based value formatting and a `source_location`-aware macro so you can log any aggregate with its file and line number attached.
 
+```cpp
 #include <meta>
 #include <format>
 #include <source_location>
@@ -105,13 +108,15 @@ std::string to_debug_string(const T& obj) {
     std::cerr << "[DEBUG " << std::source_location::current().file_name() \
               << ":" << std::source_location::current().line() << "] " \
               << to_debug_string(obj) << "\n"
-
 ```
+
+The `if constexpr (std::is_aggregate_v<T>)` branch handles structs; the `else` branch handles primitive types and anything that has a `std::format` specialization. This makes `to_debug_string` usable from other templates even when the type is not a struct.
 
 ### Recursive Printing for Nested Structs
 
-```cpp
+When your structs contain other structs, a flat printer is not enough. This version recurses into nested aggregates and produces an indented, tree-shaped output.
 
+```cpp
 template<typename T>
 std::string deep_debug(const T& obj, int indent = 0) {
     std::string pad(indent * 2, ' ');
@@ -157,13 +162,15 @@ int main() {
     //   }
     // }
 }
-
 ```
+
+The recursion here is natural: when `deep_debug` hits the `address` member, `obj.[:m:]` gives it an `Address`, and it calls `deep_debug` again on that - which follows the aggregate branch and prints `city` and `zip` with one more level of indentation.
 
 ### Structured Logging with Key-Value Pairs
 
-```cpp
+For production logging systems that want structured data rather than a formatted string, you can extract a list of name/value pairs instead:
 
+```cpp
 template<typename T>
 auto to_log_map(const T& obj) {
     std::vector<std::pair<std::string, std::string>> entries;
@@ -182,8 +189,9 @@ auto to_log_map(const T& obj) {
 // Integration with structured logging systems:
 // auto kv = to_log_map(config);
 // logger.info("Server starting", kv);
-
 ```
+
+This pattern integrates naturally with logging frameworks that accept key-value data (think OpenTelemetry structured logs, or any JSON-oriented logger). You get structured field names from reflection, which means log queries and alerting rules that filter on field names will keep working correctly when you rename a struct field - because the logged key name changes automatically too.
 
 ---
 
@@ -192,7 +200,6 @@ auto to_log_map(const T& obj) {
 ### Q1: Write a generic `to_string` function using reflection
 
 ```cpp
-
 template<typename T>
 std::string auto_to_string(const T& obj) {
     if constexpr (std::is_aggregate_v<T>) {
@@ -209,23 +216,22 @@ std::string auto_to_string(const T& obj) {
         return std::format("{}", obj);
     }
 }
-
 ```
+
+This is the compact form of the pattern: for aggregates, iterate over members and format each as `name=value`; for everything else, fall back to `std::format`. The whole thing is generic and works on any type you hand it.
 
 ### Q2: How does `template for` differ from a regular `for` loop
 
-`template for` is a **compile-time expansion** loop (sometimes called "expansion statements"). Each iteration is instantiated separately, allowing:
+`template for` is a **compile-time expansion** loop (sometimes called "expansion statements"). Each iteration is instantiated separately by the compiler, which gives you two things a normal loop cannot provide:
 
-- Different types per iteration (each member may have a different type).
-- Compile-time access to reflection values.
-- No runtime overhead — the loop is fully unrolled at compile time.
+- Different types per iteration - each member may have a completely different type, and `template for` handles that naturally because each iteration is its own template instantiation.
+- Compile-time access to reflection values - the `constexpr auto m` loop variable is a compile-time constant in each iteration, which means you can splice it, use it in `if constexpr`, and pass it to `consteval` functions.
 
-A regular `for` loop iterates at runtime over a homogeneous container.
+A regular `for` loop iterates at runtime over a homogeneous container where every element has the same type. It cannot be used here because the member types differ from field to field.
 
 ### Q3: Generate an `operator==` automatically using reflection
 
 ```cpp
-
 template<typename T>
     requires std::is_aggregate_v<T>
 bool auto_equals(const T& a, const T& b) {
@@ -236,14 +242,15 @@ bool auto_equals(const T& a, const T& b) {
     }
     return equal;
 }
-
 ```
+
+This walks every field and short-circuits by accumulating into `equal`. The result is a correct, field-by-field equality comparison that stays automatically in sync with the struct - no manual `==` overload needed.
 
 ---
 
 ## Notes
 
 - Reflection-based debug printing eliminates hundreds of lines of boilerplate in real codebases.
-- The `template for` / expansion statement syntax may evolve — check the latest P2996 revision.
+- The `template for` / expansion statement syntax may evolve - check the latest P2996 revision.
 - For production logging, consider generating `std::format` specializations instead of `operator<<`.
 - Reflection-based printing integrates naturally with structured logging frameworks.

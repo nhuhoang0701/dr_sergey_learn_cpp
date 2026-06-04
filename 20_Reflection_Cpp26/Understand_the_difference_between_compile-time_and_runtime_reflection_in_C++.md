@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-C++ has two reflection mechanisms: **RTTI** (runtime, since C++98) and **static reflection** (compile-time, C++26). They serve different purposes.
+C++ actually has two different reflection mechanisms, and they work at completely different times and in completely different ways. **RTTI** (Runtime Type Information) has been in the language since C++98 - it stores type metadata in the binary and lets you query it at runtime. **Static reflection** is new in C++26 - it runs entirely during compilation and leaves nothing in the binary. Understanding when to reach for each one saves you from both unnecessary overhead and impossible-to-satisfy expectations.
 
 | Feature | RTTI (Runtime) | Static Reflection (Compile-time) |
 | --- | --- | --- |
@@ -27,8 +27,9 @@ C++ has two reflection mechanisms: **RTTI** (runtime, since C++98) and **static 
 
 ### Q1: Why C++26 reflection is purely compile-time with no runtime tables
 
-```cpp
+The fundamental reason static reflection has zero runtime overhead is that it is entirely a compiler feature. Every query you make with `std::meta` is evaluated during compilation - the answers become ordinary constants in your binary, exactly like the result of `sizeof` or a `constexpr` calculation.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -60,13 +61,15 @@ int main() {
     std::cout << name << " has " << count << " fields\n";
     // Output: Point has 2 fields
 }
-
 ```
+
+The `static_assert(sizeof(Point) == 2 * sizeof(int))` line makes the point concretely: `Point` does not grow because you reflected on it. RTTI adds a hidden vtable pointer to polymorphic types; static reflection adds nothing.
 
 ### Q2: Compare C++26 reflection with RTTI
 
-```cpp
+Here you can see the two approaches side by side working on different problems. RTTI shines when you have a pointer to a base class and need to figure out the actual derived type at runtime - that is a runtime polymorphism problem, and `dynamic_cast` is the right tool. Static reflection shines when you know the type at compile time and want to enumerate its members, generate code for it, or log it.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <typeinfo>
@@ -120,13 +123,15 @@ int main() {
     // RTTI: requires virtual, adds vtable overhead, runtime cost
     // Reflection: no virtual needed, zero overhead, compile-time only
 }
-
 ```
+
+Notice that `describe<Sensor>` works even though `Sensor` has no virtual functions and would not be usable with RTTI at all. Static reflection does not care about the inheritance hierarchy - it works on any type the compiler knows about.
 
 ### Q3: Bootstrap runtime dispatch from compile-time reflection data
 
-```cpp
+This is the pattern that unlocks the most power: use compile-time reflection to generate the data structures you need for runtime behavior. You do the structural analysis at compile time, and what lands in the binary is just a regular table or map - no reflection overhead at runtime.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -186,8 +191,9 @@ int main() {
               << " debug=" << cfg.debug << '\n';
     // Output: localhost:8080 debug=1
 }
-
 ```
+
+The `apply_from_map` example is particularly worth studying. Without reflection you would write a long chain of `if (key == "host") cfg.host = value; else if (key == "port") ...` for every field - and you would need to keep it in sync with the struct manually. With reflection, the compiler generates all of that for you from the struct definition itself. Add a field to `Config` and the parser handles it automatically.
 
 ---
 
@@ -195,6 +201,6 @@ int main() {
 
 - C++26 reflection **replaces** most RTTI use cases with zero-overhead alternatives.
 - RTTI is still needed for runtime polymorphic downcasting (`dynamic_cast`).
-- Static reflection works with `-fno-rtti` — no virtual functions required.
+- Static reflection works with `-fno-rtti` - no virtual functions required.
 - Use `template for` to bridge compile-time reflection to runtime data structures.
 - Compile-time reflection data can seed runtime dispatch tables, serializers, validators, etc.

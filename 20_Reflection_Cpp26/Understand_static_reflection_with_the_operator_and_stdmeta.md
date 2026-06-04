@@ -9,30 +9,34 @@
 
 ## Topic Overview
 
-C++26 introduces **static reflection** via the `^` (reflect) operator and the `std::meta` namespace. `^T` produces a value of type `std::meta::info` that represents entity `T` at compile time.
+C++26 introduces **static reflection** via the `^` (reflect) operator and the `std::meta` namespace. The key idea is simple: `^T` produces a value of type `std::meta::info` that represents the entity `T` at compile time. You can then pass that value to query functions in `std::meta` to ask questions about the entity - its name, its members, its type - all during compilation with zero runtime cost.
+
+Here is a quick reference for the key pieces:
 
 | Concept | Description |
 | --- | --- |
-| `^entity` | Reflect operator — turns any entity into a `meta::info` value |
+| `^entity` | Reflect operator - turns any entity into a `meta::info` value |
 | `std::meta::info` | Opaque compile-time type representing a reflected entity |
 | `identifier_of(info)` | Get the source name as `string_view` |
 | `type_of(info)` | Get the type of a reflected member |
 | `members_of(info)` | Get all members of a reflected class/struct |
-| `[:info:]` | Splice — convert back from reflection to code |
+| `[:info:]` | Splice - convert back from reflection to code |
+
+If you want a mental picture of the pipeline, here it is:
 
 ```cpp
-
-Reflection pipeline:
-
-  Source code entity  ───^entity───→  std::meta::info
-                                         │
-                                    query APIs
-                                    (name, type,
-                                     members...)
-                                         │
-  Generated code      ──[:info:]──────┘
-
+// Reflection pipeline:
+//
+//   Source code entity  ---^entity--->  std::meta::info
+//                                          |
+//                                     query APIs
+//                                     (name, type,
+//                                      members...)
+//                                          |
+//   Generated code      --[:info:]-------->
 ```
+
+The `^` operator takes you from code to a meta-value, and the splice operator `[::]` takes you back from a meta-value to code. Everything in between is compile-time querying.
 
 ---
 
@@ -40,8 +44,9 @@ Reflection pipeline:
 
 ### Q1: Use `^T` to obtain a reflection and query its name
 
-```cpp
+This example shows the most fundamental use: reflect several different kinds of entities and print their names. Notice that `^` works on types, built-ins, namespaces, and enums equally.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -77,13 +82,15 @@ int main() {
     std::cout << "Enum: " << std::meta::identifier_of(color_refl) << '\n';
     // Enum: Color
 }
-
 ```
+
+Every call here is a compile-time operation. By the time this program runs, all those names are already baked in as constants - the program is just printing them.
 
 ### Q2: Enumerate data members of a struct using `members_of`
 
-```cpp
+This is where reflection starts to get genuinely useful. The `template for` loop is a compile-time expansion - it unrolls once per member, even though each member may have a completely different type. Notice how the loop body uses both `type_of` and `identifier_of` to print a type-annotated field list for any struct you hand it.
 
+```cpp
 #include <meta>
 #include <iostream>
 
@@ -123,13 +130,15 @@ int main() {
     //   float y
     //   float z
 }
-
 ```
+
+The `print_members` function is completely generic - you did not write a single line specific to `Config` or `Vec3`. Reflection supplied all the struct-specific knowledge at compile time.
 
 ### Q3: Reflections are compile-time values, not runtime objects
 
-```cpp
+This example nails down the most important conceptual point: `std::meta::info` is a compile-time-only value. You cannot store it in a `std::vector` at runtime, and you cannot create one inside an ordinary (non-`consteval`) function that runs at runtime. The reason this trips people up is that `meta::info` looks like a normal type, but it only has meaning during compilation - it is more like a type in a template than a value you carry around at runtime.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <type_traits>
@@ -160,7 +169,7 @@ static_assert(member_count == 3);
 // std::meta::info runtime_var;  // ERROR: not a runtime type
 // std::vector<std::meta::info> v; // ERROR: cannot store in runtime container
 
-// 5. consteval function — MUST be evaluated at compile time:
+// 5. consteval function - MUST be evaluated at compile time:
 consteval std::size_t count_fields(std::meta::info t) {
     return std::meta::nonstatic_data_members_of(t).size();
 }
@@ -174,15 +183,16 @@ int main() {
     // sizeof(std::meta::info) is NOT meaningful at runtime.
     static_assert(std::is_trivially_copyable_v<std::meta::info>);
 }
-
 ```
+
+The `static_assert` calls and the `consteval` functions all run at compile time. By the time `main` executes, the answer `3` is already a known constant in the binary - no reflection machinery runs at runtime at all.
 
 ---
 
 ## Notes
 
 - `^` can reflect: types, namespaces, enums, variables, functions, templates.
-- `std::meta::info` is an opaque, literal type — only meaningful at compile time.
+- `std::meta::info` is an opaque, literal type - only meaningful at compile time.
 - All `std::meta::` query functions are `consteval`.
-- Reflections have zero runtime cost — they exist only during compilation.
+- Reflections have zero runtime cost - they exist only during compilation.
 - P2996R5 is the latest revision of the static reflection proposal.

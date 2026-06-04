@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-The splice operator `[:r:]` takes a `std::meta::info` value and injects it back into code as a type, value, or expression. It is the complement of the reflect operator `^`.
+The splice operator `[:r:]` takes a `std::meta::info` value and injects the entity it represents directly into code. It is the complement of the reflect operator `^`. If `^` takes you from code into the meta domain, `[::]` takes you back out from the meta domain into code - as a type, a value, or a member access depending on where you put it.
+
+Here is a reference for the different positions where you can use the splice:
 
 | Context | Splice form | Result |
 | --- | --- | --- |
@@ -25,8 +27,9 @@ The splice operator `[:r:]` takes a `std::meta::info` value and injects it back 
 
 ### Q1: Splice a reflected type into a type position
 
-```cpp
+The most fundamental use of `[::]` is recovering a type from a reflection. You write `using T = [:r:]` and the compiler substitutes the actual type wherever `T` appears - including inside template arguments for containers.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -63,13 +66,15 @@ int main() {
     std::cout << a << ", " << b << ", " << c << '\n';
     // Output: 42, 3.14, hello
 }
-
 ```
+
+Notice the `using FirstField = [:std::meta::type_of(members[0]):]` line - you can nest a query call directly inside the splice. This lets you programmatically extract the type of any member and use it as a first-class type alias.
 
 ### Q2: Splice a member reflection to access and modify fields
 
-```cpp
+Member splicing is where things get interesting for generic programming. `obj.[:m:]` is literally the same as writing `obj.fieldname` - the compiler substitutes the actual member name at compile time. You can read through it, write through it, take a reference to it - anything you could do with a normal member access.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -130,13 +135,15 @@ int main() {
     // level = 10
     // xp = 5432.5
 }
-
 ```
+
+The `set_field` function is worth pausing on. The `template for` loop expands at compile time, but the name comparison `identifier_of(m) == field_name` runs at runtime inside the expanded body. The `if constexpr` is needed because each member has a different type - without it the compiler would try to assign every type of value to every type of field, which would fail for incompatible pairs. This compile-time loop / runtime comparison combination is a common pattern when you need to bridge reflected structure to dynamic behavior.
 
 ### Q3: Generic code using reflected entities as first-class values
 
-```cpp
+Here are two utilities - `transform_fields` and `struct_equal` - that show what becomes possible when you treat member reflections as first-class values you can store in arrays and index into.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <tuple>
@@ -182,8 +189,9 @@ int main() {
     std::cout << struct_equal(a, b) << '\n';  // 1 (true)
     std::cout << struct_equal(a, c) << '\n';  // 0 (false)
 }
-
 ```
+
+The `struct_equal` function is especially satisfying: you get a correct field-by-field equality comparison for any aggregate type, with no `operator==` boilerplate, and it is fully type-safe. The reason this is better than a manual implementation is that it cannot go out of sync with the struct - if you add a field to `Vec3`, `struct_equal` automatically checks that field too.
 
 ---
 

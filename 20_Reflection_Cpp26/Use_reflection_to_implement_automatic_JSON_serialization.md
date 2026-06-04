@@ -9,18 +9,18 @@
 
 ## Topic Overview
 
-Reflection enables writing a single `to_json()` function that works for **any** aggregate type, handling nested structs recursively — with zero boilerplate per type.
+Reflection enables writing a single `to_json()` function that works for **any** aggregate type, handling nested structs recursively - with zero boilerplate per type.
 
 ```cpp
-
 struct Person {            to_json(person)
-  string name;       ─→    {"name": "Alice", "age": 30,
+  string name;       ->    {"name": "Alice", "age": 30,
   int age;                  "addr": {"city": "NYC", "zip": 10001}}
   Address addr;
 };
 // Zero per-type code needed!
-
 ```
+
+Before reflection, JSON serialization in C++ meant choosing between writing a `toJson()` method on every struct, registering each field with a macro like `NLOHMANN_DEFINE_TYPE_INTRUSIVE`, or maintaining a separate mapping file. All of those require you to touch the serialization layer every time you change a struct. With reflection, the serializer iterates the struct's fields at compile time - so adding a new field to `Person` automatically makes it appear in the JSON output, with no other changes needed.
 
 ---
 
@@ -28,8 +28,9 @@ struct Person {            to_json(person)
 
 ### Q1: Generic `serialize(T)` that emits JSON key/value pairs
 
-```cpp
+The function below uses `nonstatic_data_members_of` to get every field of `T`, then uses `identifier_of` for the JSON key name and `obj.[:m:]` to access the runtime value. The `constexpr if` chain handles each type category - string, bool, arithmetic, and nested struct. Notice the recursive call for nested structs: reflection naturally handles arbitrary depth.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -57,7 +58,7 @@ std::string to_json(const T& obj) {
     template for (constexpr auto m : members) {
         if (!first) oss << ", ";
         first = false;
-        oss << '"' << std::meta::identifier_of(m) << "": ";
+        oss << '"' << std::meta::identifier_of(m) << "\": ";
 
         using MType = [:std::meta::type_of(m):];
         if constexpr (std::is_same_v<MType, std::string>) {
@@ -86,13 +87,15 @@ int main() {
     std::cout << to_json(a) << '\n';
     // {"city": "London", "zip": 12345}
 }
-
 ```
+
+The recursion through `is_reflectable_struct` is what makes deep nesting work automatically. When `to_json` encounters `addr`, it checks that `Address` is a class that is not `std::string`, and calls `to_json` again on it. The compiler resolves this recursion at compile time, so there is no runtime overhead from the nesting.
 
 ### Q2: Handle nested structs recursively with `constexpr if`
 
-```cpp
+This version factors the type dispatch into a separate `to_json_value` helper, which makes the main `to_json` loop cleaner and makes it easier to extend later. The multi-level trip example shows three levels of nesting working transparently.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -126,7 +129,7 @@ std::string to_json(const T& obj) {
     template for (constexpr auto m : members) {
         if (!first) oss << ", ";
         first = false;
-        oss << '"' << std::meta::identifier_of(m) << "": "
+        oss << '"' << std::meta::identifier_of(m) << "\": "
             << to_json_value(obj.[:m:]);
     }
     oss << "}";
@@ -151,13 +154,15 @@ int main() {
     //  "to": {"name": "Berlin", "coords": {"lat": 52.520000, "lon": 13.405000}},
     //  "km": 1050}
 }
-
 ```
+
+The `requires { std::meta::nonstatic_data_members_of(^T); }` check in `to_json_value` is what decides whether to recurse - if the type has reflectable members, recurse into it; otherwise fall back to `"null"`. That single check handles arbitrarily deep struct nesting without any per-type registration.
 
 ### Q3: Reflection eliminates manual `REFLECT_FIELD` macros
 
-```cpp
+This comparison makes the before/after contrast concrete. The old macro approach required every field to be explicitly listed - which was easy to get wrong, painful to maintain, and opaque to IDEs and static analyzers.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -197,7 +202,7 @@ void serialize(const T& obj, std::ostream& os) {
     template for (constexpr auto m : members) {
         if (!first) os << ", ";
         first = false;
-        os << '"' << std::meta::identifier_of(m) << "": ";
+        os << '"' << std::meta::identifier_of(m) << "\": ";
         using MType = [:std::meta::type_of(m):];
         if constexpr (std::is_same_v<MType, std::string>)
             os << '"' << obj.[:m:] << '"';
@@ -218,15 +223,16 @@ int main() {
 
     // No macros. No registration. No boilerplate.
 }
-
 ```
+
+The comments in `main` capture the practical difference well. With the macro approach, adding a field to a struct meant hunting down every registration site across the codebase and updating it. With reflection, the struct definition *is* the registration - there is no separate step that can get out of sync.
 
 ---
 
 ## Notes
 
-- Use `constexpr if` for type dispatch (string, bool, arithmetic, nested struct).
-- Recursive `to_json` naturally handles arbitrarily deep nesting.
-- The generic serializer is ~20 lines and works for ALL aggregate types.
-- Replace `REFLECT_FIELD`, `BOOST_DESCRIBE`, `nlohmann::NLOHMANN_DEFINE_TYPE_INTRUSIVE`.
-- For production use, add array/vector support and null handling.
+- Use `constexpr if` for type dispatch to handle strings, bools, arithmetic, and nested structs correctly.
+- Recursive `to_json` naturally handles arbitrarily deep nesting without any extra per-type setup.
+- The generic serializer is around 20 lines and works for every aggregate type in your codebase.
+- This approach replaces `REFLECT_FIELD`, `BOOST_DESCRIBE`, and `nlohmann::NLOHMANN_DEFINE_TYPE_INTRUSIVE` with zero per-type code.
+- For production use, you will want to add array/vector support and null handling as extensions to the same pattern.

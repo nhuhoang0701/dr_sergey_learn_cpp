@@ -9,15 +9,17 @@
 
 ## Topic Overview
 
-C++26 static reflection centers on two operators: `^` (reflect) produces a `std::meta::info` value, and `[:r:]` (splice) converts that value back into code. Together they form a round-trip between source code and compile-time meta-values.
+C++26 static reflection centers on two operators that work as a pair. The `^` (reflect) operator takes a source-code entity and converts it into a `std::meta::info` value you can inspect at compile time. The `[:r:]` (splice) operator goes the other direction: it takes a `meta::info` value and injects it back into code as a type, an expression, or a member access. Together they form a complete round-trip between your source code and the compile-time meta domain.
+
+A useful way to picture it:
 
 ```cpp
-
-Source entity  ───^entity───→  std::meta::info  ───[:info:]───→  Code again
-     │                                                           │
-     int  ──────^int──────→  constexpr auto r  ───[:r:]──────→  int
-
+// Source entity  ---^entity--->  std::meta::info  ---[:info:]--->  Code again
+//      |                                                           |
+//      int  ------^int------->  constexpr auto r  ---[:r:]----->  int
 ```
+
+Here is a reference for the different ways you can use both operators:
 
 | Operator | Syntax | Produces |
 | --- | --- | --- |
@@ -33,8 +35,9 @@ Source entity  ───^entity───→  std::meta::info  ───[:info:]�
 
 ### Q1: The reflect-expression `^T` produces a `std::meta::info` value
 
-```cpp
+Here you can see `^` applied to a variety of different kinds of entities all at once: built-in types, user-defined types, enums, namespaces, and variables. The result in every case is a `meta::info` value that you can compare, pass to query functions, or store in a `constexpr` variable.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -64,13 +67,15 @@ int main() {
     constexpr auto members = std::meta::nonstatic_data_members_of(point_r);
     static_assert(members.size() == 2);  // x, y
 }
-
 ```
+
+The identity comparison `static_assert(int_r == ^int)` illustrates that two reflections of the same entity compare equal, regardless of when or where you wrote `^int`. This makes reflections safe to use as compile-time keys or cache values.
 
 ### Q2: Use `identifier_of(^T)` to retrieve a type's name
 
-```cpp
+One of the most practical immediate benefits of reflection is getting a reliable, portable, human-readable name for a type - no more `typeid(T).name()` returning mangled garbage. Here, `type_name<T>()` returns exactly the identifier as written in the source.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -105,13 +110,15 @@ int main() {
     std::cout << std::meta::display_string_of(^std::string) << '\n';
     // std::basic_string<char, ...> (implementation-defined)
 }
-
 ```
+
+Use `identifier_of` when you want the short, source-level name. Use `display_string_of` when you want a more complete representation, including template arguments - but keep in mind that the exact format of `display_string_of` is implementation-defined.
 
 ### Q3: The splice `[:r:]` materialises a reflected entity back into code
 
-```cpp
+This is the other half of the story. `[:r:]` takes a `meta::info` value and injects the entity it represents directly into whatever syntactic position you put it. You can use it as a type (in a `using` declaration or a template argument), as a member access on an object, or to write through a reflected member.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <vector>
@@ -160,8 +167,9 @@ int main() {
     s.[:reading_m:] = 99.9;
     std::cout << "Updated reading: " << s.reading << '\n';  // 99.9
 }
-
 ```
+
+The reason `s.[:m:]` works is that the splice expands to the actual member name at compile time - the line `auto& val = s.[:m:]` is literally equivalent to writing `auto& val = s.name` (or `.reading`, or `.unit_id`) once the compiler processes the `template for` expansion. No runtime indirection, no pointer arithmetic - just normal member access generated for you.
 
 ---
 
@@ -170,5 +178,5 @@ int main() {
 - `^` and `[::]` are inverses: `[:^T:]` gives back `T`.
 - `identifier_of` returns the source-level name exactly as written.
 - `display_string_of` returns a human-readable string (may include template args).
-- Both operators work entirely at compile time — no runtime overhead.
+- Both operators work entirely at compile time - no runtime overhead.
 - The splice operator can appear in type positions, expression positions, and template arguments.

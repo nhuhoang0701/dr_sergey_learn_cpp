@@ -9,21 +9,25 @@
 
 ## Topic Overview
 
-Using `enumerators_of`, you can automatically generate dispatch tables (arrays of function pointers or lambdas) indexed by enum value, eliminating hand-maintained `switch` statements.
+One of the most tedious maintenance burdens in C++ is keeping a `switch` statement in sync with its enum. Every time you add a new enumerator, you have to remember to update every `switch` that handles it. Miss one, and you get a silent runtime bug.
+
+C++26 reflection fixes this by letting you generate the dispatch logic automatically from the enum definition. Add a new enumerator, and all your reflection-based dispatch code updates itself at the next compile - no manual edits required.
+
+Here is how the approaches compare:
 
 | Approach | Maintenance | Performance |
 | --- | --- | --- |
 | Hand-written `switch` | Must update for every new enumerator | Compiler optimizes to jump table |
-| Reflection dispatch table | Automatic — zero maintenance | Identical — `std::array` lookup is O(1) |
+| Reflection dispatch table | Automatic - zero maintenance | Identical - `std::array` lookup is O(1) |
 | `std::map<Enum,func>` | Manual registration | O(log N) lookup |
 
-```cpp
+For a dense enum (values 0, 1, 2, ...), the reflection approach compiles down to a simple array lookup - which is exactly what a hand-written switch becomes after optimization:
 
+```cpp
 Dense enum:  enum Op { Add=0, Sub=1, Mul=2, Div=3 };
 
-dispatch_table[Op::Mul]  ─→  handlers[2]  ─→  multiply(a, b)
+dispatch_table[Op::Mul]  ->  handlers[2]  ->  multiply(a, b)
                              ^-- array index = enum value
-
 ```
 
 ---
@@ -32,8 +36,9 @@ dispatch_table[Op::Mul]  ─→  handlers[2]  ─→  multiply(a, b)
 
 ### Q1: Generate a `std::array` of function pointers indexed by enum value
 
-```cpp
+This builds a compile-time array of function pointers where each slot corresponds to one enumerator. The `template for` loop pairs each enumerator's integer value (via `[:e:]` cast) with a handler at the matching index, filling the array at compile time.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <array>
@@ -74,13 +79,15 @@ int main() {
     std::cout << "Mul: " << dispatch[static_cast<int>(Op::Mul)](a, b) << '\n'; // 30
     std::cout << "Div: " << dispatch[static_cast<int>(Op::Div)](a, b) << '\n'; // 3
 }
-
 ```
+
+The `constexpr auto dispatch = ...` line means the entire table - including populating all four slots - is computed at compile time. At runtime, `dispatch[static_cast<int>(Op::Mul)]` is just an array read followed by a call through the stored function pointer.
 
 ### Q2: Eliminate a hand-maintained switch by generating it from reflection
 
-```cpp
+This approach is slightly different: instead of a pre-built array, it generates an inline chain of equality tests via `template for`, which the compiler then optimizes into a jump table. The bonus is that if you add a new `Shape` enumerator and forget to handle it in `ShapeHandler`, the compiler forces you to fix it.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -118,16 +125,18 @@ int main() {
     double area = reflected_switch(s, ShapeHandler{});
     std::cout << "Area: " << area << '\n';  // Area: 6
 
-    // Adding a new Shape enumerator automatically includes it —
+    // Adding a new Shape enumerator automatically includes it -
     // the compiler forces you to handle it in ShapeHandler.
 }
-
 ```
+
+The `handler.template operator()<[:e:]>()` syntax looks intimidating but it just calls the handler's `operator()` with the current enumerator value as a template argument. Each `template for` iteration instantiates a new specialization, so the handler gets the exact compile-time enum value it needs for the `if constexpr` branches.
 
 ### Q3: Demonstrate that generated dispatch matches hand-written switch performance
 
-```cpp
+It is worth confirming that all this reflection machinery does not cost you anything at runtime. This example builds a name table using reflection and compares it side-by-side with a classic hand-written switch. At `-O2` they compile to essentially the same assembly.
 
+```cpp
 #include <meta>
 #include <array>
 #include <iostream>
@@ -177,15 +186,16 @@ int main() {
     //   color_name_table:  mov rax, [rdi*8 + color_names]
     // Both are O(1) with identical throughput.
 }
-
 ```
+
+The key insight from the assembly comments is that the switch and the array do the same thing at the hardware level - both are a single indexed load. The reflection version's advantage is not performance, it is that you cannot forget to update it when you add a new color.
 
 ---
 
 ## Notes
 
-- For dense enums (0, 1, 2, ...), array indexing is optimal.
-- For sparse enums, consider a `constexpr` sorted array with binary search.
-- The `template for` expansion generates the same code as a hand-written switch.
-- Adding a new enumerator automatically updates all reflection-based dispatch.
-- This pattern eliminates entire classes of bugs from forgotten switch cases.
+- For dense enums (contiguous values starting at 0), array indexing is optimal and produces code identical to a hand-written switch.
+- For sparse enums (values like 100, 404, 500), consider a `constexpr` sorted array of pairs with binary search instead of direct indexing.
+- The `template for` expansion generates the same control flow as a hand-written switch, and the compiler applies the same jump table optimization.
+- Adding a new enumerator automatically updates all reflection-based dispatch - this is the main maintenance win over hand-written code.
+- This pattern eliminates entire classes of bugs that come from forgotten switch cases in large enums.

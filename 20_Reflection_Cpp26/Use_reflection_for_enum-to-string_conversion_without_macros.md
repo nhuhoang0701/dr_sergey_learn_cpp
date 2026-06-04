@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`enumerators_of(^E)` returns all enumerators, and `identifier_of` gives their names. This replaces macros and external libraries for enum-to-string.
+Before C++26, getting the string name of an enum value meant either writing a switch statement by hand, reaching for a macro trick, or depending on a library like `magic_enum`. All three options have real drawbacks. C++26 reflection changes this completely: `enumerators_of(^E)` gives you every enumerator of the enum at compile time, and `identifier_of` turns each one into its source-code name as a `string_view`. A single generic function covers every enum you will ever write, with no macros and no external dependencies.
+
+Here is how the approaches compare:
 
 | Approach | LOC | Portable | Enum limits | Maintenance |
 | --- | --- | --- | --- | --- |
@@ -18,14 +20,17 @@
 | `magic_enum` | 0 | Limited | ~256 values | Zero |
 | **C++26 reflection** | **~5** | **Yes** | **None** | **Zero** |
 
+The real win over `magic_enum` is the "None" in the enum limits column. `magic_enum` works by scanning a numeric range and checking whether the compiler's `__PRETTY_FUNCTION__` string contains a valid identifier - which is clever, but breaks for sparse or large enums. Reflection asks the compiler for its actual symbol table, so there is no range to worry about.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Iterate enum values and names with `enumerators_of`
 
-```cpp
+This is the foundation everything else builds on. `enumerators_of` hands you a compile-time sequence of `std::meta::info` values, one per enumerator. The `template for` loop then expands over them - it is conceptually like a regular for loop, but each iteration is a separate compile-time step.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -60,13 +65,15 @@ int main() {
                   << static_cast<int>([:e:]) << '\n';
     }
 }
-
 ```
+
+Notice the `[:e:]` syntax - that is the "splice" operator, which takes a `std::meta::info` value and turns it back into the actual enumerator so you can compare or cast it. You will see this pattern throughout reflection code.
 
 ### Q2: `constexpr to_string()` without macros
 
-```cpp
+With the basic iteration in place, the generic `to_string` is just a loop that checks each enumerator against the runtime value. What makes this elegant is that the same five-line template works for every enum in your codebase.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -74,7 +81,7 @@ int main() {
 enum class Season { Spring, Summer, Autumn, Winter };
 enum class Priority { Low = 1, Medium = 5, High = 10, Critical = 100 };
 
-// Generic enum_to_string — works for ANY enum:
+// Generic enum_to_string - works for ANY enum:
 template <typename E>
 constexpr std::string_view to_string(E value) {
     template for (constexpr auto e : std::meta::enumerators_of(^E)) {
@@ -108,13 +115,15 @@ int main() {
     auto s = from_string<Priority>("Medium");
     if (s) std::cout << "Parsed: " << static_cast<int>(*s) << '\n'; // 5
 }
-
 ```
+
+The `static_assert` lines at the top of `main` are not just documentation - they prove the conversion works correctly at compile time, before the program even runs. That is a level of confidence you cannot get from a hand-written switch.
 
 ### Q3: Comparison with `magic_enum` library
 
-```cpp
+It is worth understanding exactly *why* `magic_enum` has range limits before you appreciate how reflection avoids them. This example walks through both approaches side by side.
 
+```cpp
 #include <meta>
 #include <iostream>
 
@@ -130,7 +139,7 @@ enum class Color { Red, Green, Blue, Alpha };
 //    enum class Big { X = 1000 }; // magic_enum CANNOT see this!
 // 2. Relies on compiler-specific __PRETTY_FUNCTION__ / __FUNCSIG__
 // 3. Increased compile time (instantiates for every value in range)
-// 4. Not standard C++ — external dependency
+// 4. Not standard C++ - external dependency
 // 5. Range must be customized per-enum for sparse/large enums
 
 // ===== C++26 reflection approach =====
@@ -143,9 +152,9 @@ constexpr std::string_view to_string(E value) {
 }
 
 // Advantages of reflection:
-// 1. No range limit — works for ALL enum values, any underlying type
-// 2. Standard C++ — no external library needed
-// 3. Faster compilation — iterates actual enumerators, not a range
+// 1. No range limit - works for ALL enum values, any underlying type
+// 2. Standard C++ - no external library needed
+// 3. Faster compilation - iterates actual enumerators, not a range
 // 4. Works with ALL compilers that support C++26
 // 5. Zero runtime overhead (compile-time only)
 
@@ -158,15 +167,16 @@ int main() {
     std::cout << to_string(Color::Green) << '\n';  // Green
     std::cout << to_string(BigEnum::Y) << '\n';    // Y
 }
-
 ```
+
+The `BigEnum` example is the clearest demonstration of the fundamental difference. `magic_enum` cannot see `X = 1'000'000` because it was never designed to scan that far. Reflection just asks the compiler "what enumerators does this type have?" and gets back exactly the right answer, regardless of the numeric values.
 
 ---
 
 ## Notes
 
-- `enumerators_of` returns all explicitly declared enumerators (no synthetic values).
-- Reflection-based conversion has no range limitations unlike `magic_enum`.
-- `template for` expansion generates optimal code — equivalent to a hand-written switch.
-- This is the canonical use case for C++26 reflection — often the first example shown.
-- Combine `to_string` + `from_string` for complete bidirectional enum/string conversion.
+- `enumerators_of` returns all explicitly declared enumerators and nothing else - no synthetic or implicit values sneak in.
+- Reflection-based conversion has no range limitations, unlike `magic_enum`, because it reads from the compiler's actual symbol table rather than probing a numeric range.
+- The `template for` expansion generates code equivalent to a hand-written switch statement, so there is no runtime overhead over writing it by hand.
+- This is the canonical first example for C++26 reflection - if someone asks "what is reflection good for?", this is usually the answer they get.
+- Pairing `to_string` with `from_string` gives you complete bidirectional conversion for logging, config parsing, and serialization.

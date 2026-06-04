@@ -9,14 +9,18 @@
 
 ## Topic Overview
 
-Reflection enables writing generic serialization that works for any aggregate type without macros or manual registration.
+Serialization is one of the most repeated pieces of boilerplate in any C++ codebase. Before reflection, every approach required you to either write the serializer by hand for each type, register the fields explicitly with a macro, or use an external code generator. Reflection makes all of that unnecessary - you write the serializer once and it works for every struct automatically.
+
+The table below shows just how much work reflection eliminates compared to older approaches:
 
 | Approach | LOC per type | Maintenance | Type safety |
 | --- | --- | --- | --- |
 | Hand-written `toJson()` | ~10-30 | Manual per field | Compile-time |
 | X-Macros | ~5 (macro) | Fragile | Limited |
 | `BOOST_DESCRIBE` | ~3 (registration) | Per-type registration | Good |
-| **Reflection** | **0** | **Zero — automatic** | **Full** |
+| **Reflection** | **0** | **Zero - automatic** | **Full** |
+
+The "0 LOC per type" row is the key. You define your struct once, and every reflection-based utility you write - JSON serializers, binary packers, debug printers - picks it up automatically.
 
 ---
 
@@ -24,8 +28,9 @@ Reflection enables writing generic serialization that works for any aggregate ty
 
 ### Q1: `consteval` JSON-like serializer for any aggregate
 
-```cpp
+Here is the fundamental pattern: iterate the members, check each member's type at compile time with `if constexpr`, and format the value appropriately. The recursive call at the end handles nested structs by applying the same function to the sub-object.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <string>
@@ -44,7 +49,7 @@ std::string to_json(const T& obj) {
         if (!first) oss << ", ";
         first = false;
 
-        oss << '"' << std::meta::identifier_of(m) << "": ";
+        oss << '"' << std::meta::identifier_of(m) << "\": ";
 
         using MType = [:std::meta::type_of(m):];
         if constexpr (std::is_same_v<MType, std::string>) {
@@ -74,13 +79,15 @@ int main() {
     std::cout << to_json(a) << '\n';
     // Output: {"city": "London", "zip": 12345}
 }
-
 ```
+
+The `using MType = [:std::meta::type_of(m):]` line is the key to the type dispatch. You reflect the member's type into a handle, splice it into a `using` declaration, and then use that type alias in `if constexpr` checks. The compiler evaluates each branch at compile time - only the matching branch ends up in the generated code for each member type.
 
 ### Q2: Binary serialization layout using `meta::offset_of` and `meta::size_of`
 
-```cpp
+For binary protocols and network serialization you often need to know the exact byte layout. Reflection gives you `offset_of` and `size_of` at compile time, so you can build a layout descriptor that is guaranteed to match the actual struct layout.
 
+```cpp
 #include <meta>
 #include <cstring>
 #include <vector>
@@ -154,13 +161,15 @@ int main() {
                   << " size=" << f.size << '\n';
     }
 }
-
 ```
+
+`LayoutInfo<T>::fields` is a `static constexpr` array built inside a lambda - the entire thing is evaluated at compile time and lives in read-only memory. The serialize/deserialize functions then use that pre-computed layout at runtime, but they are doing nothing more than `memcpy` to the right offsets.
 
 ### Q3: Reflection vs X-macros vs `BOOST_DESCRIBE`
 
-```cpp
+It is worth seeing the three approaches side by side to understand what reflection replaces and why. The comparison uses comments to show the old approaches because they do not interact cleanly with the new reflection-based `print_all_fields`.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -217,15 +226,16 @@ int main() {
     // Add a new field to Person -> print_all_fields automatically picks it up.
     // With X-macros or BOOST_DESCRIBE: must also update the macro/registration.
 }
-
 ```
+
+The practical difference shows up when you add a field. With X-macros you update both the struct definition and the macro list - and if you forget the macro list, nothing warns you. With `BOOST_DESCRIBE` you update the struct and the `BOOST_DESCRIBE_STRUCT` call. With reflection you update only the struct, and every utility that uses it automatically includes the new field.
 
 ---
 
 ## Notes
 
-- `meta::offset_of(m)` returns the byte offset of a member within its struct.
-- `meta::size_of(info)` returns the size in bytes of a reflected type.
-- Reflection serialization is inherently type-safe — type mismatches are compile errors.
-- For binary serialization, always consider endianness and alignment.
-- Nested struct serialization requires recursive `to_json` calls.
+- `meta::offset_of(m)` returns the byte offset of a member within its containing struct - the same value `offsetof` gives, but for any member via reflection.
+- `meta::size_of(info)` returns the size in bytes of a reflected type - equivalent to `sizeof` but applicable to a `meta::info` handle.
+- Reflection serialization is inherently type-safe - accessing a member through `obj.[:m:]` and splicing its type with `[:type_of(m):]` are both fully type-checked at compile time.
+- For binary serialization, always consider endianness and alignment - `memcpy` preserves the in-memory layout, which may not be portable across platforms with different byte orders.
+- Nested struct serialization works naturally by making the serializer template recursive - the same `to_json` or `serialize` function handles both top-level and nested structs.

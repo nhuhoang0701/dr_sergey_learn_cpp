@@ -9,7 +9,7 @@
 
 ## Topic Overview
 
-C++26 static reflection can reflect many entities, but not everything.
+C++26 static reflection can reflect many entities, but not everything. The rough mental model is: **if it has a name and a declaration that the compiler sees, it is probably reflectable**. Preprocessor macros are already gone before the compiler starts, so they are off limits. Local variables inside function bodies are also not reflectable in C++26. Everything at namespace or class scope - types, functions, enums, members - is fair game.
 
 | Reflectable | Not Reflectable |
 | --- | --- |
@@ -29,8 +29,9 @@ C++26 static reflection can reflect many entities, but not everything.
 
 ### Q1: What CAN be reflected in C++26
 
-```cpp
+This example covers the full range of entities you can successfully pass to `^`. It is worth running through all of them at least once mentally so you know where the language draws the lines.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -81,13 +82,15 @@ int main() {
 
     std::cout << "All reflections succeeded\n";
 }
-
 ```
+
+Everything at a named, declared scope works. Individual enumerators like `^Color::Red` are reflectable too, which is what lets you iterate through an enum's values by name - a feature that C++ programmers have wanted for decades.
 
 ### Q2: What CANNOT be reflected
 
-```cpp
+Here you see the boundaries. The most important ones to internalize are: macros are not C++ entities (they are text - the compiler never even sees them), local variables are not reflectable, and expression results are not named entities.
 
+```cpp
 #include <meta>
 #include <iostream>
 
@@ -125,13 +128,15 @@ int main() {
     std::cout << "Reflection has clear boundaries\n";
     std::cout << "Key rule: only named, declared entities are reflectable\n";
 }
-
 ```
+
+The workaround note at the bottom is worth keeping in mind: if you have a value that you currently express as a macro because you want to use it as a constant, replacing it with a `constexpr` variable at namespace scope makes it reflectable. That is one more reason to prefer `constexpr` over `#define` for numeric constants.
 
 ### Q3: Compile-time reflection vs runtime RTTI
 
-```cpp
+This example puts both mechanisms in the same file so you can compare them directly. The goal is to make the trade-offs concrete, not abstract.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <typeinfo>
@@ -182,15 +187,16 @@ int main() {
 
     delete ptr;
 }
-
 ```
+
+The key takeaway from this comparison is that the two features solve different problems. RTTI answers "what type is this object right now, at runtime?" - which requires virtual dispatch and a vtable. Static reflection answers "what does this type look like structurally?" - which the compiler can answer at compile time from the class definition alone. You will often want both in the same program.
 
 ---
 
 ## Notes
 
 - Rule of thumb: if it has a **name** and a **declaration**, it's probably reflectable.
-- Preprocessor macros are replaced before compilation — the compiler never sees them.
+- Preprocessor macros are replaced before compilation - the compiler never sees them.
 - Local variables may become reflectable in future C++ revisions.
 - RTTI and static reflection are complementary, not competing features.
 - Use reflection for generic code generation; use RTTI for runtime polymorphic dispatch.

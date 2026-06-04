@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-Automatic enum-to-string is the quintessential reflection use case. With `enumerators_of` and `identifier_of`, a single generic function replaces all manual switch statements.
+Automatic enum-to-string is the quintessential reflection use case - the one example that shows up in almost every C++26 reflection talk. Before reflection, every enum needed its own switch statement, and every time you added a new enumerator you had to remember to update that switch. Miss one and you get `"<unknown>"` at runtime with no compile-time warning. With `enumerators_of` and `identifier_of`, a single generic function replaces all of those switch statements permanently.
+
+Here is the before/after at a glance:
 
 ```cpp
-
 Before reflection:         After reflection:
 
 switch(color) {            template for (auto e : enumerators_of(^E))
@@ -21,7 +22,6 @@ switch(color) {            template for (auto e : enumerators_of(^E))
   case Blue:  return "Blue";
   // Must update for every new color!
 }                          // Automatically handles ALL enumerators
-
 ```
 
 ---
@@ -30,8 +30,9 @@ switch(color) {            template for (auto e : enumerators_of(^E))
 
 ### Q1: Iterate all enumerators with `enumerators_of(^MyEnum)`
 
-```cpp
+This example shows the basic reflection loop over an enum. `enumerators_of` returns the compile-time list, and the `template for` loop runs once per enumerator. Each `e` is a `std::meta::info` value - you call `identifier_of(e)` to get the name as a `string_view`, and `[:e:]` to splice it back into the actual enumerator value.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -65,13 +66,15 @@ int main() {
     static_assert(first == "Apple");
     static_assert(last == "Elderberry");
 }
-
 ```
+
+Notice that `enumerators.size()` is available at compile time, and you can call `front()` and `back()` on it too. The whole collection behaves like a compile-time range, which means you can do a lot of useful checks with `static_assert` before the program even runs.
 
 ### Q2: Generic `to_string()` without macros
 
-```cpp
+Once you understand the basic loop, the `to_string` function is straightforward: iterate the enumerators, check if the current enumerator matches the runtime value, and return the name if it does. The same pattern also works in reverse for `parse_enum`.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -114,13 +117,15 @@ int main() {
     // - Old way: update switch statement (easy to forget)
     // - New way: NOTHING. to_string() handles it automatically.
 }
-
 ```
+
+The comment at the bottom captures the real value. Adding a new `Panic` level to `LogLevel` is a one-line change to the enum definition - `to_string` picks it up automatically because it does not have a hardcoded list of values. There is no switch statement to forget to update.
 
 ### Q3: Compare reflection vs `magic_enum` library
 
-```cpp
+It is worth understanding why `magic_enum` has limits so you can appreciate how reflection sidesteps them. `magic_enum` works by exploiting the format of `__PRETTY_FUNCTION__` or `__FUNCSIG__` - it instantiates a template for each integer in a range (default -128 to 127) and checks whether the resulting string contains a valid identifier name. That trick is clever, but it means the library literally cannot see enumerators with values outside that range without per-enum configuration. Reflection just asks the compiler for the real list.
 
+```cpp
 #include <meta>
 #include <iostream>
 // #include <magic_enum.hpp>  // for comparison
@@ -169,15 +174,16 @@ int main() {
     // magic_enum: undefined behavior or empty string
     // reflection: "B" (correct)
 }
-
 ```
+
+The `LargeEnum` example is the clearest stress test. A value of `2'000'000'000'000` is not just outside the default magic_enum range - it is so far outside that no reasonable range configuration would help. Reflection handles it trivially because it was never scanning a range in the first place.
 
 ---
 
 ## Notes
 
-- This file focuses on the practical implementation; the file on `enum-to-string without macros` covers the `magic_enum` comparison in more depth.
-- `to_string` + `parse_enum` together provide complete bidirectional conversion.
-- The reflection approach compiles faster than `magic_enum` for large enums.
-- No external dependencies required — pure standard C++26.
-- Both scoped (`enum class`) and unscoped (`enum`) enums are supported.
+- This file focuses on the practical implementation; the companion file on enum-to-string without macros covers the `magic_enum` comparison in more depth.
+- `to_string` and `parse_enum` together provide complete bidirectional conversion, which is useful for logging, config files, and serialization.
+- The reflection approach compiles faster than `magic_enum` for large enums because it iterates the actual enumerator list rather than instantiating hundreds of templates across a numeric range.
+- No external dependencies are required - this is pure standard C++26.
+- Both scoped (`enum class`) and unscoped (`enum`) enums are fully supported.

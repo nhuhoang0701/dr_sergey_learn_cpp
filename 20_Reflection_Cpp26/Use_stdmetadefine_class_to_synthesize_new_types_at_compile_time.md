@@ -9,19 +9,19 @@
 
 ## Topic Overview
 
-`std::meta::define_class` creates entirely new types at compile time from a compile-time description. This is the most powerful reflection feature — it generates types that don't exist in source code.
+`std::meta::define_class` creates entirely new types at compile time from a compile-time description. This is the most powerful reflection feature - it generates types that do not exist anywhere in your source code, determined entirely by compile-time logic.
 
 ```cpp
-
 Compile-time description             Generated type
 
-fields = [{"x", ^int},        ─→    struct Generated {
+fields = [{"x", ^int},        ->    struct Generated {
           {"y", ^int},                   int x;
           {"name", ^string}]             int y;
                                          string name;
 define_class(^S, fields)              };
-
 ```
+
+This is a fundamentally different capability from everything else in C++. Templates let you select from types that already exist. `constexpr` computation lets you compute values at compile time. `define_class` lets you create entirely new types at compile time - types whose fields are determined by logic, not by anything written in your source. The most direct use cases are ORMs (where a database schema drives the C++ type), protocol buffer generation (where a protocol spec drives the packet layout), and configuration structs (where the fields come from an external source of truth).
 
 ---
 
@@ -29,8 +29,9 @@ define_class(^S, fields)              };
 
 ### Q1: Generate a struct with fields from a compile-time description
 
-```cpp
+The `make_point_type` function below is a `consteval` function - it runs entirely at compile time - and its job is to build the description of a new type. `data_member_spec` describes one field, and `define_class` assembles them into a real C++ struct. The `using Point3D = [:make_point_type():]` line then splices the resulting type into the normal type system so you can use it just like any other struct.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -67,13 +68,15 @@ int main() {
     constexpr auto members = std::meta::nonstatic_data_members_of(^Point3D);
     static_assert(members.size() == 3);
 }
-
 ```
+
+Once the type is created, it is a fully ordinary C++ struct. You can create instances of it, access its fields by name, take `sizeof` it, and even reflect back over it with `nonstatic_data_members_of`. The compile-time origin does not impose any restrictions on how you use it at runtime.
 
 ### Q2: Generate a POD layout struct from a protocol specification
 
-```cpp
+This example is closer to a real use case: a network protocol is described as a compile-time list of field names and types, and `make_packet_type` turns that description into a concrete struct. The resulting `Packet` type has exactly the fields the spec calls for, with the correct types and names.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <cstdint>
@@ -127,13 +130,15 @@ int main() {
                   << pkt.[:m:] << '\n';
     }
 }
-
 ```
+
+The nice part here is that you can then use `nonstatic_data_members_of` on the generated type in the same loop that prints all the fields. The synthesized type is fully reflectable, so all the generic tools you have built with reflection work on it just as well as on hand-written structs.
 
 ### Q3: `define_class` vs `constexpr` class generation
 
-```cpp
+This example is important for understanding exactly what `define_class` adds that did not exist before. The reason this trips people up is that C++ already had `constexpr` computation and template metaprogramming, so it is not immediately obvious what was missing. The key distinction is the difference between computing *values* at compile time and creating *types* at compile time.
 
+```cpp
 #include <meta>
 #include <iostream>
 
@@ -188,16 +193,17 @@ int main() {
     // The struct layout was computed, not written:
     static_assert(std::meta::nonstatic_data_members_of(^IntStrPair).size() == 2);
 }
-
 ```
+
+Think of it this way: before `define_class`, compile-time programming could only influence what happened to existing types. With `define_class`, it can *create* types. That gap is what opens up the ORM, protocol buffer, and config-struct use cases - because in those scenarios, you do not know the types ahead of time. The types should come from the schema or spec, not from what a programmer wrote on a particular day.
 
 ---
 
 ## Notes
 
-- `define_class` takes an incomplete class reflection and a vector of `data_member_spec`.
-- `data_member_spec(type_info, {.name = "field_name"})` describes one field.
-- The generated type is a real C++ type — you can use it anywhere.
-- Use cases: ORM mapping, protocol buffer generation, configuration structs.
-- This is the most advanced P2996 feature — some compilers may not support it initially.
-- `define_class` cannot add member functions — only data members.
+- `define_class` takes a reflection of an incomplete class and a vector of `data_member_spec` values, one per field you want to add.
+- `data_member_spec(type_info, {.name = "field_name"})` describes a single data member with the given type and name.
+- The generated type is a fully real C++ type - you can use it anywhere: local variables, function parameters, containers, even further reflection.
+- Primary use cases are ORM mapping (database schema drives the C++ struct), protocol buffer generation (wire format spec drives the packet type), and configuration structs (external source of truth drives the fields).
+- This is the most advanced P2996 feature and some compilers may not support it in their initial C++26 releases.
+- `define_class` can only add data members to the generated type - you cannot inject member functions through it.

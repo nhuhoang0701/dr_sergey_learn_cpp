@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-The `^` (caret / reflect) operator is the entry point to C++26 static reflection. It converts compile-time entities into values of type `std::meta::info`.
+The `^` (caret / reflect) operator is the entry point to C++26 static reflection. Every time you write `^something`, the compiler produces a value of type `std::meta::info` - an opaque, compile-time handle that represents the entity you reflected. You can then pass that handle to the query functions in `std::meta` to learn everything about the entity at compile time.
+
+Here is what you can reflect with `^`:
 
 | Operand | Example | Reflects |
 | --- | --- | --- |
@@ -26,8 +28,9 @@ The `^` (caret / reflect) operator is the entry point to C++26 static reflection
 
 ### Q1: Use `^int` to obtain a `std::meta::info` value
 
-```cpp
+Here is the simplest possible introduction to the reflect operator. You write `^T` where `T` is any named entity, and you get a `meta::info` value back. You can then ask that value for a human-readable name using `display_string_of` or `identifier_of`.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -53,22 +56,24 @@ int main() {
     std::cout << std::meta::display_string_of(vec_info) << '\n';
     // std::vector
 }
-
 ```
+
+Notice that every one of these queries is a compile-time constant. There is nothing happening at runtime here - by the time `main` runs, the compiler already resolved all those names.
 
 ### Q2: Difference between a reflection (`meta::info`) and a type
 
-```cpp
+This is the distinction that trips people up most often. A reflection is not a type - it is a compile-time value that *describes* a type. The difference matters because they live in completely different syntactic positions.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <type_traits>
 
 // A reflection is NOT a type. It's a compile-time VALUE.
 //
-//   int            → a type (used in declarations, sizeof, etc.)
-//   ^int           → a meta::info value (used in consteval queries)
-//   [:^int:]       → spliced back into a type
+//   int            -> a type (used in declarations, sizeof, etc.)
+//   ^int           -> a meta::info value (used in consteval queries)
+//   [:^int:]       -> spliced back into a type
 
 int main() {
     // ^int is a VALUE, not a type:
@@ -96,13 +101,15 @@ int main() {
     constexpr auto b = ^int;
     static_assert(a == b);  // OK, constexpr comparison
 }
-
 ```
+
+The round trip `^int` -> `meta::info` -> `[:r:]` -> `int` is the key. The reflect operator takes you into the reflection domain; the splice operator `[::]` brings you back out. You will see this pattern constantly in C++26 reflection code.
 
 ### Q3: Reflections as constant expressions passed to `consteval` functions
 
-```cpp
+Once you can reflect an entity, you can write `consteval` functions that accept `meta::info` and answer compile-time questions about it. This is the foundation for all the interesting compile-time metaprogramming that reflection enables.
 
+```cpp
 #include <meta>
 #include <iostream>
 
@@ -147,8 +154,9 @@ int main() {
         std::cout << "Config has debug field\n";
     }
 }
-
 ```
+
+The `static_assert` calls at namespace scope verify everything purely at compile time. The `if constexpr` inside `main` is another natural fit - reflection gives you a genuine compile-time boolean, and `if constexpr` consumes it without generating dead code for the branch that does not apply.
 
 ---
 

@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-Reflection can auto-generate `operator==`, `operator<=>`, and `std::hash` by iterating all data members, eliminating boilerplate.
+Every time you add a new field to a struct, you have a maintenance tax: update `operator==`, update `operator<=>`, update the `std::hash` specialization. Miss one and you have a silent bug where two objects compare equal even though they differ on the new field. Reflection eliminates that tax entirely. By iterating over all data members at compile time with `nonstatic_data_members_of`, a single generic function can handle equality, ordering, and hashing for any aggregate, and it automatically picks up new fields the moment you add them.
+
+Here is what this means for the boilerplate count:
 
 | Generated | Traditional LOC | Reflection LOC | Maintenance |
 | --- | --- | --- | --- |
@@ -23,13 +25,14 @@ Reflection can auto-generate `operator==`, `operator<=>`, and `std::hash` by ite
 
 ### Q1: Generic `operator==` that compares all members field-by-field
 
-```cpp
+The `reflected_equal` function below walks every non-static data member of type `T` and compares the corresponding fields in `a` and `b`. The key ingredient is `obj.[:m:]` - that splice expression takes the compile-time member description `m` and turns it into a real member access at runtime.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
 
-// Generic equality — works for ANY aggregate:
+// Generic equality - works for ANY aggregate:
 template <typename T>
 bool reflected_equal(const T& a, const T& b) {
     constexpr auto members = std::meta::nonstatic_data_members_of(^T);
@@ -62,13 +65,15 @@ int main() {
     Color red{255, 0, 0, 255}, also_red{255, 0, 0, 255};
     std::cout << (red == also_red) << '\n';  // 1 (uses operator==)
 }
-
 ```
+
+The `Color` struct shows the usual pattern for injecting a reflected operator: put a hidden friend `operator==` that delegates to the generic helper. This way `Color` gets a proper `==` operator that participates in normal overload resolution, and it automatically covers any future fields you add.
 
 ### Q2: Generic `std::hash<T>` for any aggregate via reflection
 
-```cpp
+Getting a type into an `unordered_set` or `unordered_map` requires both `operator==` and a hash function. Writing a correct `std::hash` specialization by hand - combining each field's hash without introducing bias - is tedious and error-prone. The `ReflectedHash` template below does it generically using the same member iteration pattern.
 
+```cpp
 #include <meta>
 #include <functional>
 #include <iostream>
@@ -123,13 +128,15 @@ int main() {
     std::cout << (h({1,2}) == h({1,2})) << '\n'; // 1 (same input = same hash)
     std::cout << (h({1,2}) == h({2,1})) << '\n'; // 0 (usually different)
 }
-
 ```
+
+The `hash_combine` formula using `0x9e3779b9` is the golden ratio hash from Boost - it is a well-tested way to mix hash values without too many collisions, and it is fine to reuse in your own code.
 
 ### Q3: Compile-time cost: reflection-generated vs handwritten
 
-```cpp
+A common concern when using reflection is whether the generated code is as fast as hand-written code, and whether the compile time overhead is acceptable. This example compares both directly.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <compare>
@@ -182,15 +189,16 @@ int main() {
     // (compiler must resolve meta queries), but usually <1% of
     // total build time. Pays off when you have 50+ types.
 }
-
 ```
+
+After instantiation, `refl_equal<Vec3>` and `manual_equal` produce identical machine code. The `template for` expansion happens entirely at compile time - the optimizer sees the same field comparisons either way. The compile-time cost of the meta queries is real but small, and it pays for itself quickly once you have more than a handful of types to cover.
 
 ---
 
 ## Notes
 
-- `template for` expansion generates code identical to hand-written field-by-field operations.
+- `template for` expansion generates code identical to hand-written field-by-field operations, so there is no runtime cost over doing it manually.
 - Runtime performance of reflection-generated code is the same as manual code after optimization.
-- Compile-time cost is slightly higher but negligible for most projects.
-- C++20 `operator<=>` with `= default` handles simple cases; reflection handles complex custom logic.
-- Hash combine formula (0x9e3779b9) is the golden ratio hash from Boost.
+- Compile-time cost is slightly higher than manual code, but negligible for most projects and well worth it once you have many types.
+- C++20 `operator<=>` with `= default` handles simple cases well; use reflection when you need custom logic, filtering, or when you want a single generic helper to cover many types at once.
+- The hash combine formula `0x9e3779b9` is the golden ratio hash from Boost and is a reliable choice for mixing field hashes.

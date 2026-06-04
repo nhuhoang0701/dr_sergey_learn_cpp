@@ -9,29 +9,31 @@
 
 ## Topic Overview
 
-C++26 reflection allows iterating over enum values at compile time using `std::meta::enumerators_of`. Combined with `identifier_of` and splicing, you can build enum-to-string and string-to-enum conversions without macros.
+C++26 reflection lets you ask the compiler "what enumerators does this enum have?" at compile time using `std::meta::enumerators_of`. Combined with `identifier_of` (to get the name as a string) and splicing (to get the actual value), you can build enum-to-string and string-to-enum conversions that work for any enum type - no macros, no X-macros, no hand-written switch statements.
+
+The key APIs are worth understanding together, since they form a pipeline: reflect the enum, walk its enumerators, then either splice a value back out or read a name:
 
 | API | Purpose |
 | --- | --- |
-| `^MyEnum` | Reflect the enum type |
+| `^MyEnum` | Reflect the enum type into a `meta::info` handle |
 | `enumerators_of(^E)` | Get a `vector<info>` of all enumerators |
 | `identifier_of(e)` | Get enumerator name as `string_view` |
 | `[:e:]` | Splice back to a value |
-| `value_of<E>(e)` | Get the underlying value |
+| `value_of<E>(e)` | Get the underlying integer value |
+
+To make the flow concrete, here is the pipeline in diagram form - you reflect a type into a handle, enumerate its enumerators, then convert each one either to its name string or back to the value:
 
 ```cpp
-
 Reflection flow:
 
   enum Color { Red, Green, Blue };
 
-  ^Color ─→ meta::info (reflection of Color)
-    │
-  enumerators_of(^Color) ─→ [info(Red), info(Green), info(Blue)]
-    │
-  identifier_of(info(Red)) ─→ "Red"
-  [:info(Red):] ─→ Color::Red (value)
-
+  ^Color -> meta::info (reflection of Color)
+    |
+  enumerators_of(^Color) -> [info(Red), info(Green), info(Blue)]
+    |
+  identifier_of(info(Red)) -> "Red"
+  [:info(Red):] -> Color::Red (value)
 ```
 
 ---
@@ -40,8 +42,9 @@ Reflection flow:
 
 ### Q1: Use `enumerators_of` to list all enumerator values
 
-```cpp
+The goal here is simple: print every enumerator's name and integer value at runtime by doing all the introspection at compile time. Notice the `template for` loop - this is the C++26 expansion statement that lets you iterate a compile-time sequence, unlike a regular `for` which requires a runtime range.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -69,13 +72,15 @@ int main() {
 //   Red = 1
 //   Green = 2
 //   Blue = 4
-
 ```
+
+Each iteration gives you a compile-time `meta::info` handle for one enumerator. You then call `identifier_of` to read its source name and `[:e:]` to splice it back into an actual `Color` value.
 
 ### Q2: Type-safe `enum_to_string()` without macros
 
-```cpp
+Before reflection, converting an enum to a string meant either a giant hand-written switch or a brittle macro expansion. With reflection you write the function once and it works for every enum type automatically - the compiler walks the enumerators for you.
 
+```cpp
 #include <meta>
 #include <string_view>
 #include <stdexcept>
@@ -109,13 +114,15 @@ int main() {
     // OLD: X-macro or manual switch with 20+ cases
     // NEW: 5 lines of generic code, works for ALL enums
 }
-
 ```
+
+The `static_assert` lines at the bottom are not just a test - they prove this all runs at compile time. You get both compile-time verified results and a runtime-usable function from the same code.
 
 ### Q3: Compile-time `string_to_enum()` lookup table
 
-```cpp
+Going the other direction (string to enum) is equally clean. The first approach below does a linear scan - fine for small enums. The second builds a sorted array at compile time so you can binary-search it at runtime, which matters when you're parsing many strings in a loop.
 
+```cpp
 #include <meta>
 #include <string_view>
 #include <optional>
@@ -170,15 +177,16 @@ int main() {
 // Output:
 // Parsed: Warning
 // Found: 3
-
 ```
+
+The sorted table is built entirely at compile time - `constexpr auto log_level_table = ...` means the array and the sort both happen before your program runs. At runtime you get a read-only, pre-sorted array with O(log N) lookup and no heap allocation.
 
 ---
 
 ## Notes
 
-- `enumerators_of` works on both scoped (`enum class`) and unscoped (`enum`) enums.
-- `template for` is the expansion statement for iterating compile-time ranges.
-- All reflection happens at compile time — zero runtime overhead for the lookup tables.
-- This replaces macro-heavy solutions like `BETTER_ENUMS`, `magic_enum`, and X-macros.
-- `identifier_of` returns the source name exactly as written (case-sensitive).
+- `enumerators_of` works on both scoped (`enum class`) and unscoped (`enum`) enums - you do not need to change your enum definition.
+- `template for` is the C++26 expansion statement for iterating compile-time ranges; it is different from a regular `for` loop because the body is instantiated separately for each element.
+- All reflection happens at compile time - the lookup tables and name strings are baked in with zero runtime overhead.
+- This replaces macro-heavy solutions like `BETTER_ENUMS`, `magic_enum`, and X-macros with a language-level mechanism that needs no external library.
+- `identifier_of` returns the source name exactly as written (case-sensitive), so `"NotFound"` will not match `"notFound"`.

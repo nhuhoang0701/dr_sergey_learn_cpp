@@ -1,6 +1,6 @@
 # Reflection (C++26)
 
-Compile-time reflection: meta-objects, type introspection, and code generation facilities.
+Compile-time reflection is one of the most transformative additions in C++26. It lets you ask the compiler about types, structs, and enums at compile time - and then act on the answers to generate code automatically. No more macros, no more external code generators, no more keeping hand-written schema definitions in sync with your data structures.
 
 **Topics:** 22
 
@@ -31,13 +31,13 @@ Compile-time reflection: meta-objects, type introspection, and code generation f
 
 ## Notes
 
-- C++26 static reflection (P2996) provides compile-time introspection of types and declarations
-- ^^T (the reflection operator) produces a meta-object representing type T
-- Splicing ([:refl:]) converts a meta-object back into code — the inverse of reflection
-- Reflection enables automatic serialization, ORM, and enum-to-string without macros
-- std::meta::members_of enumerates class members at compile time
-- Template-for loops iterate over reflected members — replacing recursive metaprogramming
-- Reflection works within consteval functions — all introspection happens at compile time
-- Annotations (proposed) may allow attaching metadata to declarations for reflection consumption
-- Reflection obsoletes many uses of macros, X-macros, and code generation tools
-- Library support (std::meta namespace) provides building blocks for reflection algorithms
+- C++26 static reflection (P2996) provides compile-time introspection of types and declarations - the compiler becomes queryable at build time.
+- `^^T` (the reflection operator) produces a `meta::info` object representing type `T` - think of it as a compile-time handle to a type.
+- Splicing (`[:refl:]`) converts a `meta::info` handle back into code - it is the inverse of reflection, bridging the meta world and the code world.
+- Reflection enables automatic serialization, ORM, and enum-to-string without any macros or manual registration.
+- `std::meta::members_of` enumerates class members at compile time, giving you the struct's own field list to iterate.
+- `template for` loops iterate over reflected members, replacing old-style recursive template metaprogramming with straightforward iteration.
+- All reflection happens within `consteval` functions - introspection is a compile-time-only activity with zero runtime overhead.
+- Annotations (proposed alongside P2996) may allow attaching metadata to declarations for reflection consumption in a future standard.
+- Reflection makes macros, X-macros, and external code generation tools largely obsolete for structural introspection tasks.
+- The `std::meta` namespace provides the building blocks - `identifier_of`, `type_of`, `offset_of`, `size_of`, `enumerators_of`, and more.

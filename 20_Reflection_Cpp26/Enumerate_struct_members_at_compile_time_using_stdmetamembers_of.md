@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`std::meta::members_of` and related queries provide compile-time introspection of struct members, including names and types.
+`std::meta::members_of` and its companion `nonstatic_data_members_of` are the workhorses of struct introspection in C++26 reflection. They give you a compile-time sequence of member handles that you can iterate, inspect by name and type, and splice back into code to access the actual field values on real objects.
+
+These are the queries you will reach for most often when writing generic struct utilities:
 
 | Query | Returns |
 | --- | --- |
@@ -17,7 +19,7 @@
 | `nonstatic_data_members_of(^S)` | Only instance data members |
 | `identifier_of(m)` | Member name as `string_view` |
 | `type_of(m)` | Member type as `meta::info` |
-| `display_string_of(info)` | Human-readable type name |
+| `display_string_of(info)` | Human-readable type name (implementation-defined format) |
 
 ---
 
@@ -25,8 +27,9 @@
 
 ### Q1: Iterate non-static data members of a struct
 
-```cpp
+This example shows the full workflow: reflect the struct, walk its members, and then print each field value from a live object. Pay attention to the `if constexpr` blocks inside the loop - because each member has a different type, you need to branch at compile time to handle strings, booleans, and numeric types differently.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -72,13 +75,15 @@ int main() {
 // port = 8080
 // verbose = true
 // timeout = 30
-
 ```
+
+The line `using MemberType = [:std::meta::type_of(m):]` is how you get the actual C++ type of a reflected member so you can use it in `if constexpr` checks. You reflect `m` to a type info, then splice that type info back into a `using` declaration - giving you a real type alias to work with.
 
 ### Q2: Print name and type of each member
 
-```cpp
+You can also query layout information - byte offset and size - directly from reflection. This is useful for debugging memory layouts, writing binary serializers, or just understanding how a struct is laid out without looking it up in a debugger.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string_view>
@@ -121,13 +126,15 @@ int main() {
 //     int id;  // offset=16 size=4
 //     bool active;  // offset=20 size=1
 // };  // total size=24
-
 ```
+
+Notice that all four queries - `identifier_of`, `display_string_of`, `offset_of`, and `size_of` - are all `constexpr`. The entire describe output could be computed at compile time if needed. This is an automated struct introspection tool written in about fifteen lines.
 
 ### Q3: Generic `to_string()` for any aggregate
 
-```cpp
+Putting it all together: a fully generic `to_string` that handles any struct you throw at it. The function uses `identifier_of(^T)` to get the type's own name for the prefix, then iterates members with the same `if constexpr` type-dispatch pattern from Q1.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -176,15 +183,16 @@ int main() {
     std::cout << generic_to_string(v) << '\n';
     // Output: Vec2{x=1.5, y=2.5}
 }
-
 ```
+
+The key thing to appreciate here is that `generic_to_string` works for both `Employee` and `Vec2` without any modification. Add a field to either struct and the output automatically includes it. That zero-maintenance property is the whole point of reflection-based generic utilities.
 
 ---
 
 ## Notes
 
-- `nonstatic_data_members_of` is preferred over `members_of` for data-only iteration.
-- `identifier_of(^T)` returns the type name itself.
-- `display_string_of` gives a human-readable type string (implementation-defined format).
-- `offset_of` and `size_of` enable layout introspection without macros.
-- Reflection works with inheritance — `bases_of(^Derived)` gives base classes.
+- `nonstatic_data_members_of` is the right choice for data-only iteration - prefer it over `members_of` unless you specifically need static members or member functions too.
+- `identifier_of(^T)` returns the type's own name as a string - useful for generating output prefixes or diagnostic messages.
+- `display_string_of` gives a human-readable type name, but the format is implementation-defined and may not be stable across compilers.
+- `offset_of` and `size_of` enable precise layout introspection without `offsetof` macros or platform-specific tricks.
+- Reflection works with inheritance - `bases_of(^Derived)` gives you the base classes so you can walk the full hierarchy if needed.

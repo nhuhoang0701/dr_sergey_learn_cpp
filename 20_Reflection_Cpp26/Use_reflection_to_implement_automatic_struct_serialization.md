@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-Reflection makes struct serialization fully automatic. Adding or removing a field from a struct automatically updates ALL serialization/deserialization code.
+Reflection makes struct serialization fully automatic. Adding or removing a field from a struct automatically updates ALL serialization and deserialization code - with no changes to any serialization logic required.
+
+The reason this is such a big deal in practice is the maintenance cost of the old approach. Every time you change a struct, you have to find and update the serializer, the deserializer, and anything else that enumerates fields. It is easy to miss one, especially in large codebases. Reflection eliminates the whole category of "forgot to update the serializer" bugs.
 
 | Feature | Macro-based | Reflection |
 | --- | --- | --- |
@@ -25,8 +27,9 @@ Reflection makes struct serialization fully automatic. Adding or removing a fiel
 
 ### Q1: Iterate fields with `members_of` and generate a serializer
 
-```cpp
+The `serialize` function below uses `nonstatic_data_members_of` to walk every field of `T` at compile time. For each member, `identifier_of` gives you the field name as a string, and `obj.[:m:]` gives you the runtime value. The `constexpr if` handles the string case to add quotes; everything else is printed directly.
 
+```cpp
 // C++26 with P2996 reflection
 #include <meta>
 #include <iostream>
@@ -74,13 +77,15 @@ int main() {
     std::cout << serialize(v) << '\n';
     // Vec3{x=1, y=2, z=3}
 }
-
 ```
+
+Notice that `std::meta::identifier_of(^T)` at the top of the output loop gives you the struct's own name - so the output says `Config{...}` rather than just `{...}`. That is reflection on the type itself, not just its members.
 
 ### Q2: Adding a new field automatically updates serialization
 
-```cpp
+This is the key proof of the "zero maintenance" claim. `UserV2` adds two fields compared to `UserV1`, and the `serialize` function handles both without any modification.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -95,7 +100,7 @@ std::string serialize(const T& obj) {
     template for (constexpr auto m : members) {
         if (!first) oss << ", ";
         first = false;
-        oss << '"' << std::meta::identifier_of(m) << "": ";
+        oss << '"' << std::meta::identifier_of(m) << "\": ";
         using MType = [:std::meta::type_of(m):];
         if constexpr (std::is_same_v<MType, std::string>)
             oss << '"' << obj.[:m:] << '"';
@@ -140,13 +145,15 @@ int main() {
     // - print/debug functions
     // = 5+ places to update per field change!
 }
-
 ```
+
+The comment about "5+ places to update" is not an exaggeration for a real codebase. Each of those update sites is an opportunity to introduce a bug - either by forgetting to update one, or by updating them inconsistently. Reflection collapses all of those into a single source of truth: the struct definition itself.
 
 ### Q3: Reflection vs macro-based approaches (Boost.Hana, REFLECT)
 
-```cpp
+There have been several prior attempts to solve this problem in C++. Understanding their limitations helps you appreciate why language-level reflection is the right fix rather than another library.
 
+```cpp
 #include <meta>
 #include <iostream>
 #include <string>
@@ -208,15 +215,15 @@ int main() {
     // Boost.Describe: non-intrusive, but manual registration
     // C++26 Reflection: zero registration, standard, type-safe
 }
-
 ```
+
+The progression from Boost.Hana to Boost.Describe to C++26 reflection shows a gradual improvement in this area. Hana required you to write the struct inside the macro. Describe let you write the struct normally but still required manual field listing. Reflection finally removes the registration step entirely. The struct definition *is* the reflection data.
 
 ---
 
 ## Notes
 
-- Reflection-based serialization requires zero per-type setup.
-- Adding/removing fields is automatically reflected in all generic code.
-- This eliminates entire categories of bugs (forgotten fields in serialization).
-- For deserialization, the same pattern works in reverse with `obj.[:m:] = parsed_value`.
-- Combine with `type_of` dispatch for format-specific serialization (JSON, XML, binary).
+- Reflection-based serialization requires zero per-type setup - there is no registration step separate from the struct definition itself.
+- Adding or removing fields is automatically reflected in all generic serialization code, eliminating an entire class of "forgot to update" bugs.
+- For deserialization, the same iteration pattern works in reverse: loop over members and assign `obj.[:m:] = parsed_value` for each one.
+- Combine with `type_of` dispatch to adapt the same generic serializer to different output formats like JSON, XML, or binary.
