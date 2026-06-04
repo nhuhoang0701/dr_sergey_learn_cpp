@@ -8,10 +8,9 @@
 
 ## Topic Overview
 
-Highway is Google's C++ SIMD library that provides a single API across x86 (SSE/AVX/AVX-512), ARM (NEON/SVE), WASM, RISC-V, and POWER. It includes built-in runtime dispatch.
+Highway is Google's C++ SIMD library that provides a single API across x86 (SSE/AVX/AVX-512), ARM (NEON/SVE), WASM, RISC-V, and POWER. What makes it stand out from other portable SIMD approaches is its built-in runtime dispatch: you write the code once, it gets compiled into multiple target-specific versions in a single binary, and at startup it automatically picks the best version for the current CPU.
 
 ```cpp
-
 Highway architecture:
   Your code (hwy::HWY_NAMESPACE) -> compiled N times
                                     for each target:
@@ -20,7 +19,6 @@ Highway architecture:
     +---------+  +---------+  +---------+  +---------+
     HWY_DYNAMIC_DISPATCH selects the best at runtime.
     Single binary, zero per-call dispatch overhead (resolved at load time).
-
 ```
 
 | Feature | Value |
@@ -37,8 +35,9 @@ Highway architecture:
 
 ### Q1: Element-wise multiply with Highway
 
-```cpp
+Highway's structure is different from anything you'll have seen before. Your implementation lives in a header file (conventionally named `*-inl.h`) that gets re-included multiple times - once per target - via `foreach_target.h`. Each inclusion compiles the code for a different instruction set. The dispatch entry point then selects the best version at runtime. The pattern is unusual but it's the key to getting a single binary with multiple optimized paths.
 
+```cpp
 // Highway uses a unique pattern:
 // 1. Code is written ONCE inside HWY_NAMESPACE
 // 2. The .cc file is compiled multiple times via #include "impl-inl.h"
@@ -84,13 +83,15 @@ HWY_AFTER_NAMESPACE();
 
 // Note: This is a conceptual example. Highway's actual build system
 // uses foreach_target.h to recompile the -inl.h for each target.
-
 ```
+
+Notice that inside the implementation, you use `Mul(d, va, vb)` rather than `va * vb`. Highway uses free functions with a tag-dispatch descriptor `d` rather than operator overloads. The descriptor carries the type and width information at compile time, which is what allows the same source line to compile to `vmulps ymm` on AVX2 and `vmul.4s` on NEON.
 
 ### Q2: Highway's dynamic dispatch mechanism
 
-```cpp
+The dispatch mechanism is one of Highway's most practically useful features. It is similar to `ifunc` (GNU indirect functions) but portable. The resolution happens once at program startup, so every subsequent call goes directly to a function pointer with no branching overhead.
 
+```cpp
 #include <iostream>
 
 // Highway dynamic dispatch explained:
@@ -129,13 +130,15 @@ int main() {
     std::cout << "  builtin_cpu_supports -> branch per call\n";
     std::cout << "  Highway              -> resolved once at startup\n";
 }
-
 ```
+
+The "resolved once at startup" point is important for hot paths. If you used `__builtin_cpu_supports` inside a loop, you'd have a branch on every iteration even though the answer is always the same. Highway's approach eliminates that by resolving the function pointer once and caching it.
 
 ### Q3: Highway `HWY_DYNAMIC_DISPATCH` vs `#ifdef __AVX2__` guards
 
-```cpp
+The maintainability argument for Highway is compelling on its own, even before you factor in performance. The JPEG XL example in the code is real: what started as thousands of lines of ifdefs was refactored to a fraction of the size while maintaining or improving performance and gaining ARM and WASM support for free.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -165,8 +168,9 @@ int main() {
     //   FetchContent_MakeAvailable(highway)
     //   target_link_libraries(myapp PRIVATE hwy)
 }
-
 ```
+
+The "Fix once" row is the biggest practical win. When you have a bug in vectorized code, fixing it in every `#ifdef` branch is error-prone - it's easy to forget one, and each branch has to be tested separately. With Highway, one fix propagates to all targets automatically.
 
 ---
 
@@ -174,6 +178,6 @@ int main() {
 
 - Highway uses `ScalableTag<T>` (tag dispatch) instead of fixed types like `__m256`.
 - `Lanes(d)` returns the current target's SIMD width (not known at compile time for scalable).
-- Highway API: `Add(d, a, b)` not `a + b` — the tag `d` selects the right instruction set.
+- Highway API: `Add(d, a, b)` not `a + b` - the tag `d` selects the right instruction set.
 - Install: `FetchContent` in CMake or `vcpkg install highway`.
 - For new projects needing SIMD: Highway is the recommended choice for multi-platform support.

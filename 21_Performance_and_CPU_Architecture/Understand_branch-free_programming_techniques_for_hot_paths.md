@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Branches in hot loops cause pipeline stalls when mispredicted (~15-20 cycles penalty on modern x86). Branchless code uses conditional moves (cmov), arithmetic masks, and bitwise tricks to avoid this.
+Every time the CPU encounters a conditional branch, it tries to predict which way it will go. When that prediction is wrong, the pipeline has to flush and restart - costing around 15-20 cycles on modern x86. In a hot loop that runs millions of times, even a 5% misprediction rate adds up fast. Branchless code sidesteps this entirely by using conditional moves (`cmov`), arithmetic masks, and bitwise tricks to compute both outcomes and select the right one - no prediction needed.
+
+Here is a quick overview of the main techniques and when to reach for each one:
 
 | Technique | Mechanism | When to use |
 | --- | --- | --- |
@@ -18,15 +20,17 @@ Branches in hot loops cause pipeline stalls when mispredicted (~15-20 cycles pen
 | Lookup table | Precomputed results | small domain functions |
 | `? :` with `-O2` | Compiler may emit cmov | simple ternaries |
 
-```cpp
+To make the difference concrete, here is what the assembly looks like for a simple min - with and without a branch:
 
+```asm
 Branchy (misprediction penalty):     Branchless (no penalty):
   cmp eax, ebx                        cmp eax, ebx
   jle .L1        <- branch!           cmovg eax, ebx   <- no branch
   mov eax, ebx
 .L1:
-
 ```
+
+The `cmov` version does the same comparison but never redirects the instruction stream. The pipeline keeps moving regardless of the outcome.
 
 ---
 
@@ -34,8 +38,9 @@ Branchy (misprediction penalty):     Branchless (no penalty):
 
 ### Q1: Branchless min using conditional move
 
-```cpp
+There are three ways to write a branchless min. The simplest is to let the compiler handle it - a plain ternary at `-O2` almost always produces `cmov`. The arithmetic version shows you the underlying mechanism, which is useful to understand even if you rarely write it by hand.
 
+```cpp
 #include <iostream>
 #include <algorithm>
 
@@ -72,13 +77,15 @@ int main() {
     //   g++ -O2: both branchless_min and std::min emit cmov
     //   The ternary operator is the simplest way to get cmov
 }
-
 ```
+
+The key takeaway is that you rarely need to write the arithmetic version yourself. Use the ternary form and check the assembly on Compiler Explorer if you want to confirm `cmov` was generated.
 
 ### Q2: Branchless clamp using arithmetic masking
 
-```cpp
+Clamping is just two back-to-back min/max operations, and the same pattern applies - two `cmov` instructions instead of two branches. The arithmetic mask version spells out exactly what the hardware is doing under the hood.
 
+```cpp
 #include <iostream>
 #include <algorithm>
 
@@ -129,13 +136,15 @@ int main() {
     // 7  -> 7 7
     // 15 -> 10 10
 }
-
 ```
+
+Both approaches give the same results. In practice, prefer the ternary form - it is cleaner and the compiler will produce equally good code.
 
 ### Q3: Branchless binary search vs branchy
 
-```cpp
+This is where branchless coding really shines. A classic binary search has a 50% misprediction rate on random queries because each comparison is essentially a coin flip. The branchless version replaces the conditional branch with arithmetic, trading a 15-20 cycle mispredict penalty for a predictable 1-cycle `cmov`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -202,15 +211,16 @@ int main() {
     // Branchy:    ~200 ns/query
     // Branchless: ~120 ns/query  (40% faster)
 }
-
 ```
+
+The ~40% win comes entirely from eliminating mispredictions. Notice the `(base[half - 1] < target) * half` trick - that boolean-to-integer multiply is the key. The CPU evaluates the comparison, converts it to 0 or 1, and multiplies. No branch, no mispredict.
 
 ---
 
 ## Notes
 
 - At `-O2`/`-O3`, compilers often convert ternary `? :` to `cmov` automatically.
-- Use `__builtin_expect(expr, val)` or `[[likely]]`/`[[unlikely]]` for branch hints.
-- Branchless code is NOT always faster — measure! Predictable branches can be faster.
-- `perf stat -e branch-misses` reveals whether branchless rewrite is worthwhile.
+- Use `__builtin_expect(expr, val)` or `[[likely]]`/`[[unlikely]]` for branch hints when branchless is not an option.
+- Branchless code is NOT always faster - measure! Predictable branches can be faster because the predictor eliminates the penalty entirely.
+- `perf stat -e branch-misses` reveals whether a branchless rewrite is actually worthwhile for your workload.
 - SIMD branchless: use `_mm_min_epi32` / `_mm_max_epi32` for vectorized clamp.

@@ -9,18 +9,18 @@
 
 ## Topic Overview
 
-Auto-vectorisation lets the compiler convert scalar loops to SIMD without intrinsics. The key is writing loops that meet the compiler's safety requirements.
+Auto-vectorisation is the compiler's ability to transform a plain scalar loop into one that uses SIMD instructions - processing multiple elements per clock instead of one. You don't need intrinsics for this; the compiler can do it automatically, but only when it can prove the loop is safe and structured in a way it recognizes. Your job is to write loops that meet those conditions.
+
+The checklist and table below capture the most common requirements and blockers:
 
 ```cpp
-
 Vectorisable loop checklist:
-  ☑ Simple loop structure (for i = 0..N)
-  ☑ No pointer aliasing (or use __restrict__)
-  ☑ No loop-carried dependencies
-  ☑ No function calls (or use inline)
-  ☑ No complex control flow (or use [[likely]])
-  ☑ Contiguous memory access
-
+  - Simple loop structure (for i = 0..N)
+  - No pointer aliasing (or use __restrict__)
+  - No loop-carried dependencies
+  - No function calls (or use inline)
+  - No complex control flow (or use [[likely]])
+  - Contiguous memory access
 ```
 
 | Blocker | Example | Fix |
@@ -37,8 +37,9 @@ Vectorisable loop checklist:
 
 ### Q1: Write a loop that auto-vectorises, verify with `-fopt-info-vec`
 
-```cpp
+The simplest way to write a vectorisable loop is to keep it as straightforward as possible: count up from zero, access arrays at `[i]`, no conditionals, no cross-iteration dependencies, and `__restrict__` on any pointer parameters the compiler can't prove are non-aliasing. Here are two loops that vectorise cleanly, plus the classic FP-sum problem and its fix:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -99,13 +100,15 @@ int main() {
 }
 // Compile: g++ -O2 -mavx2 -fopt-info-vec test.cpp
 // Output:  test.cpp:X: note: LOOP VECTORIZED
-
 ```
+
+The reason `sum_bad` doesn't vectorise is subtle: floating-point addition is not mathematically associative, so the compiler can't reorder the additions without potentially changing the result. The `sum_good` version sidesteps this by using four independent accumulators - each chain computes a partial sum independently, so the compiler can execute them in parallel without reordering anything.
 
 ### Q2: Conditions that prevent auto-vectorisation
 
-```cpp
+Each of these five blockers is worth understanding on its own. The function-call blocker is particularly surprising - `std::log` is a single function call but the compiler can't vectorise it because there's no SIMD version available by default. The indirect-access blocker shows up frequently in performance-critical lookup tables.
 
+```cpp
 #include <iostream>
 #include <cmath>
 
@@ -161,13 +164,15 @@ int main() {
     //   Clang: clang++ -O2 -mavx2 -Rpass=loop-vectorize -Rpass-missed=loop-vectorize test.cpp
     std::cout << "Compile with -fopt-info-vec-all to see vectorization decisions\n";
 }
-
 ```
+
+The indirect-access case deserves special attention. AVX2 does have a gather instruction (`_mm256_i32gather_ps`), but it is often slower than scalar code for truly random indices because the hardware still has to perform the random memory accesses - it just batches the *request* slightly, not the actual memory fetches. Whether it helps depends on how random the indices are.
 
 ### Q3: `__restrict__` to enable vectorisation
 
-```cpp
+The `__restrict__` annotation is your way of telling the compiler "I promise these pointers don't point to the same memory." In return, the compiler can skip the runtime alias check it would otherwise generate - resulting in smaller, simpler assembly that is guaranteed to take the vectorised path.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -226,8 +231,9 @@ int main() {
     //   MSVC: __restrict
     //   C99: restrict (standard in C, not C++)
 }
-
 ```
+
+The raw runtime improvement from `__restrict__` is modest (0-5%), but the code size benefit is real - the binary no longer needs to carry both a scalar fallback and a vectorised version with a branch between them. More importantly, `__restrict__` *guarantees* you'll get the vectorised path rather than leaving it to the compiler's judgment.
 
 ---
 

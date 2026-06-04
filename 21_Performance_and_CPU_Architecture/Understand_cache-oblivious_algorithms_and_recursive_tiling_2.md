@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Matrix transpose is a classic example where cache-oblivious recursive algorithms outperform naive loops. The naive transpose has stride-N access patterns causing cache misses; recursive subdivision naturally adapts to all cache levels.
+Matrix transpose is a clean case study for cache-oblivious thinking because the performance problem is so visible. The naive approach writes to `B[j][i]` while reading from `A[i][j]`, which means the writes jump by a full row width between consecutive iterations of the inner loop. For a 2048-column matrix of doubles, each write jumps 16 KB - well past L1 cache. The result is a cache miss on nearly every store.
+
+The recursive approach fixes this by splitting the matrix into quadrants and recursing. Eventually the submatrix is small enough that both the source and destination quadrants fit in L1 simultaneously, so reads and writes are cheap. No tuning, no parameters - the recursion finds the right granularity automatically:
 
 ```cpp
-
 Naive transpose (stride N):           Recursive transpose:
 for i: 0..N                           transpose(A, B, r, c, n) {
   for j: 0..N                           if n <= BASE:
@@ -20,8 +21,9 @@ for i: 0..N                           transpose(A, B, r, c, n) {
      stride = N * sizeof(T)                split into 4 quadrants
      -> cache miss per access!             recurse on each
                                         }
-
 ```
+
+Here is how the three approaches stack up:
 
 | Method | Cache misses (NxN) | Tuning needed? |
 | --- | --- | --- |
@@ -29,14 +31,17 @@ for i: 0..N                           transpose(A, B, r, c, n) {
 | Cache-aware blocked | O(N²/B) | Yes (block size) |
 | Cache-oblivious | O(N²/B) | No |
 
+The cache-oblivious version matches the asymptotic cache complexity of the tuned blocked version, but without requiring you to know anything about the machine.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Cache-oblivious matrix transpose
 
-```cpp
+The function signature looks busy because it passes the top-left corner of each submatrix by (row, col) offsets. The logic itself is simple: if the submatrix is at or below the base-case size, do it naively; otherwise split into four quadrants and recurse.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -90,13 +95,15 @@ int main() {
     std::cout << "Correct:   " << (B1 == B2) << '\n';
     // N=2048: Naive ~25ms, Recursive ~8ms (3x faster)
 }
-
 ```
+
+That 3x speedup at N=2048 is typical. The bigger the matrix, the larger the naive cache miss penalty, and the bigger the gap.
 
 ### Q2: Why cache-oblivious works across all cache levels
 
-```cpp
+The reason this trips people up is that it sounds like the algorithm must "know" when a subproblem fits in L1. It doesn't - and that is exactly the point. Because the recursion creates subproblems of every size from N down to BASE, there will always be a recursion level where the subproblem fits in L1, another where it fits in L2, and another where it fits in L3. The CPU's memory hierarchy automatically takes care of the rest.
 
+```cpp
 #include <iostream>
 
 // Cache-oblivious algorithms don't need cache-size parameters because:
@@ -125,7 +132,7 @@ int main() {
 //
 // Key: at level 6, the 64x64 block (32KB) fits entirely in L1.
 // All 64*64 = 4096 reads AND writes hit L1 cache.
-// No tuning needed — it automatically adapts.
+// No tuning needed - it automatically adapts.
 
 // Cache-aware alternative: you must specify block size
 void cache_aware_transpose(const double* A, double* B, int N, int block) {
@@ -147,13 +154,15 @@ int main() {
     std::cout << "\nCache-oblivious: no tuning needed.\n";
     std::cout << "Cache-aware blocked: must tune block size per CPU.\n";
 }
-
 ```
+
+The table in the comments is worth working through once. After level 6, every base-case operation in a 4096x4096 transpose fits entirely in L1. The algorithm "tuned itself" without knowing anything about the hardware.
 
 ### Q3: Cache-oblivious vs cache-aware blocked transpose
 
-```cpp
+This benchmark shows the practical tradeoff. A cache-aware blocked transpose with the right block size is slightly faster on its target machine. But pick the wrong block size and it becomes slower than cache-oblivious. The cache-oblivious version just works everywhere.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -212,15 +221,16 @@ int main() {
     // Verdict: cache-oblivious is robust; cache-aware can be
     // slightly faster with perfect tuning but fragile.
 }
-
 ```
+
+Notice how cache-aware with a 512-element block degrades to 20 ms because the block no longer fits in L1. The cache-oblivious version sits comfortably in between and never requires that kind of babysitting.
 
 ---
 
 ## Notes
 
-- Cache-oblivious is "set and forget" — no tuning for different CPUs.
-- Cache-aware can be ~10% faster with perfect block size, but requires profiling per platform.
+- Cache-oblivious is "set and forget" - no tuning for different CPUs.
+- Cache-aware can be ~10% faster with the perfect block size, but requires profiling per platform.
 - For production: use cache-oblivious for portability, cache-aware for peak performance on a known target.
 - Both are better than naive by 3-10x for large matrices.
-- Libraries like BLAS use cache-aware blocking with runtime CPU detection for best of both worlds.
+- Libraries like BLAS use cache-aware blocking with runtime CPU detection to get the best of both worlds.

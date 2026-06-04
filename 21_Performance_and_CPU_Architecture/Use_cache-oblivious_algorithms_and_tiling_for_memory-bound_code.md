@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-The cache-oblivious model designs algorithms that perform well across all cache levels without requiring cache-size parameters. The key technique is recursive tiling: divide the problem until subproblems naturally fit in cache.
+Most performance-critical algorithms become memory-bound once the data stops fitting in L1 or L2 cache. The standard fix is tiling: instead of iterating over the full dataset in an order that causes cache thrashing, you restructure the loop nests so that a small "tile" of data is loaded into cache and reused as many times as possible before you move on.
+
+Cache-aware tiling works well but requires you to know your cache sizes and tune the block size. Cache-oblivious algorithms take a different approach: recursive subdivision divides the problem in half until subproblems naturally fit in whatever cache level is available, without ever knowing its size. The insight is that recursive halving automatically hits all cache levels on the way down.
 
 ```cpp
-
 Cache-oblivious approach:
 
   1. Divide problem in half (recursively)
@@ -21,7 +22,6 @@ Cache-oblivious approach:
 
   Problem size:  N -> N/2 -> N/4 -> ... -> BASE
   Fits in:       RAM   L3    L2         L1
-
 ```
 
 | Approach | Cache parameters needed | Portability |
@@ -36,8 +36,9 @@ Cache-oblivious approach:
 
 ### Q1: The cache-oblivious model explained
 
-```cpp
+The formal basis for why recursive halving works without knowing cache sizes is called the "tall-cache assumption" - a reasonable assumption that the cache can hold at least as many cache lines as there are elements in one row of the working set. Under that assumption, optimal cache behavior emerges automatically from recursive subdivision.
 
+```cpp
 #include <iostream>
 
 // Cache-oblivious algorithms work WITHOUT knowing cache sizes because:
@@ -74,13 +75,15 @@ int main() {
     std::cout << "  4. Optimal for matrix operations: O(N^3 / (B*sqrt(M)))\n";
     std::cout << "  5. Portable: same code works on any CPU\n";
 }
-
 ```
+
+The cache-aware approach requires you to choose a block size that fits in L1 cache. If you tune it for your development machine and deploy to a different CPU with different cache sizes, the tuned block size may no longer be optimal. The cache-oblivious approach avoids this problem entirely.
 
 ### Q2: Cache-oblivious matrix multiplication
 
-```cpp
+Matrix multiplication makes the cache behavior difference concrete because the naive triple loop has a famous access pattern: `A` is read row-by-row (cache-friendly), but `B` is read column-by-column (cache-hostile - each access to `B[k][j]` is N elements apart, causing a cache miss for large N). The recursive version reorders the computation so both matrices are accessed in smaller, cache-friendly blocks at each recursion depth.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -139,13 +142,15 @@ int main() {
     std::cout << "Match: " << (C1 == C2) << '\n';
     // N=512: Naive ~350ms, Recursive ~120ms (3x speedup)
 }
-
 ```
+
+A 3x speedup without any hardware-specific tuning is the appeal of the cache-oblivious approach. The `BASE = 32` constant is the only thing you might tune, and it is not sensitive - anything in the range 16-64 works well across typical CPUs.
 
 ### Q3: Measure cache miss rates with `perf`
 
-```cpp
+Numbers from a benchmark only tell you that one version is faster. Hardware counters tell you *why* - how many cache misses each version generates. This example shows the code you'd build and measure with `perf stat`:
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -201,8 +206,9 @@ int main() {
 #endif
     std::cout << "C[0][0] = " << C[0] << '\n';  // N (=1024)
 }
-
 ```
+
+A 100x reduction in LLC misses is what makes a 5x wall-time speedup possible. This is a useful mental model to carry: every LLC miss costs roughly 100 cycles; reducing their count is often worth more than any arithmetic optimization you could make.
 
 ---
 

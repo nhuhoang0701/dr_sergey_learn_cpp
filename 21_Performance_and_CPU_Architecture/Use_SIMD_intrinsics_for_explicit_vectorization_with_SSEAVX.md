@@ -8,17 +8,19 @@
 
 ## Topic Overview
 
-SIMD intrinsics provide direct access to CPU vector instructions. They guarantee vectorization (unlike auto-vectorization which may fail) at the cost of portability.
+SIMD (Single Instruction, Multiple Data) intrinsics give you direct access to the CPU's vector instructions. The key selling point over auto-vectorization is that intrinsics *guarantee* the instructions you ask for will be emitted - the compiler cannot decide the loop is too complex and fall back to scalar code. The tradeoff is portability: intrinsic code is tied to a specific ISA family (SSE/AVX on x86).
+
+The fundamental idea is that instead of operating on one float at a time, you operate on a register that holds 4, 8, or 16 floats simultaneously, and the CPU performs the same operation on all of them in a single instruction:
 
 ```cpp
-
 Scalar:                  AVX2 (256-bit):
   float a, b, c;           __m256 a, b, c;
   c = a * b + c;           c = _mm256_fmadd_ps(a, b, c);
   // 1 FMA                 // 8 FMAs in 1 instruction!
   // 4 cycles              // 4 cycles (same latency, 8x throughput)
-
 ```
+
+The latency is the same - the CPU still needs 4 cycles to produce the result. But instead of doing that work for 1 float, you're doing it for 8. That is the throughput win.
 
 | Register type | Width | Floats | Doubles | Ints (32-bit) |
 | --- | --- | --- | --- | --- |
@@ -32,8 +34,9 @@ Scalar:                  AVX2 (256-bit):
 
 ### Q1: Dot product with `_mm256_fmadd_ps` vs scalar
 
-```cpp
+A dot product is the classic SIMD example because it has a simple memory access pattern (sequential), pure arithmetic work, and a well-understood scalar baseline. Here both versions compute the same result; the benchmark shows you the actual speedup on your hardware.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -97,13 +100,15 @@ int main() {
     std::free(a); std::free(b);
 }
 // Compile: g++ -O2 -mavx2 -mfma -o dot dot.cpp
-
 ```
+
+The speedup is close to but not quite 8x. The reason is memory bandwidth: at 10 million floats, the arrays don't fit comfortably in L2 cache, so the loop is partially limited by how fast the CPU can pull data from L3 or DRAM, not just by arithmetic throughput. For data that fits in L1/L2 cache, the speedup would be closer to the theoretical maximum.
 
 ### Q2: Intrinsic naming convention
 
-```cpp
+The intrinsic naming convention looks intimidating at first but it follows a consistent pattern. Once you know the pattern, you can look at any intrinsic name and know exactly what it does without consulting the manual.
 
+```cpp
 #include <iostream>
 #include <immintrin.h>
 
@@ -146,13 +151,15 @@ int main() {
         std::cout << result[i] << ' ';  // 11 12 13 14 15 16 17 18
     std::cout << '\n';
 }
-
 ```
+
+One trap worth highlighting: `_mm256_set_ps` takes its arguments in **reverse lane order**. The first argument goes into lane 7 (the highest), not lane 0. If you need lane 0 to hold value 1, you write `_mm256_set_ps(8,7,6,5,4,3,2,1)` - the 1 is at the end. This surprises almost everyone the first time.
 
 ### Q3: Handle non-multiple-of-8 lengths with scalar tail
 
-```cpp
+AVX2 processes 8 floats per iteration. Real arrays almost never have lengths that are exact multiples of 8. There are three standard ways to handle the remainder, each with its own tradeoffs.
 
+```cpp
 #include <iostream>
 #include <immintrin.h>
 #include <cstdlib>
@@ -217,8 +224,9 @@ int main() {
         std::cout << c[i] << ' ';  // 10 11 12 13 14 15 16 17 18 19 20 21 22
     std::cout << '\n';
 }
-
 ```
+
+Method 1 (scalar tail) is the go-to for most code: it's simple, readable, and always correct. Method 3 (padding) is worth the extra memory when you own the allocation and need maximum performance on the main loop. Method 2 (masked loads) is useful when you can't pad and want to keep the tail in SIMD - but masked loads are slower than regular loads, so the benefit only shows up when the tail accounts for a significant fraction of total work.
 
 ---
 

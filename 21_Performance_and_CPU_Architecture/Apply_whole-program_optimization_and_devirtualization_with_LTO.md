@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Link-Time Optimization (LTO) allows the compiler to optimize across translation unit boundaries, enabling cross-TU inlining and devirtualization.
+When you compile a C++ project with separate translation units, the compiler optimizes each `.cpp` file in isolation. That means it can only inline a function if it can see the function body in the same translation unit - and it can only devirtualize a virtual call if it can prove at compile time which concrete type is being used. Both of those are often impossible when your program is split across files.
+
+Link-Time Optimization (LTO) breaks that boundary. Instead of emitting machine code during compilation, the compiler emits an intermediate representation (IR). At link time, the linker hands all that IR to the optimizer as one giant program, enabling cross-file inlining, dead code elimination, and - with the right flags - whole-program devirtualization of virtual calls.
 
 | Feature | Without LTO | With LTO |
 | --- | --- | --- |
@@ -17,6 +19,8 @@ Link-Time Optimization (LTO) allows the compiler to optimize across translation 
 | Dead code elimination | Per-TU | Whole-program |
 | Build time | Faster | Slower (2-3x) |
 | Binary size | Larger | Smaller (DCE) |
+
+There are two modes worth knowing. Full LTO merges everything into a single giant compilation unit; ThinLTO does a smarter summary-based approach that runs in parallel and scales much better on large codebases.
 
 | LTO Mode | Description |
 | --- | --- |
@@ -29,8 +33,9 @@ Link-Time Optimization (LTO) allows the compiler to optimize across translation 
 
 ### Q1: Enable ThinLTO with whole-program vtables
 
-```cpp
+This example shows the most impactful case: a virtual call that the compiler cannot devirtualize without LTO because the concrete type lives in a different file. The build command comments walk you through how to see the difference in the generated assembly.
 
+```cpp
 // === file: shape.h ===
 #pragma once
 struct Shape {
@@ -77,13 +82,15 @@ int main() {
 //
 // Verify with:
 //   objdump -d app | grep -A5 'area'
-
 ```
+
+With LTO enabled, the linker can see that `make_circle` is the only factory function and `Circle` is the only concrete `Shape` in the whole program. That lets it replace the vtable dispatch with a plain direct call - and potentially inline `Circle::area()` into `main` entirely.
 
 ### Q2: LTO enables cross-TU inlining
 
-```cpp
+Even without virtual calls, LTO gives you a big win on any small utility function that lives in its own file. Without LTO the compiler sees only an `extern` declaration and has to emit a real function call. With LTO it can see the body and inline it directly into the hot loop.
 
+```cpp
 // === file: math_utils.cpp ===
 int square(int x) { return x * x; }
 int cube(int x) { return x * x * x; }
@@ -124,13 +131,15 @@ int main() {
 //   clang++ -O2 -flto=thin -c math_utils.cpp -o math_utils.o
 //   clang++ -O2 -flto=thin -c main.cpp -o main.o
 //   clang++ -O2 -flto=thin math_utils.o main.o -o app
-
 ```
+
+For a loop that calls `square` and `cube` a million times, replacing two function calls per iteration with two multiply instructions is easily a 2-5x speedup - and that is just one hot loop. Real programs benefit across many call sites simultaneously.
 
 ### Q3: Virtual call devirtualized only with LTO
 
-```cpp
+This is the classic scenario where LTO pays off most dramatically: a tight loop that calls a virtual method a million times through a base-class pointer. Without LTO, each call goes through the vtable. With LTO and `-fwhole-program-vtables`, the optimizer can prove only one concrete type exists and replace all the dispatches with direct calls (or even inline them).
 
+```cpp
 // === file: logger.h ===
 #pragma once
 #include <string>
@@ -179,8 +188,9 @@ void run() {
 //   clang++ -O2 -flto=thin -fwhole-program-vtables \
 //           -Rpass=devirt app.cpp console_logger.cpp -o app
 //   // Remark: devirtualized call to ConsoleLogger::log
-
 ```
+
+The 5 ns overhead per virtual call comes from a chain of three memory indirections: load the vtable pointer from the object, load the function pointer from the vtable, then do an indirect call through that pointer. That last step is an indirect branch, which the CPU's branch target buffer may mispredict. Over a million iterations those nanoseconds add up fast.
 
 ---
 

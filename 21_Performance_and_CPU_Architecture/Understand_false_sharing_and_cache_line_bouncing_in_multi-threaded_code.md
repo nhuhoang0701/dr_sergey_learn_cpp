@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-False sharing occurs when threads on different cores modify variables that happen to share a cache line (typically 64 bytes). Each write invalidates the cache line on other cores, causing expensive bouncing.
+Here is a multi-threading bug that shows up in profilers as "the threads are fast individually but terrible together," even though the threads are modifying completely different variables. The culprit is the cache line.
+
+Cache coherence hardware - the MESI or MOESI protocol that keeps caches consistent across cores - operates on entire cache lines, not individual bytes. A cache line is typically 64 bytes. If two threads on different cores both write to variables that happen to share a cache line, every write by one thread invalidates the other thread's cached copy of that line. The other core then has to fetch the updated line before its next write. The result is that the cache line ping-pongs between cores, at roughly 40-100 cycles per round trip:
 
 ```cpp
-
 Cache line (64 bytes):
 +---------------------------+
 | counter_A | counter_B     |  <- Thread 0 writes A, Thread 1 writes B
@@ -24,8 +25,11 @@ Cache line (64 bytes):
   Invalidate!   Invalidate!
      <----------->           <- cache line ping-pongs between cores
                                ~40-100 cycles per ping-pong!
-
 ```
+
+This is called **false sharing** because the threads look like they are sharing data (they compete for the same cache line) even though they are logically accessing separate variables.
+
+Here is a quick reference for the related terms:
 
 | Term | Description |
 | --- | --- |
@@ -41,8 +45,9 @@ Cache line (64 bytes):
 
 ### Q1: Demonstrate false sharing
 
-```cpp
+The two counters in `SharedCounters` sit at offset 0 and offset 8 within the struct. That puts them both inside the same 64-byte cache line. Two threads hammering them simultaneously triggers exactly the ping-pong described above.
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -88,13 +93,15 @@ int main() {
     // the cache coherence protocol (MESI/MOESI) operates on
     // entire cache lines, not individual bytes.
 }
-
 ```
+
+The performance hit of 3-10x is typical. The exact factor depends on how many cores are involved and how hot the loop is.
 
 ### Q2: Fix with padding to separate cache lines
 
-```cpp
+The fix is to put each counter on its own cache line using `alignas(64)`. This forces the struct layout to place each member at a 64-byte boundary, so they live on separate lines and their writes never interfere with each other.
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -155,13 +162,15 @@ int main() {
     // Fixed:         ~120 ms  (6-7x faster!)
     // Cost: 112 extra bytes per pair. Usually worth it.
 }
-
 ```
+
+The struct grows from 16 bytes to 128 bytes. That is a real cost if you have a large array of these, but 6-7x faster thread throughput is almost always worth 112 extra bytes.
 
 ### Q3: Detecting false sharing with `perf c2c`
 
-```cpp
+The frustrating thing about false sharing is that it does not show up as high CPU usage or obvious contention. Both threads appear to be running. The regular cache miss counters may or may not spike. The right tool is `perf c2c`, which specifically tracks cache-to-cache transfers - the HITM (Hit In Modified) events that are the fingerprint of false sharing.
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -219,15 +228,16 @@ int main() {
     //       std::atomic<long long> value;
     //   };
 }
-
 ```
+
+The `counters[8]` array is 8 × 8 = 64 bytes, which lands all 8 atomics on exactly one cache line. Four threads hammering four of them simultaneously maximizes the HITM rate. The `perf c2c` output will point directly at the struct member. Once you see high HITM%, `alignas(64)` on each atomic is the fix.
 
 ---
 
 ## Notes
 
 - Cache line size is 64 bytes on x86/ARM; use `alignas(64)` for padding.
-- `std::hardware_destructive_interference_size` (C++17) provides the portable constant, but many compilers don't implement it.
-- False sharing is invisible in profilers that only show CPU time — use `perf c2c` specifically.
+- `std::hardware_destructive_interference_size` (C++17) provides the portable constant, but many compilers don't implement it yet - `64` is a safe fallback.
+- False sharing is invisible in profilers that only show CPU time; use `perf c2c` specifically to find it.
 - Common false sharing sites: thread-local counters in arrays, adjacent atomics, struct members accessed by different threads.
-- `perf stat -e L1-dcache-load-misses` shows elevated cache miss rate from false sharing.
+- `perf stat -e L1-dcache-load-misses` shows an elevated cache miss rate that can hint at false sharing, but `perf c2c` gives the definitive diagnosis.

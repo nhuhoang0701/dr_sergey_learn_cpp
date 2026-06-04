@@ -9,10 +9,13 @@
 
 ## Topic Overview
 
-The Translation Lookaside Buffer (TLB) caches virtual-to-physical page mappings. With 4KB pages and a working set of 1GB, you need 262,144 pages — far more than the TLB can hold (~1536 entries). Huge pages (2MB/1GB) reduce the page count by 512x/262144x.
+Every memory access your program makes goes through address translation: the CPU maps a virtual address to a physical one by walking a multi-level page table in RAM. That walk can cost dozens to hundreds of cycles. The **Translation Lookaside Buffer (TLB)** is a small hardware cache that stores recently used virtual-to-physical mappings so most accesses can skip the walk entirely.
+
+The problem is that TLBs are tiny. A typical L2 TLB holds about 1536 entries. With the default 4 KB page size, 1536 entries cover only 6 MB of memory. If your program randomly accesses a 1 GB working set, 262,144 pages are needed - far more than the TLB can hold - so almost every random access triggers a page walk.
+
+Huge pages solve this by trading granularity for coverage. A 2 MB page covers 512x more address space per TLB entry, so those same 1536 TLB entries now cover 3 GB. A 1 GB page covers 262,144x more.
 
 ```cpp
-
 4KB pages (default):                2MB huge pages:
   Working set: 1 GB                   Working set: 1 GB
   Pages: 262,144                      Pages: 512
@@ -21,7 +24,6 @@ The Translation Lookaside Buffer (TLB) caches virtual-to-physical page mappings.
   -> constant TLB misses!             -> everything fits in TLB!
 
 TLB miss penalty: ~7-100 cycles (page walk through 4 levels)
-
 ```
 
 | Page size | TLB entries (typ.) | Coverage | Use case |
@@ -36,8 +38,9 @@ TLB miss penalty: ~7-100 cycles (page walk through 4 levels)
 
 ### Q1: How TLB misses add latency
 
-```cpp
+The page walk that a TLB miss triggers is itself a series of memory accesses - one for each level of the page table. In the best case those page table entries are cached in the CPU's data cache. In the worst case they are in DRAM, and you pay a full DRAM latency at each level.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -90,13 +93,15 @@ int main() {
     // 256 MB:  ~30 ns   (heavy TLB misses + L3 cache misses)
     //   1 GB:  ~80 ns   (constant TLB misses + DRAM access)
 }
-
 ```
+
+Notice the step from 1 MB to 16 MB: latency jumps from 5 ns to 15 ns. That 3x increase has nothing to do with cache misses - the L3 cache is large enough to hold 16 MB. It is purely TLB pressure. Once you cross the TLB coverage boundary, random accesses start triggering page walks on almost every iteration.
 
 ### Q2: Enable huge pages with `madvise`
 
-```cpp
+On Linux you can request huge pages for an existing allocation using `madvise`. The kernel will then promote the underlying 4 KB pages to 2 MB pages when the physical memory is available, transparently reducing the number of TLB entries you need.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <chrono>
@@ -160,13 +165,15 @@ int main() {
     //   4KB: dTLB-load-misses = 5,000,000
     //   2MB: dTLB-load-misses =    50,000  (100x reduction!)
 }
-
 ```
+
+The `std::memset` before the benchmark is important: it forces the kernel to actually allocate and fault in the physical pages. Without it the pages might not exist yet and the benchmark would measure page-fault time rather than TLB behavior.
 
 ### Q3: THP vs explicit `MAP_HUGETLB`
 
-```cpp
+There are two distinct mechanisms for getting huge pages on Linux, and they have different trade-offs. Transparent Huge Pages (THP) are managed automatically by the kernel; explicit huge pages via `MAP_HUGETLB` require pre-reserved memory but give you a firm guarantee.
 
+```cpp
 #include <iostream>
 #include <sys/mman.h>
 #include <cstring>
@@ -227,8 +234,9 @@ int main() {
     //   jemalloc: MALLOC_CONF="thp:always" enables THP
     //   tcmalloc: set TCMALLOC_MEMFS_MALLOC_PATH=/dev/hugepages
 }
-
 ```
+
+The practical advice is: start with THP (`MADV_HUGEPAGE`) because it requires no system configuration and degrades gracefully. Switch to `MAP_HUGETLB` only if you need a hard guarantee that huge pages are in use - for example, in a production database where latency variance is unacceptable.
 
 ---
 

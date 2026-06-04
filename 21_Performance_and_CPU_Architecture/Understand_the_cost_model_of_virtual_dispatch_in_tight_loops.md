@@ -8,18 +8,20 @@
 
 ## Topic Overview
 
-Virtual dispatch costs ~5ns per call due to vtable pointer load, function pointer load, and indirect branch. In tight loops with millions of iterations, this overhead dominates.
+Virtual dispatch has a real price. Each virtual call requires loading the vtable pointer out of the object, loading the function pointer from the vtable, and then executing an indirect branch - a branch whose target the CPU cannot know until runtime. In a tight loop that runs millions of times, that overhead stops being negligible and starts dominating your profile.
+
+Here is what the CPU actually does at the instruction level:
 
 ```cpp
-
 Virtual call sequence:           Direct call:
   mov rax, [rdi]       1 cycle    call Circle::area   0 overhead
-  mov rax, [rax+16]    4 cycles   (possibly inlined!)  
+  mov rax, [rax+16]    4 cycles   (possibly inlined!)
   call rax             ~5 cycles
   (branch mispredict)  15 cycles  <- if mixed types!
   Total: ~10-25 cycles             Total: 0-3 cycles
-
 ```
+
+The ~25-cycle worst case only fires when the branch target predictor (BTB) misses - which happens whenever you process a mix of types in alternating order. The CPU predicts "next call will go to the same target as last time," and when it doesn't, you pay a 15-cycle penalty per iteration.
 
 | Cost component | Cycles | Notes |
 | --- | --- | --- |
@@ -34,8 +36,9 @@ Virtual call sequence:           Direct call:
 
 ### Q1: Benchmark virtual vs direct call in a 10M iteration loop
 
-```cpp
+To make the cost concrete, here is a benchmark that puts virtual dispatch, compiler-devirtualized dispatch, and a plain non-virtual call side by side. The key thing to watch is the `DerivedFinal` case - marking a class `final` tells the compiler no further derivation is possible, so it can devirtualize the call even when the pointer type is `Base*`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -89,13 +92,17 @@ int main() {
     // Devirt (known type):  ~12 ms  (compiler sees Derived type)
     // Direct (non-virtual): ~10 ms  (inlined!)
 }
-
 ```
+
+Notice that `DerivedFinal` through a `Base*` pointer achieves nearly the same time as calling the concrete type directly. That is devirtualization: the compiler looked at the declaration, saw `final`, and replaced the indirect call with a direct one. No runtime change, just a compile-time annotation.
 
 ### Q2: Contiguous storage enables devirtualization via type homogeneity
 
-```cpp
+The pointer-array pattern (`vector<unique_ptr<Shape>>`) is the classic way to write polymorphic code in C++, but it has two performance strikes against it. First, every `area()` call is a virtual dispatch. Second, following a `unique_ptr` to get to the object is a pointer dereference - you're jumping to a random heap address for each element.
 
+This example compares three approaches with the same data and measures the gap:
+
+```cpp
 #include <iostream>
 #include <vector>
 #include <memory>
@@ -186,13 +193,15 @@ int main() {
     // Variant:     ~100ms (no vtable, contiguous, but visit overhead)
     // Homogeneous: ~30ms  (direct+inlined, perfect cache locality)
 }
-
 ```
+
+The 8x gap between virtual and homogeneous is not unusual. Homogeneous arrays win on two fronts simultaneously: the calls are direct (possibly inlined), and the memory access is a straight linear scan that the hardware prefetcher handles perfectly.
 
 ### Q3: `final` keyword enables devirtualization
 
-```cpp
+The `final` keyword is the cheapest optimization in this topic - it costs nothing at runtime and only requires a one-word annotation at the class declaration. When the compiler sees `Cat final`, it knows no subclass can override `speak()`, so a call through a `Cat*` or a call where the type is provably `Cat` can be turned into a direct branch.
 
+```cpp
 #include <iostream>
 #include <chrono>
 
@@ -248,8 +257,9 @@ int main() {
     //   Dog via Animal*: callq *(%rax)    <- indirect
     //   Cat final:       callq Cat::speak <- direct (or inlined!)
 }
-
 ```
+
+You can verify what the compiler actually produced by inspecting the assembly output. An indirect call looks like `callq *(%rax)` - it reads the target from a register. A devirtualized call looks like `callq Cat::speak` - the target is baked in at compile time, and the CPU's branch predictor handles it easily.
 
 ---
 

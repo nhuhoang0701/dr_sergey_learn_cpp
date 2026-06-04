@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-GCC/Clang support `[[gnu::hot]]` and `[[gnu::cold]]` attributes to hint the compiler about function execution frequency, affecting section placement, inlining decisions, and instruction cache locality.
+GCC and Clang support `[[gnu::hot]]` and `[[gnu::cold]]` attributes to give the compiler a hint about how often a function executes. That hint flows into three real decisions: which ELF section the function lands in, how aggressively the compiler tries to inline it, and whether to optimize it for speed or for size.
+
+The reason this matters is instruction cache locality. When unrelated cold code - error handlers, logging, rarely-hit fallbacks - is interleaved with your hot loop body in the same `.text` section, both fight for the same cache lines. Splitting them into separate sections means the CPU's instruction cache is filled only with the code you actually run in the critical path.
 
 | Attribute | Effect |
 | --- | --- |
@@ -16,8 +18,9 @@ GCC/Clang support `[[gnu::hot]]` and `[[gnu::cold]]` attributes to hint the comp
 | `[[gnu::cold]]` | Places function in `.text.unlikely`, lower inlining priority, size-optimized |
 | (no attribute) | Default `.text` section |
 
-```cpp
+Here is a picture of how the linker lays things out after you apply these attributes:
 
+```cpp
 Memory layout with hot/cold splitting:
 
   .text.hot      .text          .text.unlikely
@@ -28,8 +31,9 @@ Memory layout with hot/cold splitting:
   | loop()  |   |         |    |         |
   +---------+   +---------+    +---------+
   <-- hot in icache -->        <-- rarely loaded -->
-
 ```
+
+The cold functions still exist and work correctly - they just live far away in memory so they never pollute your hot code's cache lines.
 
 ---
 
@@ -37,8 +41,9 @@ Memory layout with hot/cold splitting:
 
 ### Q1: Mark an error handler with `[[gnu::cold]]`
 
-```cpp
+This example puts the ideas into practice. The hot processing function and cold error handlers are annotated, and the comments show you how to verify the section placement with standard tools after you build.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <cstdlib>
@@ -79,13 +84,15 @@ int main() {
     int data[] = {1, 2, 3, 4, 5};
     std::cout << process(data, 5) << '\n';  // 15
 }
-
 ```
+
+Notice that `[[unlikely]]` on the branch and `[[gnu::cold]]` on the called function reinforce each other - the branch hint tells the compiler this path is rare, while the cold attribute tells it to move the function body to a separate section entirely.
 
 ### Q2: `[[gnu::hot]]` effects on inlining and section placement
 
-```cpp
+When both the caller and the callee carry `[[gnu::hot]]`, the compiler raises its willingness to inline. Think of it as bumping the inlining budget for that function. The comments below explain exactly what the attribute unlocks.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -128,13 +135,15 @@ int main() {
     matrix_multiply(A, B, C, 2, 2, 2);
     std::cout << C[0] << " " << C[1] << '\n';  // 19 22
 }
-
 ```
+
+When `dot_product` is inlined into `matrix_multiply`, the call overhead disappears and the loop body becomes a tight multiply-accumulate sequence. That is where `[[gnu::hot]]` earns its keep.
 
 ### Q3: Cold placement reduces instruction cache pressure
 
-```cpp
+Here is the core intuition for why cold splitting helps: every function that shares a cache line with your hot loop is a function that can evict hot instructions. Moving cold code to `.text.unlikely` keeps your hot path compact enough to fit in fewer cache lines.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -185,8 +194,9 @@ int main() {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
     std::cout << "Time: " << ms.count() << "ms\n";
 }
-
 ```
+
+The 10-30% reduction in icache misses cited in the comment is typical for loops where the cold path is large (logging, diagnostics) relative to the hot path. The bigger the cold blob you remove, the more compact - and cache-friendly - your hot section becomes.
 
 ---
 

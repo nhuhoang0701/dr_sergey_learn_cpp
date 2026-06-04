@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Normal stores follow the cache hierarchy: read the cache line into L1, modify it, write back. For write-only buffers larger than the cache, this wastes bandwidth reading data we'll immediately overwrite. Non-temporal stores bypass the cache, writing directly to memory.
+A normal (temporal) store doesn't just write to memory - it first *reads* the entire 64-byte cache line into L1, modifies the relevant bytes, and then writes back when the line is eventually evicted. For a write-only buffer that is larger than your cache, this read step is completely wasted. You're pulling gigabytes of data into the cache just to overwrite it, while also evicting all the other data you actually care about.
+
+Non-temporal stores cut out that unnecessary read. They write directly to a write-combining buffer and flush full cache lines straight to DRAM, bypassing the cache hierarchy entirely.
 
 ```cpp
-
 Temporal store (normal):             Non-temporal store:
 
   1. Read cache line (64B from DRAM)   1. Write directly to write-combine buffer
@@ -20,8 +21,9 @@ Temporal store (normal):             Non-temporal store:
 
   READ bandwidth: wasted!              READ bandwidth: saved!
   Cache: polluted with write-only data Cache: untouched!
-
 ```
+
+The table below summarizes the trade-offs. The most important thing to notice is the write ordering row - non-temporal stores are weakly ordered, which means you *must* call `_mm_sfence()` before any code that reads the data you just wrote.
 
 | Feature | Temporal store | Non-temporal store |
 | --- | --- | --- |
@@ -37,8 +39,9 @@ Temporal store (normal):             Non-temporal store:
 
 ### Q1: Non-temporal store with `_mm_stream_si128`
 
-```cpp
+Here you can see three variants side by side: the normal fill, the SSE non-temporal fill, and the AVX2 version. The key pattern is always the same: use the streaming store intrinsic in the main loop, handle the leftover elements with a scalar loop, then call `_mm_sfence()`.
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <immintrin.h>  // SSE/AVX intrinsics
@@ -104,13 +107,15 @@ int main() {
 
     std::free(data);
 }
-
 ```
+
+The roughly 70% throughput improvement here reflects the fact that normal stores on a 256 MB buffer are burning almost half their memory bandwidth on reads that produce no useful work. The non-temporal path simply removes that overhead.
 
 ### Q2: Why non-temporal stores avoid cache pollution
 
-```cpp
+This example illustrates an often-overlooked benefit of non-temporal stores: keeping your *hot* data safe. When you have a small working set that fits in L1 and you're writing a large output, temporal stores will evict your hot data on every write. The non-temporal store leaves the cache alone.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -164,13 +169,15 @@ int main() {
 
     std::free(output);
 }
-
 ```
+
+The hot array here is only 4 KB - it easily fits in L1. But every temporal write to the large `output` array pushes some of those hot bytes out. With non-temporal stores, the output stream goes straight to DRAM without disturbing L1 at all.
 
 ### Q3: Benchmark video frame clear: temporal vs non-temporal
 
-```cpp
+A video frame clear is an ideal use case for non-temporal stores: it's write-only, the buffer is much larger than the cache, and you never read it back immediately. At 60 FPS you're clearing 500 MB/s, so the saved bandwidth adds up quickly.
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <immintrin.h>
@@ -228,8 +235,9 @@ int main() {
     //   temporal:     LLC-store-misses: 130,000 per frame
     //   non-temporal: LLC-store-misses:       0 per frame
 }
-
 ```
+
+The `perf stat` command at the bottom is the key verification step. The LLC-store-misses counter tells you directly whether the frame data is hitting the L3 cache or bypassing it. For a 60 FPS rendering loop, having zero L3 store-misses means the entire L3 stays available for textures, AI state, and physics - exactly where you want it.
 
 ---
 

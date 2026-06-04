@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Writing branch-predictor-friendly code means structuring branches so the common path is predictable and fall-through, minimizing costly mispredictions.
+Writing branch-predictor-friendly code means structuring your branches so the common path is predictable and falls through naturally, minimizing the costly pipeline flushes that mispredictions cause. There are a few concrete techniques you can reach for, ranging from simple ordering choices to eliminating branches entirely.
+
+If you remember only one thing from this topic: a branch the CPU cannot predict costs you 15-20 cycles every time it mispredicts. For a tight loop, that can easily 3-4x your runtime. The techniques below address this at different levels.
 
 | Technique | Description | Benefit |
 | --- | --- | --- |
@@ -18,13 +20,13 @@ Writing branch-predictor-friendly code means structuring branches so the common 
 | Branchless arithmetic | Replace branch with `cmov` or math | Eliminates misprediction entirely |
 | Loop peeling | Handle boundary cases outside loop | Removes branches from hot loop |
 
-```cpp
+The most powerful option - and the cleanest fallback when you have truly unpredictable data - is to eliminate the branch entirely with arithmetic or conditional moves:
 
+```cpp
 Branchy hot loop:                   Branchless equivalent:
   for each x:                        for each x:
     if (x >= 128)   <- 50% miss        sum += (x >= 128) * x;
       sum += x;                         ^-- no branch, just multiply
-
 ```
 
 ---
@@ -33,8 +35,9 @@ Branchy hot loop:                   Branchless equivalent:
 
 ### Q1: Mispredict penalty on out-of-order CPUs
 
-```cpp
+Understanding why the penalty is specifically 10-20 cycles helps you reason about when it matters and when it does not. The key is that modern out-of-order CPUs keep a large window of speculative work in flight - far more than the simple pipeline picture suggests.
 
+```cpp
 #include <iostream>
 
 // Modern out-of-order (OoO) CPUs execute instructions speculatively:
@@ -69,13 +72,15 @@ int main() {
     std::cout << "  4. Refill pipeline:   ~5 cycles\n";
     std::cout << "  Total: ~15 cycles on Skylake\n";
 }
-
 ```
+
+The reason this trips people up is the phrase "tight loops there's nothing else to do." An out-of-order CPU can often hide a mispredict by executing independent instructions from other parts of the program while the pipeline refills. But in a hot loop the CPU is fully committed to executing loop iterations - there is no slack work to absorb the penalty.
 
 ### Q2: Fall-through path optimization
 
-```cpp
+Compilers and CPUs both have a bias toward forward-not-taken branches. The compiler exploits this when it lays out code: it tries to place the common path as straight-line instructions and put rare paths (error handling, cold branches) out-of-line. You can help the compiler make the right choice by using `[[likely]]`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -122,13 +127,15 @@ int main() {
     // Difference is small here (predictor learns), but code layout
     // affects icache: common-first keeps hot code contiguous.
 }
-
 ```
+
+The hardware predictor will learn the 99% pattern in both versions, so the runtime difference is modest. But the code layout effect is real: keeping the common path as straight-line code means it occupies fewer instruction cache lines and is less likely to compete with other hot code for cache space.
 
 ### Q3: Branchless arithmetic eliminates misprediction
 
-```cpp
+When the data is genuinely random and the predctor has no chance to learn, the only reliable fix is to eliminate the branch entirely. Branchless arithmetic replaces the conditional jump with a multiplication or bitmask that the CPU executes without any prediction at all.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -191,8 +198,9 @@ int main() {
     // Branchless mask: ~8 ms   (same, different approach)
     // 3x speedup from eliminating branches!
 }
-
 ```
+
+Notice that the branchless versions also tend to auto-vectorize better. Without a branch breaking the data dependency chain, the compiler can transform the inner loop into SIMD instructions that process multiple elements simultaneously, stacking a vectorization speedup on top of the branch-elimination speedup.
 
 ---
 
@@ -200,6 +208,6 @@ int main() {
 
 - `[[likely]]` / `[[unlikely]]` (C++20) affect compiler code layout, not hardware prediction.
 - `__builtin_expect(expr, val)` is the pre-C++20 GCC/Clang equivalent.
-- The compiler at `-O2`+ often converts simple branches to cmov automatically.
+- The compiler at `-O2`+ often converts simple branches to `cmov` automatically.
 - For complex conditions, manually writing branchless code can beat the compiler.
 - Profile first with `perf stat -e branch-misses` to confirm misprediction is the bottleneck.

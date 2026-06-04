@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-The roofline model predicts performance as a function of arithmetic intensity (FLOP/byte). A kernel is either **compute-bound** or **memory-bound**.
+When a piece of code is running slower than you expect, the roofline model gives you a framework to diagnose why. The idea is simple: every kernel is limited by one of two things - either the CPU cannot compute fast enough (compute-bound), or memory cannot deliver data fast enough (memory-bound). The roofline model shows you which ceiling you are hitting.
+
+The key metric is **arithmetic intensity**: the ratio of floating-point operations to bytes of memory traffic (FLOP/byte). A kernel with high arithmetic intensity does a lot of computation per byte of data moved - it is likely compute-bound. A kernel with low arithmetic intensity spends most of its time waiting for data - it is memory-bound.
 
 ```cpp
-
   Performance (GFLOP/s)
        ^
        |         _______________
@@ -26,8 +27,11 @@ The roofline model predicts performance as a function of arithmetic intensity (F
       memory-bound          compute-bound
 
   Ridge point = peak_GFLOPS / peak_bandwidth_GB_s
-
 ```
+
+The **ridge point** is the arithmetic intensity where the memory bandwidth ceiling meets the compute ceiling. If your kernel's arithmetic intensity is below the ridge point, you are memory-bound; above it, you are compute-bound.
+
+Here is how common kernels fall on that scale:
 
 | Kernel | FLOP/byte | Bound |
 | --- | --- | --- |
@@ -42,8 +46,9 @@ The roofline model predicts performance as a function of arithmetic intensity (F
 
 ### Q1: Arithmetic intensity of DGEMM vs stream copy
 
-```cpp
+Working out the arithmetic intensity by hand is the most important skill here. You count the FLOPs the kernel performs and the bytes it reads and writes, then take the ratio. The examples below cover several common kernels and then classify them against a representative machine's ridge point:
 
+```cpp
 #include <iostream>
 #include <cmath>
 
@@ -91,13 +96,15 @@ int main() {
     classify("SpMV          ", 0.5);
     classify("DGEMM (N=1024)", 85.0);
 }
-
 ```
+
+The DGEMM result is striking. A 1024x1024 matrix multiply has an arithmetic intensity of 85 FLOP/byte - well above the ridge point of 4.0 (200/50). Every byte fetched from memory is used for 85 arithmetic operations. That is why matrix multiply benefits so dramatically from SIMD and cache blocking, and why it is the canonical compute-bound kernel.
 
 ### Q2: Roofline model to classify compute-bound vs memory-bound
 
-```cpp
+You can verify the roofline classification experimentally by measuring actual GFLOP/s and comparing to the theoretical limits. A memory-bound kernel will plateau at `bandwidth * AI` regardless of how much you optimize the compute path; a compute-bound kernel will plateau at `peak_gflops`:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -145,13 +152,15 @@ int main() {
     // Stream triad: ~10 GFLOP/s (bounded by memory bandwidth)
     // Compute heavy: ~100 GFLOP/s (bounded by CPU FLOP throughput)
 }
-
 ```
+
+If you add more arithmetic to the stream triad without increasing data movement, its measured GFLOP/s will not improve - that is the signature of a memory-bound kernel. If you add more arithmetic to the compute-heavy kernel, it slows down proportionally - that is the signature of a compute-bound kernel.
 
 ### Q3: Loop fusion to increase arithmetic intensity
 
-```cpp
+One of the most practical roofline-improving techniques is loop fusion. If you have two separate loops that process the same array, fusing them into one loop means the data gets loaded from memory once instead of twice, effectively doubling the arithmetic intensity:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -200,15 +209,16 @@ int main() {
     bench(fused,   "Fused (1 pass)    ");
     // Typical: fused is 30-50% faster (one memory pass vs two)
 }
-
 ```
+
+The key insight in the fused version is that `a[i]` lives in a register between the two computations. It is never written to memory and read back - the intermediate result flows directly from the first operation to the second. For large N where `a[]` has been evicted from cache by the time the second loop starts, the unfused version is essentially paying for two full memory passes.
 
 ---
 
 ## Notes
 
-- **Ridge point** = Peak GFLOP/s ÷ Peak bandwidth (GB/s). Below it: memory-bound.
-- Most real-world code is memory-bound (AI < 1). Optimization = reduce data movement.
-- Loop fusion, tiling, and AoS-to-SoA transforms increase arithmetic intensity.
-- Intel tools: `likwid-perfctr` and `Intel Advisor` can generate roofline plots automatically.
-- Stream benchmark (`STREAM Triad`) measures practical memory bandwidth.
+- **Ridge point** = Peak GFLOP/s divided by Peak bandwidth (GB/s). Kernels with arithmetic intensity below this point are memory-bound.
+- Most real-world code is memory-bound (AI < 1). This means the most impactful optimizations are those that reduce data movement, not those that speed up arithmetic.
+- Loop fusion, tiling, and AoS-to-SoA transforms all increase arithmetic intensity by reusing data that is already in cache.
+- Intel tools: `likwid-perfctr` and `Intel Advisor` can generate roofline plots automatically from hardware counters.
+- The STREAM benchmark (`STREAM Triad`) measures practical memory bandwidth - use it to calibrate your roofline model for a specific machine.

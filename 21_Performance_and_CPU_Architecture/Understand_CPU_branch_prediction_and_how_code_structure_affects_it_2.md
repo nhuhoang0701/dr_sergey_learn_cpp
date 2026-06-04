@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-When the CPU mispredicts a branch, it must flush the speculative pipeline and restart from the correct path. On modern superscalar CPUs, this costs 10–20 cycles of wasted work.
+When the CPU mispredicts a branch, it must flush the speculative pipeline and restart from the correct path. On modern superscalar CPUs, this costs 10-20 cycles of wasted work. The reason this trips people up is that "10-20 cycles" sounds abstract until you connect it to what is physically happening: the CPU has already speculatively fetched, decoded, and started executing a dozen or more instructions down the wrong path. All of that work is discarded.
+
+The picture below shows the contrast between a correct prediction (the pipeline keeps flowing) and a mispredict (everything speculatively in flight is thrown away and the pipeline stalls while it refills from the correct target):
 
 ```cpp
-
 Pipeline on correct prediction:     Pipeline on mispredict:
 
   Fetch -> Decode -> Execute          Fetch -> Decode -> Execute
@@ -20,8 +21,9 @@ Pipeline on correct prediction:     Pipeline on mispredict:
    [C]     [D]      [E]                FLUSH   FLUSH     FLUSH
    ~3 instructions in flight            restart from correct path
                                         ~15 cycles wasted!
-
 ```
+
+The cost scales with pipeline depth. Deeper pipelines keep more speculative work in flight, so there is more to throw away when the prediction is wrong.
 
 | CPU | Pipeline depth | Mispredict cost |
 | --- | --- | --- |
@@ -35,10 +37,11 @@ Pipeline on correct prediction:     Pipeline on mispredict:
 
 ## Self-Assessment
 
-### Q1: Why mispredictions cost 10–20 cycles
+### Q1: Why mispredictions cost 10-20 cycles
+
+The comments here do the heavy lifting. This code is set up to isolate the branch-prediction effect by comparing two inputs to the same loop - one where the branch is always taken (100% predictable) and one where it is random (50% mispredict rate). The only variable is the data.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -85,13 +88,15 @@ int main() {
     // Typical: Predictable ~80ms, Random ~250ms (3x slower!)
     // The only difference: branch prediction accuracy.
 }
-
 ```
+
+The 3x slowdown from a single branch in a tight loop is a striking result. The branch itself is trivial - one comparison and one conditional jump. All the cost comes from the pipeline flushes.
 
 ### Q2: Sorting inputs to minimize branch mispredictions
 
-```cpp
+Sorting is a classic technique for turning an unpredictable branch into a predictable one. When data is sorted, the branch outcome changes only once - at the transition point - so the predictor makes virtually no mistakes.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -141,13 +146,15 @@ int main() {
     //           ^--- all not-taken ---^^--- all taken ---^
     //           Only 1 mispredict at the 127->128 transition!
 }
-
 ```
+
+Of course sorting has its own cost - O(N log N) - so this technique only makes sense when you will process the data many times, or when you can sort once and reuse. If you only pass through the data once, a branchless formulation is usually the better answer.
 
 ### Q3: Measuring with `perf stat -e branch-misses`
 
-```cpp
+Here is how to run a controlled experiment with `perf stat` to confirm that the performance difference is actually coming from branch mispredictions and not something else (cache misses, instruction throughput, etc.).
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <random>
@@ -219,8 +226,9 @@ int main() {
     version_unsorted();
 #endif
 }
-
 ```
+
+The `perf stat` output is the definitive evidence: 250 million branch misses on the unsorted run versus 100 thousand on the sorted run. That is a 2500x reduction in mispredictions, which translates directly into the 4x wall-clock speedup. When you see a loop that is slower than expected and you cannot explain it from cache behavior alone, branch misses are the next thing to check.
 
 ---
 

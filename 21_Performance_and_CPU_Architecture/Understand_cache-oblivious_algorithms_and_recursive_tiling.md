@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-Cache-oblivious algorithms achieve optimal cache performance on all levels of the memory hierarchy without knowing cache sizes. They use recursive divide-and-conquer until subproblems fit in any cache.
+The typical approach to making an algorithm cache-friendly is to pick a block size that fits in L1 or L2 cache and tile your loops around it. That works, but it has a catch: the right block size depends on the machine. An 8KB tile that fits beautifully in L1 on one CPU might be wrong on the next generation.
+
+Cache-oblivious algorithms take a different approach. Instead of tuning to a specific cache size, they use recursive divide-and-conquer to keep splitting the problem into halves until the subproblem is small enough to fit in whatever cache level the CPU has. Because the recursion creates subproblems of every possible size, something will always fit - in L1 on some machines, in L2 on others - and the algorithm adapts automatically without any parameters.
+
+The naive matrix multiply is the canonical bad example. The inner loop accesses column `j` of `B`, which means jumping `N * sizeof(double)` bytes between consecutive accesses. For a 1024-column matrix, that is 8 KB per step - every access misses L1:
 
 ```cpp
-
 Naive triple-loop matrix multiply:      Recursive (cache-oblivious):
   for i: 0..N                             split(A, B, C) {
     for j: 0..N                              if small enough: naive multiply
@@ -21,8 +24,9 @@ Naive triple-loop matrix multiply:      Recursive (cache-oblivious):
   Accesses B column-wise:                    }
   stride = N * sizeof(double)             Each sub-problem eventually fits
   -> cache misses on every access!        in L1 -> minimal cache misses
-
 ```
+
+Here is how the cache complexity compares across approaches. `B` is the cache line size and `M` is the cache size:
 
 | Algorithm | Cache complexity | Notes |
 | --- | --- | --- |
@@ -37,8 +41,9 @@ Naive triple-loop matrix multiply:      Recursive (cache-oblivious):
 
 ### Q1: Why recursive matrix multiplication has better cache behavior
 
-```cpp
+The recursive version splits the matrix into quadrants and recurses until the subproblem is small enough to fit in L1 cache. At that point, all the data for a base-case multiply is resident - no cache misses during the inner loops. The example below benchmarks both approaches so you can see the wall-clock difference:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -100,13 +105,15 @@ int main() {
     // N=512: Naive ~400ms, Recursive ~150ms (2.5x faster)
     // The difference grows with N (more cache misses in naive)
 }
-
 ```
+
+The 2.5x speedup at N=512 comes purely from cache behavior. Both algorithms do exactly the same number of multiplications and additions.
 
 ### Q2: Cache-oblivious merge sort
 
-```cpp
+Merge sort is naturally cache-oblivious. You just keep dividing until the subarray fits in cache - there are no tuning parameters at all. The reason this works is that once a subarray fits in L1 (around 4000 integers for a 32 KB cache), the merge of two sub-sorted halves reads and writes entirely from L1. By the time you get back up the recursion tree, the intermediate results for those pieces are already warm in L2 or L3.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -156,13 +163,15 @@ int main() {
     std::cout << "std::sort (introsort):      " << ms2.count() << " ms\n";
     std::cout << "Sorted correctly: " << std::is_sorted(data.begin(), data.end()) << '\n';
 }
-
 ```
+
+`std::sort` will likely be faster in practice because introsort is highly tuned with small-array optimizations and an insertion sort base case. The point of this example is to show that a straightforward recursive merge sort already has good cache behavior without any tuning.
 
 ### Q3: Performance cliff at L1, L2, L3 boundaries
 
-```cpp
+If you want to see cache effects directly, the pointer-chasing benchmark is the classic tool. It creates a random permutation and follows it in circles - the pattern is intentionally unpredictable, so the hardware prefetcher cannot help. The only thing that determines how long each step takes is which cache level holds the data.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -212,15 +221,16 @@ int main() {
     //    8 MB: ~12 ns     (L3 boundary)
     //   16 MB: ~60 ns     (DRAM)       <-- cliff!
 }
-
 ```
+
+When you run this, you will see latency jump sharply at the L1/L2 boundary, again at L2/L3, and again when you fall off into DRAM. Those are the same cliffs that cache-oblivious algorithms are designed to stay away from.
 
 ---
 
 ## Notes
 
-- Cache-oblivious algorithms don't need cache-size parameters — they adapt automatically.
-- Key insight: recursive subdivision ensures subproblems fit in *every* cache level.
-- Real-world use: FFTW (fastest FFT) uses cache-oblivious recursive algorithms.
+- Cache-oblivious algorithms don't need cache-size parameters - they adapt automatically to every cache level.
+- The key insight is that recursive subdivision ensures subproblems fit in every cache level, not just the smallest.
+- Real-world use: FFTW (one of the fastest FFT libraries) uses cache-oblivious recursive algorithms.
 - Cache complexity notation: O(f(N, M, B)) where M = cache size, B = cache line size.
-- For practical code, cache-aware blocking (tuned to L1/L2 size) often beats cache-oblivious by 10-20%.
+- For practical code, cache-aware blocking (tuned to L1/L2 size) often beats cache-oblivious by 10-20% on a known target, but requires re-tuning per CPU.

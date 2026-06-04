@@ -9,10 +9,13 @@
 
 ## Topic Overview
 
-Compilers insert padding between struct members to satisfy alignment requirements. Field ordering dramatically affects struct size.
+Compilers insert silent padding bytes between struct members to keep each member aligned to its natural boundary. The tricky part is that this happens automatically and invisibly, so a struct can end up much larger than the sum of its fields.
+
+The rule of thumb is that every member must start at an address that is a multiple of its own `alignof`. So a `double` (8-byte aligned) that follows a single `char` forces the compiler to insert 7 bytes of dead space before it. The struct's total size is then rounded up to a multiple of the largest member's alignment.
+
+Here is a side-by-side picture of a badly ordered and a well ordered struct:
 
 ```cpp
-
 Poorly ordered (24 bytes):       Well ordered (16 bytes):
 
 struct Bad {                     struct Good {
@@ -22,8 +25,9 @@ struct Bad {                     struct Good {
   int   i;   // offset 16         char   a;  // offset 14 (1)
   // 4 bytes padding               char   b;  // offset 15 (1)
 };           // size = 24         };           // size = 16
-
 ```
+
+Simply reordering the fields from largest to smallest cuts 8 bytes - a 33% reduction - without changing anything else about the program. Multiply that by a million elements in an array, and you have saved 8 MB and noticeably improved cache utilization.
 
 | Rule | Description |
 | --- | --- |
@@ -39,8 +43,9 @@ struct Bad {                     struct Good {
 
 ### Q1: Reveal padding with `sizeof` and `offsetof`, then reorder
 
-```cpp
+The standard way to investigate a struct's layout is with `sizeof` and `offsetof`. `sizeof` tells you the total size including padding, and `offsetof` shows you exactly where each field lands - so you can spot the gaps.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 
@@ -80,13 +85,15 @@ int main() {
     // Padded:  24 MB
     // Compact: 16 MB  (33% less memory, better cache utilization)
 }
-
 ```
+
+Notice that in `Padded` there is a 7-byte gap between `a` and `d`, and a 3-byte gap between `b` and `i`. Those bytes do nothing useful. In `Compact`, all four fields fit end-to-end because the largest type comes first and the small types pack tightly at the end.
 
 ### Q2: `__attribute__((packed))` and alignment fault risk
 
-```cpp
+You can also force a struct to have zero padding with `__attribute__((packed))` or `#pragma pack`. This is tempting because it minimizes size, but it comes with a real cost: members may end up at misaligned addresses, which causes hardware penalties or outright faults on strict-alignment platforms.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <cstdint>
@@ -133,13 +140,15 @@ int main() {
 
     std::cout << "Reordered: " << sizeof(Reordered) << '\n';  // 16
 }
-
 ```
+
+The reason this trips people up is that x86 silently handles misaligned reads - you just pay a performance tax - while ARM and RISC-V can signal a bus error. Code written on x86 that relies on packing can silently break when ported to embedded or mobile platforms. Reordering fields is almost always the right answer instead.
 
 ### Q3: Packed vs aligned struct cache efficiency in arrays
 
-```cpp
+This benchmark makes the performance difference concrete. The packed struct saves memory, but every array access may straddle a cache-line boundary, costing extra cycles on every read.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -193,8 +202,9 @@ int main() {
     //
     // Verdict: reorder fields > pack. Only pack for wire protocols.
 }
-
 ```
+
+The verdict in the comment is worth repeating: reordering fields beats packing in almost every real-world scenario. Packing belongs in network protocols and file formats where you need an exact on-the-wire layout that must match a spec - not in data structures you access in a hot loop.
 
 ---
 
@@ -205,4 +215,4 @@ int main() {
 - Use `static_assert(sizeof(T) == expected)` to catch layout changes.
 - `-Wpadded` (GCC/Clang) warns about implicit padding.
 - Packing is appropriate for network protocols and file formats where layout must be exact.
-- For arrays, the savings compound: 8 bytes × 1M elements = 8MB less memory.
+- For arrays, the savings compound: 8 bytes x 1M elements = 8MB less memory.

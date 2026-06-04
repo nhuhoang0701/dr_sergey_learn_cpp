@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on practical prefetch patterns in hot loops — complementing #542 (basics + excessive prefetch) and #624 (C++26 std::prefetch + locality levels).
+This topic focuses on practical prefetch patterns in hot loops - complementing #542 (basics + excessive prefetch) and #624 (C++26 std::prefetch + locality levels).
+
+The basic hot-loop prefetch pattern is straightforward: in each iteration, issue a prefetch for the address you will need D iterations from now. By the time the loop reaches that iteration, the data has already been fetched from DRAM into cache.
 
 ```cpp
-
 Hot loop prefetch pattern:
   for (int i = 0; i < N; ++i) {
       __builtin_prefetch(&data[i + D]);  // D = prefetch distance
@@ -19,10 +20,11 @@ Hot loop prefetch pattern:
   }
 
   Optimal D = memory_latency / iteration_time
-  DRAM latency: ~100ns, iteration: ~5ns -> D ≈ 20
-  L3 latency:   ~10ns, iteration:  ~5ns -> D ≈ 2
-
+  DRAM latency: ~100ns, iteration: ~5ns -> D ~= 20
+  L3 latency:   ~10ns, iteration:  ~5ns -> D ~= 2
 ```
+
+The reason this only pays off for irregular access is the hardware prefetcher. Modern CPUs track sequential and strided access patterns automatically and issue prefetches without any help from you. Software prefetching only adds value for patterns the hardware cannot predict - pointer chasing, random lookups, and indirect indexing.
 
 | Access pattern | HW prefetcher | SW prefetch needed? |
 | --- | --- | --- |
@@ -38,8 +40,11 @@ Hot loop prefetch pattern:
 
 ### Q1: Prefetch next cache line ahead of loop iteration
 
-```cpp
+The indirect array access pattern `a[indices[i]]` is a common source of cache misses in practice - think database lookups, graph traversal, or any scatter/gather operation. The hardware can predict the sequential access through `indices[]`, but cannot predict where `a[indices[i]]` will land.
 
+The fix: each iteration, look D steps ahead in the indices array and prefetch the corresponding element of `a`:
+
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -93,13 +98,15 @@ int main() {
     // No prefetch:  ~120ms (constant DRAM misses)
     // With prefetch: ~80ms  (33% faster, latency partially hidden)
 }
-
 ```
+
+The improvement is "partial" because latency hiding is never perfect. Some cache misses still complete late when the computation catches up with the prefetch pipeline. Experiment with the distance value - on some machines and some data sizes, D=8 beats D=16, and on others the opposite is true.
 
 ### Q2: Prefetch 8-16 iterations ahead for pointer-chasing
 
-```cpp
+Pointer-chasing in a linked list is fundamentally hard to prefetch because each node's next pointer is only readable after the current node has been fetched. Single-step prefetch (look 1 node ahead) only hides L3 latency (~15ns). To hide full DRAM latency (~100ns), you need to walk 8 or more nodes ahead - which means paying the cost of reading those intermediate next pointers early.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -186,13 +193,15 @@ int main() {
     // Prefetch 8: ~40ms (DRAM latency partially hidden)
     // Diminishing returns beyond 8-16 (prefetch queue limited)
 }
-
 ```
+
+The deep-prefetch version is more complex because it maintains a `lookahead` pointer that is always D nodes ahead of the working `idx`. The prefetch queue in typical CPUs holds about 10-16 entries, so going beyond D=16 yields diminishing returns.
 
 ### Q3: Temporal vs non-temporal prefetch
 
-```cpp
+The locality parameter in `__builtin_prefetch` controls which cache levels receive the data. This distinction matters when your working set is large: pulling data into L1+L2+L3 with every prefetch can evict other useful data from those caches. For single-pass workloads, it is better to use a non-temporal prefetch that brings data only into L1 and lets it evict quickly.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -250,8 +259,9 @@ int main() {
     std::cout << "  L3 only (1): large working sets with some reuse\n";
     std::cout << "  L2+L3 (2): moderate working sets\n";
 }
-
 ```
+
+The 5-15% difference between temporal and non-temporal depends on the ratio of your working set to the available cache size. If the data fits in L3 anyway, it doesn't matter. If you are scanning multiple gigabytes and you have other hot data competing for cache space, the non-temporal hint is worth using.
 
 ---
 

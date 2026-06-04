@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-Runtime CPU feature detection allows a single binary to use the best available SIMD instructions (SSE2/AVX/AVX2/AVX-512) depending on the host CPU.
+You want to ship a single binary that runs on any x86-64 machine but automatically uses the best available SIMD instructions - SSE2 on older hardware, AVX2 on modern desktops, AVX-512 on servers. Runtime CPU feature detection is how you do that.
+
+There are several ways to achieve this, with different tradeoffs in overhead and control:
 
 | Method | When resolved | Overhead | Portability |
 | --- | --- | --- | --- |
@@ -18,14 +20,17 @@ Runtime CPU feature detection allows a single binary to use the best available S
 | `target_clones` attribute | Load time (automatic) | 0 per call | GCC 6+/Clang 14+ |
 | CPUID manually | Runtime | Higher | Any compiler |
 
+The key insight is that `__builtin_cpu_supports` checks a CPU feature flag at runtime, but the overhead (~1ns for a branch) is only paid once per call to the dispatching function, not once per iteration of the inner loop. The inner loop itself runs at full SIMD speed.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Runtime dispatch with `__builtin_cpu_supports`
 
-```cpp
+The simplest dispatch pattern: write two implementations with different `target` attributes, then check `__builtin_cpu_supports` at call time to pick the right one. The overhead is one branch per call to `add_arrays`, not per element:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -72,13 +77,15 @@ int main() {
     add_arrays(a.data(), b.data(), c.data(), 1000);
     std::cout << "a[0] = " << a[0] << '\n';  // 3.0
 }
-
 ```
+
+Notice that each implementation is annotated with `__attribute__((target("avx2")))` or `__attribute__((target("sse2")))`. This tells the compiler to use those instruction sets for that specific function, even if the rest of the translation unit was compiled without those flags. Without these attributes, the compiler would refuse to emit AVX2 instructions in a file compiled for the SSE2 baseline.
 
 ### Q2: `ifunc` for load-time dispatch
 
-```cpp
+If `add_arrays` is called very frequently (e.g., inside an inner loop), even a ~1ns branch per call adds up. `ifunc` eliminates that overhead by resolving the function pointer **once** at program load time through the dynamic linker, so subsequent calls go directly to the right implementation with no branching at all.
 
+```cpp
 #include <iostream>
 
 // ifunc resolves the function pointer ONCE at load time (dynamic linker).
@@ -119,13 +126,15 @@ int main() {
         std::cout << a[i] << ' ';  // 11 22 33 44 55 66 77 88
     std::cout << '\n';
 }
-
 ```
+
+The mechanism works because the dynamic linker, when it sets up the GOT (Global Offset Table) entry for `add_vectors`, calls `resolve_add` and stores the returned pointer. Every call to `add_vectors` in the program then jumps directly to `impl_avx2` or `impl_sse2` - no conditional branch, no CPU feature check.
 
 ### Q3: `target_clones` for automatic multi-versioning
 
-```cpp
+`ifunc` requires you to write both the resolver and the multiple implementations manually. `target_clones` automates this: you write one function body, annotate it with the ISA variants you want, and the compiler generates the versions and the dispatch mechanism automatically.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -172,15 +181,16 @@ int main() {
     //   000000000040xxxx process.sse2:
     //   000000000040xxxx process.default:
 }
-
 ```
+
+`target_clones` is the right choice when you want multi-ISA dispatch with minimal code maintenance overhead. You get the full performance benefit of the best available ISA, automatic fallback, and you only have one copy of the function logic to maintain. The main cost is binary size: each clone adds the full compiled function.
 
 ---
 
 ## Notes
 
 - Call `__builtin_cpu_init()` before first use of `__builtin_cpu_supports()` (GCC).
-- `target_clones` is the easiest approach — just annotate the function, compiler does the rest.
+- `target_clones` is the easiest approach - just annotate the function, compiler does the rest.
 - `ifunc` gives manual control over dispatch logic (useful for complex decisions).
 - For portable code: use Highway or `std::experimental::simd` which handle dispatch internally.
 - `-march=native` compiles for the build machine only (not portable).

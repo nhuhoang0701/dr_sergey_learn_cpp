@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-The `[[gnu::hot]]` and `[[gnu::cold]]` attributes tell the compiler which functions are performance-critical vs. rarely executed. The compiler and linker use this to place hot functions contiguously and cold functions in a separate `.text.unlikely` section.
+The `[[gnu::hot]]` and `[[gnu::cold]]` attributes are your way of communicating execution frequency to the compiler and linker. `[[gnu::hot]]` says "optimize this aggressively and put it somewhere the instruction cache can easily keep it warm." `[[gnu::cold]]` says "this function rarely runs - minimize its footprint and push it away from the hot code."
+
+The payoff comes from how the linker groups sections. All `.text.hot` sections from every translation unit end up adjacent in the final binary. All `.text.unlikely` sections end up in a completely separate region. The hot working set is therefore physically contiguous in virtual memory, which means it occupies the fewest possible icache lines.
 
 ```cpp
-
 Object file layout with hot/cold sections:
 
 .text.hot:            (icache-dense, fits together)
@@ -27,7 +28,6 @@ Object file layout with hot/cold sections:
 
 Linker groups .text.hot sections from ALL .o files together.
 Result: the entire hot working set is contiguous in virtual memory.
-
 ```
 
 | Attribute | Section | Effect on optimizer |
@@ -42,8 +42,9 @@ Result: the entire hot working set is contiguous in virtual memory.
 
 ### Q1: Mark fast path `[[gnu::hot]]` and error handler `[[gnu::cold]]`, inspect layout
 
-```cpp
+The two attributes work together: `[[gnu::hot]]` on the main processing function tells the compiler to apply its most aggressive optimizations and place it in the hot section, while `[[gnu::cold]]` on the error handler keeps that bulky code out of the hot path entirely:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -96,13 +97,15 @@ int main() {
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0);
     std::cout << "Time: " << ms.count() << " ms\n";
 }
-
 ```
+
+The `readelf` and `objdump` commands in the comments are the way to verify this actually worked. If you see `.text.hot.fast_path` and `.text.unlikely.handle_negative` in the section list, the placement is correct.
 
 ### Q2: How cold functions go to `.text.unlikely` for icache improvement
 
-```cpp
+To understand why this matters, it helps to think about how the linker lays out the binary and how the instruction cache works. Functions that call each other frequently benefit from being physically adjacent - if `compute` and `process` both fit in the same few icache lines, they can stay resident together:
 
+```cpp
 #include <iostream>
 
 // The linker groups sections by name prefix:
@@ -144,13 +147,15 @@ int main() {
         r = process(i);
     std::cout << r << '\n';
 }
-
 ```
+
+The `nm --numeric-sort` command gives you the symbol addresses in order, so you can confirm that `compute` and `process` are adjacent while `log_error` and `print_trace` are at much higher addresses. That address gap is the physical separation between the hot and cold regions of your binary.
 
 ### Q3: Explicit hot/cold splitting vs. PGO-based automatic splitting
 
-```cpp
+When should you use manual attributes versus setting up a full PGO build? The answer depends on how confident you are about which code is actually hot and whether you can afford the build complexity.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -195,8 +200,9 @@ int main() {
     //  llvm-bolt app.pgo -o app.bolt -data=perf.data -reorder-functions
     //  // app.bolt: 10-20% faster than app.pgo for large binaries
 }
-
 ```
+
+The "use both together" recommendation is the practical takeaway. Explicit `[[gnu::cold]]` on obvious error paths is essentially free effort - error handlers are always cold, and marking them takes one line. PGO then handles the less obvious cases where your intuition might be wrong. The two approaches are complementary: PGO will not override explicit attributes, so you get the best of both.
 
 ---
 

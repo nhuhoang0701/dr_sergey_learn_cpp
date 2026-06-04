@@ -9,10 +9,13 @@
 
 ## Topic Overview
 
-This topic covers the C++26 `std::prefetch` proposal and practical prefetch strategies — complementing #542 which covers `__builtin_prefetch` basics and excessive prefetching.
+This topic covers the C++26 `std::prefetch` proposal and practical prefetch strategies - complementing #542 which covers `__builtin_prefetch` basics and excessive prefetching.
+
+The core idea behind prefetching is simple: memory latency is roughly 100ns when you miss all the way to DRAM, but your loop iteration might only take 5ns. If you can tell the CPU "I will need this address in about 20 iterations," it can start fetching that cache line in the background while you continue computing on data you already have. By the time you actually need the new data, it has already arrived.
+
+Today you do this with `__builtin_prefetch`. C++26 will standardize the same hint as `std::prefetch`:
 
 ```cpp
-
 __builtin_prefetch (GCC/Clang):             std::prefetch (C++26 P1007):
   __builtin_prefetch(ptr, 0, 3);              std::prefetch(ptr, std::pfhint::read);
   // Compiler-specific                        // Standard, portable
@@ -21,8 +24,9 @@ __builtin_prefetch (GCC/Clang):             std::prefetch (C++26 P1007):
 Both generate the same instruction:
   prefetcht0 [rdi]   (x86)
   prfm pldl1keep, [x0]  (ARM)
-
 ```
+
+The three `std::prefetch` hint values map directly to the three most common use cases:
 
 | Prefetch hint | `__builtin_prefetch` | `std::prefetch` (proposed) |
 | --- | --- | --- |
@@ -36,8 +40,11 @@ Both generate the same instruction:
 
 ### Q1: Overlap prefetch with compute
 
-```cpp
+The hash table lookup is the canonical case where prefetching pays off. The hardware prefetcher can predict sequential and strided access patterns, but random accesses to a hash table defeat it entirely. Every lookup causes a cache miss, and your loop sits idle waiting for DRAM.
 
+The fix is to compute where you will be looking in D iterations and issue a prefetch for that address now, letting the memory system work in parallel with your compute:
+
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -109,13 +116,15 @@ int main() {
     // No prefetch:  ~250ms (random L3 misses)
     // With prefetch: ~150ms (40% faster, latency hidden)
 }
-
 ```
+
+A 40% improvement from a few extra lines of code is a good return. The key is picking the right distance D - too small and the prefetch doesn't arrive in time, too large and you waste prefetch bandwidth on data the CPU would have fetched anyway.
 
 ### Q2: The four locality levels and when to use each
 
-```cpp
+The second argument to `__builtin_prefetch` (the `rw` parameter) controls read vs write. The third argument (the `locality` parameter) controls which cache levels to populate. This matters because polluting L2/L3 with data you will only use once evicts data that other parts of your code need.
 
+```cpp
 #include <iostream>
 
 // __builtin_prefetch(addr, rw, locality)
@@ -158,13 +167,17 @@ int main() {
     //  Use rw=1 when you KNOW you'll modify the data:
     //    __builtin_prefetch(output + i + 64, 1, 3);  // will write here
 }
-
 ```
+
+The reason to care about locality levels is cache pollution. If you use `locality=3` for a streaming scan that touches 2GB of data, you will thrash the L2 and L3 caches, pushing out data that your other hot loops actually reuse. Using `locality=0` for single-pass data is a courtesy to the rest of your working set.
 
 ### Q3: Prefetch speedup on linked-list traversal
 
-```cpp
+Linked-list traversal is the hardest case for the hardware prefetcher because each node contains the address of the next node. The prefetcher cannot know where to look next until it has read the current node - the dependency chain means it can only ever prefetch one step ahead, and that one step may already be a 100ns DRAM miss.
 
+Software prefetching lets you look further ahead by walking the list an extra step or two to retrieve future addresses before they are needed for computation:
+
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -259,8 +272,9 @@ int main() {
     // Prefetch 2 ahead: ~45ms (44% faster)
     // HW prefetcher: 0% help (random pattern)
 }
-
 ```
+
+Each node is padded to exactly one cache line (64 bytes) so that a prefetch always brings in exactly one useful node. Looking 2 nodes ahead rather than 1 gives another meaningful improvement because it gives the memory system more latency to hide. Looking further than 2-3 nodes ahead yields diminishing returns because the CPU's prefetch queue has limited capacity.
 
 ---
 

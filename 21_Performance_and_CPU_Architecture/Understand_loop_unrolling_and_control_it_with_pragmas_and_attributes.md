@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-Loop unrolling replicates the loop body multiple times per iteration, reducing loop overhead (compare, branch) and enabling the CPU to fill execution pipelines.
+Every loop iteration carries a small amount of overhead: increment the counter, compare against the limit, and branch back to the top. For a tight loop doing a tiny amount of work per iteration, that overhead can represent a significant fraction of the total time. Loop unrolling removes it by copying the loop body multiple times per iteration, so you branch back less often.
+
+There is a second benefit that matters just as much: unrolling creates opportunities for the CPU's out-of-order engine to find independent work. Four consecutive additions in a row can all start in the same cycle if they operate on different data; a single addition repeated in a loop cannot, because each iteration depends on the previous result.
+
+Here is the basic idea visually:
 
 ```cpp
-
 Original loop:                Unrolled x4:
   for (i=0; i<N; ++i)          for (i=0; i<N; i+=4) {
     a[i] = b[i] + c[i];          a[i]   = b[i]   + c[i];
@@ -20,7 +23,6 @@ Original loop:                Unrolled x4:
                                   a[i+3] = b[i+3] + c[i+3];
   1 branch per iteration        }
                                 1 branch per 4 iterations
-
 ```
 
 | Benefit | Drawback |
@@ -36,8 +38,9 @@ Original loop:                Unrolled x4:
 
 ### Q1: Manual unrolling with `#pragma`
 
-```cpp
+The `#pragma GCC unroll N` directive tells the compiler to unroll the following loop by a factor of N. The compiler still handles the cleanup for cases where N does not divide evenly into the loop count. The second function below shows full unrolling for a known small loop - the compiler emits 16 straight-line instructions with no branch at all.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -91,13 +94,17 @@ int main() {
     bench(add_unroll4,   "Unroll x4  ");
     // Compile: g++ -O2 -march=native -o test test.cpp
 }
-
 ```
+
+In practice, for a simple elementwise loop like this, the compiler will often vectorize it with SIMD and the unrolling difference becomes secondary. But for reduction loops with dependencies, the pragma really makes a difference - see Q2.
 
 ### Q2: When unrolling helps vs hurts
 
-```cpp
+The payoff from unrolling comes from breaking dependency chains. The serial sum example is ideal: a single accumulator forces every addition to wait for the previous one, limiting throughput to one add every 3-4 cycles. Four independent accumulators let the CPU overlap four addition chains, delivering up to 4 adds per 3-4 cycles.
 
+The danger is going too far. Unrolling 64x means the loop body no longer fits in the L1 instruction cache, and you start paying icache miss penalties on top of the work you are trying to speed up:
+
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -157,13 +164,15 @@ int main() {
     // x4:      ~25ms  (4 independent chains: 4 adds/3 cycles)
     // x64:     ~30ms  (icache pressure counteracts the benefit)
 }
-
 ```
+
+The sweet spot is 4-8x for most loops. Beyond that, the icache pressure penalty starts eating back the gains.
 
 ### Q3: Verify unrolling with `-funroll-loops` and assembly inspection
 
-```cpp
+The best way to confirm unrolling actually happened is to look at the assembly, either with `-S` or on Compiler Explorer (godbolt.org). The comments below show what to look for - one branch per iteration versus one branch per four iterations:
 
+```cpp
 #include <iostream>
 
 // Compile with different flags and compare assembly:
@@ -215,15 +224,16 @@ int main() {
         std::cout << a[i] << ' ';  // 0 3 6 9
     std::cout << '\n';
 }
-
 ```
+
+Notice that at `-O3` or with `-ftree-vectorize -march=native`, the compiler may go further and emit SIMD instructions, processing 4 or 8 floats per instruction. Unrolling and vectorization stack on top of each other.
 
 ---
 
 ## Notes
 
 - `#pragma GCC unroll N` (GCC 8+) / `#pragma unroll(N)` (Clang) / `#pragma loop(unroll, N)` (MSVC).
-- `-funroll-loops` enables automatic unrolling; `-O3` includes it for GCC.
+- `-funroll-loops` enables automatic unrolling globally; `-O3` includes it for GCC.
 - Sweet spot: unroll 4-8x for most loops. Beyond that, icache pressure dominates.
-- Unrolling is most beneficial for loops with independent iterations (no loop-carried dependency).
-- For FP reductions, use multiple accumulators to break dependency chains.
+- Unrolling is most beneficial for loops with independent iterations (no loop-carried dependency). It helps less when the bottleneck is something else (memory bandwidth, branch misprediction).
+- For FP reductions, use multiple accumulators to break dependency chains - that is the most important unrolling pattern to know.

@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Modern CPUs speculatively execute instructions past branches, predicting which path will be taken. A misprediction flushes the pipeline (~15-20 cycles penalty).
+Modern CPUs do not wait at a branch to see which direction it goes. Instead they guess - speculatively executing instructions down the predicted path while the branch condition is still being evaluated. If the guess is right, the work is free; the CPU committed useful instructions. If the guess is wrong, all that speculative work is thrown away and the pipeline is flushed and restarted from the correct target. That flush costs roughly 15-20 cycles, which is a significant penalty when it happens frequently.
+
+The hardware component that makes the guess is the **Branch Prediction Unit**, which maintains several cooperating structures:
 
 ```cpp
-
 Branch Prediction Unit:
 
   Branch History Table (BHT)       Branch Target Buffer (BTB)
@@ -25,8 +26,9 @@ Branch Prediction Unit:
 
   2-bit saturating counter:  ST=Strongly Taken, WT=Weakly Taken
                               WN=Weakly Not-taken, SN=Strongly Not-taken
-
 ```
+
+The 2-bit saturating counter is the reason a simple loop (taken 99 times, then not taken once) only mispredicts at the loop exit - the counter stays in the "Strongly Taken" state for all iterations and needs two consecutive "not taken" outcomes to flip its prediction.
 
 | Predictor type | Description |
 | --- | --- |
@@ -42,8 +44,9 @@ Branch Prediction Unit:
 
 ### Q1: How the CPU branch predictor works
 
-```cpp
+This code block gives you a mental model of all four major components. The comments walk through each one and explain how they interact. Read through it as documentation rather than executable logic - the `main` function at the bottom is just for illustration.
 
+```cpp
 #include <iostream>
 
 // The CPU branch predictor has several components:
@@ -88,13 +91,15 @@ int main() {
     std::cout << "  TAGE: multiple history lengths (modern CPUs)\n";
     std::cout << "  Mispredict penalty: ~15-20 cycles (pipeline flush)\n";
 }
-
 ```
+
+The loop exit example is a nice sanity check. Even a completely naive predictor only mispredicts once per 100-iteration loop because the pattern is almost perfectly regular. The real damage comes from branches with genuinely unpredictable patterns, like a branch conditioned on random data.
 
 ### Q2: Common-case-first ordering improves throughput
 
-```cpp
+Ordering branches so the most frequent outcome comes first is a simple code-structure technique that reduces the average number of comparisons per call. The predictor accuracy ends up the same either way, but you do less work to reach the common result.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -148,13 +153,15 @@ int main() {
     bench(process_good, "Common-first");
     // Typical: Common-first is 10-20% faster
 }
-
 ```
+
+The `[[likely]]` attribute on the first branch is the modern C++20 way to tell the compiler that this path should be the fall-through. The compiler uses that hint to arrange the generated code so the common case is straight-line execution without any jump.
 
 ### Q3: Use `perf stat` to measure branch misses
 
-```cpp
+This is the classic benchmark that demonstrates why unsorted data is slower than sorted data. The branch `if (x >= 128)` is the same instruction in both cases - the only difference is whether the CPU can predict it.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -212,8 +219,9 @@ int main() {
     // Alternative: branchless version eliminates the issue entirely:
     //   sum += (x >= 128) * x;  // no branch, works on unsorted data
 }
-
 ```
+
+With sorted data there is exactly one transition point - when the values cross 128 - and the predictor mispredicts only there. With random data every iteration is a coin flip, and the 4x slowdown you see is almost entirely due to pipeline flushes, not anything else. The `perf stat` command in the comments confirms this: you will see hundreds of millions of branch misses in the unsorted case and almost none in the sorted case.
 
 ---
 
@@ -224,4 +232,4 @@ int main() {
 - `perf stat -e branch-misses` is the key tool for diagnosing branch issues.
 - Sorting input data can eliminate branch mispredictions (but adds sort cost).
 - Virtual function calls use the BTB; polymorphic call sites with many types cause BTB misses.
-- Switch statements: compiler may use jump table (indirect branch) or if-else chain depending on density.
+- Switch statements: compiler may use a jump table (indirect branch) or an if-else chain depending on density.

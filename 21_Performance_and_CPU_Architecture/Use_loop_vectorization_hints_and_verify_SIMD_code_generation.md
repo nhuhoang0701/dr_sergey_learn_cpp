@@ -9,18 +9,20 @@
 
 ## Topic Overview
 
-Auto-vectorization converts scalar loops into SIMD instructions. The compiler needs hints (pragmas, annotations) when it can't prove safety, and you should always verify the generated assembly.
+Auto-vectorization is the compiler's ability to convert a scalar loop - one that processes one element per iteration - into a SIMD loop that processes several elements at once. On AVX2, for instance, a float loop can process 8 values simultaneously, which can give you a real 8x throughput gain. The catch is that the compiler needs to be able to *prove* it is safe to do this, and sometimes it can't without a little help from you.
+
+The pseudoassembly below shows the difference at a glance:
 
 ```cpp
-
 Scalar loop:                    Vectorized loop (AVX2):
   for (int i=0; i<N; ++i)        for (int i=0; i<N; i+=8)
     a[i] = b[i] + c[i];            vmovups ymm0, [b+i*4]
   // 1 add per cycle                vaddps  ymm0, ymm0, [c+i*4]
                                     vmovups [a+i*4], ymm0
                                   // 8 adds per cycle (8x speedup)
-
 ```
+
+The hints and pragmas in the table below are your way of giving the compiler the extra information it needs to confidently generate that vectorized version:
 
 | Hint / Pragma | Compiler | Effect |
 | --- | --- | --- |
@@ -36,8 +38,9 @@ Scalar loop:                    Vectorized loop (AVX2):
 
 ### Q1: Use `#pragma GCC ivdep` and `__builtin_assume_aligned` for vectorization
 
-```cpp
+The most common reason a loop fails to vectorize is pointer aliasing - the compiler isn't sure whether `a` and `b` overlap in memory, so it plays it safe with scalar code (or generates both versions with a runtime check). Here are four ways to deal with that, each trading a different level of programmer responsibility for compiler confidence.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -99,13 +102,15 @@ int main() {
     bench(add_ivdep,    "ivdep    ");
     bench(add_aligned,  "Aligned  ");
 }
-
 ```
+
+Notice how `__restrict` is the cleanest solution: you're making a contract with the compiler ("I promise these pointers don't alias"), and in return you get clean vectorized code with no runtime overhead. The `ivdep` pragma is a blunter tool - it tells the compiler to ignore *all* dependencies, so it vectorizes, but it's your problem if the pointers actually do overlap.
 
 ### Q2: Verify SIMD code generation on Compiler Explorer
 
-```cpp
+Verifying that your loop actually vectorized is not optional - it is part of the workflow. A loop that *looks* vectorizable can still fall back to scalar for subtle reasons. Here are the three verification methods you should have in your toolbox:
 
+```cpp
 #include <iostream>
 
 // How to verify vectorization:
@@ -170,13 +175,15 @@ int main() {
     float data[] = {1,2,3,4,5,6,7,8};
     std::cout << vectorized_sum(data, 8) << '\n'; // 36
 }
-
 ```
+
+The floating-point sum example is a classic trap. The reason it trips people up is that floating-point addition is not mathematically associative - `(a + b) + c` does not always equal `a + (b + c)` due to rounding. The compiler respects this and won't reorder the additions unless you ask it to (with `-ffast-math`) or do it yourself (four independent accumulators, as shown above).
 
 ### Q3: Loop-carried dependencies that prevent vectorization
 
-```cpp
+A loop-carried dependency is when iteration `i` needs the result of iteration `i-1`. By definition, those iterations cannot run in parallel, so the loop cannot be vectorized. Recognizing these patterns early saves a lot of frustration.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -234,8 +241,9 @@ int main() {
     //   note: read-write dependency detected
     std::cout << "Always verify with -fopt-info-vec-all\n";
 }
-
 ```
+
+The linked-list example is worth remembering. Pointer chasing is fundamentally sequential - each `next` pointer read depends on the previous one - which is one of the strongest arguments for preferring array-based data structures when performance matters.
 
 ---
 

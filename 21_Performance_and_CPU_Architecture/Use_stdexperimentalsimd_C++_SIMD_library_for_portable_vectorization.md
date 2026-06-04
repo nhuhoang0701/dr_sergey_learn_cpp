@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-`std::experimental::simd` (Parallelism TS 2) provides a C++ abstraction over SIMD registers. It compiles to native SIMD instructions (AVX2, NEON, etc.) without platform-specific intrinsics.
+`std::experimental::simd` (part of the Parallelism TS 2) is C++'s answer to the problem of writing SIMD code that works everywhere. Without it, you end up with a forest of `#ifdef __AVX2__` / `#elif __ARM_NEON` guards and duplicated logic for every platform. With it, you write the operation once and the library generates the right native instructions for each target.
+
+The comparison below shows how much cleaner the `stdx::simd` approach is:
 
 ```cpp
-
 Raw intrinsics:                    stdx::simd:
   #ifdef __AVX2__                    stdx::native_simd<float> a, b;
   __m256 a, b, c;                    auto c = a + b;  // works everywhere!
@@ -20,8 +21,9 @@ Raw intrinsics:                    stdx::simd:
   float32x4_t a, b, c;              // SSE  -> addps xmm
   c = vaddq_f32(a, b);              // Scalar -> for loop
   #endif
-
 ```
+
+The library is available now in GCC, with a standalone version for broader use, and is proposed for standardization as `std::simd` in C++26:
 
 | Header | Availability |
 | --- | --- |
@@ -35,8 +37,9 @@ Raw intrinsics:                    stdx::simd:
 
 ### Q1: Element-wise addition with `stdx::fixed_size_simd`
 
-```cpp
+There are two main width modes. `fixed_size_simd<float, 8>` always processes exactly 8 floats per iteration regardless of what hardware you're on. `native_simd<float>` adapts to whatever the hardware naturally supports - 4 lanes on SSE, 8 on AVX2, 16 on AVX-512. The following example shows both:
 
+```cpp
 #include <experimental/simd>
 #include <iostream>
 #include <array>
@@ -86,13 +89,15 @@ int main() {
     add_native(a.data(), b.data(), c.data(), 16);
 }
 // Compile: g++ -O2 -std=c++17 -mavx2 -o test test.cpp
-
 ```
+
+Notice the scalar tail loop after the main SIMD loop. This is always necessary because the SIMD loop can only process chunks of `W` elements at a time, and your array length is rarely an exact multiple of `W`. The tail handles the leftover elements safely.
 
 ### Q2: `simd_mask` for conditional branchless operations
 
-```cpp
+The mask type is how you express per-element conditionals without branches. Instead of an `if` statement that takes one path for all elements, a `simd_mask` stores a boolean result per lane and `stdx::where` applies a conditional assignment. The result compiles to a blend or select instruction with no branch at all.
 
+```cpp
 #include <experimental/simd>
 #include <iostream>
 #include <vector>
@@ -157,13 +162,15 @@ int main() {
     // 0 5 0 0 7 0 4 0 1 0
     std::cout << '\n';
 }
-
 ```
+
+The `where(mask, v) = zero` syntax is worth reading carefully. It doesn't return a new value - it modifies the lanes of `v` selected by the mask in-place. All other lanes keep their original values unchanged.
 
 ### Q3: `stdx::simd` vs raw intrinsics
 
-```cpp
+The assembly output of `stdx::simd` and hand-written intrinsics is identical - this is zero-overhead abstraction in the true sense. The only costs are at the source level: slightly more setup code and the need for GCC 11+.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -193,8 +200,9 @@ int main() {
     //   _mm256_add_ps(a, b)             -> vaddps ymm0, ymm1, ymm2
     //   Identical!
 }
-
 ```
+
+The fact that both paths produce `vaddps ymm0, ymm1, ymm2` at the assembly level is the key verification. If you're skeptical, paste both versions into godbolt.org with `-O2 -mavx2` and compare the output side by side.
 
 ---
 
@@ -203,5 +211,5 @@ int main() {
 - `stdx::native_simd<float>` adapts to hardware: 4 lanes (SSE), 8 (AVX2), 16 (AVX-512).
 - `stdx::fixed_size_simd<float, N>` guarantees exact width regardless of hardware.
 - GCC: `#include <experimental/simd>` with `-std=c++17`.
-- `stdx::where(mask, vec) = val` is the branchless conditional — compiles to blend/select.
+- `stdx::where(mask, vec) = val` is the branchless conditional - compiles to blend/select.
 - Proposed for C++26 as `std::simd` (moving out of experimental).

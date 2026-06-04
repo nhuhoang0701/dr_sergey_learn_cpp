@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-`perf` is Linux's primary profiling tool. Combined with flamegraphs, it provides a visual map of where CPU time is spent.
+`perf` is Linux's primary profiling tool, and combined with flamegraphs it gives you a visual map of where your CPU time is actually going. The important thing to understand is that `perf` works by *sampling* the call stack at high frequency - typically hundreds of times per second - and building a statistical picture of which functions were executing most often. The wider a bar in a flamegraph, the more samples landed in that function, which means the more time the CPU spent there.
+
+The workflow and reading guide below are worth committing to memory:
 
 ```cpp
-
 Workflow:
 
   1. perf record -g ./app         (sample call stacks)
@@ -24,13 +25,14 @@ Flamegraph reading:
   Y-axis = call stack depth (bottom = main, top = leaf)
   Color = random (no meaning)
 
-  │  malloc  │   free   │
-  │    process_data()   │  log()  │
-  │         main()                 │
-  └──────────── 100% CPU ──────────┘
+  |  malloc  |   free   |
+  |    process_data()   |  log()  |
+  |         main()                 |
+  +------------ 100% CPU ----------+
   process_data() = 70% of CPU time (hottest stack)
-
 ```
+
+Here is a quick reference for the `perf` subcommands you'll use most often:
 
 | Tool | Purpose | Key flags |
 | --- | --- | --- |
@@ -46,8 +48,9 @@ Flamegraph reading:
 
 ### Q1: Record perf profile and generate flamegraph
 
-```cpp
+Here is a sample program designed so that most time lands in `hot_function`. After you've seen what a clear flamegraph looks like with obvious hotspots, you'll have a reference point for when the picture is messier in a real application.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cmath>
@@ -105,13 +108,15 @@ int main() {
 //    - Inside hot_function: sin(), cos(), sqrt() are visible
 //    - cold_function() is a narrow tower (10%)
 //    - Click any box to zoom in
-
 ```
+
+Notice that you compile with `-O2` and also with `-g`. The debug symbols are for source mapping - they don't prevent optimization. If you compile without `-O2`, you're profiling code that doesn't resemble what users run, and the results are misleading.
 
 ### Q2: `perf annotate` for assembly-level hotspots
 
-```cpp
+Flamegraphs tell you *which function* is hot. `perf annotate` goes one level deeper and tells you *which instruction* is consuming cycles. This is how you distinguish between a function that's slow because of heavy computation versus one that's slow because of cache misses.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -155,13 +160,15 @@ int main() {
 //       result[j] += matrix[i * cols + j];  // stride = 1 (sequential)
 //
 // After fix: the 87% hotspot drops to ~5% (hits L1 cache).
-
 ```
+
+The 87.3% concentration on a single `add` instruction is a classic cache-miss fingerprint. The instruction itself is trivial - an integer add - but the CPU is stalled for hundreds of cycles waiting for `matrix[i*cols+j]` to arrive from DRAM. Swapping the loop order makes that access sequential and eliminates most of the stalls.
 
 ### Q3: CPU cycles, instructions, and IPC
 
-```cpp
+IPC (Instructions Per Cycle) is one of the most useful quick diagnostics for understanding what kind of problem you have. A high IPC means the CPU is executing instructions efficiently. A low IPC means it's spending most of its time waiting - for memory, for branches to resolve, or for dependent instructions to complete.
 
+```cpp
 #include <iostream>
 
 // perf stat measures hardware performance counters:
@@ -210,8 +217,9 @@ int main() {
     //      5,432,109,876   instructions   # 1.57 IPC  <-- GOOD! 3.5x improvement
     //         12,345,678   cache-misses   # 100x fewer
 }
-
 ```
+
+The before/after comparison in the comments is instructive. The instruction count stays the same - you're doing the same computation - but the cycle count drops by 3.5x because you stopped waiting on cache misses. This is the typical pattern for memory-bound code: optimization reduces cycles without changing instructions.
 
 ---
 

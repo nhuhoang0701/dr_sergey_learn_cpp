@@ -8,10 +8,15 @@
 
 ## Topic Overview
 
-AoSoA is a data layout that combines the benefits of AoS (good spatial locality for single-element access) and SoA (SIMD-vectorizable).
+AoSoA is a data layout that tries to get the best of two worlds that are normally in tension: the SIMD vectorizability of SoA (Struct of Arrays) and the cache locality of AoS (Array of Structs). Understanding why each layout has its own trade-off is the key to seeing why AoSoA exists.
+
+With **AoS**, all fields of one element live together. That is great when you need all the data for a single particle at once, but it is terrible for SIMD - the eight `x` coordinates you want to load in one AVX register are 24 bytes apart, scattered across eight different structs.
+
+With **SoA**, each field lives in its own contiguous array. The `x` coordinates are all adjacent, so a single `_mm256_load_ps` grabs eight at once. The problem is that accessing all fields of a single particle now touches six widely separated memory regions.
+
+**AoSoA** breaks the data into fixed-width tiles whose width matches the SIMD register. Within a tile, each field is contiguous - so you get the same vectorizable layout as SoA - but all fields for those eight particles live within a single 192-byte block, which is good for cache line reuse when you process a full tile at once.
 
 ```cpp
-
 AoS (Array of Structs):        SoA (Struct of Arrays):
 [x y z] [x y z] [x y z] ...   x: [x x x x x x x x ...]
                                 y: [y y y y y y y y ...]
@@ -21,8 +26,9 @@ AoSoA (tile size = 8):
 Tile 0:  x[8] y[8] z[8]   <- 8 x's contiguous, then 8 y's, then 8 z's
 Tile 1:  x[8] y[8] z[8]
 Tile 2:  x[8] y[8] z[8]
-
 ```
+
+If the table below feels like a lot, the one-sentence summary is: use AoSoA when you process all fields of a group of elements in lockstep and your inner loop width matches the SIMD register size.
 
 | Layout | SIMD efficiency | Single-element access | Cache locality |
 | --- | --- | --- | --- |
@@ -36,8 +42,9 @@ Tile 2:  x[8] y[8] z[8]
 
 ### Q1: AoSoA as a compromise between AoS and SoA
 
-```cpp
+Let's look at all three layouts side by side in code to make the trade-offs concrete. Pay attention to the comments on SIMD access patterns - they explain exactly why AoS fails for vectorization.
 
+```cpp
 #include <iostream>
 #include <cstddef>
 #include <array>
@@ -92,13 +99,15 @@ int main() {
     std::cout << "Tiles: " << num_tiles << '\n';                       // 128
     std::cout << "Total: " << sizeof(ParticleTile) * num_tiles << " bytes\n";
 }
-
 ```
+
+The 192-byte tile fits in three cache lines (64 bytes each). When you process a tile with SIMD instructions you load those three lines once and work entirely from cache for the duration of the tile.
 
 ### Q2: AoSoA particle system with SIMD-width tiles
 
-```cpp
+Here the AoSoA tile size is set to `TILE_SIZE = 8` to match an AVX register, which holds exactly eight 32-bit floats. The `alignas(32)` ensures the tile base address is 32-byte aligned, which is required for the aligned load intrinsic `_mm256_load_ps`.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <immintrin.h>  // AVX intrinsics
@@ -150,13 +159,15 @@ int main() {
     std::cout << "Updated " << N << " particles in "
               << num_tiles << " tiles\n";
 }
-
 ```
+
+Notice that each iteration of the outer loop does six aligned loads, three fused multiply-adds, and three stores - operating on eight particles at once. Without the AoSoA layout you would need gather intrinsics (which are much slower) or you would fall back to scalar code.
 
 ### Q3: Benchmark AoS vs SoA vs AoSoA
 
-```cpp
+This benchmark puts all three layouts through the same particle position update and measures the difference. The compiler can auto-vectorize the SoA and AoSoA loops because the data is contiguous; it struggles with AoS because the fields interleave.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -229,15 +240,16 @@ int main() {
     // SoA:   ~300 us   (excellent vectorization, 6 cache streams)
     // AoSoA: ~250 us   (excellent vectorization + fewer cache streams)
 }
-
 ```
+
+AoSoA edges out SoA here because SoA keeps six separate arrays, and iterating all six simultaneously means six independent cache streams. AoSoA colocates all six fields for a tile of eight particles, so a single set of cache line fills covers the whole tile.
 
 ---
 
 ## Notes
 
-- Set tile size = SIMD register width (AVX=8 floats, SSE=4, AVX-512=16).
-- AoSoA combines vectorization of SoA with spatial locality of AoS.
-- The inner loop over a tile processes exactly one SIMD register width.
+- Set tile size equal to the SIMD register width (AVX = 8 floats, SSE = 4, AVX-512 = 16).
+- AoSoA combines the vectorization of SoA with the spatial locality of AoS.
+- The inner loop over a tile processes exactly one SIMD register width per instruction.
 - `alignas(32)` or `alignas(64)` ensures tiles are aligned for `_mm256_load_ps`.
 - AoSoA is the standard layout in game engines, physics simulators, and HPC.

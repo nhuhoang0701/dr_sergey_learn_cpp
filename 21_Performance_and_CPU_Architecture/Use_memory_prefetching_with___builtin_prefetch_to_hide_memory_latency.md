@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Memory latency (L3 miss → DRAM) is ~100ns. Software prefetching issues cache line loads ahead of time, hiding this latency by overlapping computation with memory access.
+When the CPU needs data that isn't in cache, it has to go all the way to DRAM to get it - and that round-trip takes about 100 nanoseconds. On a 3 GHz processor, that is roughly 300 cycles of stalling while the CPU sits idle waiting. Software prefetching is the technique of *asking for the data early*, before you actually need it, so the memory request is in flight while you're still computing on previous data.
+
+The diagram below shows the key idea - with prefetch, the two operations overlap instead of stacking:
 
 ```cpp
-
 Without prefetch:        With prefetch:
   load &data[i]            prefetch &data[i+D]  (D = prefetch distance)
   STALL 100ns              load &data[i]         (compute while prefetch in flight)
@@ -19,8 +20,9 @@ Without prefetch:        With prefetch:
   load &data[i+1]          prefetch &data[i+D+1]
   STALL 100ns              load &data[i+1]       (hit!)
   use data[i+1]            use data[i+1]
-
 ```
+
+The three parameters of `__builtin_prefetch` let you tune exactly how the prefetch behaves:
 
 | Parameter | Value | Meaning |
 | --- | --- | --- |
@@ -38,8 +40,9 @@ Without prefetch:        With prefetch:
 
 ### Q1: Prefetch ahead in a pointer-chasing loop
 
-```cpp
+Pointer-chasing is the worst case for the hardware prefetcher because each memory address is hidden inside the data you just loaded - there is no pattern to predict. This is exactly where software prefetching shines: you read the next address a step early and issue the prefetch yourself.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -104,13 +107,15 @@ int main() {
     bench(sum_with_prefetch, "With prefetch");
     // N=1M random: No prefetch ~80ms, With prefetch ~50ms (1.6x speedup)
 }
-
 ```
+
+The 1.6x speedup here comes from overlapping the memory latency with the work of processing the current node. The hardware prefetcher simply can't help here because it has no idea what `nodes[idx].next` will be until after the load completes.
 
 ### Q2: The three parameters of `__builtin_prefetch`
 
-```cpp
+Understanding the locality hint matters because choosing the wrong one can actually hurt performance. Using `locality=3` for streaming data that you'll never reuse wastes L1 space; using `locality=0` for data you're about to read repeatedly causes repeated cache misses.
 
+```cpp
 #include <iostream>
 #include <vector>
 
@@ -158,13 +163,15 @@ int main() {
     std::cout << "  locality=3, rw=0 -> prefetcht0   (L1+L2+L3)\n";
     std::cout << "  locality=*, rw=1 -> prefetchw    (exclusive ownership)\n";
 }
-
 ```
+
+The `rw=1` (write prefetch) is worth a special mention. When the CPU writes to a cache line it doesn't own yet, it first has to request exclusive ownership - that's a bus transaction. By prefetching for write, you initiate that ownership request early, so by the time you actually write, the line is already yours.
 
 ### Q3: Excessive prefetching hurting performance
 
-```cpp
+The reason this trips people up is that prefetching too aggressively can actually make things *worse*. If you prefetch data that is too far ahead, you pollute the cache with data that won't be used for a while, evicting the data you need *right now*. The sweet spot is prefetching just far enough ahead to hide the latency without causing evictions.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -224,8 +231,9 @@ int main() {
     std::cout << "  Use locality=0 for streaming, 3 for reused data\n";
     std::cout << "  Limit to 1-2 prefetches per loop iteration\n";
 }
-
 ```
+
+Notice that the "bad" version is slower than no prefetching at all. The formula in the comment - `latency / loop_time` - is a useful starting point for picking the prefetch distance. From there, measure and tune.
 
 ---
 
@@ -234,5 +242,5 @@ int main() {
 - `__builtin_prefetch` is a hint; CPU may ignore it (no-op if target already in cache).
 - Best use case: random/pointer-chasing access where HW prefetcher fails.
 - Sequential access rarely benefits (HW prefetcher handles it well).
-- Optimal distance = memory_latency × loop_throughput (typically 4-8 cache lines).
+- Optimal distance = memory_latency x loop_throughput (typically 4-8 cache lines).
 - C++26 proposes `std::prefetch` as a portable alternative.

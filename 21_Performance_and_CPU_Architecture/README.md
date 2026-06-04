@@ -48,13 +48,13 @@ Cache optimization, SIMD, branch prediction, memory layout, and performance meas
 
 ## Notes
 
-- Cache locality dominates performance — std::vector often beats std::list even for insertions
-- Branch misprediction costs ~15 cycles — sort data or use branchless techniques in hot paths
-- SIMD intrinsics (SSE, AVX, NEON) can 4-16x throughput for data-parallel operations
-- [[likely]]/[[unlikely]] (C++20) hint the compiler about branch prediction
-- False sharing occurs when threads write to variables on the same cache line — align to 64 bytes
-- Profile before optimizing — use perf, VTune, or Tracy to find actual bottlenecks
-- Link-Time Optimization (LTO) enables cross-translation-unit inlining and dead code elimination
-- Small Buffer Optimization (SBO) in std::string, std::function avoids heap allocation for small objects
-- Prefetch instructions (__builtin_prefetch) hint the CPU to load data before it's needed
-- Memory alignment (lignas) matters for SIMD operations and can impact cache efficiency
+- Cache locality dominates performance - `std::vector` often beats `std::list` even for insertions.
+- Branch misprediction costs ~15 cycles - sort data or use branchless techniques in hot paths.
+- SIMD intrinsics (SSE, AVX, NEON) can deliver 4-16x throughput for data-parallel operations.
+- `[[likely]]`/`[[unlikely]]` (C++20) hint the compiler about branch prediction.
+- False sharing occurs when threads write to variables on the same cache line - align to 64 bytes.
+- Profile before optimizing - use `perf`, VTune, or Tracy to find actual bottlenecks.
+- Link-Time Optimization (LTO) enables cross-translation-unit inlining and dead code elimination.
+- Small Buffer Optimization (SBO) in `std::string`, `std::function` avoids heap allocation for small objects.
+- Prefetch instructions (`__builtin_prefetch`) hint the CPU to load data before it is needed.
+- Memory alignment (`alignas`) matters for SIMD operations and can impact cache efficiency.

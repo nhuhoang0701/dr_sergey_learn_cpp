@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Branches (if/else) cause pipeline stalls when mispredicted (~15-20 cycles penalty). Branchless code uses conditional moves (cmov) or arithmetic to avoid branches entirely.
+Every time the CPU encounters a branch (an `if`/`else`), its branch predictor makes a guess about which way the branch will go and speculatively executes instructions along that path. When the guess is wrong, the CPU has to throw away all that speculative work and start over - a penalty of roughly 15-20 cycles. For random or unpredictable data, this can be the biggest bottleneck in a tight loop.
+
+Branchless code avoids the problem entirely by replacing the conditional jump with a conditional move (`cmov`), which selects between two values without any pipeline disruption. The penalty drops from 15-20 cycles (when mispredicted) to a flat ~2 cycles every time.
 
 ```asm
-
 Branch version:                     Branchless (cmov):
   cmp eax, ebx                        cmp eax, ebx
   jl .take_a                          cmovl ecx, eax    ; select a if a<b
@@ -21,8 +22,9 @@ Branch version:                     Branchless (cmov):
   mov ecx, eax
   .done:
   // 15-20 cycle penalty if mispredicted  // Always ~2 cycles
-
 ```
+
+The table below is the key decision guide. Notice that the break-even point matters: if a branch is highly predictable, the predictor costs almost nothing, and switching to branchless actually makes things slower.
 
 | Pattern | Branch cost | Branchless cost | Use branchless? |
 | --- | --- | --- | --- |
@@ -36,8 +38,9 @@ Branch version:                     Branchless (cmov):
 
 ### Q1: Branchless min and verify on Compiler Explorer
 
-```cpp
+The three versions here demonstrate the progression from explicit branch to ternary to arithmetic trick. The ternary is the most practical - compilers at `-O2` reliably convert `a < b ? a : b` to a `cmov` instruction. The arithmetic version is more fragile (it overflows for large integers) but illustrates the underlying bit-manipulation principle.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -100,13 +103,15 @@ int main() {
     // Sorted data: Branch ~120ms (predictor succeeds), Ternary ~150ms
 }
 // Verify on godbolt.org: compile with -O2, look for cmovl (branchless)
-
 ```
+
+The sorted-data row in the comment is the critical counterpoint. When data is sorted, the branch predictor sees "take left branch every time" and achieves near-perfect prediction. In that case, the branch version at ~120ms beats the branchless ternary at ~150ms. This is why you should always measure before converting branches to branchless form.
 
 ### Q2: `std::min` compiles to cmov
 
-```cpp
+You don't always have to write branchless code explicitly. The standard library functions `std::min`, `std::max`, and `std::clamp` already compile to `cmov` instructions at `-O2`. This is free branchless code that you get just by using the standard library correctly.
 
+```cpp
 #include <iostream>
 #include <algorithm>  // std::min
 #include <vector>
@@ -167,13 +172,15 @@ int main() {
     std::cout << "std::min chain: " << ms.count() << " ms\n";  // ~120ms
     std::cout << "Result: " << r << '\n';  // minimum element
 }
-
 ```
+
+The practical takeaway here is that you can often get branchless benefits just by preferring `std::min`/`std::max`/`std::clamp` over explicit `if` statements - no intrinsics, no bit tricks, just standard C++.
 
 ### Q3: When branchless code is slower
 
-```cpp
+The reason this trips people up is that "branchless is always faster" sounds like a rule, but it isn't. The fundamental issue is that a conditional move always evaluates both sides, whereas a correctly predicted branch only executes the side you take. When the branch is predictable or when one of the paths is expensive, the branch wins.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -232,8 +239,9 @@ int main() {
     std::cout << "\nProfile first: perf stat -e branch-misses ./app\n";
     std::cout << "If branch-miss rate < 1%: branch is fine, don't optimize\n";
 }
-
 ```
+
+The workflow the last two lines describe is the right one: run `perf stat -e branch-misses,branches ./app` first and look at the misprediction rate. If it's below about 1%, your predictor is doing a great job and branchless code will only hurt. If it's above 5-10%, you have a candidate for conversion.
 
 ---
 

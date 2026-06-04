@@ -8,16 +8,16 @@
 
 ## Topic Overview
 
-This topic focuses on the practical workflow of using `perf` for CPU time analysis and diagnosing cache miss hotspots — complementing #635 which covers the fundamentals.
+This topic focuses on the practical workflow of using `perf` for CPU time analysis and diagnosing cache miss hotspots - complementing #635 which covers the fundamentals.
+
+While #635 covers the basic record/report/flamegraph pipeline, here you'll use `perf mem` and `perf c2c` to go beyond cycle sampling and pinpoint exactly *which memory accesses* are causing your stalls, and from which cache level the misses are occurring.
 
 ```cpp
-
 Perf workflow for cache analysis:
   perf record -e cache-misses -g ./app      (sample on cache miss events)
   perf mem record ./app                     (detailed memory access profiling)
   perf mem report --sort=symbol,mem         (which symbols cause misses + NUMA info)
   perf c2c record ./app                     (false sharing detection)
-
 ```
 
 | perf subcommand | What it profiles | Best for |
@@ -34,8 +34,9 @@ Perf workflow for cache analysis:
 
 ### Q1: Generate flamegraph from `perf record` output
 
-```cpp
+This example creates a program with three distinct hotspots at roughly 50/40/10 percent. After generating the flamegraphs, you'll also see how to create a *differential* flamegraph that visually highlights regressions (red) and improvements (blue) between two runs.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <algorithm>
@@ -90,13 +91,15 @@ int main() {
 // stackcollapse-perf.pl after.perf > after.folded
 // difffolded.pl before.folded after.folded | flamegraph.pl > diff.svg
 // # Red = regression, blue = improvement
-
 ```
+
+The cache-miss flamegraph is particularly useful when you have a function that appears small on the CPU flamegraph but is responsible for a disproportionate share of cache misses. That's the tell-tale sign of a memory-latency bottleneck rather than a compute bottleneck, and the two require different fixes.
 
 ### Q2: `perf annotate` to find cycle-consuming instructions
 
-```cpp
+When a function shows up as a hotspot, `perf annotate` breaks it down to individual instructions and shows how many samples landed on each one. A concentration of 90%+ on a single `mov` or `add` instruction is almost always a cache miss - the instruction itself is fast, but the CPU is stalled waiting for the data to arrive from memory.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <random>
@@ -149,13 +152,15 @@ int main() {
 //       sum += table[indices[i]];
 //   }
 // After fix: 91% drops to ~30% (prefetch hides 60% of latency)
-
 ```
+
+The 91% concentration is diagnostic in itself. If the stall were due to a computation bottleneck (too many operations chained together), you'd see the samples spread across multiple instructions. A single instruction consuming almost all samples means the pipeline is stalled on memory bandwidth or latency.
 
 ### Q3: Identify cache miss hotspot with `perf mem`
 
-```cpp
+`perf mem` goes further than cycle sampling by recording *where in the memory hierarchy* each load or store was served from. This lets you distinguish between L1 hits (fast), L3 hits (slower), and DRAM misses (much slower). It also reports whether any loads hit a "modified" line in another core's cache, which is the fingerprint of false sharing.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <random>
@@ -215,8 +220,9 @@ int main() {
 //   1. Sort indices for cache-friendly access order
 //   2. Use software prefetch (__builtin_prefetch)
 //   3. Restructure algorithm to avoid random access
-
 ```
+
+The "HitM" snoop result is particularly important in multi-threaded programs. If you see `HitM` on a line that shouldn't be shared between threads, you likely have false sharing - two threads that write to different variables which happen to share the same 64-byte cache line. That's best detected with `perf c2c`.
 
 ---
 

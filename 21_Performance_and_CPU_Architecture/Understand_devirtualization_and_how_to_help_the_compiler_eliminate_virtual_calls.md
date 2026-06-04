@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Devirtualization replaces indirect virtual calls (vtable lookup) with direct calls or inlined code, avoiding the ~5ns overhead per call.
+Every virtual call goes through the vtable: load the vtable pointer from the object, look up the function pointer at the right offset, then call through that pointer. That indirect call costs roughly 5 ns per invocation and also blocks inlining. In a tight loop over a polymorphic collection, this adds up fast.
+
+Devirtualization is when the compiler replaces that indirect call with a direct call (or inlines the body entirely), dropping the overhead to zero. The table below shows the four main ways it can happen:
 
 | Devirt technique | When it works | Compiler flag |
 | --- | --- | --- |
@@ -18,14 +20,14 @@ Devirtualization replaces indirect virtual calls (vtable lookup) with direct cal
 | LTO whole-program | Only one derived class exists | `-flto` |
 | PGO speculative | Profile shows one dominant type | `-fprofile-use` |
 
-```asm
+Here is what the assembly difference looks like. The virtual call version has to chase two pointers before it can even issue the call:
 
+```asm
 Virtual call (indirect):             Devirtualized (direct):
   mov rax, [rdi]       ; load vptr     call Derived::func  ; direct call
   mov rax, [rax + 16]  ; load func ptr (or inlined entirely)
   call rax             ; indirect call
   ~5ns overhead         ~0ns overhead
-
 ```
 
 ---
@@ -34,8 +36,9 @@ Virtual call (indirect):             Devirtualized (direct):
 
 ### Q1: Devirtualization when dynamic type is locally visible
 
-```cpp
+When the compiler can see where an object was created in the same scope - for example, `Derived d;` on the stack - it knows the exact type and can prove the vtable lookup would always return `Derived::compute`. So it skips the lookup entirely.
 
+```cpp
 #include <iostream>
 
 struct Base {
@@ -79,13 +82,15 @@ int main() {
     // Verify with Compiler Explorer (godbolt.org):
     //   g++ -O2: Cases 1-3 show direct call, Case 4 shows indirect
 }
-
 ```
+
+Case 4 is the hard one. If the object comes from another translation unit (a factory function, a dependency-injected pointer, etc.), the compiler has no idea what derived type it is at call time - so the vtable lookup is unavoidable unless you use LTO or PGO.
 
 ### Q2: `final` enables devirtualization
 
-```cpp
+The `final` keyword tells the compiler that no further subclass can override a method (or that a class can have no subclasses at all). That single guarantee is enough for the compiler to devirtualize any call through a pointer or reference to that type.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -152,13 +157,15 @@ int main() {
     for (auto* p : no_final) delete p;
     for (auto* p : with_final) delete p;
 }
-
 ```
+
+The `[[gnu::noinline]]` attribute on `sum_areas` is there to prevent the whole function from being inlined into `main`, which would allow the compiler to devirtualize even the non-final version. The benchmark is measuring a realistic call-through-pointer scenario.
 
 ### Q3: Profile-Guided Optimization (PGO) speculative devirtualization
 
-```cpp
+When the compiler cannot prove the exact type at compile time, PGO offers a third option: collect real data about which concrete type actually shows up at runtime, then generate a type-checked fast path for that dominant type. If 95% of calls go through `ConsoleLogger`, the compiler emits a type guard and a direct call for that case, falling back to the vtable only for the other 5%.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -222,15 +229,16 @@ int main() {
     std::cout << "  2. Compile: insert type guard for dominant type\n";
     std::cout << "  3. Runtime: dominant path is direct call\n";
 }
-
 ```
+
+The reason this trips people up is that PGO devirtualization is not guaranteed - it depends on the profile reflecting typical production traffic. If the real workload is different from the profiling run, the speculative guard pays its ~1 cycle cost on every call without the benefit. Make sure your profiling workload is representative.
 
 ---
 
 ## Notes
 
-- `final` is the easiest devirtualization technique — zero runtime cost, just a type annotation.
+- `final` is the easiest devirtualization technique - zero runtime cost, just a type annotation.
 - `-Rpass=devirt` (Clang) or `-fdump-ipa-devirt` (GCC) shows which calls were devirtualized.
-- CRTP (Curiously Recurring Template Pattern) avoids virtual dispatch entirely at compile time.
-- In tight loops, virtual call overhead can be 5-10x; devirtualization + inlining removes it.
+- CRTP (Curiously Recurring Template Pattern) avoids virtual dispatch entirely at compile time, at the cost of templates.
+- In tight loops, virtual call overhead can be 5-10x compared to a direct call; devirtualization plus inlining removes it completely.
 - LTO (`-flto`) enables cross-TU devirtualization for the whole-program case.

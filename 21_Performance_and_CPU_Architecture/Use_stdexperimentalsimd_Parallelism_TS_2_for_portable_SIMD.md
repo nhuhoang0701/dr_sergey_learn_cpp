@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic covers the ABI types, portable dot product, and comparison with Highway — complementing #723 which covers element-wise ops and `simd_mask`.
+This topic covers the ABI types, portable dot product, and comparison with Highway - complementing #723 which covers element-wise ops and `simd_mask`.
+
+The `simd<T, Abi>` template is more flexible than it first appears. The `Abi` parameter isn't just about performance - it also controls portability and ABI stability. Understanding the four options lets you choose the right one for each situation:
 
 ```cpp
-
 simd<T, Abi> template:
   T   = float, double, int, etc.
   Abi = how the SIMD register is mapped
@@ -19,7 +20,6 @@ simd<T, Abi> template:
   native_simd<float>       -> best for current CPU (8 on AVX2, 4 on SSE)
   fixed_size_simd<float,4> -> exactly 4 lanes (portable width)
   simd<float, compatible>  -> ABI-compatible across TU boundaries
-
 ```
 
 | ABI | Width | Best for |
@@ -35,8 +35,9 @@ simd<T, Abi> template:
 
 ### Q1: Portable SIMD dot product (compiles to AVX2 or NEON)
 
-```cpp
+This is the most compelling demonstration of `stdx::simd`: a single function that compiles to `vfmadd231ps ymm` on AVX2, `fmla v.4s` on ARM NEON, and a plain loop on any other target. You write it once, and the library does the platform work.
 
+```cpp
 #include <experimental/simd>
 #include <iostream>
 #include <vector>
@@ -97,13 +98,15 @@ int main() {
     // Scalar: ~800ms, SIMD: ~120ms on AVX2 (6.7x)
 }
 // Compile: g++ -O2 -std=c++17 -mavx2 -mfma test.cpp
-
 ```
+
+The `stdx::reduce(acc)` call at the end is doing a horizontal sum - adding all the lanes of the SIMD register together to produce a single scalar result. This is the step where you "collapse" the SIMD accumulator back to a regular float.
 
 ### Q2: ABI template parameters explained
 
-```cpp
+Choosing the wrong ABI type is a common source of subtle bugs. The most dangerous one is passing a `native_simd` value across a shared library boundary if the two sides were compiled with different `-march` flags - the register width might not match. That's exactly what `compatible` is designed to prevent.
 
+```cpp
 #include <experimental/simd>
 #include <iostream>
 
@@ -148,13 +151,15 @@ int main() {
     float sum = stdx::reduce(c);  // horizontal sum
     std::cout << "reduce result: " << sum << '\n'; // 3.0 * V::size()
 }
-
 ```
+
+The `scalar` ABI is particularly useful during development. Because it processes one element at a time, it behaves exactly like a normal scalar loop - you can use `std::cout` or a debugger to inspect the values, which is impossible with actual SIMD registers. Write the algorithm with `scalar`, verify correctness, then switch to `native` for production.
 
 ### Q3: `stdx::simd` vs Highway library
 
-```cpp
+Both libraries let you write portable SIMD code. The difference is maturity, compiler support, and runtime dispatch. If you need to ship today across multiple platforms, Highway is the more pragmatic choice. If you're writing code for the long term and want to use a future C++ standard feature, `stdx::simd` is the right investment.
 
+```cpp
 #include <iostream>
 
 int main() {
@@ -180,8 +185,9 @@ int main() {
     //   - Both produce the same assembly quality
     //   - For new projects: Highway if shipping soon, stdx::simd if long-term
 }
-
 ```
+
+The performance row is the same for both - this is genuinely not a trade-off between speed and convenience. The choice is entirely about compiler coverage, runtime dispatch features, and API stability preferences.
 
 ---
 

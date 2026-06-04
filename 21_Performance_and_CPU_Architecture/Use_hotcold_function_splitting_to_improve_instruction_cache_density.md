@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Hot/cold splitting separates frequently-executed code from rarely-executed code (error handling, logging) into different text sections, improving instruction cache density for the hot path.
+Every function in your binary occupies instruction cache space. The problem with error handling and logging code is that it lives right next to the hot loop that runs millions of times per second - even though the error path executes maybe once every few minutes. Those rarely-executed bytes still take up cache lines that the hot loop could be using.
+
+Hot/cold splitting fixes this by physically moving the cold code to a different section of the binary. The hot path becomes a compact, contiguous block of instructions that fits in fewer cache lines:
 
 ```cpp
-
 Without splitting:                    With splitting:
 .text:                                .text.hot:
   [process entry]                       [process entry]
@@ -22,7 +23,6 @@ Without splitting:                    With splitting:
   [process exit]                        [logging]
   Total hot path: fragmented            Total hot path: compact!
   icache lines: scattered               icache lines: contiguous
-
 ```
 
 | Technique | Mechanism |
@@ -38,8 +38,9 @@ Without splitting:                    With splitting:
 
 ### Q1: `[[gnu::cold]]` on error paths for icache improvement
 
-```cpp
+When error-handling code is inlined into the hot function, the compiler inserts the full error handler body directly inside the loop. Even with `[[unlikely]]` hints, those bytes still occupy icache space. Extracting the error handler into a separate `[[gnu::cold]]` function removes it from the hot path entirely:
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -98,13 +99,15 @@ int main() {
     // Split version: hot loop is more compact -> fewer icache misses
     // Improvement: ~5-15% for tight loops with error handling
 }
-
 ```
+
+The `[[noreturn]]` annotation on `report_error` tells the compiler this function never returns normally (it always throws), which allows slightly better code generation in the caller - the compiler knows the code after the call is unreachable on the cold path.
 
 ### Q2: `noinline` on cold paths prevents hot-function bloating
 
-```cpp
+`[[gnu::cold]]` alone is not always enough. If the cold function is small enough, the compiler might inline it into the hot caller anyway - which defeats the purpose. Adding `[[gnu::noinline]]` forces the cold code to remain a separate call:
 
+```cpp
 #include <iostream>
 #include <string>
 
@@ -157,13 +160,15 @@ int main() {
     int data[] = {1, 2, 3, 4, 5};
     std::cout << hot_compute(data, 5) << '\n';  // 55
 }
-
 ```
+
+The assembly comment gives you the key metric: a 4x difference in loop body size directly translates to fewer icache lines needed to hold the hot path. When the hot loop fits in 2-3 cache lines instead of 8-10, the instruction cache can hold more of your hot working set and misses drop accordingly.
 
 ### Q3: PGO-based automatic hot/cold section grouping
 
-```cpp
+Profile-Guided Optimization (PGO) automates the hot/cold analysis. Instead of guessing which paths are hot, the compiler instruments the binary, you run it on representative input, and then the compiler uses the measured execution counts to make splitting decisions - including splitting *within* a single function, not just at function boundaries.
 
+```cpp
 #include <iostream>
 
 // Profile-Guided Optimization (PGO) automates hot/cold splitting:
@@ -211,8 +216,9 @@ int main() {
     std::cout << "  -freorder-blocks-and-partition: split functions\n";
     std::cout << "\nTypical improvement: 10-20% for large codebases\n";
 }
-
 ```
+
+PGO's advantage over manual annotation is granularity: it can split within a single function, reorder basic blocks within a function, and make inlining decisions based on actual call frequency. The three-step build process is the main friction. It is worth setting up if you have a reproducible representative workload and a large codebase where manual annotation would be impractical.
 
 ---
 
