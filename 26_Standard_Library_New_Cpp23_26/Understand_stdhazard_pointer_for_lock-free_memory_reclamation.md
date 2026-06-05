@@ -8,34 +8,37 @@
 
 ## Topic Overview
 
-Lock-free data structures face **the reclamation problem**: a thread may `delete` a node while another thread still holds a raw pointer to it. **Hazard pointers** (C++26, `<hazard_pointer>`) solve this by letting each reader *announce* which pointers it is currently accessing. A writer that wants to reclaim memory checks all published hazard pointers and defers deletion until no reader holds the address.
+Lock-free data structures face **the reclamation problem**: a thread may `delete` a node while another thread still holds a raw pointer to it. This is the kind of bug that is nearly impossible to catch in testing because it requires a precise interleaving of thread operations to trigger.
+
+**Hazard pointers** (C++26, `<hazard_pointer>`) solve this by letting each reader *announce* which pointers it is currently accessing. A writer that wants to reclaim memory checks all published hazard pointers and defers deletion until no reader holds that address. The "hazard" in the name refers to the pointer itself being dangerous to delete - the hazard pointer slot is the reader's way of saying "this address is still in use by me."
 
 ### Protocol (3 steps)
 
+Here is the flow at a glance. The reader publishes its intent, verifies the world has not changed under it, and only then accesses the data safely:
+
 ```cpp
-
 Reader thread                             Writer thread
-─────────────                             ─────────────
+-------------                             -------------
 
-1. hp.protect(ptr)  ← publish pointer     1. Swap ptr out (CAS)
+1. hp.protect(ptr)  <- publish pointer     1. Swap ptr out (CAS)
 2. Verify ptr still current               2. hp_obj.retire()
-
-   (re-read atomic, compare)                 → deferred delete
+   (re-read atomic, compare)                 -> deferred delete
 
 3. Access *ptr safely                     3. Scan hazard list:
-4. hp.reset_protection()                     if no reader holds ptr → delete
-
+4. hp.reset_protection()                     if no reader holds ptr -> delete
 ```
+
+The reason step 2 (verify) exists is subtle but critical. There is a window between when you read the atomic pointer and when you publish it to the hazard slot. In that window, a writer could have swapped the pointer out and retired the old node. The verify step catches this: if the atomic has changed between your initial load and your hazard slot publish, you retry the whole sequence. Once you confirm the atomic still holds your pointer after you have published, you are safe - any retire happening after that point will see your hazard slot and defer deletion.
 
 ### Key API (C++26)
 
-| API                                | Purpose                                   |
+| API | Purpose |
 | --- | --- |
 | `std::hazard_pointer hp = make_hazard_pointer()` | Acquire a per-thread hazard slot |
-| `hp.protect(src)`                  | Atomically load `src` and publish it       |
-| `hp.reset_protection()`           | Clear the hazard slot                      |
-| `obj->retire()`                   | Schedule deferred reclamation of `obj`     |
-| `std::hazard_pointer_obj_base<T>` | CRTP base; adds `retire()` to your node    |
+| `hp.protect(src)` | Atomically load `src` and publish it |
+| `hp.reset_protection()` | Clear the hazard slot |
+| `obj->retire()` | Schedule deferred reclamation of `obj` |
+| `std::hazard_pointer_obj_base<T>` | CRTP base; adds `retire()` to your node |
 
 ---
 
@@ -43,10 +46,9 @@ Reader thread                             Writer thread
 
 ### Q1: Explain the hazard pointer protocol: protect a pointer, verify it is still current, then access
 
-**Answer:**
+The code below implements a minimal hazard slot manually (since `<hazard_pointer>` is C++26 and may not be in your toolchain yet). Study the `protect` loop - that loop is the entire protocol compressed into a few lines:
 
 ```cpp
-
 #include <atomic>
 #include <iostream>
 #include <thread>
@@ -54,24 +56,24 @@ Reader thread                             Writer thread
 #include <cassert>
 // Note: <hazard_pointer> is C++26; this demonstrates the protocol manually.
 
-// ═══════════ Simplified hazard pointer slot ═══════════
+// Simplified hazard pointer slot
 // In real C++26: std::hazard_pointer hp = std::make_hazard_pointer();
 template<typename T>
 struct HazardSlot {
     std::atomic<T*> protected_ptr{nullptr};
 
-    // Step 1: Protect — publish the pointer we're about to read
+    // Step 1: Protect - publish the pointer we're about to read
     T* protect(const std::atomic<T*>& source) {
         T* ptr = nullptr;
         do {
             ptr = source.load(std::memory_order_acquire);
             protected_ptr.store(ptr, std::memory_order_release);
-            // Step 2: Verify — re-read source; if it changed, retry
+            // Step 2: Verify - re-read source; if it changed, retry
         } while (ptr != source.load(std::memory_order_acquire));
         return ptr;  // Now safe to dereference
     }
 
-    // Step 4: Reset — allow reclamation
+    // Step 4: Reset - allow reclamation
     void reset() {
         protected_ptr.store(nullptr, std::memory_order_release);
     }
@@ -86,7 +88,7 @@ int main() {
     std::atomic<Node*> head{new Node{42, nullptr}};
     HazardSlot<Node> hp;
 
-    // Reader: protect → verify (inside protect loop) → access
+    // Reader: protect -> verify (inside protect loop) -> access
     Node* safe = hp.protect(head);
     if (safe) {
         std::cout << "Safely read value: " << safe->value << '\n';  // 42
@@ -95,23 +97,23 @@ int main() {
 
     // Cleanup
     delete head.load();
-    std::cout << "Protocol: protect → verify → access → reset\n";
+    std::cout << "Protocol: protect -> verify -> access -> reset\n";
 }
-
 ```
 
 **The three guarantees:**
 
-1. **Protect** — Store the pointer in a hazard slot visible to all threads
-2. **Verify** — Re-read the atomic source to confirm it hasn't been swapped out
-3. **Access** — Now safe because any `retire()` will see our hazard slot and defer deletion
+1. **Protect** - store the pointer in a hazard slot visible to all threads.
+2. **Verify** - re-read the atomic source to confirm it has not been swapped out.
+3. **Access** - now safe because any `retire()` will see your hazard slot and defer deletion.
+
+Once `reset()` is called, you are saying you are done with this pointer and the system is free to delete it if no one else is protecting it.
 
 ### Q2: Implement a lock-free linked list pop using hazard pointers to safely reclaim nodes
 
-**Answer:**
+This is a more complete example showing how hazard pointers integrate into a real lock-free stack. Pay attention to the protect-verify loop inside `pop` - it is the same pattern from Q1, now embedded in a concurrent data structure:
 
 ```cpp
-
 #include <atomic>
 #include <iostream>
 #include <thread>
@@ -119,7 +121,7 @@ int main() {
 #include <array>
 #include <algorithm>
 
-// ═══════════ Manual hazard pointer infrastructure ═══════════
+// Manual hazard pointer infrastructure
 // (C++26 provides std::hazard_pointer; this is the equivalent logic)
 
 constexpr int MAX_THREADS = 8;
@@ -156,7 +158,7 @@ struct HazardPointerDomain {
     }
 };
 
-// ═══════════ Lock-free stack with safe reclamation ═══════════
+// Lock-free stack with safe reclamation
 struct Node {
     int data;
     std::atomic<Node*> next;
@@ -224,37 +226,37 @@ int main() {
     }
     // Output: 30, 20, 10 (LIFO order)
 }
-
 ```
 
 ### Q3: Compare hazard pointers with epoch-based reclamation for latency vs throughput tradeoffs
 
-**Answer:**
+Hazard pointers and epoch-based reclamation (EBR) are the two dominant approaches to lock-free memory management. They make different tradeoffs, and understanding those tradeoffs tells you which to reach for:
 
-| Aspect                  | Hazard Pointers              | Epoch-Based Reclamation (EBR)    |
+| Aspect | Hazard Pointers | Epoch-Based Reclamation (EBR) |
 | --- | --- | --- |
-| **Reclamation latency** | Bounded — O(H×P) deferred nodes | Unbounded — blocked by slowest reader |
-| **Throughput**          | Moderate — scanning hazard list per retire | High — just increment a counter    |
-| **Per-op overhead**     | Store + fence per access     | Epoch enter/exit (very cheap)     |
+| **Reclamation latency** | Bounded - O(H x P) deferred nodes | Unbounded - blocked by slowest reader |
+| **Throughput** | Moderate - scanning hazard list per retire | High - just increment a counter |
+| **Per-op overhead** | Store + fence per access | Epoch enter/exit (very cheap) |
 | **Stalled thread impact** | Blocks only nodes that specific thread protects | Blocks ALL reclamation for the epoch |
-| **Memory bound**        | O(T²) where T = thread count | Unbounded if a thread stalls      |
-| **Implementation**      | More complex                 | Simpler                           |
-| **C++ standard**        | `std::hazard_pointer` (C++26) | Not standardized (libraries)     |
+| **Memory bound** | O(T^2) where T = thread count | Unbounded if a thread stalls |
+| **Implementation** | More complex | Simpler |
+| **C++ standard** | `std::hazard_pointer` (C++26) | Not standardized (libraries) |
+
+The comment below shows the mental model for each approach side by side. Notice how EBR's stall behavior differs sharply from hazard pointers - one stalled thread in EBR blocks everybody's garbage collection:
 
 ```cpp
-
 // Conceptual comparison:
 
-// ═══ Hazard Pointer: per-access protection ═══
+// Hazard Pointer: per-access protection
 // Reader:
 //   hp.protect(ptr);       // announce "I'm using ptr"
 //   use(*ptr);
 //   hp.reset_protection(); // done
 // Writer:
 //   old->retire();         // checks ALL hp slots before delete
-// → Worst case: T threads protect T nodes each → T*T deferred nodes
+// -> Worst case: T threads protect T nodes each -> T*T deferred nodes
 
-// ═══ Epoch-Based: generation counting ═══
+// Epoch-Based: generation counting
 // Reader:
 //   guard.enter();         // increment local epoch (1 atomic)
 //   use(*ptr);
@@ -263,21 +265,22 @@ int main() {
 //   retire_list[current_epoch].push(old);
 //   if (all_threads_past(epoch - 2))
 //       delete_epoch(epoch - 2);
-// → Worst case: 1 stalled thread in epoch 5 → epochs 6,7,8... pile up
+// -> Worst case: 1 stalled thread in epoch 5 -> epochs 6,7,8... pile up
 
 // When to choose:
-// - Hard real-time, bounded memory → Hazard Pointers
-// - Maximum throughput, cooperative threads → EBR
+// - Hard real-time, bounded memory -> Hazard Pointers
+// - Maximum throughput, cooperative threads -> EBR
 // - Mixed: use EBR + timeout that falls back to HP for stalled threads
-
 ```
+
+The reason hazard pointers give bounded memory usage is that the number of deferred nodes is bounded by the number of hazard slots (threads times slots per thread). EBR has no such bound - if one thread goes to sleep while holding an epoch guard, the entire system accumulates garbage indefinitely.
 
 ---
 
 ## Notes
 
-- `std::hazard_pointer` is expected in C++26; currently available in Folly (`folly::hazard_pointer`) and libcds
-- Each thread typically needs 1-2 hazard pointer slots per concurrent operation
-- Hazard pointers are **patent-encumbered** (IBM patent expired ~2024); the standard sidesteps this
-- Combine with `std::atomic<std::shared_ptr<T>>` for simpler cases where performance is less critical
-- The standard also proposes `std::rcu` (Read-Copy-Update) as a complementary mechanism
+- `std::hazard_pointer` is expected in C++26; currently available in Folly (`folly::hazard_pointer`) and libcds.
+- Each thread typically needs 1-2 hazard pointer slots per concurrent operation.
+- Hazard pointers were patent-encumbered (IBM patent expired approximately 2024); the standard sidesteps historical concerns.
+- Combine with `std::atomic<std::shared_ptr<T>>` for simpler cases where performance is less critical.
+- The standard also proposes `std::rcu` (Read-Copy-Update) as a complementary mechanism for read-heavy workloads.

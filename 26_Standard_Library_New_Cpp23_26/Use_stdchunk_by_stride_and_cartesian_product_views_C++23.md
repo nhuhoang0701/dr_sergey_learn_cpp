@@ -18,17 +18,17 @@ C++23 significantly expanded the ranges library with new view adaptors that elim
 | `zip(R1,R2,...)` | Parallel iteration over multiple ranges | N ranges | Tuples of references |
 | `zip_transform(f,R1,R2,...)` | Zip then apply function | N ranges + function | Transformed values |
 | `adjacent<N>` | Sliding window of N adjacent elements | Range | Tuples (N refs) |
-| `pairwise` | `adjacent<2>` — consecutive pairs | Range | Pairs |
+| `pairwise` | `adjacent<2>` - consecutive pairs | Range | Pairs |
+
+To make the relationships concrete, here is what each view produces given the same input sequence:
 
 ```cpp
-
 Source: [1, 1, 2, 2, 2, 3, 3]
 
- chunk_by(equal):     [1,1] [2,2,2] [3,3]    ← groups of equal elements
- stride(3):           [1, 2, 3]               ← every 3rd element
- adjacent<3>:         (1,1,2)(1,2,2)(2,2,2)(2,2,3)(2,3,3)  ← sliding triple
- pairwise:            (1,1)(1,2)(2,2)(2,2)(2,3)(3,3)       ← consecutive pairs
-
+ chunk_by(equal):     [1,1] [2,2,2] [3,3]    <- groups of equal elements
+ stride(3):           [1, 2, 3]               <- every 3rd element
+ adjacent<3>:         (1,1,2)(1,2,2)(2,2,2)(2,2,3)(2,3,3)  <- sliding triple
+ pairwise:            (1,1)(1,2)(2,2)(2,2)(2,3)(3,3)       <- consecutive pairs
 ```
 
 All views are lazy and compose with pipe syntax. They work with any range that satisfies their minimum iterator requirements.
@@ -39,8 +39,9 @@ All views are lazy and compose with pipe syntax. They work with any range that s
 
 ### Q1: How do `chunk_by` and `stride` work, and what patterns do they replace
 
-```cpp
+`chunk_by` is like Python's `itertools.groupby` - it walks through the range and starts a new group whenever the predicate returns false for a pair of adjacent elements. `stride` is the "take every Nth element" pattern you might have written with a manual index before. Here is both in action:
 
+```cpp
 #include <ranges>
 #include <vector>
 #include <string>
@@ -51,9 +52,7 @@ All views are lazy and compose with pipe syntax. They work with any range that s
 namespace rv = std::ranges::views;
 
 int main() {
-    // ═══════════════════════════════════════
-    //  chunk_by: split where predicate fails
-    // ═══════════════════════════════════════
+    // chunk_by: split where predicate fails
 
     // Group consecutive equal elements (like Python's itertools.groupby)
     std::vector<int> data = {1, 1, 2, 2, 2, 3, 1, 1};
@@ -82,9 +81,7 @@ int main() {
     }
     // 'hello'  '  '  'world'  '   '  'foo'
 
-    // ═══════════════════════════════════════
-    //  stride: take every N-th element
-    // ═══════════════════════════════════════
+    // stride: take every N-th element
 
     auto numbers = rv::iota(0, 20);
 
@@ -101,7 +98,7 @@ int main() {
     std::println("Downsampled: {}", downsampled);
     // [0.0, 0.8, 0.4]
 
-    // Combine: chunk of stride — matrix column selection
+    // Combine: chunk of stride - matrix column selection
     std::vector<int> flat_matrix = {
         1, 2, 3, 4,   // row 0
         5, 6, 7, 8,   // row 1
@@ -112,15 +109,17 @@ int main() {
                              | std::ranges::to<std::vector>();
     std::println("Column 1: {}", col1);  // [2, 6, 10]
 }
-
 ```
+
+The column extraction example at the end is a nice demonstration of how views compose: `drop(1)` skips to the first column-1 element, then `stride(4)` hops row by row. No index arithmetic, no off-by-one errors.
 
 ---
 
 ### Q2: How do `zip`, `zip_transform`, and `cartesian_product` work
 
-```cpp
+`zip` lets you walk multiple ranges in parallel, which replaces the classic `for (int i = 0; i < n; ++i)` index trick. `zip_transform` fuses the zip with a function, avoiding intermediate tuple allocations. `cartesian_product` gives you every combination - think nested loops without the nesting:
 
+```cpp
 #include <ranges>
 #include <vector>
 #include <string>
@@ -131,9 +130,7 @@ int main() {
 namespace rv = std::ranges::views;
 
 int main() {
-    // ═══════════════════════════════════════
-    //  zip: parallel iteration
-    // ═══════════════════════════════════════
+    // zip: parallel iteration
     std::vector<std::string> names = {"Alice", "Bob", "Charlie"};
     std::vector<int> scores = {95, 87, 92};
     std::vector<char> grades = {'A', 'B', 'A'};
@@ -144,15 +141,13 @@ int main() {
         std::println("  {} scored {}", name, score);
     }
 
-    // N-ary zip — stops at shortest
+    // N-ary zip - stops at shortest
     std::println("zip (name, score, grade):");
     for (auto [name, score, grade] : rv::zip(names, scores, grades)) {
         std::println("  {} scored {} (grade {})", name, score, grade);
     }
 
-    // ═══════════════════════════════════════
-    //  zip_transform: zip + apply function
-    // ═══════════════════════════════════════
+    // zip_transform: zip + apply function
     std::vector<double> xs = {1.0, 2.0, 3.0, 4.0};
     std::vector<double> ys = {4.0, 3.0, 2.0, 1.0};
 
@@ -169,9 +164,7 @@ int main() {
     double dot = std::ranges::fold_left(products, 0.0, std::plus{});
     std::println("Dot product: {}", dot);  // 20.0
 
-    // ═══════════════════════════════════════
-    //  cartesian_product: all combinations
-    // ═══════════════════════════════════════
+    // cartesian_product: all combinations
     std::vector<char> suits = {'H', 'D', 'C', 'S'};
     std::vector<std::string> ranks = {"A", "K", "Q", "J"};
 
@@ -191,15 +184,17 @@ int main() {
     std::println("");
     // (0,0) (0,1) (0,2) (1,0) (1,1) (1,2) (2,0) (2,1) (2,2)
 }
-
 ```
+
+Note that `cartesian_product` varies the rightmost range fastest - the output is in lexicographic order. That matches the natural reading order for grid coordinates and nested loop ordering.
 
 ---
 
 ### Q3: How do `adjacent` and `pairwise` work for sliding window patterns
 
-```cpp
+`pairwise` (which is just `adjacent<2>`) and `adjacent<N>` give you overlapping windows over a sequence. These replace a lot of "compare element i with element i-1" loops that are easy to get wrong at the boundaries:
 
+```cpp
 #include <ranges>
 #include <vector>
 #include <print>
@@ -210,9 +205,7 @@ int main() {
 namespace rv = std::ranges::views;
 
 int main() {
-    // ═══════════════════════════════════════
-    //  pairwise (= adjacent<2>): consecutive pairs
-    // ═══════════════════════════════════════
+    // pairwise (= adjacent<2>): consecutive pairs
     std::vector<int> data = {1, 4, 2, 8, 5, 7};
 
     // Compute differences between consecutive elements
@@ -229,9 +222,7 @@ int main() {
     );
     std::println("Sorted: {}", sorted);  // false
 
-    // ═══════════════════════════════════════
-    //  adjacent<N>: sliding window of size N
-    // ═══════════════════════════════════════
+    // adjacent<N>: sliding window of size N
     std::vector<double> prices = {100.0, 102.5, 101.0, 105.0, 103.5, 107.0};
 
     // 3-element moving average
@@ -250,9 +241,7 @@ int main() {
         }
     }
 
-    // ═══════════════════════════════════════
-    //  pairwise_transform (= adjacent_transform<2>)
-    // ═══════════════════════════════════════
+    // pairwise_transform (= adjacent_transform<2>)
     // Compute derivatives (finite differences)
     std::vector<double> signal = {0.0, 1.0, 4.0, 9.0, 16.0, 25.0};
     auto derivative = signal
@@ -266,11 +255,9 @@ int main() {
         | rv::pairwise_transform([](double a, double b) { return b - a; })
         | std::ranges::to<std::vector>();
     std::println("2nd derivative: {}", second_deriv);
-    // [2.0, 2.0, 2.0, 2.0]  — constant (quadratic input)
+    // [2.0, 2.0, 2.0, 2.0]  - constant (quadratic input)
 
-    // ═══════════════════════════════════════
-    //  adjacent_transform<3>: apply to triples
-    // ═══════════════════════════════════════
+    // adjacent_transform<3>: apply to triples
     auto smoothed = signal
         | rv::adjacent_transform<3>(
             [](double a, double b, double c) { return (a + b + c) / 3.0; })
@@ -278,21 +265,22 @@ int main() {
     std::println("Smoothed (window=3): {}", smoothed);
     // [1.667, 4.667, 9.667, 16.667]
 }
-
 ```
+
+The second derivative example is a nice illustration of lazy composition: you pipe the derivative result through another `pairwise_transform` to get the second derivative. Because views are lazy, none of the intermediate work materializes until you call `ranges::to`.
 
 ---
 
 ## Notes
 
 - All views are in `<ranges>` (C++23) and compose with pipe `|` syntax.
-- **`chunk_by(pred)`**: groups consecutive elements where `pred(a, b)` is true between adjacent elements. Predicate takes two arguments (current, next).
+- **`chunk_by(pred)`**: groups consecutive elements where `pred(a, b)` is true between adjacent elements. The predicate takes two arguments (current, next).
 - **`stride(n)`**: takes every n-th element. O(1) advance for random-access ranges.
 - **`cartesian_product`**: yields all combinations. The rightmost range varies fastest (lexicographic order). Size is the product of input sizes.
-- **`zip`**: parallel iteration. Stops at the shortest range. Elements are tuple of references.
+- **`zip`**: parallel iteration. Stops at the shortest range. Elements are tuples of references.
 - **`zip_transform(f, ranges...)`**: fused zip+transform. More efficient than `zip | transform` as it avoids constructing intermediate tuples.
-- **`adjacent<N>`**: sliding window of exactly N elements. Produces `N - 1` fewer elements than the input. `pairwise` = `adjacent<2>`.
+- **`adjacent<N>`**: sliding window of exactly N elements. Produces N - 1 fewer elements than the input. `pairwise` = `adjacent<2>`.
 - **`pairwise_transform(f)`** and **`adjacent_transform<N>(f)`**: fused sliding window + function application.
-- These views are lazy — they compute on iteration, not on construction.
-- Feature-test macro: `__cpp_lib_ranges_chunk_by >= 202202L`, `__cpp_lib_ranges_stride >= 202207L`, `__cpp_lib_ranges_cartesian_product >= 202207L`, `__cpp_lib_ranges_zip >= 202110L`.
+- These views are lazy - they compute on iteration, not on construction.
+- Feature-test macros: `__cpp_lib_ranges_chunk_by >= 202202L`, `__cpp_lib_ranges_stride >= 202207L`, `__cpp_lib_ranges_cartesian_product >= 202207L`, `__cpp_lib_ranges_zip >= 202110L`.
 - Compilers: GCC 13+, Clang 17+, MSVC 19.34+ (varies by view).

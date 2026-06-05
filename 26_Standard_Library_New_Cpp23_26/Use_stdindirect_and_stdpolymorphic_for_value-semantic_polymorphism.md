@@ -13,10 +13,9 @@ This file focuses on the **practical usage patterns** and **migration from clone
 
 ### The Clone Problem
 
-Before C++26, making a polymorphic type copyable required a manual `clone()` pattern:
+Before C++26, making a polymorphic type copyable required a manual `clone()` pattern. It worked, but it was fragile: every new derived class had to remember to implement `clone()`, return the right type, and keep it in sync with the copy constructor. Forgetting any of that was a silent runtime bug.
 
 ```cpp
-
 // OLD: Manual clone() idiom — error-prone, boilerplate
 struct Shape {
     virtual ~Shape() = default;
@@ -33,8 +32,9 @@ struct Circle : Shape {
 // NEW: std::polymorphic — automatic deep copy, zero boilerplate
 // std::polymorphic<Shape> s = Circle{5.0};
 // auto s2 = s;  // Deep copies the Circle automatically!
-
 ```
+
+`std::polymorphic` bakes the clone mechanism into the type itself, using internal type erasure. You never write `clone()` again.
 
 ---
 
@@ -42,10 +42,11 @@ struct Circle : Shape {
 
 ### Q1: Use std::indirect<T> to store a heap-allocated T with value semantics (copyable, movable)
 
+Here is a practical scenario: a `Config` struct that holds a large payload. You want heap allocation to keep the struct small, but you also want copy and assign to work naturally without writing a custom copy constructor. `std::indirect<BigData>` gives you exactly that - the `Config` struct does not need any special member functions at all.
+
 **Answer:**
 
 ```cpp
-
 #include <indirect>
 #include <iostream>
 #include <string>
@@ -70,14 +71,14 @@ struct Config {
 
 int main() {
     Config c1{"prod", std::indirect<BigData>{BigData("large payload data...")}};
-    
+
     // Copy: deep copies the BigData
     Config c2 = c1;
     c2.name = "staging";
     c2.data.value().payload = "modified payload";
 
     std::cout << c1.name << ": " << c1.data.value().payload << '\n';
-    // prod: large payload data...  ← unchanged!
+    // prod: large payload data...  <- unchanged!
     std::cout << c2.name << ": " << c2.data.value().payload << '\n';
     // staging: modified payload
 
@@ -86,25 +87,27 @@ int main() {
     configs.push_back(c1);
     configs.push_back(c2);
     auto backup = configs;  // Deep copy of vector of Configs
-    
+
     std::cout << "Backup has " << backup.size() << " configs\n";
 }
-
 ```
 
+Notice that `Config` has no user-written special members at all - the compiler generates them, and they do the right thing because `std::indirect` itself is copyable, movable, and assignable with deep-copy semantics.
+
 ### Q2: Use std::polymorphic<Base> to store any type derived from Base with deep-copy value semantics
+
+This example builds a document model with multiple element types (`Text`, `Image`, `Link`). The key thing to notice is what is missing: there is no `clone()` method on `Element`, no manual copy loop, and the `Document` type is a plain struct with no special members. Deep copying the entire document is one line.
 
 **Answer:**
 
 ```cpp
-
 #include <polymorphic>
 #include <indirect>
 #include <iostream>
 #include <vector>
 #include <string>
 
-// ═══════════ Domain: Document elements ═══════════
+// Domain: Document elements
 struct Element {
     virtual ~Element() = default;
     virtual std::string render() const = 0;
@@ -134,7 +137,7 @@ struct Link : Element {
     }
 };
 
-// ═══════════ Document: value-semantic container of polymorphic elements ═══════════
+// Document: value-semantic container of polymorphic elements
 struct Document {
     std::string title;
     std::vector<std::polymorphic<Element>> elements;
@@ -174,20 +177,22 @@ int main() {
     //   <a href='https://example.com'>Click here</a>
     //   Added to copy only
 }
-
 ```
 
+Adding a new element type like `Video` or `Table` in the future requires zero changes to `Document` or any existing element type. There is no `clone()` method to forget, and no base class to update.
+
 ### Q3: Compare std::polymorphic<Base> with unique_ptr<Base> + clone() and explain the ergonomic improvement
+
+The old pattern was not wrong - it worked - but it accumulated boilerplate at every new derived class and created a category of bug (mismatched or forgotten `clone()`) that simply does not exist with `std::polymorphic`. The table inside the code block quantifies exactly what is eliminated.
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <vector>
 #include <iostream>
 
-// ═══════════ OLD: unique_ptr + clone() ═══════════
+// OLD: unique_ptr + clone()
 struct ShapeOld {
     virtual ~ShapeOld() = default;
     virtual std::unique_ptr<ShapeOld> clone() const = 0;  // Boilerplate #1
@@ -213,7 +218,7 @@ std::vector<std::unique_ptr<ShapeOld>> copy_shapes(
     return dst;
 }
 
-// ═══════════ NEW: std::polymorphic (C++26) ═══════════
+// NEW: std::polymorphic (C++26)
 struct ShapeNew {
     virtual ~ShapeNew() = default;
     virtual double area() const = 0;
@@ -254,15 +259,16 @@ int main() {
     Bug surface area: clone() mismatch bugs eliminated entirely
     */
 }
-
 ```
+
+The reason `clone() returns wrong type` is listed as a subtle bug is that a derived class can accidentally return `std::make_unique<Base>(*this)` instead of `std::make_unique<Derived>(*this)` - it compiles, runs, and silently loses the derived data. `std::polymorphic` eliminates this entire class of bug because the framework, not the user, performs the copy.
 
 ---
 
 ## Notes
 
-- `std::polymorphic<Base>` internally stores a type-erased copy function alongside the object — no user `clone()` needed
-- `std::indirect<T>` is for **non-polymorphic** heap allocation with value semantics (like `std::string` wrapping a `char*`)
-- Both guarantee non-null: always hold a valid object (no `nullptr` state unlike `unique_ptr`)
-- Small buffer optimization is implementation-defined but encouraged for `std::indirect`
-- Migration: replace `unique_ptr<Base> + clone()` → `polymorphic<Base>` for immediate ergonomic win
+- `std::polymorphic<Base>` internally stores a type-erased copy function alongside the object - no user `clone()` needed.
+- `std::indirect<T>` is for **non-polymorphic** heap allocation with value semantics (analogous to how `std::string` wraps a heap `char*`).
+- Both guarantee non-null: they always hold a valid object (no `nullptr` state unlike `unique_ptr`).
+- Small buffer optimization is implementation-defined but encouraged for `std::indirect`.
+- Migration path: replace `unique_ptr<Base> + clone()` with `polymorphic<Base>` for an immediate ergonomic improvement.

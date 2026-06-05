@@ -1,40 +1,37 @@
-# Use `std::to_underlying` (C++23) for Safe Enum-to-Integer Conversion# Use `std::to_underlying` (C++23) for Safe Enum-to-Integer Conversion
-
-
-- Compilers: GCC 11+, Clang 13+, MSVC 19.30+ (VS 2022 17.0).- Feature-test macro: `__cpp_lib_to_underlying >= 202102L`.- For bit-flag enums, `std::to_underlying` replaces the need for a separate `underlying_cast` utility that many codebases define internally.- Prefer `std::to_underlying` over `static_cast<int>`: the latter hardcodes the target type and silently truncates if the underlying type is wider than `int`.- The function is `constexpr noexcept` — zero overhead, usable in `static_assert` and template arguments.- It works with both scoped (`enum class`) and unscoped (`enum`) enumerations.- `std::to_underlying` is in `<utility>`, not `<type_traits>` — a common source of missing-include errors.## Notes---```}    static_assert(has_flag(flags, Flags::C));    static_assert(!has_flag(flags, Flags::B));    static_assert(has_flag(flags, Flags::A));        std::to_underlying(Flags::A) | std::to_underlying(Flags::C));    constexpr auto flags = static_cast<Flags>(    std::cout << r.status_code() << " — " << r.category() << '\n';    Response r{HttpStatus::NotFound};int main() {}    return (std::to_underlying(set) & std::to_underlying(flag)) != 0;constexpr bool has_flag(Flags set, Flags flag) {enum class Flags : uint8_t { A = 1, B = 2, C = 4 };// Comparison: to_underlying in bitwise operations};    }        return "Unknown";        if (code >= 500 && code < 600) return "Server Error";        if (code >= 400 && code < 500) return "Client Error";        if (code >= 200 && code < 300) return "Success";        auto code = std::to_underlying(status);        // Use to_underlying for range-based classification    std::string_view category() const noexcept {    }        return std::to_underlying(status);    uint16_t status_code() const noexcept {    HttpStatus status;struct Response {// Use to_underlying for wire-protocol encoding};    ServerError = 500,    NotFound    = 404,    OK          = 200,enum class HttpStatus : uint16_t {#endif}    }        return static_cast<std::underlying_type_t<E>>(e);    constexpr auto to_underlying(E e) noexcept {    template <typename E>namespace std {#if __cpp_lib_to_underlying < 202102L// Polyfill for pre-C++23 compilers#include <cstdint>#include <utility>#include <iostream>#include <type_traits>```cpp### Q3: How do you implement a pre-C++23 polyfill and use `to_underlying` in a switch-case exhaustiveness pattern?---**Key insight:** `std::to_underlying(LogLevel::COUNT)` in the array size guarantees the table stays in sync with the enum even if the underlying type changes.```}    }        std::cout << to_string(lvl) << '\n';         lvl = next(lvl)) {         lvl != LogLevel::COUNT;    for (auto lvl = LogLevel::Trace;    static_assert(to_string(LogLevel::Error) == "ERROR");int main() {}    return static_cast<LogLevel>(val + 1);    auto val = std::to_underlying(lvl);constexpr LogLevel next(LogLevel lvl) {// Type-safe enum increment}    return "UNKNOWN";    if (idx < level_names.size()) return level_names[idx];    auto idx = std::to_underlying(lvl);constexpr std::string_view to_string(LogLevel lvl) {};    "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"    std::to_underlying(LogLevel::COUNT)> level_names = {constexpr std::array<std::string_view,// Lookup table indexed by enum};    Trace, Debug, Info, Warn, Error, Fatal, COUNTenum class LogLevel : uint8_t {#include <iostream>#include <string_view>#include <utility>#include <array>```cpp### Q2: How do you use `std::to_underlying` as an array index for enum-keyed lookup tables?---**Key insight:** When the underlying type changes (e.g., from `uint32_t` to `uint64_t`), every `static_cast<uint32_t>` site silently truncates. `std::to_underlying` adapts automatically.```}    serialize(Permission::All); // 0x7    serialize(perms);         // 0x3    static_assert(raw == 0x03);    constexpr auto raw = std::to_underlying(perms);    // Compile-time evaluation    constexpr auto perms = Permission::Read | Permission::Write;int main() {}              << std::hex << raw << '\n';    std::cout << "Serialized permission bits: 0x"    static_assert(std::is_same_v<decltype(raw), uint32_t>);    auto raw = std::to_underlying(p);    // CORRECT: deduces uint32_t automatically    // int raw = static_cast<int>(p);    // WRONG: static_cast<int> silently narrows if underlying is uint64_tvoid serialize(Permission p) {// Serialization helper — always uses the correct underlying type}        std::to_underlying(a) | std::to_underlying(b));    return static_cast<Permission>(constexpr Permission operator|(Permission a, Permission b) {};    All     = Read | Write | Execute  // bit-field enum    Execute = 0x04,    Write   = 0x02,    Read    = 0x01,enum class Permission : uint32_t {#include <type_traits>#include <iostream>#include <utility>#include <cstdint>```cpp### Q1: How does `std::to_underlying` compare with `static_cast` for serialization safety?## Self-Assessment---```└──────────────┘                        └──────────────────┘│  Color::Red  │                        │  (e.g. uint8_t)   ││  enum class  │ ────────────────────►  │  underlying_type  │┌──────────────┐   std::to_underlying   ┌──────────────────┐```Common use cases include serialization (writing enum values to binary/JSON), logging, interfacing with C APIs that expect integers, and indexing arrays by enum value. The function is trivially implementable — the value proposition is readability, correctness, and intent expression.| `std::to_underlying(e)` | Yes | Yes | Excellent | Yes || `static_cast<underlying_type_t<E>>(e)` | Yes | Yes | Verbose | Yes || `static_cast<int>(e)` | No — silently narrows | No — hardcodes `int` | Poor | Yes ||---|---|---|---|---|| Approach | Type-safe | Correct type deduced | Readable | Compile-time |The function is `constexpr` and `noexcept`. It participates in overload resolution only when the argument is an enumeration type, providing a compile-time guard against accidental misuse on non-enum types. This makes it strictly safer than a bare `static_cast<int>`.`std::to_underlying`, defined in `<utility>`, converts a scoped or unscoped enumeration value to its underlying integral type. Before C++23, the idiomatic way was `static_cast<std::underlying_type_t<E>>(e)` — verbose, error-prone if the target type is manually specified, and invisible to grep-based code audits. `std::to_underlying` replaces this pattern with a single, self-documenting call.## Topic Overview---**Reference:** [cppreference — std::to_underlying](https://en.cppreference.com/w/cpp/utility/to_underlying)  **Standard:** C++23  **Category:** Standard Library — New in C++23/26  
+# Use `std::to_underlying` (C++23) for Safe Enum-to-Integer Conversion
 
 **Category:** Standard Library — New in C++23/26  
 **Standard:** C++23  
-**Reference:** https://en.cppreference.com/w/cpp/utility/to_underlying  
+**Reference:** [cppreference — std::to_underlying](https://en.cppreference.com/w/cpp/utility/to_underlying)  
 
 ---
 
 ## Topic Overview
 
-`std::to_underlying` is a utility function introduced in C++23 (`<utility>`) that converts a scoped or unscoped enumeration value to its underlying integer type. It replaces the verbose `static_cast<std::underlying_type_t<E>>(e)` pattern with a concise, readable, and type-safe call.
+`std::to_underlying`, defined in `<utility>`, converts a scoped or unscoped enumeration value to its underlying integral type. Before C++23, the idiomatic way was `static_cast<std::underlying_type_t<E>>(e)` - verbose, error-prone if the target type is manually specified, and invisible to grep-based code audits. `std::to_underlying` replaces this pattern with a single, self-documenting call.
 
 Before C++23, extracting the numeric value of an enum required either an explicit `static_cast` to the underlying type or a helper function that developers had to write themselves. Both approaches are error-prone: `static_cast` lets you cast to the *wrong* integer type silently, and hand-rolled helpers are inconsistent across codebases. `std::to_underlying` eliminates these problems by always deducing the correct underlying type.
 
 | Approach | Type-safe? | Deduces underlying type? | Readable? |
-| --- | --- | --- | --- |
-| `static_cast<int>(e)` | No — allows wrong target type | No | Moderate |
-| `static_cast<std::underlying_type_t<E>>(e)` | Yes | Yes | Poor — verbose |
+| -------- | ---------- | ------------------------ | --------- |
+| `static_cast<int>(e)` | No - allows wrong target type | No | Moderate |
+| `static_cast<std::underlying_type_t<E>>(e)` | Yes | Yes | Poor - verbose |
 | `std::to_underlying(e)` | Yes | Yes | Excellent |
 
 The function is `constexpr` and `noexcept`, making it usable in compile-time contexts, template metaprogramming, serialization routines, logging, and hash functions. It works identically for scoped (`enum class`) and unscoped (`enum`) enumerations.
 
 ### Implementation (simplified)
 
-```asm
+The implementation is deliberately trivial - the value of this function is the name, not the mechanics:
 
+```cpp
 template <class Enum>
 constexpr std::underlying_type_t<Enum> to_underlying(Enum e) noexcept {
     return static_cast<std::underlying_type_t<Enum>>(e);
 }
-
 ```
 
-The simplicity is the point: the standard provides a well-named, discoverable vocabulary function so that every codebase converges on one idiom.
+The simplicity is the point: the standard provides a well-named, discoverable vocabulary function so that every codebase converges on one idiom instead of each team inventing their own `enum_cast` or `underlying_cast` helper.
 
 ---
 
@@ -42,8 +39,9 @@ The simplicity is the point: the standard provides a well-named, discoverable vo
 
 ### Q1: How does `std::to_underlying` compare to `static_cast` in a serialization context, and what bugs does it prevent
 
-```cpp
+The subtle danger with `static_cast<int>(e)` is that it hardcodes the destination type. If the enum's underlying type is `uint8_t` and you cast to `int`, the compiler won't warn you - it's a legal widening conversion. But you've now written 4 bytes to the wire instead of 1, silently breaking your protocol. `std::to_underlying` can't make that mistake because it always uses the exact declared underlying type:
 
+```cpp
 #include <cstdint>
 #include <utility>
 #include <iostream>
@@ -83,19 +81,19 @@ int main() {
     buf.clear();
     serialize_bad(Permission::Admin, buf);
     std::cout << "Serialized size (bad):  " << buf.size() << " byte(s)\n";
-    // Output: 4 — silent data bloat and protocol mismatch
+    // Output: 4 - silent data bloat and protocol mismatch
 }
-
 ```
 
-**Key insight:** `std::to_underlying` eliminates an entire class of serialization bugs where the developer casts to a mismatched integer width.
+The key insight: `std::to_underlying` eliminates an entire class of serialization bugs where the developer casts to a mismatched integer width. When the underlying type changes (e.g., from `uint8_t` to `uint16_t`), every `std::to_underlying` call adapts automatically; every `static_cast<uint8_t>` site silently truncates.
 
 ---
 
 ### Q2: How do you use `std::to_underlying` inside a `constexpr` bitmask flag system
 
-```cpp
+Bitmask enums are the most common place you'll reach for `to_underlying`. To implement `operator|` and `operator&` on an `enum class`, you need to extract the integer, do the bitwise operation, and cast back. `to_underlying` makes the intent clear at each step:
 
+```cpp
 #include <cstdint>
 #include <utility>
 #include <type_traits>
@@ -149,15 +147,17 @@ int main() {
     //   + Bold
     //   + Underline
 }
-
 ```
+
+Notice that the `static_assert` lines at namespace scope verify the bit values at compile time - zero runtime cost, and they document the expected layout of the bit field right next to the enum definition.
 
 ---
 
 ### Q3: How do you use `std::to_underlying` as a hash or map key for enum-indexed data structures
 
-```cpp
+Two common patterns here: using an enum value as an array index (with a `COUNT` sentinel), and using an enum as a key in an `unordered_map` (which needs a hash). `to_underlying` makes both clean:
 
+```cpp
 #include <utility>
 #include <unordered_map>
 #include <string>
@@ -186,7 +186,7 @@ constexpr const char* to_string(LogLevel lv) noexcept {
     return "UNKNOWN";
 }
 
-// 2. Hash functor using to_underlying — generic for any enum
+// 2. Hash functor using to_underlying - generic for any enum
 struct EnumHash {
     template <typename E>
         requires std::is_enum_v<E>
@@ -216,16 +216,17 @@ int main() {
         case 4: case 5: std::cout << "critical\n"; break;
     }
 }
-
 ```
+
+The `COUNT` sentinel pattern is worth understanding: by placing a `COUNT` enumerator at the end, `std::to_underlying(LogLevel::COUNT)` gives you the number of enumerators as a compile-time constant. That means the `level_names` array is automatically the right size - add a new log level, update `level_names`, and the array size stays in sync without any manual counting.
 
 ---
 
 ## Notes
 
-- **Header:** `<utility>` — no additional includes needed.
+- **Header:** `<utility>` - a common source of missing-include errors since you might expect it to live in `<type_traits>`.
 - **`constexpr` + `noexcept`:** usable in every evaluation context including `static_assert`, template arguments, and `consteval` functions.
 - **Works with unscoped enums too:** although less commonly needed since unscoped enums implicitly convert to integers, `to_underlying` still guarantees the *exact* underlying type rather than a potentially widened `int`.
-- **Migration tip:** search your codebase for `static_cast<.*underlying_type` — every hit is a candidate for replacement with `std::to_underlying`.
+- **Migration tip:** search your codebase for `static_cast<.*underlying_type` - every hit is a candidate for replacement with `std::to_underlying`.
 - **Compiler support (as of 2025):** GCC 13+, Clang 16+, MSVC 19.34+ (VS 2022 17.4+).
-- **Pair with `std::format`:** `std::to_underlying` feeds directly into format specifiers — `std::format("{}", std::to_underlying(e))` — useful for logging and diagnostics.
+- **Pair with `std::format`:** `std::to_underlying` feeds directly into format specifiers - `std::format("{}", std::to_underlying(e))` - useful for logging and diagnostics.

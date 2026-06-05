@@ -13,26 +13,26 @@
 Before C++23, developers relied on compiler-specific intrinsics: `__builtin_unreachable()` (GCC/Clang) and `__assume(false)` (MSVC). `std::unreachable()` standardizes this pattern, making portable code cleaner and eliminating `#ifdef` blocks.
 
 | Mechanism | Portable | Standard | UB if reached | Optimizer hint |
-| --- | --- | --- | --- | --- |
+| --------- | -------- | -------- | ------------- | -------------- |
 | `__builtin_unreachable()` | GCC/Clang only | No | Yes | Yes |
 | `__assume(false)` | MSVC only | No | Yes | Yes |
 | `std::unreachable()` | Yes | C++23 | Yes | Yes |
 | `assert(false)` | Yes | Yes | No (abort) | No |
 | `std::abort()` | Yes | Yes | No (abort) | No |
 
-**Critical safety rule:** `std::unreachable()` is not a debugging tool — it is a *performance* tool for provably dead code. If there is any possibility the path is reachable, use `assert(false)` or `std::abort()` instead. In debug builds, consider guarding with an assertion before the unreachable hint.
+**Critical safety rule:** `std::unreachable()` is not a debugging tool - it is a *performance* tool for provably dead code. If there is any possibility the path is reachable, use `assert(false)` or `std::abort()` instead. In debug builds, consider guarding with an assertion before the unreachable hint.
+
+Here's the classic example - an exhaustive switch where the compiler can eliminate the default branch entirely once it knows the other cases cover everything:
 
 ```cpp
-
 switch (color) {
     case Red:   ...
     case Green: ...
     case Blue:  ...
     default:    std::unreachable();   // enum is exhaustive
-}           ▲
-            │ Compiler may now omit the default branch entirely,
-              eliminate bounds checks, and assume only 3 cases exist.
-
+}           ^
+            |  Compiler may now omit the default branch entirely,
+               eliminate bounds checks, and assume only 3 cases exist.
 ```
 
 ---
@@ -41,8 +41,9 @@ switch (color) {
 
 ### Q1: How does `std::unreachable()` eliminate generated code in an exhaustive switch
 
-```cpp
+The way the optimizer uses this hint is concrete: without `unreachable()`, the compiler must generate a fallback path in case `d` holds an out-of-range value. With it, the compiler knows only four cases are possible and can produce a simple jump table with no defensive branch. Notice that `unreachable()` goes *after* the switch, not inside `default:` - this preserves `-Wswitch` warnings if you add a new enumerator without a case:
 
+```cpp
 #include <utility>
 #include <cstdint>
 #include <string_view>
@@ -50,7 +51,7 @@ switch (color) {
 enum class Direction : uint8_t { North, South, East, West };
 
 // Without unreachable: compiler generates a fallback path for default
-// With unreachable: compiler knows all cases are covered → tighter codegen
+// With unreachable: compiler knows all cases are covered -> tighter codegen
 constexpr std::string_view to_string(Direction d) {
     switch (d) {
         case Direction::North: return "North";
@@ -72,17 +73,17 @@ int main() {
     // All four calls resolve at compile time with constexpr
     return to_string(Direction::East).size();  // returns 4
 }
-
 ```
 
-**Key insight:** Placing `std::unreachable()` after the switch (not in `default:`) avoids suppressing `-Wswitch` warnings. The compiler still warns if a new enumerator is added without a case.
+The placement outside the switch body rather than in `default:` is the key ergonomic detail. Putting it in `default: std::unreachable()` would suppress the compiler warning when a new enumerator is added. Placing it after the switch keeps that warning alive, so you get the optimization hint *and* the safety net.
 
 ---
 
 ### Q2: How do you safely combine `std::unreachable()` with debug assertions
 
-```cpp
+The right pattern for production code is a wrapper that gives you a hard assertion in debug builds and the optimizer hint in release builds. `std::source_location` (C++20) makes the debug message maximally useful - you get the exact file, line, and function where the impossible path was actually reached:
 
+```cpp
 #include <utility>
 #include <cassert>
 #include <iostream>
@@ -132,24 +133,24 @@ static_assert(compute_checked(3.0, 4.0, Op::Add) == 7.0);
 int main() {
     std::cout << compute(10, 3, Op::Mul) << '\n';  // 30
 }
-
 ```
 
-**Key insight:** In `constexpr`/`consteval` context, reaching `std::unreachable()` is a compile-time error — the compiler diagnoses UB during constant evaluation, providing an extra safety net.
+The `consteval` case is a particularly nice safety property: in constant evaluation, undefined behavior is not allowed, so the compiler will issue a compile-time error if `std::unreachable()` is ever actually reached. You get free correctness checking at compile time when the function is used in a constant context.
 
 ---
 
 ### Q3: What are valid vs. dangerous uses of `std::unreachable()`? Show an optimization benchmark pattern
 
-```cpp
+The reason this trips people up is that `std::unreachable()` looks like it might be a useful error-handling tool - "if we get here something went wrong, so mark it unreachable." That thinking is backwards and dangerous. A user passing invalid input *can* reach that path, and the result is silent UB, not a helpful crash. The rule is: only use it when the *logic of the program* (not user behavior) makes the path impossible:
 
+```cpp
 #include <utility>
 #include <cstdint>
 #include <vector>
 #include <numeric>
 #include <iostream>
 
-// ═══ VALID USE: value known to be in range ═══
+// VALID USE: value known to be in range
 // After validation at system boundary, hint the optimizer
 uint32_t fast_lookup(const uint32_t* table, uint32_t index) {
     // Caller guarantees index < 256 (validated at API boundary)
@@ -157,20 +158,20 @@ uint32_t fast_lookup(const uint32_t* table, uint32_t index) {
     return table[index];  // compiler omits bounds check
 }
 
-// ═══ VALID USE: division where denominator is provably nonzero ═══
+// VALID USE: division where denominator is provably nonzero
 int fast_div(int num, int denom) {
     if (denom == 0) std::unreachable();
     return num / denom;  // compiler omits zero-check on some architectures
 }
 
-// ═══ DANGEROUS: DO NOT use unreachable as error handling ═══
+// DANGEROUS: DO NOT use unreachable as error handling
 // int parse_int(std::string_view s) {
 //     auto result = try_parse(s);
 //     if (!result) std::unreachable();  // BUG: user input can be invalid!
 //     return *result;
 // }
 
-// ═══ VALID USE: eliminate impossible modular arithmetic outcomes ═══
+// VALID USE: eliminate impossible modular arithmetic outcomes
 int classify_mod3(int value) {
     switch (value % 3) {
         case 0: return 0;
@@ -182,7 +183,7 @@ int classify_mod3(int value) {
     std::unreachable();
 }
 
-// ═══ Portable polyfill for pre-C++23 ═══
+// Portable polyfill for pre-C++23
 #if __cplusplus < 202302L
 namespace std {
     [[noreturn]] inline void unreachable() {
@@ -203,18 +204,19 @@ int main() {
     std::cout << fast_div(100, 7) << '\n';          // 14
     std::cout << classify_mod3(17) << '\n';         // 2
 }
-
 ```
+
+The commented-out dangerous example is the most important part of this question. The distinction between "validated at API boundary" (safe) and "comes from user input" (not safe) is what separates a valid use of `std::unreachable()` from a latent UB bug waiting to surface.
 
 ---
 
 ## Notes
 
 - `std::unreachable()` is in `<utility>`, declared `[[noreturn]]`.
-- Reaching it is **undefined behavior** — treat it as a loaded weapon, not as error handling.
-- Place after a switch (not inside `default:`) to preserve `-Wswitch` / `-Wswitch-enum` warnings when enumerators are added.
-- In `constexpr` evaluation, reaching `std::unreachable()` is a hard compile error — UB is diagnosed at compile time.
-- Combine with `assert(false)` in debug builds via a wrapper like `unreachable_safe()`.
+- Reaching it is **undefined behavior** - treat it as a performance tool for provably dead paths, not as error handling.
+- Place it after a switch (not inside `default:`) to preserve `-Wswitch` / `-Wswitch-enum` warnings when new enumerators are added.
+- In `constexpr` evaluation, reaching `std::unreachable()` is a hard compile error - UB is diagnosed at compile time, which is a useful free safety check.
+- Combine with `assert(false)` in debug builds via a wrapper like `unreachable_safe()` so you get actionable diagnostics during development.
 - The optimizer benefits most in tight loops and lookup tables where eliminating a single branch matters.
 - Feature-test macro: `__cpp_lib_unreachable >= 202202L`.
 - Compilers: GCC 12+, Clang 15+, MSVC 19.32+ (VS 2022 17.2).

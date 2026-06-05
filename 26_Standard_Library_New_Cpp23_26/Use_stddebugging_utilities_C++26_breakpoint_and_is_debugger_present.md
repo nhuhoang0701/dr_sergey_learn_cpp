@@ -9,20 +9,21 @@
 
 ## Topic Overview
 
-C++26 introduces `<debugging>` with two utilities that replace decades of platform-specific hacks for programmatic debugger interaction:
+C++26 introduces `<debugging>` with two utilities that replace decades of platform-specific hacks for programmatic debugger interaction. Before this, triggering a breakpoint in code required a chain of `#ifdef` guards that was easy to get wrong (and sometimes silently wrong - see the notes about `__builtin_trap()`).
 
-| Function                        | Purpose                                               |
+| Function | Purpose |
 | --- | --- |
-| `std::breakpoint()`             | Halt execution as if a debugger breakpoint was set    |
-| `std::is_debugger_present()`    | Returns `true` if a debugger is attached at runtime   |
-| `std::breakpoint_if_debugging()`| Calls `breakpoint()` only when debugger is attached   |
+| `std::breakpoint()` | Halt execution as if a debugger breakpoint was set |
+| `std::is_debugger_present()` | Returns `true` if a debugger is attached at runtime |
+| `std::breakpoint_if_debugging()` | Calls `breakpoint()` only when debugger is attached |
 
 ### Before vs After C++26
 
-```cpp
+Here is just how messy the old approach was, and how much cleaner C++26 makes it:
 
+```cpp
 Before (platform-specific):                After (portable):
-─────────────────────────                  ────────────────────
+--------------------------                 ----------------
 #ifdef _MSC_VER                            #include <debugging>
   __debugbreak();                          std::breakpoint();
 #elif defined(__GNUC__)
@@ -30,7 +31,6 @@ Before (platform-specific):                After (portable):
 #elif defined(__APPLE__)
   __builtin_trap();
 #endif
-
 ```
 
 ---
@@ -39,10 +39,9 @@ Before (platform-specific):                After (portable):
 
 ### Q1: Call std::breakpoint() to programmatically trigger a debugger break at a specific point
 
-**Answer:**
+The typical use case is breaking on an unexpected condition so the debugger stops right at the point of interest, with the full call stack available. Notice that `std::breakpoint()` is used here inside a data processing loop - this is much cleaner than setting a conditional breakpoint in the IDE:
 
 ```cpp
-
 #include <debugging>  // C++26
 #include <iostream>
 #include <vector>
@@ -71,17 +70,15 @@ int main() {
     }
 }
 // When run under debugger: execution stops at std::breakpoint()
-// When run normally: behavior is implementation-defined (usually SIGTRAP → crash,
+// When run normally: behavior is implementation-defined (usually SIGTRAP -> crash,
 // or no-op if compiled with certain flags)
-
 ```
 
 ### Q2: Use std::is_debugger_present() to enable extra diagnostic output only when debugging
 
-**Answer:**
+`is_debugger_present()` is a simple runtime check - no `#ifdef`, no compile-time flag. The overhead is minimal (typically one memory read), so it is safe to put behind a conditional even in hot paths:
 
 ```cpp
-
 #include <debugging>  // C++26
 #include <iostream>
 #include <string>
@@ -89,17 +86,17 @@ int main() {
 #include <format>
 #include <source_location>
 
-// ═══════════ Debug-only logging ═══════════
+// Debug-only logging
 void debug_log(const std::string& msg,
                std::source_location loc = std::source_location::current()) {
     if (std::is_debugger_present()) {
         auto now = std::chrono::system_clock::now();
-        std::cerr << std::format("[DEBUG {}:{}] {} — {}\n",
+        std::cerr << std::format("[DEBUG {}:{}] {} - {}\n",
                                   loc.file_name(), loc.line(), msg,
                                   now);
         // Extra: dump memory stats, validate invariants, etc.
     }
-    // In production (no debugger): zero overhead — the check is a simple read
+    // In production (no debugger): zero overhead - the check is a simple read
 }
 
 class Database {
@@ -112,7 +109,7 @@ public:
 
         if (std::is_debugger_present() && connection_count_ > 100) {
             // Alert developer of potential connection leak
-            std::cerr << "WARNING: >100 connections — possible leak!\n";
+            std::cerr << "WARNING: >100 connections - possible leak!\n";
             std::breakpoint_if_debugging();  // Stop only if debugger attached
         }
     }
@@ -123,28 +120,28 @@ int main() {
     db.connect("localhost:5432");
 
     if (std::is_debugger_present()) {
-        std::cout << "Running under debugger — verbose mode enabled\n";
+        std::cout << "Running under debugger - verbose mode enabled\n";
     } else {
-        std::cout << "Production mode — minimal output\n";
+        std::cout << "Production mode - minimal output\n";
     }
 }
 
 // Under debugger:
-//   [DEBUG main.cpp:28] Attempting connection to localhost:5432 — 2024-...
-//   [DEBUG main.cpp:30] Active connections: 1 — 2024-...
-//   Running under debugger — verbose mode enabled
+//   [DEBUG main.cpp:28] Attempting connection to localhost:5432 - 2024-...
+//   [DEBUG main.cpp:30] Active connections: 1 - 2024-...
+//   Running under debugger - verbose mode enabled
 
 // Without debugger:
-//   Production mode — minimal output
-
+//   Production mode - minimal output
 ```
+
+The `breakpoint_if_debugging()` call in the `connect` method is the idiomatic form: you want to stop when the suspicious condition occurs, but only when you are actually in a debugging session. Without a debugger, the check is a no-op.
 
 ### Q3: Show a debug-only assertion that triggers std::breakpoint() before printing a detailed diagnostic
 
-**Answer:**
+The order of operations here matters: you want the debugger to stop *first*, while the call stack is still intact, and only then print the diagnostic. Printing first and then breaking loses the stack context you actually need:
 
 ```cpp
-
 #include <debugging>  // C++26
 #include <iostream>
 #include <format>
@@ -152,7 +149,7 @@ int main() {
 #include <string_view>
 #include <cstdlib>
 
-// ═══════════ Debug assertion macro ═══════════
+// Debug assertion macro
 // Triggers breakpoint FIRST (so debugger stops at the assert site),
 // then prints diagnostics
 
@@ -163,16 +160,15 @@ inline void debug_assert_impl(
     std::source_location loc = std::source_location::current())
 {
     if (!condition) {
-        // Step 1: Break FIRST — debugger stops at the call site's context
+        // Step 1: Break FIRST - debugger stops at the call site's context
         std::breakpoint_if_debugging();
 
         // Step 2: Print detailed diagnostic
         std::cerr << std::format(
-            "\n╔══ ASSERTION FAILED ══════════════════════\n"
-            "║ Expression: {}\n"
-            "║ Message:    {}\n"
-            "║ Location:   {}:{} in {}\n"
-            "╚═════════════════════════════════════════\n",
+            "\nASSERTION FAILED\n"
+            "  Expression: {}\n"
+            "  Message:    {}\n"
+            "  Location:   {}:{} in {}\n",
             expr, msg, loc.file_name(), loc.line(), loc.function_name());
 
         // Step 3: In non-debug builds, abort
@@ -186,7 +182,7 @@ inline void debug_assert_impl(
 #define DEBUG_ASSERT(cond, msg) \
     debug_assert_impl((cond), #cond, (msg))
 
-// ═══════════ Usage ═══════════
+// Usage
 class BoundedBuffer {
     int* data_;
     size_t capacity_;
@@ -222,15 +218,16 @@ int main() {
     // Under debugger: breaks first, then prints diagnostic
     // Without debugger: prints diagnostic, then abort()
 }
-
 ```
+
+The conditional `abort()` at the end is intentional: under a debugger you want to be able to inspect and possibly continue, so you do not abort. Without a debugger, you want a hard stop with a clean error message rather than silent undefined behavior.
 
 ---
 
 ## Notes
 
-- `<debugging>` is C++26; early support in GCC 14, Clang 19, MSVC 17.10
-- `std::breakpoint_if_debugging()` = `if (is_debugger_present()) breakpoint();` — the most commonly useful form
-- `is_debugger_present()` checks at **runtime**, not compile time — no `#ifdef` needed
-- Overhead of `is_debugger_present()` is typically a single memory read (on Windows: `NtCurrentPeb()->BeingDebugged`)
-- Unlike `assert()`, `std::breakpoint()` does not require `NDEBUG` to be unset — you control when it fires
+- `<debugging>` is C++26; early support in GCC 14, Clang 19, MSVC 17.10.
+- `std::breakpoint_if_debugging()` is equivalent to `if (is_debugger_present()) breakpoint()` - it is the most commonly useful form for day-to-day use.
+- `is_debugger_present()` checks at **runtime**, not compile time - no `#ifdef` needed.
+- Overhead of `is_debugger_present()` is typically a single memory read (on Windows: `NtCurrentPeb()->BeingDebugged`).
+- Unlike `assert()`, `std::breakpoint()` does not require `NDEBUG` to be unset - you control when it fires.

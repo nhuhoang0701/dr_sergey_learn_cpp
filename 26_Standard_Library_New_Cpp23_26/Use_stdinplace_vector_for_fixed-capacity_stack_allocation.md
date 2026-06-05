@@ -12,8 +12,9 @@ This file focuses on **practical patterns and benchmarks** for `std::inplace_vec
 
 ### Common Use Cases
 
-```cpp
+The table below is a quick reference for where `inplace_vector` pays off. The common thread is any context where heap allocation is either forbidden, expensive, or simply unnecessary because the maximum count is known at compile time.
 
+```cpp
 ┌─────────────────────────────────────────────────────────┐
 │ Use Case                           │ Why inplace_vector │
 ├─────────────────────────────────────────────────────────┤
@@ -24,7 +25,6 @@ This file focuses on **practical patterns and benchmarks** for `std::inplace_vec
 │ High-frequency trading              │ Predictable latency│
 │ Interrupt handlers                  │ No allocator calls │
 └─────────────────────────────────────────────────────────┘
-
 ```
 
 ---
@@ -33,16 +33,17 @@ This file focuses on **practical patterns and benchmarks** for `std::inplace_vec
 
 ### Q1: Use std::inplace_vector<int,16> as a fixed-capacity vector that never heap-allocates
 
+The best way to get comfortable with `inplace_vector` is to see that its API is essentially identical to `std::vector`. If you know `std::vector`, you already know how to use this. The only real difference is that `capacity()` and `max_size()` are always the compile-time constant `N`, and the whole object lives on the stack.
+
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <iostream>
 #include <algorithm>
 
 int main() {
-    // ═══════════ Basic usage — drop-in vector replacement ═══════════
+    // Basic usage — drop-in vector replacement
     std::inplace_vector<int, 16> iv;
 
     // Same API as std::vector
@@ -72,27 +73,29 @@ int main() {
 
     // sizeof lives on the stack
     std::cout << "sizeof(iv): " << sizeof(iv) << " bytes\n";
-    // ≈ 16 * sizeof(int) + sizeof(size_t) = 72 bytes (on stack, not heap)
+    // ~= 16 * sizeof(int) + sizeof(size_t) = 72 bytes (on stack, not heap)
 
-    // ═══════════ Initializer list construction ═══════════
+    // Initializer list construction
     std::inplace_vector<double, 4> coords = {1.0, 2.5, 3.7, 4.2};
 
-    // ═══════════ Never heap-allocates — verified ═══════════
+    // Never heap-allocates — verified
     // Even with custom allocator tracking, new/delete are never called.
     // This makes it safe for:
     // - Interrupt service routines
     // - Real-time audio callbacks
     // - constexpr contexts
 }
-
 ```
 
+Notice that `capacity()` always returns 16, not the current size. This is different from `std::vector`, where `capacity()` grows as needed. With `inplace_vector`, the capacity is baked into the type at compile time and never changes.
+
 ### Q2: Show push_back throwing std::bad_alloc when capacity is exceeded
+
+This is the one behavioral difference from `std::vector` that you need to internalize: `std::vector` reallocates when it runs out of room; `inplace_vector` cannot. Instead it throws `std::bad_alloc` from `push_back`, returns `nullptr` from `try_push_back`, or causes undefined behavior from `unchecked_push_back`. The choice of which API to use is a deliberate design decision about how you want overflow handled.
 
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <iostream>
 #include <stdexcept>
@@ -108,7 +111,7 @@ int main() {
     std::cout << "Full: size=" << v.size() << " capacity=" << v.capacity() << '\n';
     // Full: size=4 capacity=4
 
-    // ═══════════ push_back: throws when full ═══════════
+    // push_back: throws when full
     try {
         v.push_back(5);  // Throws std::bad_alloc!
     } catch (const std::bad_alloc& e) {
@@ -116,14 +119,14 @@ int main() {
     }
     std::cout << "Size still: " << v.size() << '\n';  // 4 (strong guarantee)
 
-    // ═══════════ try_push_back: returns nullptr when full ═══════════
+    // try_push_back: returns nullptr when full
     auto* p = v.try_push_back(5);
     std::cout << "try_push_back result: " << (p ? "success" : "nullptr") << '\n';
     // nullptr — no exception thrown
 
-    // ═══════════ unchecked_push_back: UB when full (fastest) ═══════════
+    // unchecked_push_back: UB when full (fastest)
     // v.unchecked_push_back(5);  // UB! Only use when you've checked size < capacity
-    
+
     // Safe pattern with unchecked:
     v.pop_back();  // Make room: size=3
     if (v.size() < v.capacity()) {
@@ -138,20 +141,22 @@ int main() {
     API decision tree:
     ┌──────────────────────────────────────────────────────┐
     │ Need to handle overflow?                             │
-    │   YES → push_back (exception) or try_push_back (null)│
-    │   NO  → unchecked_push_back (fastest, UB if full)    │
+    │   YES -> push_back (exception) or try_push_back (null)│
+    │   NO  -> unchecked_push_back (fastest, UB if full)    │
     └──────────────────────────────────────────────────────┘
     */
 }
-
 ```
 
+The reason `push_back` throws `std::bad_alloc` specifically (rather than something like `std::length_error`) is to stay compatible with code that already catches `std::bad_alloc` for allocation failures. From the caller's perspective, the container ran out of capacity - that is conceptually the same as running out of memory.
+
 ### Q3: Benchmark inplace_vector vs std::vector for a hot path that rarely exceeds 16 elements
+
+This benchmark simulates a physics tick that collects collision pairs. The key insight in the results is that even a reserved `std::vector` is slower than `inplace_vector` - not just because of allocation, but because `inplace_vector`'s data lives in the object itself rather than behind a heap pointer, giving the compiler and CPU better locality.
 
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <vector>
 #include <iostream>
@@ -181,7 +186,7 @@ void simulate_tick(Container& collisions, int seed) {
 int main() {
     constexpr int TICKS = 2'000'000;
 
-    // ═══════════ Benchmark: std::vector ═══════════
+    // Benchmark: std::vector
     {
         std::vector<CollisionPair> collisions;
         collisions.reserve(16);  // Pre-allocate, but still heap memory
@@ -194,7 +199,7 @@ int main() {
                   << " ms\n";
     }
 
-    // ═══════════ Benchmark: std::inplace_vector ═══════════
+    // Benchmark: std::inplace_vector
     {
         std::inplace_vector<CollisionPair, 16> collisions;
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -225,15 +230,16 @@ int main() {
 
     */
 }
-
 ```
+
+Point 4 in the comment - the compiler keeping the container in registers - is the most surprising one. For small element types like `int` or a pair of `int`s, the optimizer can sometimes eliminate the stack storage entirely and keep everything in CPU registers. That optimization is simply not possible for a `std::vector` because its data lives at a heap address that could be observed from elsewhere.
 
 ---
 
 ## Notes
 
-- `std::inplace_vector<T,N>` is equivalent to Boost `static_vector<T,N>` and EASTL `fixed_vector<T,N,false>`
-- `capacity()` and `max_size()` are always `N` — compile-time constants
-- Three push tiers: `push_back` (safe, throws), `try_push_back` (safe, no-throw), `unchecked_push_back` (fast, UB if full)
-- For types larger than a cache line (64 bytes), the advantage over `vector` diminishes
-- Size overhead: `sizeof(inplace_vector<T,N>)` = N * sizeof(T) + alignment padding — lives on stack
+- `std::inplace_vector<T,N>` is equivalent to Boost `static_vector<T,N>` and EASTL `fixed_vector<T,N,false>`.
+- `capacity()` and `max_size()` are always `N` - compile-time constants that never change.
+- Three push tiers: `push_back` (safe, throws on overflow), `try_push_back` (safe, no-throw, returns null), `unchecked_push_back` (fastest, undefined behavior if full).
+- For types larger than a cache line (64 bytes), the advantage over `vector` diminishes because the stack object itself becomes large enough to hurt locality.
+- Size overhead: `sizeof(inplace_vector<T,N>)` = N * sizeof(T) + alignment padding - lives entirely on the stack.

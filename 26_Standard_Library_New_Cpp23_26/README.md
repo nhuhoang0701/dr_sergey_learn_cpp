@@ -1,6 +1,6 @@
 # Standard Library — New in C++23/26
 
-New standard library additions in C++23 and C++26.
+C++23 and C++26 added a lot of genuinely useful library features - not just language tweaks, but new containers, new formatting power, new concurrency tools, and new ways to write safer abstractions. This folder covers the ones worth knowing.
 
 **Topics:** 25
 
@@ -34,13 +34,13 @@ New standard library additions in C++23 and C++26.
 
 ## Notes
 
-- std::expected (C++23) is the standard way to return a value or an error without exceptions
-- std::flat_map / std::flat_set (C++23) store elements in contiguous memory for better cache performance
-- std::generator (C++23) is the standard coroutine-based lazy sequence generator
-- std::print / std::println (C++23) provide Python-like formatted output
-- std::ranges::to (C++23) materializes lazy ranges into concrete containers
-- std::mdspan (C++23) provides multi-dimensional non-owning views over contiguous data
-- std::stacktrace (C++23) captures call stacks programmatically for diagnostics
-- import std; (C++23) imports the entire standard library as a named module
-- std::views::zip and std::views::enumerate (C++23) add missing range adaptors
-- Static reflection and std::execution are the headline features coming in C++26
+- `std::expected` (C++23) is the standard way to return a value or an error without exceptions.
+- `std::flat_map` / `std::flat_set` (C++23) store elements in contiguous memory for better cache performance.
+- `std::generator` (C++23) is the standard coroutine-based lazy sequence generator.
+- `std::print` / `std::println` (C++23) provide Python-like formatted output.
+- `std::ranges::to` (C++23) materializes lazy ranges into concrete containers.
+- `std::mdspan` (C++23) provides multi-dimensional non-owning views over contiguous data.
+- `std::stacktrace` (C++23) captures call stacks programmatically for diagnostics.
+- `import std;` (C++23) imports the entire standard library as a named module.
+- `std::views::zip` and `std::views::enumerate` (C++23) add missing range adaptors.
+- Static reflection and `std::execution` are the headline features coming in C++26.

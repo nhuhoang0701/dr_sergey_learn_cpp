@@ -11,6 +11,8 @@
 
 `std::inplace_vector<T, N>` (C++26, `<inplace_vector>`) is a **fixed-capacity, variable-size container** that stores up to `N` elements entirely on the stack. It provides the same interface as `std::vector` but **never heap-allocates**.
 
+The motivating insight is that many uses of `std::vector` in practice have a known small upper bound on element count. When that bound is known at compile time, paying for heap allocation on every call is wasteful. `inplace_vector` lets you express "this holds at most N elements, always stack-local" with a drop-in `std::vector`-compatible API.
+
 ### Key Properties
 
 | Property              | `std::vector<T>`          | `std::inplace_vector<T,N>` | `std::array<T,N>`       |
@@ -22,11 +24,13 @@
 | **constexpr**         | Partial (C++20)           | Full                        | Full                    |
 | **Contiguous**        | Yes                       | Yes                         | Yes                     |
 
+The difference from `std::array` is important: `array<T,N>` always has exactly N elements and does not support `push_back`. `inplace_vector<T,N>` starts empty and grows up to N, just like `vector`.
+
 ### When to Use
 
-- **Embedded / real-time** — no allocator, deterministic timing
-- **Hot paths** — avoid allocator overhead when max size is known and small
-- **constexpr** — compute arrays at compile time with dynamic logic
+- **Embedded / real-time** - no allocator, deterministic timing
+- **Hot paths** - avoid allocator overhead when max size is known and small
+- **constexpr** - compute arrays at compile time with dynamic push-back logic
 
 ---
 
@@ -34,10 +38,11 @@
 
 ### Q1: Replace a std::vector in a hot path with inplace_vector<T,N> and verify zero heap allocation
 
+This example shows a grid neighbor computation - a classic hot-path pattern where up to 8 neighbors are collected per call, millions of times. The heap version allocates and deallocates on every call. The stack version does not touch the allocator at all.
+
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <vector>
 #include <iostream>
@@ -66,7 +71,7 @@ std::inplace_vector<Point, 8> get_neighbors_stack(int x, int y) {
         for (int dy = -1; dy <= 1; ++dy)
             if (dx != 0 || dy != 0)
                 result.push_back({x + dx, y + dy});
-    return result;  // sizeof(result) == sizeof(Point)*8 + size_t ≈ 72 bytes on stack
+    return result;  // sizeof(result) == sizeof(Point)*8 + size_t ~= 72 bytes on stack
 }
 
 int main() {
@@ -96,15 +101,17 @@ int main() {
     for (auto [x, y] : neighbors)
         std::cout << "  (" << x << "," << y << ")\n";
 }
-
 ```
 
+Even with `reserve(8)`, the heap version still has to go through the allocator once per call. With `inplace_vector`, the entire result lives inside the function's stack frame. The 3-5x speedup is largely from eliminating that allocator round-trip.
+
 ### Q2: Show that try_push_back returns false instead of throwing when capacity is reached
+
+There are three ways to add an element to an `inplace_vector`, and they differ in how they handle the full case. Choosing the right one depends on whether you expect overflow to be a normal condition, an exceptional one, or something you have already ruled out.
 
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <iostream>
 
@@ -157,15 +164,17 @@ int main() {
     std::inplace_vector<int, 8> fast;
     fast.unchecked_push_back(42);  // Caller guarantees size < capacity
 }
-
 ```
 
+Use `push_back` when overflow means something went wrong and you want the program to throw. Use `try_push_back` in real-time or embedded code where exceptions are disabled or where "full" is a normal flow condition. Use `unchecked_push_back` only in the innermost hot loops where you have already verified there is room - it is the fastest option but has undefined behavior if the container is full.
+
 ### Q3: Explain how inplace_vector satisfies ContiguousContainer and works with std::span
+
+Because `inplace_vector` stores elements contiguously, it satisfies the `ContiguousContainer` concept. That means it implicitly converts to `std::span`, works with C APIs via `data()`, and interoperates with SIMD or linear algebra code that expects a pointer and a count. It is not a "special" container that needs adapters - it just works wherever a contiguous range is expected.
 
 **Answer:**
 
 ```cpp
-
 #include <inplace_vector>  // C++26
 #include <span>
 #include <iostream>
@@ -196,7 +205,7 @@ extern "C" {
 int main() {
     std::inplace_vector<int, 8> iv = {5, 3, 8, 1, 9, 2};
 
-    // ═══════════ Pass to span-based functions ═══════════
+    // Pass to span-based functions
     double avg = compute_average(iv);  // Implicit conversion to span
     std::cout << "Average: " << avg << '\n';  // 4.666...
 
@@ -205,19 +214,19 @@ int main() {
     for (int x : iv) std::cout << x << ' ';
     std::cout << '\n';  // 1 2 3 5 8 9
 
-    // ═══════════ Explicit span construction ═══════════
+    // Explicit span construction
     std::span<int> s(iv);
     std::span<int> first3 = s.first(3);
     std::cout << "First 3: ";
     for (int x : first3) std::cout << x << ' ';
     std::cout << '\n';  // 1 2 3
 
-    // ═══════════ data() for C API interop ═══════════
+    // data() for C API interop
     int* raw = iv.data();
     size_t count = iv.size();
     // legacy_api(raw, static_cast<int>(count));  // Pass to C function
 
-    // ═══════════ constexpr usage ═══════════
+    // constexpr usage
     constexpr auto make_primes() {
         std::inplace_vector<int, 10> primes;
         for (int n = 2; primes.size() < 10; ++n) {
@@ -234,15 +243,16 @@ int main() {
     static_assert(primes[9] == 29);
     std::cout << "10th prime (constexpr): " << primes[9] << '\n';  // 29
 }
-
 ```
+
+The `constexpr` usage at the end is one of the more compelling features. Because `inplace_vector` is fully `constexpr`, you can run push-back logic at compile time to build tables and lookup arrays. The prime sieve here computes entirely at compile time - `primes` is a compile-time constant and the `static_assert` checks verify correctness without any runtime cost.
 
 ---
 
 ## Notes
 
-- `std::inplace_vector` is C++26 (`<inplace_vector>`); reference implementation available (Boost.Container has `static_vector`)
-- Three insertion modes: `push_back` (throws), `try_push_back` (returns null), `unchecked_push_back` (UB if full, fastest)
-- `sizeof(inplace_vector<T,N>)` = `sizeof(T) * N + sizeof(size_type)` — entirely on the stack
-- Ideal for small buffers in hot loops: neighboring cells, stack-allocated scratch space, embedded systems
-- Fully `constexpr` — can compute sequences at compile time with push_back logic
+- `std::inplace_vector` is C++26 (`<inplace_vector>`); a reference implementation is available and Boost.Container has `static_vector` as a prior art equivalent.
+- Three insertion modes: `push_back` (throws on overflow), `try_push_back` (returns null on overflow, no exception), `unchecked_push_back` (undefined behavior if full, fastest).
+- `sizeof(inplace_vector<T,N>)` = `sizeof(T) * N + sizeof(size_type)` - entirely on the stack with no indirection.
+- Ideal for small buffers in hot loops: neighboring cells, stack-allocated scratch space, embedded systems without a heap.
+- Fully `constexpr` - can compute sequences at compile time using push-back logic.

@@ -9,7 +9,9 @@
 
 ## Topic Overview
 
-`std::hive` (C++26) is a **bucket-based container** optimized for workloads with frequent **random insertion and erasure** — common in game engines (entity pools), simulations (particle systems), and GUI frameworks (widget pools).
+`std::hive` (C++26) is a **bucket-based container** optimized for workloads with frequent **random insertion and erasure** - common in game engines (entity pools), simulations (particle systems), and GUI frameworks (widget pools).
+
+The big idea is this: when you erase an element from a `std::vector`, everything after it shifts. When you erase from a `std::list`, the pointer structure adjusts. Both approaches cost you something - either shuffled data or cache-hostile pointer chasing. `std::hive` takes a different approach entirely: it leaves a "hole" where the erased element was, tracks those holes with a compact skipfield, and skips them automatically during iteration. You get O(1) erase and cache-friendly iteration over survivors without ever compacting the storage.
 
 ### Key Properties
 
@@ -24,13 +26,11 @@
 ### How It Works
 
 ```cpp
-
-Block 0: [A][B][ ][D][E]     ← slot 2 erased, becomes a "hole"
-Block 1: [F][ ][ ][I][J]     ← slots 1,2 are holes
-                  ↓
-Iteration: A → B → D → E → F → I → J   (holes skipped automatically)
+Block 0: [A][B][ ][D][E]     <- slot 2 erased, becomes a "hole"
+Block 1: [F][ ][ ][I][J]     <- slots 1,2 are holes
+                  |
+Iteration: A -> B -> D -> E -> F -> I -> J   (holes skipped automatically)
 Insert: new element fills an existing hole (O(1))
-
 ```
 
 ---
@@ -39,10 +39,11 @@ Insert: new element fills an existing hole (O(1))
 
 ### Q1: Insert and erase elements in a std::hive and verify that surviving element addresses remain stable
 
+The stability guarantee is the defining feature of `std::hive`. This example makes that concrete by capturing raw pointers to elements before an erase and checking that those pointers are still valid afterward. Pay attention to the contrast with `std::vector` in the comment at the end - that comparison is the core reason `std::hive` exists.
+
 **Answer:**
 
 ```cpp
-
 // C++26 — requires <hive> support
 #include <hive>
 #include <iostream>
@@ -71,8 +72,8 @@ int main() {
     std::cout << "After erasing 20:\n";
     std::cout << "  *addr1 = " << *addr1 << " (at " << addr1 << ")\n";  // Still 10
     std::cout << "  *addr3 = " << *addr3 << " (at " << addr3 << ")\n";  // Still 30
-    assert(*addr1 == 10);  // ✓ Stable!
-    assert(*addr3 == 30);  // ✓ Stable!
+    assert(*addr1 == 10);  // Stable!
+    assert(*addr3 == 30);  // Stable!
 
     // Insert new element — may reuse the hole left by 20
     auto it4 = h.insert(40);
@@ -91,15 +92,17 @@ int main() {
     // v.erase(v.begin() + 1);
     // *vaddr may now be 20 (shifted!) — NOT STABLE
 }
-
 ```
 
+Notice that the hole left by erasing 20 becomes available for reuse - the new element 40 may land right in that spot. The memory is not wasted, and no compaction pass is needed. The skipfield handles the bookkeeping entirely behind the scenes.
+
 ### Q2: Show that std::hive iteration skips holes (erased slots) automatically without repack
+
+This example erases every other element and then iterates to show that the holes are transparently skipped. The conceptual diagram in the comments is worth reading carefully - the skipfield representation is the core data structure that makes this work in O(1) per hole.
 
 **Answer:**
 
 ```cpp
-
 #include <hive>
 #include <iostream>
 
@@ -116,7 +119,7 @@ int main() {
     std::cout << '\n';
     // 0 1 2 3 4 5 6 7 8 9
 
-    // Erase every other element → creates holes at indices 1, 3, 5, 7, 9
+    // Erase every other element -> creates holes at indices 1, 3, 5, 7, 9
     for (int i = 1; i < 10; i += 2)
         h.erase(iters[i]);
 
@@ -148,15 +151,17 @@ int main() {
     std::cout << '\n';
     // 99 2 4 6 8  (99 may occupy a hole)
 }
-
 ```
 
+The skipfield stores, for each slot, how many consecutive slots to jump over to reach the next live element. This lets the iterator advance in O(1) per live element regardless of how many holes surround it - unlike a naive approach that would scan slot-by-slot.
+
 ### Q3: Benchmark std::hive vs std::list and std::deque for a workload with frequent random erasure
+
+The benchmark below captures the performance story in concrete numbers. `std::hive` typically wins when the workload mixes erasure with iteration over survivors, because it avoids both the pointer-chasing of `std::list` and the O(n) shifting of `std::vector`.
 
 **Answer:**
 
 ```cpp
-
 #include <hive>
 #include <list>
 #include <deque>
@@ -236,15 +241,16 @@ int main() {
 
     */
 }
-
 ```
+
+`std::list` beats `std::vector` on erase but then loses on iteration because every node is a separate heap allocation scattered across memory. `std::hive` gets the best of both: erases are O(1) and do not move anything, and iteration still walks through contiguous blocks, only jumping over the holes tracked by the skipfield.
 
 ---
 
 ## Notes
 
-- `std::hive` was previously known as `plf::colony` (by Matthew Bentley) — battle-tested in game engines
-- Elements are stored in blocks; erased slots become holes tracked by a **skipfield** (O(1) skip per hole during iteration)
-- `hive::reshape()` controls the min/max block sizes for tuning memory overhead vs fragmentation
-- Not random-access: no `operator[]`. Use iterators only
-- Ideal for **entity-component-system (ECS)** pools where entities are created/destroyed frequently
+- `std::hive` was previously known as `plf::colony` (by Matthew Bentley) - battle-tested in game engines well before standardization.
+- Elements are stored in blocks; erased slots become holes tracked by a **skipfield** (O(1) skip per hole during iteration).
+- `hive::reshape()` controls the min/max block sizes for tuning memory overhead vs fragmentation.
+- Not random-access: no `operator[]`. Use iterators only.
+- Ideal for **entity-component-system (ECS)** pools where entities are created and destroyed frequently.

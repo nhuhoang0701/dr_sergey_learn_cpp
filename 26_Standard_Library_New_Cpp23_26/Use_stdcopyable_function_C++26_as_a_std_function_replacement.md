@@ -8,40 +8,40 @@
 
 ## Topic Overview
 
-`std::copyable_function`, defined in `<functional>`, is a drop-in improvement over `std::function` that fixes its long-standing const-correctness bug. `std::function<R(Args...)>`'s `operator()` is `const`, yet it can wrap mutable callables — allowing mutation through a `const` reference, violating const-correctness silently. `std::copyable_function` encodes the const/noexcept qualifiers directly in the signature.
+`std::copyable_function`, defined in `<functional>`, is a drop-in improvement over `std::function` that fixes its long-standing const-correctness bug. The bug: `std::function<R(Args...)>`'s `operator()` is always `const`, yet it can wrap mutable callables - which means you can mutate state through a `const` reference without any compiler warning. That is a silent violation of const-correctness that has existed since C++11.
+
+`std::copyable_function` fixes this by encoding the `const` and `noexcept` qualifiers directly in the type signature, the same way you write them on a member function:
 
 The key difference: `std::copyable_function<int(int) const>` has a `const operator()` and only accepts const-invocable callables. Without `const`, it has a non-const `operator()` and correctly prevents invocation through a `const` reference.
 
 | Feature | `std::function` | `std::copyable_function` |
 | --- | --- | --- |
-| Const-correct `operator()` | No — always const | Yes — qualifiers in signature |
-| `noexcept` propagation | No | Yes — `R(Args...) noexcept` |
+| Const-correct `operator()` | No - always const | Yes - qualifiers in signature |
+| `noexcept` propagation | No | Yes - `R(Args...) noexcept` |
 | Move-only callable support | No | No (see `std::move_only_function`) |
 | Copyable requirement | Yes | Yes |
 | Small-buffer optimization | Implementation-defined | Implementation-defined |
 | Null state | Yes (throws on call) | Yes (throws on call) |
 
+Here is a quick read of what the different signature forms mean:
+
 ```cpp
-
-  std::function<void()>                   — operator() is const (broken)
-  std::copyable_function<void()>          — operator() is non-const
-  std::copyable_function<void() const>    — operator() is const (correct)
-  std::copyable_function<void() noexcept> — operator() is non-const noexcept
-
+  std::function<void()>                   - operator() is const (broken)
+  std::copyable_function<void()>          - operator() is non-const
+  std::copyable_function<void() const>    - operator() is const (correct)
+  std::copyable_function<void() noexcept> - operator() is non-const noexcept
 ```
 
-The C++26 callable type hierarchy:
+The C++26 callable type hierarchy, from most restrictive to most permissive:
 
 ```cpp
-
-┌──────────────────────────────────────┐
-│ std::move_only_function (C++23)      │ ← move-only, no copy
-├──────────────────────────────────────┤
-│ std::copyable_function (C++26)       │ ← copyable, const-correct
-├──────────────────────────────────────┤
-│ std::function_ref (C++26)            │ ← non-owning, lightweight
-└──────────────────────────────────────┘
-
++--------------------------------------+
+| std::move_only_function (C++23)      | <- move-only, no copy
++--------------------------------------+
+| std::copyable_function (C++26)       | <- copyable, const-correct
++--------------------------------------+
+| std::function_ref (C++26)            | <- non-owning, lightweight
++--------------------------------------+
 ```
 
 ---
@@ -50,12 +50,13 @@ The C++26 callable type hierarchy:
 
 ### Q1: What is the const-correctness bug in `std::function` that `std::copyable_function` fixes
 
-```cpp
+The bug is subtle and easy to miss. A `const std::function<void()>&` still lets you call the underlying mutable lambda - because `operator()` is declared `const` on `std::function` unconditionally. `std::copyable_function` makes the const-ness of `operator()` match what you wrote in the type signature:
 
+```cpp
 #include <functional>
 #include <iostream>
 
-// ═══ THE BUG in std::function ═══
+// THE BUG in std::function
 void demonstrate_function_bug() {
     int counter = 0;
     std::function<void()> f = [counter]() mutable {
@@ -66,10 +67,10 @@ void demonstrate_function_bug() {
     // f is const-invocable even though the lambda is mutable!
     const auto& cf = f;
     cf();  // COMPILES! Modifies state through const reference
-    cf();  // counter = 2 — const violation
+    cf();  // counter = 2 - const violation
 }
 
-// ═══ THE FIX with std::copyable_function ═══
+// THE FIX with std::copyable_function
 void demonstrate_copyable_function() {
     int counter = 0;
 
@@ -102,27 +103,27 @@ int main() {
     demonstrate_function_bug();
     demonstrate_copyable_function();
 }
-
 ```
 
-**Key insight:** `std::function`'s `operator()` being unconditionally `const` is a design defect from C++11. `copyable_function` fixes it by making the const qualifier explicit in the type signature.
+`std::function`'s `operator()` being unconditionally `const` is a design defect from C++11. `copyable_function` fixes it by making the const qualifier explicit in the type signature - the type itself tells you whether calling through a `const` reference is allowed.
 
 ---
 
 ### Q2: How do you use `std::copyable_function` with noexcept and in callback-based APIs
 
-```cpp
+The `noexcept` qualifier in the signature is enforced at construction time: if you try to store a potentially-throwing callable in a `noexcept`-qualified `copyable_function`, the compiler rejects it. This is genuinely useful for safety-critical or lock-held callbacks where a thrown exception would be catastrophic:
 
+```cpp
 #include <functional>
 #include <vector>
 #include <string>
 #include <iostream>
 #include <algorithm>
 
-// ═══ noexcept-aware callback storage ═══
+// noexcept-aware callback storage
 class EventBus {
 public:
-    // Only accepts noexcept handlers — crash-safe guarantee
+    // Only accepts noexcept handlers - crash-safe guarantee
     using Handler = std::copyable_function<void(std::string_view) const noexcept>;
 
     void subscribe(Handler h) {
@@ -131,7 +132,7 @@ public:
 
     void publish(std::string_view event) const {
         for (const auto& h : handlers_) {
-            h(event);  // guaranteed noexcept — no try/catch needed
+            h(event);  // guaranteed noexcept - no try/catch needed
         }
     }
 
@@ -139,7 +140,7 @@ private:
     std::vector<Handler> handlers_;
 };
 
-// ═══ Const-correct predicate storage ═══
+// Const-correct predicate storage
 template <typename T>
 class FilterChain {
     // const: predicates don't mutate state
@@ -177,21 +178,21 @@ int main() {
     std::cout << chain.passes(-1) << '\n';   // false
     std::cout << chain.passes(101) << '\n';  // false
 }
-
 ```
 
 ---
 
 ### Q3: How does `std::copyable_function` compare with `std::move_only_function` and `std::function`
 
-```cpp
+This question is about picking the right tool. `std::function` is the broadest but has the const bug. `std::copyable_function` fixes the bug but still requires copyable callables. `std::move_only_function` (C++23) handles move-only callables like those capturing `unique_ptr`. For non-owning use, `std::function_ref` (C++26) avoids allocation entirely:
 
+```cpp
 #include <functional>
 #include <memory>
 #include <iostream>
 #include <vector>
 
-// ═══ Comparison: three callable wrappers ═══
+// Comparison: three callable wrappers
 
 struct CopyableCallable {
     std::shared_ptr<int> state = std::make_shared<int>(0);
@@ -204,17 +205,17 @@ struct MoveOnlyCallable {
 };
 
 void compare_wrappers() {
-    // std::function — copyable, NOT const-correct
+    // std::function - copyable, NOT const-correct
     std::function<void()> f1 = CopyableCallable{};
     auto f1_copy = f1;  // OK: copyable
     // const_cast-like invocation is possible (bug)
 
-    // std::copyable_function — copyable, const-correct
+    // std::copyable_function - copyable, const-correct
     std::copyable_function<void()> f2 = CopyableCallable{};
     auto f2_copy = f2;  // OK: copyable
     // const auto& cf2 = f2; cf2(); // ERROR: non-const signature
 
-    // std::move_only_function — move-only, const-correct
+    // std::move_only_function - move-only, const-correct
     std::move_only_function<void()> f3 = MoveOnlyCallable{};
     // auto f3_copy = f3;  // ERROR: not copyable
     auto f3_moved = std::move(f3);  // OK: movable
@@ -223,7 +224,7 @@ void compare_wrappers() {
     // std::copyable_function<void()> bad = MoveOnlyCallable{};  // ERROR
 }
 
-// ═══ Migration guide ═══
+// Migration guide:
 //
 // | Old code                     | New code                                |
 // |------------------------------|-----------------------------------------|
@@ -232,7 +233,7 @@ void compare_wrappers() {
 // | std::function + unique_ptr   | std::move_only_function<void()>         |
 // | const std::function& param   | std::function_ref<void() const>         |
 
-// ═══ Practical: callback registry that needs copyability ═══
+// Practical: callback registry that needs copyability
 class Scheduler {
     struct Task {
         std::string name;
@@ -249,7 +250,7 @@ public:
     void run_all() const {
         for (const auto& [name, action] : tasks_) {
             std::cout << "Running: " << name << '\n';
-            action();  // const call — guaranteed safe
+            action();  // const call - guaranteed safe
         }
     }
 };
@@ -264,8 +265,9 @@ int main() {
     auto sched_copy = sched;  // deep copy of all tasks
     sched_copy.run_all();
 }
-
 ```
+
+The migration guide comment in the middle is worth bookmarking. The general rule of thumb: prefer `copyable_function<... const>` for anything that does not mutate state, plain `copyable_function<...>` for mutable callables, and `move_only_function` whenever `unique_ptr` or other move-only resources are captured.
 
 ---
 
@@ -273,8 +275,8 @@ int main() {
 
 - `std::copyable_function` is in `<functional>` (C++26). It supersedes `std::function` for new code.
 - The signature encodes qualifiers: `R(Args...)`, `R(Args...) const`, `R(Args...) noexcept`, `R(Args...) const noexcept`.
-- Unlike `std::function`, the `const` qualifier on `operator()` must match the stored callable — no silent const violations.
+- Unlike `std::function`, the `const` qualifier on `operator()` must match the stored callable - no silent const violations.
 - `std::copyable_function` requires copyable callables. For move-only callables, use `std::move_only_function` (C++23).
-- For non-owning callable references (no allocation), use `std::function_ref` (C++26).
+- For non-owning callable references with no allocation, use `std::function_ref` (C++26).
 - Migration path: replace `std::function<R(Args...)>` with `std::copyable_function<R(Args...) const>` for const-correct semantics.
 - Feature-test macro: `__cpp_lib_copyable_function >= 202306L`.

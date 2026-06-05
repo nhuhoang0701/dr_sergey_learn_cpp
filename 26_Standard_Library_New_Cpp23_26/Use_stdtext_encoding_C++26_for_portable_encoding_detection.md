@@ -13,13 +13,16 @@ This file focuses on the **compile-time vs runtime encoding distinction** and bu
 
 ### Two Encodings in Every Program
 
-| Encoding                          | When decided    | API                              |
-| --- | --- | --- |
-| **Literal encoding**              | Compile time    | `std::text_encoding::literal()`  |
-| **System/environment encoding**   | Runtime         | `std::text_encoding::environment()` |
+This is a concept that trips up a lot of developers: your program actually has *two* encodings to worry about, and they can be different from each other. One is baked in at compile time (what encoding are string literals stored in the binary?), and the other is determined at runtime (what encoding does the current system expect when you write to the console or a file?).
+
+| Encoding                          | When decided  | API                                     |
+| --------------------------------- | ------------- | --------------------------------------- |
+| **Literal encoding**              | Compile time  | `std::text_encoding::literal()`         |
+| **System/environment encoding**   | Runtime       | `std::text_encoding::environment()`     |
+
+When these two disagree, you get mojibake - garbled output where the bytes you wrote don't match what the terminal expected to receive. The diagram shows exactly how this happens:
 
 ```cpp
-
 Source code: const char* s = "hello café";
                                     │
 Compiler flag (-fexec-charset=utf-8)│
@@ -29,8 +32,9 @@ Binary contains: UTF-8 bytes [68 65 6c 6c 6f 20 63 61 66 c3 a9]
 Runtime: console uses windows-1252  │
                                     ▼
 Display: garbled "cafÃ©" unless converted!
-
 ```
+
+`std::text_encoding` gives you a standard way to query both sides of this at runtime and at compile time, so you can detect mismatches and act accordingly.
 
 ---
 
@@ -40,62 +44,67 @@ Display: garbled "cafÃ©" unless converted!
 
 **Answer:**
 
-```cpp
+`environment()` returns a `text_encoding` object that describes the encoding the current system uses for narrow strings - essentially, what the OS locale or Windows code page resolves to. You can query it by MIB enum value, by name, or compare it directly to a named encoding:
 
+```cpp
 #include <text_encoding>  // C++26
 #include <iostream>
 #include <print>
 
 int main() {
-    // ═══════════ Detect system encoding ═══════════
+    // Detect system encoding
     auto sys = std::text_encoding::environment();
     std::println("System encoding: {} (MIB: {})",
                  sys.name(), static_cast<int>(sys.mib()));
 
-    // ═══════════ Common MIB checks ═══════════
+    // Common MIB checks
     switch (sys.mib()) {
         case std::text_encoding::id::UTF8:
-            std::println("System uses UTF-8 — no conversion needed");
+            std::println("System uses UTF-8 - no conversion needed");
             break;
         case std::text_encoding::id::ISO8859_1:
             std::println("System uses ISO-8859-1 (Latin-1)");
             break;
         case std::text_encoding::id::unknown:
-            std::println("Unknown encoding — proceed with caution");
+            std::println("Unknown encoding - proceed with caution");
             break;
         default:
             std::println("System uses: {}", sys.name());
             break;
     }
 
-    // ═══════════ Check specific encoding by name ═══════════
+    // Check specific encoding by name
     auto expected = std::text_encoding("UTF-8");
     if (sys == expected) {
         std::println("Confirmed: system is UTF-8");
     }
 
-    // ═══════════ aliases() — all known names for this encoding ═══════════
+    // aliases() - all known names for this encoding
     std::println("Known aliases:");
     for (auto alias : sys.aliases()) {
         std::println("  - {}", alias);
     }
     // e.g., for UTF-8: "UTF-8", "utf-8", "csUTF8"
 }
-
 ```
+
+The MIB values come from the IANA character set registry. `UTF8`, `ISO8859_1`, and `unknown` cover the most common cases you'll encounter in practice. The `aliases()` method is useful when you need to pass the encoding name to a third-party library like iconv that may expect a specific alias.
+
+---
 
 ### Q2: Explain the difference between literal encoding (compile time) and system encoding (runtime)
 
 **Answer:**
 
-```cpp
+The reason this distinction matters is that the same program binary can be deployed to machines with different locale settings. The bytes in your string literals are fixed at compile time, but whether those bytes make sense to the receiving system depends on what encoding that system expects at runtime.
 
+```cpp
 #include <text_encoding>  // C++26
 #include <iostream>
 #include <print>
 
 int main() {
-    // ═══════════ Literal encoding: decided at COMPILE TIME ═══════════
+    // Literal encoding: decided at COMPILE TIME
     auto lit = std::text_encoding::literal();
     std::println("Literal encoding: {}", lit.name());
     // Determined by:
@@ -108,30 +117,30 @@ int main() {
     // With -fexec-charset=utf-8:  bytes = 63 61 66 c3 a9 (5 bytes, UTF-8)
     // With -fexec-charset=latin1: bytes = 63 61 66 e9    (4 bytes, Latin-1)
 
-    // ═══════════ System encoding: decided at RUNTIME ═══════════
+    // System encoding: decided at RUNTIME
     auto sys = std::text_encoding::environment();
     std::println("System encoding:  {}", sys.name());
     // Determined by:
     //   Linux:   LC_CTYPE locale (usually UTF-8)
-    //   Windows: GetACP() → codepage (often 1252 or 65001)
+    //   Windows: GetACP() -> codepage (often 1252 or 65001)
     //   macOS:   UTF-8 (always)
 
-    // ═══════════ The mismatch problem ═══════════
+    // The mismatch problem
     if (lit != sys) {
-        std::println("⚠ MISMATCH: literal={} vs system={}",
+        std::println("MISMATCH: literal={} vs system={}",
                      lit.name(), sys.name());
         std::println("  String literals will display incorrectly without conversion!");
 
         // Example scenario:
         // Compiled on Linux (UTF-8 literals)
         // Running on Windows (system = windows-1252)
-        // → "café" stored as UTF-8 in binary
-        // → Console expects windows-1252
-        // → "cafÃ©" displayed (mojibake!)
+        // -> "café" stored as UTF-8 in binary
+        // -> Console expects windows-1252
+        // -> "cafÃ©" displayed (mojibake!)
 
         // Solution: detect at startup and configure conversion
     } else {
-        std::println("✓ Match: both literal and system use {}", lit.name());
+        std::println("Match: both literal and system use {}", lit.name());
     }
 
     /*
@@ -142,27 +151,31 @@ int main() {
     │ When decided?   │ Compile time      │ Runtime                  │
     │ Changed by?     │ Compiler flags    │ OS locale / env vars     │
     │ Affects?        │ String literals   │ Console, file I/O, APIs  │
-    │ Can differ?     │ YES — this causes │ encoding mismatch bugs!  │
+    │ Can differ?     │ YES - this causes │ encoding mismatch bugs!  │
     │ Queried via?    │ literal()         │ environment()            │
     └─────────────────┴───────────────────┴──────────────────────────┘
     */
 }
-
 ```
+
+The reason this trips people up is that on Linux and macOS everything is almost always UTF-8 end-to-end, so the mismatch never manifests. On Windows, especially in legacy projects, the system codepage is often 1252 even when the compiler is generating UTF-8 literals. `std::text_encoding` lets you detect and respond to this at runtime rather than relying on documentation or tribal knowledge.
+
+---
 
 ### Q3: Show a portable UTF-8 input handler that converts from the system encoding using text_encoding
 
 **Answer:**
 
-```cpp
+The key limitation to know upfront: `std::text_encoding` *detects* encodings but does *not convert* between them. The conversion itself still requires a platform API (Win32's `MultiByteToWideChar`/`WideCharToMultiByte`) or a library like iconv. What `text_encoding` gives you is a portable way to *decide* whether conversion is needed:
 
+```cpp
 #include <text_encoding>  // C++26
 #include <iostream>
 #include <string>
 #include <print>
 #include <stdexcept>
 
-// ═══════════ Portable UTF-8 input handler ═══════════
+// Portable UTF-8 input handler
 // Reads input from stdin, converts to UTF-8 if system encoding differs
 
 class Utf8InputHandler {
@@ -177,7 +190,7 @@ public:
         sys_encoding_ = sys.name();
 
         if (needs_conversion_) {
-            std::println(std::cerr, "Note: system encoding is {} — will convert to UTF-8",
+            std::println(std::cerr, "Note: system encoding is {} - will convert to UTF-8",
                          sys_encoding_);
         }
     }
@@ -199,7 +212,7 @@ private:
         // Platform-specific conversion
         // In production, use ICU, iconv, or OS APIs
 #ifdef _WIN32
-        // Windows: MultiByteToWideChar(CP_ACP) → WideCharToMultiByte(CP_UTF8)
+        // Windows: MultiByteToWideChar(CP_ACP) -> WideCharToMultiByte(CP_UTF8)
         // Pseudocode:
         // int wide_len = MultiByteToWideChar(CP_ACP, 0, input.c_str(), -1, nullptr, 0);
         // std::wstring wide(wide_len, 0);
@@ -244,15 +257,16 @@ int main() {
     }
     std::println("Valid UTF-8: {}", valid ? "yes" : "no");
 }
-
 ```
+
+The `needs_conversion_` flag set in the constructor is the portable part. The actual conversion in `convert_to_utf8` is necessarily platform-specific - `std::text_encoding` can't change that. What it does change is that the *detection* logic no longer needs `#ifdef` blocks or platform-specific API calls.
 
 ---
 
 ## Notes
 
-- `std::text_encoding` detects but does not convert — conversion still requires ICU / iconv / OS APIs
-- Always compile with `/utf-8` (MSVC) or `-fexec-charset=utf-8` to ensure literal encoding is UTF-8
-- `text_encoding::environment()` may return different results based on `LC_CTYPE`, `LANG`, or Windows code page
-- C++26 also provides `std::text_encoding::wide_literal()` for the wide string literal encoding
-- On modern Linux/macOS, `environment()` almost always returns UTF-8; Windows is the main edge case
+- `std::text_encoding` detects encodings but does not convert between them - conversion still requires ICU, iconv, or OS APIs.
+- Always compile with `/utf-8` (MSVC) or `-fexec-charset=utf-8` (GCC/Clang) to ensure the literal encoding is UTF-8 and eliminate one source of mismatch.
+- `text_encoding::environment()` may return different results based on `LC_CTYPE`, `LANG`, or the Windows active code page.
+- C++26 also provides `std::text_encoding::wide_literal()` for querying the wide string literal encoding.
+- On modern Linux and macOS, `environment()` almost always returns UTF-8; Windows is the main edge case to defend against.
