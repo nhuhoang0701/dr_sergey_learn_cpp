@@ -10,25 +10,29 @@
 
 This third CMakePresets file focuses on **platform-specific presets** with condition expressions, **toolchain file selection** via presets, and the **workflow preset** feature introduced in version 6.
 
+The condition feature is what makes presets scale to cross-platform projects. Without it, a Windows preset would show up on Linux and fail confusingly. With conditions, `cmake --list-presets` only shows what is actually usable on the current machine.
+
 ### Platform-Specific Preset Design
 
+Here is the typical structure for a cross-platform project. The hidden base preset holds everything shared, and each platform-specific preset inherits from it and adds what is needed:
+
 ```cpp
-
-CMakePresets.json
-├── ci-base (hidden) ── common settings
-├── debug-linux     ── inherits ci-base, condition: Linux
-├── debug-windows   ── inherits ci-base, condition: Windows
-├── release-linux   ── inherits ci-base, condition: Linux, LTO
-├── release-windows ── inherits ci-base, condition: Windows, MSVC
-└── cross-arm64     ── inherits ci-base, toolchainFile
-
+// CMakePresets.json
+// |-- ci-base (hidden) -- common settings
+// |-- debug-linux     -- inherits ci-base, condition: Linux
+// |-- debug-windows   -- inherits ci-base, condition: Windows
+// |-- release-linux   -- inherits ci-base, condition: Linux, LTO
+// |-- release-windows -- inherits ci-base, condition: Windows, MSVC
+// `-- cross-arm64     -- inherits ci-base, toolchainFile
 ```
+
+Here is a quick reference for the preset features used in this file:
 
 | Feature | Version Required | Purpose |
 | --- | --- | --- |
 | `condition` | 3 | OS/compiler-specific presets |
 | `toolchainFile` | 3 | Embed toolchain selection |
-| `workflowPresets` | 6 | Chain configure→build→test |
+| `workflowPresets` | 6 | Chain configure->build->test |
 | `$env{}` macro | 3 | Read environment variables |
 | `$penv{}` macro | 3 | Read parent environment |
 
@@ -40,8 +44,9 @@ CMakePresets.json
 
 **Answer:**
 
-```json
+The `condition` field uses `${hostSystemName}` to filter presets by platform. This is what makes the list tidy: on Linux you see Linux presets, on Windows you see Windows presets, and cross-compilation presets appear everywhere because they have no condition. The workflow preset at the end chains configure, build, and test into one command - very convenient for CI:
 
+```json
 {
     "version": 6,
     "configurePresets": [
@@ -159,7 +164,6 @@ CMakePresets.json
         }
     ]
 }
-
 ```
 
 The `condition` field ensures `cmake --list-presets` only shows presets valid for the current host OS.
@@ -168,9 +172,10 @@ The `condition` field ensures `cmake --list-presets` only shows presets valid fo
 
 **Answer:**
 
-```bash
+Watch what happens on a Linux machine. The conditions filter the list automatically, and the preset picks up all the right flags without you specifying a single `-D`:
 
-# ═══════════ On a Linux machine ═══════════
+```bash
+# On a Linux machine
 $ cmake --list-presets
 Available configure presets:
 
@@ -198,29 +203,31 @@ $ cmake --build --preset release-linux -- -j$(nproc)
 $ ctest --preset release-linux
 # Test project /project/build/release-linux
 #   1/8 Test #1: unit_core ............   Passed  0.05 sec
-#   
+#
 #   8/8 Test #8: integration_api .....   Passed  1.23 sec
 # 100% tests passed, 0 tests failed
 
-# ═══════════ Or run the full workflow in one command ═══════════
+# Or run the full workflow in one command
 $ cmake --workflow --preset ci-linux
-# Executes configure → build → test sequentially
+# Executes configure -> build -> test sequentially
 # If any step fails, the workflow stops immediately
 
-# ═══════════ Toolchain preset for cross-compilation ═══════════
+# Toolchain preset for cross-compilation
 $ cmake --preset cross-arm64
-# Reads toolchainFile from the preset — no -DCMAKE_TOOLCHAIN_FILE needed
+# Reads toolchainFile from the preset - no -DCMAKE_TOOLCHAIN_FILE needed
 # The preset encodes the toolchain path relative to ${sourceDir}
-
 ```
 
 ### Q3: Explain how CMakeUserPresets.json extends the shared presets without committing machine-specific paths
 
 **Answer:**
 
-```json
+The inheritance model between the two files is intentionally one-directional: user presets can extend shared presets, but shared presets can never depend on user presets. This guarantees that the shared configuration is always self-contained and correct for any machine that does not have a user preset file.
 
-// CMakeUserPresets.json — MUST be in .gitignore
+Here is an example of a user preset that adds ccache integration and a custom vcpkg path - both of which are machine-specific and should never be in version control:
+
+```json
+// CMakeUserPresets.json - MUST be in .gitignore
 {
     "version": 6,
     "configurePresets": [
@@ -255,24 +262,21 @@ $ cmake --preset cross-arm64
         }
     ]
 }
-
 ```
 
 **How inheritance works:**
 
 ```cpp
-
-CMakePresets.json (committed)         CMakeUserPresets.json (gitignored)
-┌─────────────────────┐               ┌──────────────────────┐
-│ ci-base (hidden)    │               │ dev-alice             │
-│ debug-linux         │◄──inherits────│   inherits: debug-linux│
-│ release-linux       │               │   + custom paths      │
-└─────────────────────┘               │   + ccache compiler   │
-                                      │ dev-alice-clang       │
-                                      │   inherits: debug-linux│
-                                      │   + clang++-17        │
-                                      └──────────────────────┘
-
+// CMakePresets.json (committed)         CMakeUserPresets.json (gitignored)
+// +---------------------+               +----------------------+
+// | ci-base (hidden)    |               | dev-alice             |
+// | debug-linux         |<--inherits----| inherits: debug-linux |
+// | release-linux       |               | + custom paths        |
+// +---------------------+               | + ccache compiler     |
+//                                       | dev-alice-clang       |
+//                                       | inherits: debug-linux |
+//                                       | + clang++-17          |
+//                                       +----------------------+
 ```
 
 **Rules:**
@@ -280,13 +284,13 @@ CMakePresets.json (committed)         CMakeUserPresets.json (gitignored)
 - `CMakeUserPresets.json` **can** inherit from `CMakePresets.json` presets
 - `CMakePresets.json` **cannot** reference `CMakeUserPresets.json` presets
 - Use `$env{HOME}` or `$penv{VCPKG_ROOT}` to avoid hardcoded absolute paths where possible
-- `$penv{}` reads from parent environment (shell), `$env{}` reads from preset-defined environment
+- `$penv{}` reads from the parent environment (shell), `$env{}` reads from preset-defined environment
 
 ---
 
 ## Notes
 
-- **Condition types:** `equals`, `notEquals`, `inList`, `matches` (regex), `allOf`, `anyOf`, `not` — combine for complex platform targeting
-- **`cmake --workflow`** (version 6) chains configure→build→test→package — ideal for CI one-liners
-- **`${hostSystemName}`** returns `Linux`, `Windows`, or `Darwin` — maps to `CMAKE_HOST_SYSTEM_NAME`
-- **Toolchain in presets** avoids the `cmake -DCMAKE_TOOLCHAIN_FILE=...` flag — the toolchain becomes part of the reproducible configuration
+- **Condition types:** `equals`, `notEquals`, `inList`, `matches` (regex), `allOf`, `anyOf`, `not` - you can combine these for complex platform targeting, such as "Linux and Clang" or "not Windows".
+- **`cmake --workflow`** (version 6) chains configure->build->test->package - ideal for CI one-liners where you want a single command to represent the whole pipeline.
+- **`${hostSystemName}`** returns `Linux`, `Windows`, or `Darwin` - it maps to `CMAKE_HOST_SYSTEM_NAME` and is evaluated when presets are loaded, not at build time.
+- **Toolchain in presets** avoids the `-DCMAKE_TOOLCHAIN_FILE=...` flag - the toolchain becomes part of the reproducible configuration and is stored relative to `${sourceDir}`, so it works from any checkout location.

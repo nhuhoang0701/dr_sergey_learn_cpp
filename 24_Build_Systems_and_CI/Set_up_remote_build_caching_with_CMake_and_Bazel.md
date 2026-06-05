@@ -8,23 +8,23 @@
 
 ## Topic Overview
 
-Remote build caching stores compilation results on a shared server so that multiple CI jobs, developers, or machines can reuse previous build outputs. Instead of recompiling unchanged source files, the build system fetches the cached object files. For large C++ projects, this can reduce CI build times from 30+ minutes to 2-5 minutes.
+Remote build caching stores compilation results on a shared server so that multiple CI jobs, developers, or machines can reuse previous build outputs. Instead of recompiling unchanged source files, the build system fetches the cached object files from the server. For large C++ projects, this can reduce CI build times from 30+ minutes down to 2-5 minutes - the savings are enormous on projects with many files that rarely all change at once.
 
 ### Caching Architecture
 
+Here is the mental model. Each machine computes a hash of the source file plus the compiler flags. If that hash is in the cache, it downloads the result. If not, it compiles and uploads.
+
 ```cpp
-
 Developer A (laptop)          CI Runner 1          CI Runner 2
-     │                             │                     │
-     │  compile foo.cpp            │                     │
-     ├──→ hash(flags + source) ──→ Cache Server ←────────┤
-     │       cache miss!           (sccache/remote)      │
-     │  ← upload foo.o             │                     │
-     │                             │  compile foo.cpp    │
-     │                             │  hash → cache HIT!  │
-     │                             │  ← download foo.o   │
-     │                             │  (no compilation!)  │
-
+     |                             |                     |
+     |  compile foo.cpp            |                     |
+     +-> hash(flags + source) --> Cache Server <---------+
+     |       cache miss!           (sccache/remote)      |
+     |  <- upload foo.o             |                     |
+     |                             |  compile foo.cpp    |
+     |                             |  hash -> cache HIT! |
+     |                             |  <- download foo.o  |
+     |                             |  (no compilation!)  |
 ```
 
 ### Caching Tools Comparison
@@ -44,9 +44,10 @@ Developer A (laptop)          CI Runner 1          CI Runner 2
 
 **Answer:**
 
-```bash
+sccache works as a transparent compiler wrapper. CMake's `CMAKE_CXX_COMPILER_LAUNCHER` mechanism means you don't have to change how your build is structured at all - you just tell CMake to run every compiler invocation through sccache first.
 
-# ═══════════ Install sccache ═══════════
+```bash
+# ======= Install sccache =======
 # macOS
 brew install sccache
 
@@ -57,12 +58,12 @@ curl -L https://github.com/mozilla/sccache/releases/download/v0.8.1/sccache-v0.8
 # Verify
 sccache --version
 # sccache 0.8.1
-
 ```
 
-```cmake
+There are two ways to tell CMake to use sccache - via `CMakeLists.txt` or via the command line:
 
-# ═══════════ Method 1: CMake variable ═══════════
+```cmake
+# ======= Method 1: CMake variable =======
 # CMakeLists.txt
 find_program(SCCACHE sccache)
 if(SCCACHE)
@@ -71,17 +72,17 @@ if(SCCACHE)
     message(STATUS "Using sccache: ${SCCACHE}")
 endif()
 
-# ═══════════ Method 2: Command line ═══════════
+# ======= Method 2: Command line =======
 # cmake -B build \
 #   -DCMAKE_C_COMPILER_LAUNCHER=sccache \
 #   -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
 #   -DCMAKE_BUILD_TYPE=Release
-
 ```
 
-```bash
+Setting up an S3 remote backend and running a build:
 
-# ═══════════ Configure S3 remote backend ═══════════
+```bash
+# ======= Configure S3 remote backend =======
 export SCCACHE_BUCKET=my-build-cache
 export SCCACHE_REGION=us-east-1
 export AWS_ACCESS_KEY_ID=AKIA...
@@ -113,27 +114,24 @@ sccache --show-stats
 # Cache misses                       30
 # Cache timeouts                      0
 # Non-cacheable calls                 0
-
 ```
 
-```yaml
+Here is the full GitHub Actions integration with sccache:
 
+```yaml
 # GitHub Actions CI integration
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v4
 
       - name: Install sccache
-
         run: |
           curl -L https://github.com/mozilla/sccache/releases/download/v0.8.1/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz \
             | sudo tar xz -C /usr/local/bin --strip-components=1
 
       - name: Configure sccache
-
         env:
           SCCACHE_BUCKET: ${{ secrets.SCCACHE_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -141,28 +139,25 @@ jobs:
         run: sccache --start-server
 
       - name: Configure CMake
-
         run: cmake -B build -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-
         run: cmake --build build -j2
 
       - name: Show cache stats
-
         run: sccache --show-stats
-
 ```
 
-**How sccache works:** Before compiling each `.cpp` file, sccache hashes the preprocessed source + compiler flags + compiler version. If the hash matches a cached entry (locally or on S3/GCS), it returns the cached `.o` file without invoking the compiler. First build is cold (all misses), subsequent builds are hot (80-95% hit rate).
+**How sccache works:** Before compiling each `.cpp` file, sccache hashes the preprocessed source plus compiler flags plus compiler version. If the hash matches a cached entry (locally or on S3/GCS), it returns the cached `.o` file without invoking the compiler. The first build is cold (all cache misses), but subsequent builds from any machine achieve 80-95% hit rates once the cache is populated.
 
 ### Q2: Set up Bazel remote cache with --remote_cache pointing to an HTTP/gRPC cache server
 
 **Answer:**
 
-```python
+Bazel has built-in remote caching support. You configure it in `.bazelrc` rather than on the command line, so every team member automatically uses the cache when they build.
 
-# ═══════════ .bazelrc — Bazel configuration ═══════════
+```python
+# ======= .bazelrc - Bazel configuration =======
 # Remote cache via HTTP (simplest setup)
 build --remote_cache=https://cache.example.com/bazel-cache
 build --remote_upload_local_results=true
@@ -177,12 +172,12 @@ build --remote_header=Authorization=Bearer <token>
 # For gRPC remote execution (Buildfarm, BuildBuddy, etc.):
 # build --remote_executor=grpc://buildfarm.example.com:8980
 # build --remote_instance_name=default
-
 ```
 
-```bash
+You can run a simple HTTP cache server using nginx with WebDAV support:
 
-# ═══════════ Simple HTTP cache with nginx ═══════════
+```bash
+# ======= Simple HTTP cache with nginx =======
 
 # nginx.conf for a Bazel cache server:
 # server {
@@ -205,13 +200,13 @@ bazel build //... --remote_cache=http://cache-server:8080/bazel-cache
 
 # Second build (same or different machine):
 # INFO: 200 actions, 195 cache hits, 5 changed
-# Build time: 45min → 3min
-
+# Build time: 45min -> 3min
 ```
 
-```python
+Your BUILD file structure controls what Bazel caches - it caches at the action level, meaning each individual compilation and link step can be cached separately:
 
-# BUILD file — Bazel caches at the action level
+```python
+# BUILD file - Bazel caches at the action level
 cc_library(
     name = "mylib",
     srcs = ["mylib.cpp"],
@@ -230,18 +225,18 @@ cc_test(
     srcs = ["mylib_test.cpp"],
     deps = [":mylib", "@googletest//:gtest_main"],
 )
-
 ```
 
-**How Bazel caching works:** Bazel computes a hash of each action (inputs + command + environment). If the hash exists in the remote cache, the outputs are downloaded instead of executing the action. This works for compilation, linking, test execution, and any custom rule.
+**How Bazel caching works:** Bazel computes a hash of each action (inputs + command + environment). If the hash exists in the remote cache, the outputs are downloaded instead of executing the action. This works for compilation, linking, test execution, and any custom rule - Bazel is more aggressive about caching than sccache because it understands the full dependency graph.
 
 ### Q3: Measure cache hit ratio and build time improvement for a CI pipeline with remote caching
 
 **Answer:**
 
-```bash
+Measuring cache effectiveness tells you whether your caching setup is actually working and helps justify the infrastructure cost of maintaining a cache server.
 
-# ═══════════ Measuring sccache performance ═══════════
+```bash
+# ======= Measuring sccache performance =======
 
 # Reset stats before a build
 sccache --zero-stats
@@ -260,13 +255,17 @@ sccache --show-stats
 # Avg compilation time             2.3s
 
 # Calculate time savings:
-# 230 cache hits × 2.3s avg compile = 529s saved
-# 20 cache misses × 2.3s = 46s compilation
-# Without cache: 250 × 2.3s = 575s (9.6 min)
-# With cache: 46s + 230 × 0.05s = 57.5s (1 min)
+# 230 cache hits x 2.3s avg compile = 529s saved
+# 20 cache misses x 2.3s = 46s compilation
+# Without cache: 250 x 2.3s = 575s (9.6 min)
+# With cache: 46s + 230 x 0.05s = 57.5s (1 min)
 # Speedup: ~10x
+```
 
-# ═══════════ Measuring Bazel cache performance ═══════════
+Bazel reports cache statistics automatically on every build:
+
+```bash
+# ======= Measuring Bazel cache performance =======
 
 # Bazel shows cache hits automatically:
 bazel build //... 2>&1 | tail -5
@@ -276,24 +275,19 @@ bazel build //... 2>&1 | tail -5
 # For detailed stats:
 bazel build //... --build_event_json_file=build_events.json
 # Parse the JSON for action cache statistics
-
-# ═══════════ CI pipeline timing comparison ═══════════
-# Track in CI with timestamps:
-
 ```
 
-```yaml
+Here is a GitHub Actions workflow that records build time to the job summary, making it easy to track trends over time:
 
+```yaml
 # GitHub Actions with timing
 jobs:
   build-with-cache:
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v4
 
       - name: Setup sccache
-
         run: |
           curl -L https://github.com/mozilla/sccache/releases/download/v0.8.1/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz \
             | sudo tar xz -C /usr/local/bin --strip-components=1
@@ -304,7 +298,6 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Build
-
         run: |
           START=$(date +%s)
           cmake -B build -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DCMAKE_BUILD_TYPE=Release
@@ -313,14 +306,12 @@ jobs:
           echo "Build time: $((END - START)) seconds" >> $GITHUB_STEP_SUMMARY
 
       - name: Cache statistics
-
         run: |
           sccache --show-stats | tee -a $GITHUB_STEP_SUMMARY
           # Write stats to job summary for easy viewing
-
 ```
 
-**Expected results after cache is warm:**
+**Expected results after the cache is warm:**
 
 | Metric | Without cache | With sccache | With Bazel remote |
 | --- | --- | --- | --- |
@@ -333,8 +324,8 @@ jobs:
 
 ## Notes
 
-- **sccache vs ccache:** sccache supports remote backends natively; ccache requires third-party solutions for remote caching (Redis via `ccache --set-config=remote_storage=redis://...` in ccache 4.8+)
-- **Cache invalidation:** changing compiler version, flags, or system headers invalidates all cache entries — always pin compiler versions
-- **S3 lifecycle policy:** set a 30-day expiration on the cache bucket to prevent unbounded growth
-- **Security:** cache servers should be read-only for untrusted PRs (prevent cache poisoning). Use `--remote_upload_local_results=false` for forked PR builds
-- **sccache limitations:** doesn't cache linking, only compilation. For link-time caching, use Bazel or incremental linking
+- **sccache vs ccache:** sccache supports remote backends natively; ccache requires third-party solutions for remote caching (Redis via `ccache --set-config=remote_storage=redis://...` in ccache 4.8+). If you need remote caching with CMake, sccache is usually the easier choice.
+- **Cache invalidation:** changing the compiler version, compiler flags, or system headers invalidates all cache entries - always pin compiler versions in CI or you'll get mysterious cache misses.
+- **S3 lifecycle policy:** set a 30-day expiration on the cache bucket to prevent unbounded growth. Cache entries from old feature branches are never hit again after the branch is merged.
+- **Security:** cache servers should be read-only for untrusted PRs to prevent cache poisoning. Use `--remote_upload_local_results=false` for forked PR builds in Bazel, and configure sccache with read-only credentials for untrusted runners.
+- **sccache limitations:** sccache caches compilation but not linking. For link-time caching, use Bazel or rely on incremental linking. Linking is typically faster than compilation anyway, so this limitation rarely matters in practice.

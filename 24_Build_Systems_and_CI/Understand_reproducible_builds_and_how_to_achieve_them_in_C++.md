@@ -8,21 +8,22 @@
 
 ## Topic Overview
 
-This file focuses on the **SOURCE_DATE_EPOCH standard** and **SHA256 verification workflow** for achieving reproducible C++ builds. A build is reproducible when every developer and CI runner produces the exact same binary from the same source and toolchain.
+This file focuses on the **SOURCE_DATE_EPOCH standard** and **SHA256 verification workflow** for achieving reproducible C++ builds. A build is reproducible when every developer and CI runner produces the exact same binary from the same source and toolchain. The goal is not just a nice property - it is a security and reliability guarantee: if the binary matches, you know exactly what source produced it.
 
 ### The Reproducibility Checklist
 
+Think of this as the minimum set of things you need to get right before you can claim a build is reproducible. Each item addresses a specific source of non-determinism:
+
 ```cpp
-
-□ Pin compiler version (GCC 13.2.0, not "latest")
-□ Pin all dependency versions (vcpkg baseline hash)
-□ Set SOURCE_DATE_EPOCH (deterministic timestamps)
-□ Use -ffile-prefix-map (strip absolute paths)
-□ Sort all file lists (no glob order dependency)
-□ Use deterministic ar (ARFLAGS=Dcr)
-□ Remove __DATE__/__TIME__ (or use SOURCE_DATE_EPOCH)
-□ Verify with sha256sum or diffoscope
-
+// Reproducibility checklist - work through these top to bottom:
+// [ ] Pin compiler version (GCC 13.2.0, not "latest")
+// [ ] Pin all dependency versions (vcpkg baseline hash)
+// [ ] Set SOURCE_DATE_EPOCH (deterministic timestamps)
+// [ ] Use -ffile-prefix-map (strip absolute paths)
+// [ ] Sort all file lists (no glob order dependency)
+// [ ] Use deterministic ar (ARFLAGS=Dcr)
+// [ ] Remove __DATE__/__TIME__ (or use SOURCE_DATE_EPOCH)
+// [ ] Verify with sha256sum or diffoscope
 ```
 
 ---
@@ -33,25 +34,26 @@ This file focuses on the **SOURCE_DATE_EPOCH standard** and **SHA256 verificatio
 
 **Answer:**
 
-```bash
+The `-ffile-prefix-map` flag tells the compiler to rewrite path prefixes before embedding them in the binary. Without it, the absolute path to your source directory ends up in the DWARF debug info, and that path is different on every developer's machine.
 
-# ═══════════ Compiler flags for path stripping ═══════════
+```bash
+# Compiler flags for path stripping
 
 # GCC/Clang: replace source directory path with "."
 g++ -g -ffile-prefix-map=$(pwd)=. -o app main.cpp
 
 # The flag family:
-# -ffile-prefix-map=OLD=NEW      → replace in ALL embedded paths (debug + __FILE__)
-# -fdebug-prefix-map=OLD=NEW     → replace only in DWARF debug info
-# -fmacro-prefix-map=OLD=NEW     → replace only in __FILE__ macro expansion
+# -ffile-prefix-map=OLD=NEW      -> replace in ALL embedded paths (debug + __FILE__)
+# -fdebug-prefix-map=OLD=NEW     -> replace only in DWARF debug info
+# -fmacro-prefix-map=OLD=NEW     -> replace only in __FILE__ macro expansion
 # -ffile-prefix-map is equivalent to both of the above
 
-# ═══════════ CMake integration ═══════════
-
+# CMake integration
 ```
 
-```cmake
+Putting it into CMake ensures the flag is applied to every target automatically:
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.21)
 project(MyApp CXX)
@@ -65,31 +67,31 @@ add_compile_options(
 # Also fix __FILE__ in assertion messages:
 # Before: /home/alice/project/src/main.cpp:42: assertion failed
 # After:  ./src/main.cpp:42: assertion failed
-
 ```
 
-```bash
+After applying the flag, verify that no absolute paths are left in the binary:
 
-# ═══════════ Verify paths are stripped ═══════════
+```bash
+# Verify paths are stripped
 # Check what paths are embedded in the binary:
 strings app | grep /home
 # (should be empty after -ffile-prefix-map)
 
 readelf --debug-dump=info app | grep comp_dir
-# DW_AT_comp_dir: .    ← relative, not absolute
+# DW_AT_comp_dir: .    <- relative, not absolute
 
 # MSVC equivalent:
 # cl /d1trimfile:C:\Users\alice\project=. main.cpp
-
 ```
 
 ### Q2: Use SOURCE_DATE_EPOCH to make __DATE__ and __TIME__ macros deterministic
 
 **Answer:**
 
-```bash
+`SOURCE_DATE_EPOCH` is a standard environment variable defined by the reproducible-builds.org project. When it is set, GCC and Clang use it as the build timestamp instead of the current wall-clock time. The result is that `__DATE__` and `__TIME__` expand to a fixed, deterministic string - the same on every machine that builds the same commit.
 
-# ═══════════ SOURCE_DATE_EPOCH standard ═══════════
+```bash
+# SOURCE_DATE_EPOCH standard
 # Defined by https://reproducible-builds.org/specs/source-date-epoch/
 # When this environment variable is set, compilers use it instead of "now"
 # for __DATE__, __TIME__, and embedded timestamps
@@ -109,12 +111,12 @@ SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) g++ -o app main.cpp
 # Build with Clang:
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) clang++ -o app main.cpp
 # Both honor SOURCE_DATE_EPOCH since GCC 7 and Clang 6
-
 ```
 
-```cpp
+Here is what it looks like from the C++ side - the same code behaves differently depending on whether `SOURCE_DATE_EPOCH` is set:
 
-// ═══════════ Demonstrating the effect ═══════════
+```cpp
+// Demonstrating the effect
 #include <iostream>
 
 int main() {
@@ -124,11 +126,11 @@ int main() {
     std::cout << "Build time: " << __TIME__ << "\n";
     return 0;
 }
-
 ```
 
-```cmake
+You can set it from CMake by querying git at configure time:
 
+```cmake
 # CMake integration: set SOURCE_DATE_EPOCH from git
 find_package(Git REQUIRED)
 execute_process(
@@ -139,16 +141,16 @@ execute_process(
 )
 set(ENV{SOURCE_DATE_EPOCH} ${GIT_COMMIT_TIMESTAMP})
 message(STATUS "SOURCE_DATE_EPOCH = ${GIT_COMMIT_TIMESTAMP}")
-
 ```
 
 ### Q3: Verify build reproducibility by comparing SHA256 of two independently built binaries
 
 **Answer:**
 
-```bash
+The verification workflow is straightforward: build from scratch in two separate directories, hash the outputs, and compare. If the hashes match, the build is reproducible. If they differ, `diffoscope` will tell you exactly which sections of the binary differ and why.
 
-# ═══════════ Verification workflow ═══════════
+```bash
+# Verification workflow
 
 # Step 1: Set reproducibility flags
 export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
@@ -182,19 +184,19 @@ diff norm1.txt norm2.txt
 # If empty: reproducible
 # If different: investigate which object files differ
 
-# ═══════════ Quick one-liner check ═══════════
+# Quick one-liner check
 sha256sum build1/myapp build2/myapp
 # abc123...  build1/myapp
-# abc123...  build2/myapp  ← same hash = reproducible
+# abc123...  build2/myapp  <- same hash = reproducible
 
-# ═══════════ Deep investigation with diffoscope ═══════════
+# Deep investigation with diffoscope
 diffoscope build1/myapp build2/myapp --html diff-report.html
 # Opens HTML showing exactly which bytes differ and why
-
 ```
 
-```yaml
+Once you have verified it locally, automate the check in CI so regressions are caught immediately:
 
+```yaml
 # CI automation: reproducibility gate
 name: Verify Reproducible Build
 on: [push]
@@ -232,15 +234,14 @@ jobs:
             exit 1
           fi
           echo "Builds are reproducible!"
-
 ```
 
 ---
 
 ## Notes
 
-- **`SOURCE_DATE_EPOCH`** is supported by GCC (7+), Clang (6+), and many other tools (tar, gzip, zip, javac)
-- **MSVC** does not support `SOURCE_DATE_EPOCH` — use `/Brepro` flag for deterministic PE timestamps
-- **Static libraries (.a)** embed timestamps by default — use `ar Dcr` or `CMAKE_C_ARCHIVE_CREATE` with `D` flag
-- **Python in build scripts** can introduce non-determinism via `dict` ordering (use `PYTHONHASHSEED=0`)
-- **Reproducible builds are a supply-chain security measure** — they allow third parties to verify that a binary was built from the claimed source code
+- **`SOURCE_DATE_EPOCH`** is supported by GCC (7+), Clang (6+), and many other tools (tar, gzip, zip, javac) - it is a cross-ecosystem standard, not a compiler-specific extension.
+- **MSVC** does not support `SOURCE_DATE_EPOCH` - use `/Brepro` flag for deterministic PE timestamps instead.
+- **Static libraries (.a)** embed timestamps by default - use `ar Dcr` or set `CMAKE_C_ARCHIVE_CREATE` with the `D` flag to disable this.
+- **Python in build scripts** can introduce non-determinism via `dict` ordering - use `PYTHONHASHSEED=0` to make it deterministic.
+- **Reproducible builds are a supply-chain security measure** - they allow third parties to verify that a binary was built from the claimed source code, which is essential for package managers and open-source distribution.

@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-Conan 2.0 is a decentralized C++ package manager that downloads, builds, and caches pre-compiled binaries for your dependencies. It integrates with CMake via **CMakeDeps** (generates `find_package` files) and **CMakeToolchain** (generates a toolchain file with compiler/standard settings).
+Conan 2.0 is a decentralized C++ package manager that downloads, builds, and caches pre-compiled binaries for your dependencies. If a pre-built binary matches your exact compiler, OS, architecture, and settings, Conan grabs it instantly. If not, it builds from source with `--build=missing`. The integration with CMake is intentionally clean: Conan generates a **CMakeToolchain** file that sets your compiler and standard, and a set of **CMakeDeps** config files that make `find_package()` work for every dependency you declared. From CMake's perspective, it looks exactly like the libraries were installed on the system.
 
 ### Conan 2.0 Workflow
 
-```cpp
+Here is the overall pipeline from your recipe file to a working build:
 
+```cpp
 conanfile.py (declares deps)
      │
      ▼
@@ -27,10 +28,11 @@ conan install . --build=missing
           ▼
 cmake --preset conan-release
      └── find_package(Boost) ── works via generated files
-
 ```
 
 ### Conan 2.0 vs 1.x
+
+If you have used Conan before, the 2.0 changes are significant enough that existing recipes will not just work. The generator names changed, and the layout system is smarter:
 
 | Feature | Conan 1.x | Conan 2.0 |
 | --- | --- | --- |
@@ -47,8 +49,9 @@ cmake --preset conan-release
 
 **Answer:**
 
-```python
+A `conanfile.py` is a Python class that describes your project to Conan. The `requires` field lists your runtime dependencies, `generate()` creates the CMake integration files, and `build()` / `package()` drive the actual compilation. Notice that the `CMakeLists.txt` side is completely ordinary - it just calls `find_package` and links targets. Conan handles making those targets available:
 
+```python
 # conanfile.py
 from conan import ConanFile
 from conan.tools.cmake import CMake, cmake_layout, CMakeDeps, CMakeToolchain
@@ -59,7 +62,7 @@ class MyProjectConan(ConanFile):
     version = "1.0.0"
     settings = "os", "compiler", "build_type", "arch"
 
-    # ═══════════ Dependencies ═══════════
+    # Dependencies
     requires = (
         "boost/1.84.0",
         "fmt/10.2.1",
@@ -89,11 +92,11 @@ class MyProjectConan(ConanFile):
     def package(self):
         cmake = CMake(self)
         cmake.install()
-
 ```
 
-```cmake
+The `CMakeLists.txt` that consumes these generated files looks exactly like normal CMake - no Conan-specific calls needed here:
 
+```cmake
 # CMakeLists.txt — uses the generated find modules
 cmake_minimum_required(VERSION 3.24)
 project(MyProject LANGUAGES CXX)
@@ -109,16 +112,16 @@ target_link_libraries(app PRIVATE
     fmt::fmt
     spdlog::spdlog
 )
-
 ```
 
 ### Q2: Run conan install --build=missing to download and build dependencies
 
 **Answer:**
 
-```bash
+The workflow is: detect your compiler profile once, then `conan install` to get your dependencies, then build through CMake presets. The `--build=missing` flag tells Conan to compile from source anything for which a pre-built binary does not exist for your exact configuration:
 
-# ═══════════ Step 1: Create a Conan profile ═══════════
+```bash
+# Step 1: Create a Conan profile
 conan profile detect  # Auto-detect compiler, OS, arch
 conan profile show
 # Output:
@@ -130,12 +133,12 @@ conan profile show
 # build_type=Release
 # arch=x86_64
 
-# ═══════════ Step 2: Install dependencies ═══════════
+# Step 2: Install dependencies
 conan install . --build=missing
 # --build=missing: build from source if no pre-built binary exists
 # Downloads:
-#   - boost/1.84.0: Found pre-built binary ✓
-#   - fmt/10.2.1: Found pre-built binary ✓
+#   - boost/1.84.0: Found pre-built binary
+#   - fmt/10.2.1: Found pre-built binary
 #   - spdlog/1.13.0: Building from source (no binary for this config)
 
 # Output:
@@ -150,29 +153,29 @@ conan install . --build=missing
 # Generated: conan_toolchain.cmake
 # Generated: BoostConfig.cmake, fmtConfig.cmake, spdlogConfig.cmake
 
-# ═══════════ Step 3: Build with CMake using Conan preset ═══════════
+# Step 3: Build with CMake using Conan preset
 cmake --preset conan-release    # Uses conan_toolchain.cmake
 cmake --build --preset conan-release
 ctest --preset conan-release
 
-# ═══════════ Debug build ═══════════
+# Debug build
 conan install . --build=missing -s build_type=Debug
 cmake --preset conan-debug
 cmake --build --preset conan-debug
 
-# ═══════════ Useful flags ═══════════
+# Useful flags
 conan install . --build=missing --output-folder=build
 conan install . --build="boost/*"    # Force rebuild specific package
 conan install . --build=*            # Rebuild everything from source
-
 ```
 
 ### Q3: Create a custom Conan recipe (ConanFile class) for a header-only library
 
 **Answer:**
 
-```python
+Header-only libraries need a slightly different recipe because there is no compilation step - you just need to copy the headers into the package folder and describe the include path. The `package_id(self)` override that calls `self.info.clear()` is important: it tells Conan that this package produces the same result regardless of OS, compiler, or build type, so a single package binary works for everyone:
 
+```python
 # conanfile.py for a header-only library "mymath"
 from conan import ConanFile
 from conan.tools.files import copy
@@ -211,11 +214,11 @@ class MyMathConan(ConanFile):
     def package_id(self):
         # Header-only: same package for all configurations
         self.info.clear()
-
 ```
 
-```bash
+To test and publish the package locally and then upload it to a remote:
 
+```bash
 # Test locally:
 conan create . --build-folder=tmp
 # Output:
@@ -228,14 +231,13 @@ conan create . --build-folder=tmp
 # Upload to a remote:
 conan remote add myremote https://myartifactory.com/conan
 conan upload "mymath/1.0.0" -r myremote --confirm
-
 ```
 
 ---
 
 ## Notes
 
-- **Conan cache:** `~/.conan2/` stores all downloaded/built packages — `conan cache path boost/1.84.0` shows the path
+- **Conan cache:** `~/.conan2/` stores all downloaded/built packages - `conan cache path boost/1.84.0` shows the path
 - **Lockfiles:** `conan lock create .` generates `conan.lock` for fully reproducible dependency resolution
 - **Profiles:** create custom profiles for cross-compilation, sanitizers, etc. in `~/.conan2/profiles/`
-- **ConanCenter:** <https://conan.io/center> — the public repository with 1500+ packages
+- **ConanCenter:** <https://conan.io/center> - the public repository with 1500+ packages

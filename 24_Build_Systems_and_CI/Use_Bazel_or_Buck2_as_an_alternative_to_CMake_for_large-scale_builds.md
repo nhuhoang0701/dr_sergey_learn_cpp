@@ -8,9 +8,13 @@
 
 ## Topic Overview
 
-**Bazel** (Google) and **Buck2** (Meta) are build systems designed for massive monorepos with thousands of targets. Unlike CMake+Ninja (which relies on convention and implicit dependencies), Bazel and Buck2 enforce **explicit dependency declarations** and **hermetic sandboxed builds**, guaranteeing correctness and enabling powerful caching and remote execution.
+**Bazel** (Google) and **Buck2** (Meta) are build systems designed for massive monorepos with thousands of targets. Unlike CMake+Ninja - which relies on convention and implicit dependencies - Bazel and Buck2 enforce **explicit dependency declarations** and **hermetic sandboxed builds**, guaranteeing correctness and enabling powerful caching and remote execution.
+
+The reason you would switch from CMake to Bazel is not that CMake is bad. CMake is excellent for projects of moderate size. The reason is that at large scale, the implicit trust model CMake relies on starts producing subtle, hard-to-reproduce bugs, and the lack of remote execution and action-level caching makes CI slow. Bazel trades a higher setup cost for guaranteed correctness and dramatic CI speedups.
 
 ### Build System Comparison
+
+If you are trying to decide whether the migration is worth it, this table captures the key trade-offs at a glance:
 
 | Feature | CMake + Ninja | Bazel | Buck2 |
 | --- | --- | --- | --- |
@@ -31,12 +35,13 @@
 
 **Answer:**
 
-```python
+Every target in Bazel is described in a `BUILD` file. The syntax is Starlark - a dialect of Python - and the discipline is strict: every `.cpp` file goes in `srcs`, every header in `hdrs`, every dependency in `deps`. There are no wildcards, no implicit include paths. That strictness is the whole point.
 
-# BUILD file (Starlark syntax — Python-like)
+```python
+# BUILD file (Starlark syntax - Python-like)
 # Every source file and dependency must be explicitly listed
 
-# ═══════════ Library target ═══════════
+# Library target
 cc_library(
     name = "math_utils",
     srcs = ["math_utils.cpp"],
@@ -49,7 +54,7 @@ cc_library(
     copts = ["-std=c++20"],
 )
 
-# ═══════════ Binary target ═══════════
+# Binary target
 cc_binary(
     name = "calculator",
     srcs = ["main.cpp"],
@@ -62,7 +67,7 @@ cc_binary(
     linkopts = ["-lpthread"],
 )
 
-# ═══════════ Test target ═══════════
+# Test target
 cc_test(
     name = "math_utils_test",
     srcs = ["math_utils_test.cpp"],
@@ -73,12 +78,12 @@ cc_test(
     copts = ["-std=c++20"],
     size = "small",  # Test size hint: small (<1min), medium, large
 )
-
 ```
 
-```python
+The `WORKSPACE` file at the project root is where external dependencies are declared. Notice that dependencies are pinned by SHA256 hash - that is how Bazel enforces dependency pinning at the build system level:
 
-# WORKSPACE file (root of the project) — declares external dependencies
+```python
+# WORKSPACE file (root of the project) - declares external dependencies
 workspace(name = "my_project")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
@@ -98,11 +103,11 @@ http_archive(
     strip_prefix = "abseil-cpp-20240116.0",
     sha256 = "...",
 )
-
 ```
 
-```bash
+Building, running, and testing follow a consistent `//package:target` label syntax:
 
+```bash
 # Build and run:
 bazel build //path/to:calculator
 bazel run //path/to:calculator -- --input data.txt
@@ -113,49 +118,49 @@ bazel test //...  # Run ALL tests in the repo
 
 # Query the dependency graph:
 bazel query 'deps(//path/to:calculator)' --output graph | dot -Tpng > deps.png
-
 ```
 
 **Key differences from CMake:**
 
-- Every `.cpp` file must be listed in `srcs` — no globs (intentional!)
-- Every header dependency must be in `hdrs` or `deps` — no implicit include paths
+- Every `.cpp` file must be listed in `srcs` - no globs (intentional!)
+- Every header dependency must be in `hdrs` or `deps` - no implicit include paths
 - Dependencies are directed edges: if A depends on B, you must write `deps = [":B"]`
 
 ### Q2: Explain Bazel's hermetic build sandbox and how it guarantees dependency correctness
 
 **Answer:**
 
+The sandbox is what makes Bazel's guarantees meaningful. In a normal CMake build, the compiler sees the entire filesystem - so if you forget to declare a dependency but the header happens to be on the include path anyway, the build succeeds. That is a latent bug that will only surface on a different machine or in CI. Bazel prevents this by giving each build action a private view of the filesystem that only contains what you declared.
+
 ```cpp
+// Bazel's Sandbox Model
 
-═══════════ Bazel's Sandbox Model ═══════════
+// Normal build (CMake/Make):
+//   compiler sees: entire filesystem
+//
+//   - Can #include any header anywhere
+//   - Can link against any library
+//   - Missing dep? Might still work by accident
 
-Normal build (CMake/Make):
-  compiler sees: entire filesystem
-
-  - Can #include any header anywhere
-  - Can link against any library
-  - Missing dep? Might still work by accident
-
-Bazel sandboxed build:
-  compiler sees: ONLY declared inputs
-  ┌────────────────────────────────────┐
-  │ Sandbox (temporary directory)       │
-  │ ├── math_utils.cpp     (from srcs) │
-  │ ├── math_utils.h       (from hdrs) │
-  │ ├── absl/strings.h     (from deps) │
-  │ └── (nothing else!)                │
-  └────────────────────────────────────┘
-  
-  If math_utils.cpp does #include "missing.h":
-    → Compile ERROR! "missing.h" not found
-    → Even if missing.h exists in the repo
-    → Because it wasn't declared in deps/hdrs
-
+// Bazel sandboxed build:
+//   compiler sees: ONLY declared inputs
+//   +------------------------------------+
+//   | Sandbox (temporary directory)       |
+//   | |-- math_utils.cpp     (from srcs) |
+//   | |-- math_utils.h       (from hdrs) |
+//   | |-- absl/strings.h     (from deps) |
+//   | `-- (nothing else!)                |
+//   +------------------------------------+
+//
+//   If math_utils.cpp does #include "missing.h":
+//     -> Compile ERROR! "missing.h" not found
+//     -> Even if missing.h exists in the repo
+//     -> Because it wasn't declared in deps/hdrs
 ```
 
-```bash
+Here is what a sandboxing failure looks like in practice, and why it is actually the correct behavior - you want to know about this now, not when your colleague tries to build on a clean machine:
 
+```bash
 # How sandboxing works on Linux:
 # 1. Bazel creates a temporary directory
 # 2. Symlinks only the declared inputs into it
@@ -174,52 +179,52 @@ Bazel sandboxed build:
 # )
 
 # parser.cpp:
-# #include "utils/string_helpers.h"  ← ERROR: not in sandbox
+# #include "utils/string_helpers.h"  <- ERROR: not in sandbox
 
 # Bazel output:
 # ERROR: parser.cpp:1: 'utils/string_helpers.h' file not found
 # NOTE: add deps = ["//utils:string_helpers"] to your BUILD target
 
 # This GUARANTEES that the dependency graph is complete and correct
-# → No "works on my machine" because I had a stale header in my include path
-# → No silent dependency on accidentally-available system header
+# -> No "works on my machine" because I had a stale header in my include path
+# -> No silent dependency on accidentally-available system header
 
-# ═══════════ Why this matters for correctness ═══════════
-# Content-addressed caching relies on knowing ALL inputs
+# Why this matters for correctness:
+# Content-addressed caching relies on knowing ALL inputs.
 # If an input is missing from the declaration:
 #   - Cache entry might be stale (input changed but cache doesn't know)
 #   - Remote build might fail (different machine, different environment)
 # Sandboxing prevents this class of bugs entirely
-
 ```
 
 ### Q3: Compare Bazel remote execution with CMake+Ninja for a 1000-TU project build time
 
 **Answer:**
 
+The local build speed is similar between CMake and Bazel - both invoke the same compiler. The real gap opens up when you add remote execution and shared caching. Bazel can distribute compilation across hundreds of remote workers and cache every action result so that other developers and CI jobs can reuse the work:
+
 ```cpp
+// Build Time Comparison: 1000 Translation Units
 
-═══════════ Build Time Comparison: 1000 Translation Units ═══════════
-
-Scenario: 1000 .cpp files, 200 libraries, 50 test targets
-
-┌─────────────────────┬──────────────────┬─────────────────────────┐
-│ Build Type           │ CMake + Ninja    │ Bazel (remote exec)     │
-├─────────────────────┼──────────────────┼─────────────────────────┤
-│ Clean build (local)  │ 30 min (8 cores) │ 35 min (8 cores)       │
-│ Clean build (remote) │ N/A              │ 5 min (200 remote CPUs) │
-│ 1 file changed       │ 30 sec           │ 15 sec                  │
-│ 10 files changed     │ 2 min            │ 20 sec (parallel exec)  │
-│ No change rebuild    │ 5 sec (Ninja)    │ 2 sec (cached)          │
-│ New developer clone  │ 30 min           │ 5 min (cached artifacts)│
-│ CI (warm cache)      │ 5-10 min         │ 1-3 min                 │
-└─────────────────────┴──────────────────┴─────────────────────────┘
-
+// Scenario: 1000 .cpp files, 200 libraries, 50 test targets
+//
+// +---------------------+------------------+-------------------------+
+// | Build Type           | CMake + Ninja    | Bazel (remote exec)     |
+// +---------------------+------------------+-------------------------+
+// | Clean build (local)  | 30 min (8 cores) | 35 min (8 cores)       |
+// | Clean build (remote) | N/A              | 5 min (200 remote CPUs) |
+// | 1 file changed       | 30 sec           | 15 sec                  |
+// | 10 files changed     | 2 min            | 20 sec (parallel exec)  |
+// | No change rebuild    | 5 sec (Ninja)    | 2 sec (cached)          |
+// | New developer clone  | 30 min           | 5 min (cached artifacts)|
+// | CI (warm cache)      | 5-10 min         | 1-3 min                 |
+// +---------------------+------------------+-------------------------+
 ```
 
-```bash
+Configuring remote execution is done through `.bazelrc`. Once configured, the remote cache is transparent - developers do not change how they build, they just get faster builds:
 
-# ═══════════ Bazel Remote Execution ═══════════
+```bash
+# Bazel Remote Execution
 # .bazelrc configuration:
 # build --remote_executor=grpc://buildserver.example.com:8980
 # build --remote_cache=grpc://buildserver.example.com:8980
@@ -237,13 +242,14 @@ Scenario: 1000 .cpp files, 200 libraries, 50 test targets
 # CMake + Ninja equivalent:
 # cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 # cmake --build build -j$(nproc)
-# → Limited to local CPU count
-# → No remote execution (sccache helps with compilation caching only)
-# → No action-level parallelism across machines
+# -> Limited to local CPU count
+# -> No remote execution (sccache helps with compilation caching only)
+# -> No action-level parallelism across machines
 
-# ═══════════ When is Bazel worth the migration cost? ═══════════
-
+# When is Bazel worth the migration cost?
 ```
+
+Here is a practical decision guide. The break-even point is roughly at 500 translation units with a team of 10 or more:
 
 | Factor | CMake better | Bazel better |
 | --- | --- | --- |
@@ -261,8 +267,8 @@ Scenario: 1000 .cpp files, 200 libraries, 50 test targets
 
 ## Notes
 
-- **Buck2** (Meta) is similar to Bazel but uses a different configuration language (Starlark variant) and is optimized for Meta's monorepo
-- **Bazel modules (bzlmod)** is the modern dependency management system, replacing WORKSPACE files
-- **CMake-to-Bazel migration** tools exist: `cmake_external` rule in Bazel can wrap CMake projects
-- **Please** (pleasebuild.com) is another alternative that aims to be simpler than Bazel
-- **Ninja** is a build executor, not a build system — it's analogous to Bazel's action execution layer, not to Bazel's full dependency management
+- **Buck2** (Meta) is similar to Bazel but uses a different configuration language (Starlark variant) and is optimized for Meta's monorepo - worth evaluating if you have heavy Rust or Python components alongside C++.
+- **Bazel modules (bzlmod)** is the modern dependency management system, replacing WORKSPACE files - prefer it for new projects.
+- **CMake-to-Bazel migration** tools exist: the `cmake_external` rule in Bazel can wrap CMake projects so you can migrate incrementally rather than all at once.
+- **Please** (pleasebuild.com) is another alternative that aims to be simpler than Bazel while keeping the hermetic model.
+- **Ninja** is a build executor, not a build system - it is analogous to Bazel's action execution layer, not to Bazel's full dependency management. Comparing "CMake+Ninja vs Bazel" is comparing the full stack, not just the executor.

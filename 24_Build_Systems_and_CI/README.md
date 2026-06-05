@@ -33,13 +33,13 @@ CMake, package management, CI/CD pipelines, and build configuration best practic
 
 ## Notes
 
-- CMake is the dominant C++ build system — learn 	arget_link_libraries, FetchContent, and presets
-- CMake presets (CMakePresets.json) standardize build configurations across developers
-- Vcpkg and Conan are the two main C++ package managers — vcpkg integrates tightly with CMake
-- CI pipelines should build with multiple compilers (GCC, Clang, MSVC) to catch portability issues
-- Enable sanitizers (ASan, UBSan, TSan) in CI — they catch bugs that unit tests alone miss
-- Unity builds (jumbo builds) combine translation units to reduce build times
-- ccache caches compilation results — essential for fast iterative development
-- Use EXPORT and INSTALL in CMake to create reusable packages for downstream consumers
-- Reproducible builds ensure binary output is identical given the same source — aids security auditing
-- Separate build types: Debug (assertions, symbols), Release (optimizations), RelWithDebInfo (both)
+- CMake is the dominant C++ build system - learn `target_link_libraries`, FetchContent, and presets.
+- CMake presets (`CMakePresets.json`) standardize build configurations across developers so everyone uses the same flags without having to remember them.
+- Vcpkg and Conan are the two main C++ package managers - vcpkg integrates especially tightly with CMake via its toolchain file.
+- CI pipelines should build with multiple compilers (GCC, Clang, MSVC) to catch portability issues early, before they become surprises.
+- Enable sanitizers (ASan, UBSan, TSan) in CI - they catch bugs at runtime that unit tests alone will never see.
+- Unity builds (jumbo builds) combine translation units to reduce build times by cutting down on repeated header parsing.
+- ccache caches compilation results so unchanged files aren't recompiled - essential for fast iterative development on large projects.
+- Use `EXPORT` and `install()` in CMake to create reusable packages that downstream consumers can pick up with a simple `find_package`.
+- Reproducible builds ensure binary output is identical given the same source - this aids security auditing and debugging.
+- Keep build types separate: Debug (assertions + symbols), Release (optimizations), RelWithDebInfo (both) - mixing them up leads to confusing behavior.

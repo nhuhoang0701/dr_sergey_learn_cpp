@@ -10,10 +10,13 @@
 
 This second file on CMakePresets focuses on the **practical workflow**: using `cmake --preset=release` to configure without remembering flags, and how `CMakeUserPresets.json` lets each developer customize without touching shared configuration.
 
+The key insight is that a preset is not just a convenience - it is a contract. When you run `cmake --preset release`, you get exactly the same CMake variables as every other developer who runs the same command. That makes configuration reproducible without requiring any extra tooling beyond CMake itself.
+
 ### Preset Workflow
 
-```bash
+Notice how much cleaner the preset workflow is compared to the manual approach:
 
+```bash
 # Before presets (error-prone):
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 ...
 
@@ -21,7 +24,6 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 ...
 cmake --preset release
 cmake --build --preset release
 ctest --preset release
-
 ```
 
 ---
@@ -32,8 +34,9 @@ ctest --preset release
 
 **Answer:**
 
-```json
+This example uses `${presetName}` in `binaryDir`, which automatically creates a separate build directory for each preset. That way you can have debug and release builds coexist without clearing and reconfiguring:
 
+```json
 {
     "version": 6,
     "configurePresets": [
@@ -103,24 +106,24 @@ ctest --preset release
         }
     ]
 }
-
 ```
 
-```bash
+The full workflow for any configuration is the same three-command sequence:
 
+```bash
 # Full workflow:
 cmake --preset debug && cmake --build --preset debug && ctest --preset debug
 cmake --preset release && cmake --build --preset release && ctest --preset release
-
 ```
 
 ### Q2: Use cmake --preset=release to configure and build without manually specifying -D flags
 
 **Answer:**
 
-```bash
+This example shows exactly what you gain. The manual approach requires remembering seven flags and getting them all right. The preset approach requires knowing the preset name, which you can discover with `cmake --list-presets`.
 
-# ═══════════ Without presets (manual flags) ═══════════
+```bash
+# Without presets (manual flags)
 cmake -B build-release \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
@@ -137,7 +140,7 @@ cd build-release && ctest --output-on-failure
 # - Different devs use different generators (Make vs Ninja)
 # - Flag typo? Build silently misconfigured
 
-# ═══════════ With presets (reproducible) ═══════════
+# With presets (reproducible)
 cmake --preset release
 # Output:
 # Preset CMake variables:
@@ -156,21 +159,21 @@ ctest --preset release
 # Every developer, CI runner, and IDE gets IDENTICAL configuration
 # No need to read a wiki page for "how to build this project"
 
-# ═══════════ What cmake --preset does internally ═══════════
+# What cmake --preset does internally:
 # It reads CMakePresets.json, finds the "release" preset, and runs:
 #   cmake -B build/release -G Ninja \
 #     -DCMAKE_BUILD_TYPE=Release \
 #     ... (all cacheVariables from the preset)
-
 ```
 
 ### Q3: Explain how CMakeUserPresets.json (gitignored) extend shared presets for per-developer overrides
 
 **Answer:**
 
-```json
+`CMakeUserPresets.json` is how personal settings stay personal. A developer can inherit from any shared preset and add their own install path, their preferred compiler, or a cross-compilation toolchain - none of which should ever appear in version control because they are meaningless or wrong on other machines.
 
-// CMakeUserPresets.json — ALWAYS in .gitignore
+```json
+// CMakeUserPresets.json - ALWAYS in .gitignore
 {
     "version": 6,
     "configurePresets": [
@@ -202,16 +205,16 @@ ctest --preset release
         }
     ]
 }
-
 ```
 
-```bash
+Alice and Bob can work on the same project with completely different local setups, and neither affects the other:
 
+```bash
 # Alice uses her presets:
 cmake --preset my-dev
 cmake --build --preset my-dev
 
-# Bob doesn't have CMakeUserPresets.json — uses shared presets:
+# Bob doesn't have CMakeUserPresets.json - uses shared presets:
 cmake --preset debug
 
 # What Alice's .gitignore contains:
@@ -219,10 +222,9 @@ cmake --preset debug
 # build/
 
 # Inheritance rules:
-# CMakeUserPresets.json CAN inherit from CMakePresets.json presets ✅
-# CMakePresets.json CANNOT inherit from CMakeUserPresets.json ✗
-# → Shared config never depends on personal config
-
+# CMakeUserPresets.json CAN inherit from CMakePresets.json presets (Yes)
+# CMakePresets.json CANNOT inherit from CMakeUserPresets.json presets (No)
+# -> Shared config never depends on personal config
 ```
 
 **Use cases for user presets:**
@@ -237,7 +239,7 @@ cmake --preset debug
 
 ## Notes
 
-- **IDE support:** VS Code (CMake Tools extension), CLion, and Visual Studio 2022 all read `CMakePresets.json` and show presets in their UI
-- **`${presetName}`** variable in `binaryDir` creates per-preset build directories automatically
-- **Vendor fields:** add `"vendor": {"my-company": {...}}` for custom metadata that CMake ignores
-- **Workflow presets** (version 6): chain configure → build → test into a single `cmake --workflow --preset ci` command
+- **IDE support:** VS Code (CMake Tools extension), CLion, and Visual Studio 2022 all read `CMakePresets.json` and show presets in their UI - this means developers get preset selection directly in their editor without using the command line.
+- **`${presetName}`** variable in `binaryDir` creates per-preset build directories automatically - a clean pattern that lets you switch between configurations without wiping the build tree.
+- **Vendor fields:** add `"vendor": {"my-company": {...}}` for custom metadata that CMake ignores - useful for tooling that reads the same file.
+- **Workflow presets** (version 6): chain configure -> build -> test into a single `cmake --workflow --preset ci` command, ideal for CI pipelines.

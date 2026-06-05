@@ -12,32 +12,31 @@ This file focuses on the **practical workflow** of using CMake toolchain files f
 
 ### CMake Toolchain Invocation
 
-```bash
+There are two syntaxes for passing a toolchain file to CMake. Both do the same thing; `--toolchain` is just cleaner and available since CMake 3.21.
 
+```bash
 # Modern CMake (3.21+): --toolchain flag
 cmake -B build --toolchain=cmake/arm-linux.cmake
 
 # Older CMake: -DCMAKE_TOOLCHAIN_FILE
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-linux.cmake
 
-# Both are equivalent. --toolchain is preferred for clarity
-
+# Both are equivalent. --toolchain is preferred for clarity.
 ```
 
 ### find_package Behavior in Cross-Compilation
 
-```cpp
+The reason this is confusing is that `find_package` searches different paths depending on whether you're doing a native or cross-compilation build. Here is the comparison:
 
+```cpp
 Native build:
-  find_package(Boost) → searches /usr/lib, /usr/local/lib
+  find_package(Boost) -> searches /usr/lib, /usr/local/lib
 
 Cross-compilation with sysroot:
-  find_package(Boost) → searches:
-
+  find_package(Boost) -> searches:
     1. ${CMAKE_SYSROOT}/usr/lib/cmake/Boost/
     2. ${CMAKE_FIND_ROOT_PATH}/lib/cmake/Boost/
     3. NEVER /usr/lib/ (host) when MODE is ONLY
-
 ```
 
 ---
@@ -48,55 +47,56 @@ Cross-compilation with sysroot:
 
 **Answer:**
 
-```cmake
+This example targets the ARM32 hard-float ABI (armhf), which is what most Raspberry Pi OS 32-bit images use. The `gnueabihf` suffix in the compiler name tells you the target ABI: GNU EABI with hardware floating point.
 
-# cmake/arm-linux.cmake — Toolchain for ARM32 (armv7) Linux
+```cmake
+# cmake/arm-linux.cmake - Toolchain for ARM32 (armv7) Linux
 # Target: Raspberry Pi 3/4 running 32-bit Raspberry Pi OS
 
-# ═══════════ Target identification ═══════════
+# ======= Target identification =======
 set(CMAKE_SYSTEM_NAME Linux)       # Triggers cross-compilation mode
 set(CMAKE_SYSTEM_PROCESSOR armv7l) # ARM 32-bit (hard-float)
 
-# ═══════════ Compiler ═══════════
+# ======= Compiler =======
 # Install: sudo apt-get install gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 set(CMAKE_C_COMPILER   arm-linux-gnueabihf-gcc)
 set(CMAKE_CXX_COMPILER arm-linux-gnueabihf-g++)
 
-# ═══════════ Sysroot ═══════════
-# The target filesystem root. GCC adds --sysroot= automatically
+# ======= Sysroot =======
+# The target filesystem root. GCC adds --sysroot= automatically.
 # Create from a Pi SD card image or via debootstrap:
 #   sudo debootstrap --arch=armhf bullseye /opt/pi-sysroot http://raspbian.raspberrypi.org/raspbian
 set(CMAKE_SYSROOT /opt/pi-sysroot)
 
-# ═══════════ Find path control ═══════════
+# ======= Find path control =======
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)  # Host tools (e.g., protoc)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)   # Target libraries
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)   # Target headers
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)   # Target CMake packages
 
-# ═══════════ Hardware floating point ═══════════
+# ======= Hardware floating point =======
 set(CMAKE_C_FLAGS_INIT   "-mfpu=neon-vfpv4 -mfloat-abi=hard")
 set(CMAKE_CXX_FLAGS_INIT "-mfpu=neon-vfpv4 -mfloat-abi=hard")
 
-# ═══════════ Test emulation ═══════════
+# ======= Test emulation =======
 set(CMAKE_CROSSCOMPILING_EMULATOR "qemu-arm;-L;${CMAKE_SYSROOT}")
-
 ```
 
 **Key points:**
 
-- `CMAKE_SYSTEM_NAME Linux` switches CMake into cross-compilation mode
-- `armv7l` = 32-bit ARM, `aarch64` = 64-bit ARM, `riscv64` = RISC-V
-- The `gnueabihf` suffix means hard-float ABI (hardware FPU)
-- `CMAKE_C_FLAGS_INIT` sets flags once during initial configuration
+- `CMAKE_SYSTEM_NAME Linux` switches CMake into cross-compilation mode - this is the signal that tells CMake to stop assuming host == target.
+- `armv7l` = 32-bit ARM, `aarch64` = 64-bit ARM, `riscv64` = RISC-V.
+- The `gnueabihf` suffix means hard-float ABI (hardware FPU). Using soft-float on a hard-float board produces binaries that run but are much slower.
+- `CMAKE_C_FLAGS_INIT` sets flags once during initial configuration and is not overridden on reconfigure, which makes it the right place for ABI-defining flags.
 
 ### Q2: Use cmake --toolchain=arm-linux.cmake to configure a cross-compilation build
 
 **Answer:**
 
-```bash
+Let's walk through the full workflow, from verification that the cross-compiler is installed all the way to deploying the binary on the target device.
 
-# ═══════════ Step-by-step cross-compilation workflow ═══════════
+```bash
+# ======= Step-by-step cross-compilation workflow =======
 
 # 1. Verify the cross-compiler is installed
 arm-linux-gnueabihf-g++ --version
@@ -130,14 +130,12 @@ cd build-arm && ctest --output-on-failure
 # 6. Deploy to target
 scp build-arm/myapp pi@raspberrypi.local:/home/pi/
 ssh pi@raspberrypi.local ./myapp
-
-# ═══════════ Using CMake presets for toolchain ═══════════
-
 ```
 
-```json
+A cleaner approach for teams is to encode the toolchain in a CMake preset so developers don't have to remember the flag:
 
-// CMakePresets.json — encode the toolchain in a preset
+```json
+// CMakePresets.json - encode the toolchain in a preset
 {
   "version": 6,
   "configurePresets": [
@@ -162,30 +160,30 @@ ssh pi@raspberrypi.local ./myapp
     }
   ]
 }
-
 ```
 
-```bash
+With the preset in place, cross-compiling becomes a single command:
 
+```bash
 # Now cross-compile with a single command:
 cmake --preset arm-release
 cmake --build --preset arm-release
-
 ```
 
 ### Q3: Explain how find_package works for target libraries in a sysroot vs host libraries
 
 **Answer:**
 
-```cmake
+This is the most important thing to get right in cross-compilation. Linking a host library (x86_64) into a target binary (ARM) produces a binary that looks fine at link time but crashes at runtime with a cryptic "wrong ELF class" error. The `CMAKE_FIND_ROOT_PATH_MODE_*` settings are what prevent this.
 
-# ═══════════ The problem: host vs target library confusion ═══════════
+```cmake
+# ======= The problem: host vs target library confusion =======
 #
 # Without proper toolchain configuration:
 #   find_package(Boost) might find /usr/lib/x86_64-linux-gnu/libboost_*.so
-#   Linking these x86_64 libs into an ARM binary → instant crash or link error
+#   Linking these x86_64 libs into an ARM binary -> instant crash or link error
 #
-# ═══════════ How CMAKE_FIND_ROOT_PATH_MODE controls search ═══════════
+# ======= How CMAKE_FIND_ROOT_PATH_MODE controls search =======
 #
 # set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 #
@@ -195,21 +193,21 @@ cmake --build --preset arm-release
 #   ${CMAKE_FIND_ROOT_PATH}/lib/
 #
 # And NEVER:
-#   /usr/lib/x86_64-linux-gnu/     ← host libraries
-#   /usr/local/lib/                 ← host libraries
+#   /usr/lib/x86_64-linux-gnu/     <- host libraries
+#   /usr/local/lib/                 <- host libraries
 #
-# ═══════════ But host tools must be found on the host! ═══════════
+# ======= But host tools must be found on the host! =======
 #
 # set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 #
-# find_program(PROTOC protoc) → searches /usr/bin/, /usr/local/bin/
+# find_program(PROTOC protoc) -> searches /usr/bin/, /usr/local/bin/
 # (host protoc, because you need to run it during the build)
-
 ```
 
-```cmake
+Here is a practical CMakeLists.txt that shows how the search rules play out:
 
-# CMakeLists.txt — practical example
+```cmake
+# CMakeLists.txt - practical example
 cmake_minimum_required(VERSION 3.21)
 project(MyApp CXX)
 
@@ -222,15 +220,15 @@ find_package(Threads REQUIRED)
 
 # find_program uses host tools (MODE_PROGRAM = NEVER)
 find_program(PROTOC protoc REQUIRED)
-# Finds /usr/bin/protoc (x86_64 host binary — runs during build)
+# Finds /usr/bin/protoc (x86_64 host binary - runs during build)
 
 add_executable(myapp src/main.cpp)
 target_link_libraries(myapp PRIVATE Boost::filesystem Threads::Threads)
-
 ```
 
-```bash
+When something goes wrong, `--debug-find` is your best debugging tool:
 
+```bash
 # Debugging find_package issues:
 
 # Show where CMake searches:
@@ -251,16 +249,15 @@ cmake -B build-arm --toolchain arm-linux.cmake --debug-find
 
 # Option 3: Use vcpkg with a cross triplet
 #   vcpkg install boost:arm-linux
-
 ```
 
-**Explanation:** `find_package` in cross-compilation respects the `CMAKE_FIND_ROOT_PATH_MODE_*` settings. Setting `MODE_LIBRARY ONLY` restricts library searches to the sysroot and `CMAKE_FIND_ROOT_PATH` directories, preventing accidental linking of host (x86_64) libraries into the target (ARM) binary. `MODE_PROGRAM NEVER` ensures build tools (protoc, flex, bison) are found on the host, since they run during the build.
+`find_package` in cross-compilation respects the `CMAKE_FIND_ROOT_PATH_MODE_*` settings throughout. Setting `MODE_LIBRARY ONLY` restricts library searches to the sysroot and `CMAKE_FIND_ROOT_PATH` directories, preventing accidental linking of host (x86_64) libraries into the target (ARM) binary. `MODE_PROGRAM NEVER` ensures build tools (protoc, flex, bison) are found on the host, since they run during the build process itself.
 
 ---
 
 ## Notes
 
-- **`--debug-find`** (CMake 3.17+) shows every search path for every `find_*` call — essential for diagnosing "library not found" in cross-compilation
-- **Toolchain files are processed early** — before `project()`. Some variables (like `CMAKE_CXX_STANDARD`) should go in the CMakeLists.txt, not the toolchain file
-- **vcpkg cross-compilation:** set `VCPKG_TARGET_TRIPLET=arm-linux` and `VCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/arm-linux.cmake`
-- **Common error:** "cannot find crt1.o" or "ld: cannot find -lc" → sysroot is missing or `CMAKE_SYSROOT` is not set correctly
+- **`--debug-find`** (CMake 3.17+) shows every search path for every `find_*` call - it's essential for diagnosing "library not found" in cross-compilation because the error message alone rarely tells you where it looked.
+- **Toolchain files are processed early** - before `project()`. Some variables (like `CMAKE_CXX_STANDARD`) should go in the CMakeLists.txt, not the toolchain file, to avoid ordering surprises.
+- **vcpkg cross-compilation:** set `VCPKG_TARGET_TRIPLET=arm-linux` and `VCPKG_CHAINLOAD_TOOLCHAIN_FILE=cmake/arm-linux.cmake` to use vcpkg with a cross toolchain.
+- **Common error:** "cannot find crt1.o" or "ld: cannot find -lc" means the sysroot is missing or `CMAKE_SYSROOT` is not set correctly. These are the C runtime startup files and the C library - they must come from the target sysroot.
