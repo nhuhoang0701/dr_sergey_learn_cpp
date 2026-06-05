@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-TCP flow control and socket tuning are critical for network performance. This topic covers TCP_NODELAY, buffer sizing, and TCP_CORK — complementing #554 (Nagle + delayed ACK interaction).
+TCP flow control and socket tuning are the dials that determine whether your application uses the network efficiently or leaves performance on the table. This topic covers the three most impactful options: `TCP_NODELAY` for eliminating latency on request-response protocols, `SO_SNDBUF`/`SO_RCVBUF` for maximizing throughput on fat-pipe links, and `TCP_CORK` for batching writes into full-sized segments. These complement the Nagle + delayed ACK interaction covered in #554.
+
+Here is a quick conceptual summary before diving into the code:
 
 ```cpp
-
 Nagle's algorithm (default ON):
   Wait to send small data until:
     a) Previous ACK received, OR
@@ -23,8 +24,9 @@ Nagle's algorithm (default ON):
 TCP_NODELAY: disables Nagle -> send immediately
 TCP_CORK:    hold ALL data until uncorked -> send one large segment
 SO_SNDBUF/SO_RCVBUF: kernel buffer sizes -> affect throughput
-
 ```
+
+If the table feels like a lot at first glance, the rule of thumb is: use `TCP_NODELAY` when every millisecond of latency matters, use `TCP_CORK` when you're building a multi-part response and want it sent as one burst, and only touch the buffer sizes if you're pushing data across a WAN.
 
 | Socket option | Effect | Use case |
 | --- | --- | --- |
@@ -40,8 +42,9 @@ SO_SNDBUF/SO_RCVBUF: kernel buffer sizes -> affect throughput
 
 ### Q1: Disable Nagle with TCP_NODELAY for low-latency RPC
 
-```cpp
+Setting `TCP_NODELAY` is a one-liner, but it is worth understanding exactly what it changes. Without it, two consecutive small writes will trigger the Nagle + delayed ACK interaction that adds 40ms per round-trip. With it, every write goes out immediately, regardless of whether there is unacknowledged data in flight.
 
+```cpp
 // Linux/POSIX example
 #include <iostream>
 #include <cstring>
@@ -92,13 +95,15 @@ int main() {
 
     close(sock);
 }
-
 ```
+
+The key nuance here is timing: set `TCP_NODELAY` on the server side right after `accept()`, or on the client side right after `socket()` - before any data flows. It takes effect immediately, so you can also set it mid-connection if you suddenly switch from bulk to interactive mode, though that is an unusual pattern.
 
 ### Q2: SO_SNDBUF and SO_RCVBUF for high-throughput
 
-```cpp
+The reason buffer sizes matter for throughput comes down to the **bandwidth-delay product (BDP)**: the amount of data that can be "in flight" on the network at any moment equals bandwidth multiplied by round-trip time. If your TCP receive buffer is smaller than the BDP, the sender must stop and wait for ACKs before the buffer even fills - you're leaving bandwidth unused. On a LAN this rarely matters, but on a WAN with a 10ms or 100ms RTT it can cut your throughput dramatically.
 
+```cpp
 #include <iostream>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -151,13 +156,15 @@ int main() {
 
     close(sock);
 }
-
 ```
+
+Notice that Linux quietly doubles whatever value you request. If you ask for 4 MB, `getsockopt` will report 8 MB - the kernel uses the extra half for its own bookkeeping. This is expected and normal. Also worth noting: Linux has auto-tuning (via `tcp_wmem`/`tcp_rmem`) that works well for most cases; you only need to override it manually for very high-bandwidth WAN links.
 
 ### Q3: TCP_CORK batches writes into full segments
 
-```cpp
+`TCP_CORK` is the opposite of `TCP_NODELAY`. Instead of sending each write immediately, it holds everything back until you "uncork" the socket, then flushes the accumulated data as one burst of full-sized TCP segments. This is ideal for HTTP-style responses where you have a fixed structure (status line, headers, body) that you want to go out together.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <sys/socket.h>
@@ -218,8 +225,9 @@ int main() {
     std::cout << "\nBest practice: use writev when possible, TCP_CORK when";
     std::cout << " data arrives asynchronously (e.g., streaming body).\n";
 }
-
 ```
+
+The golden rule here is: reach for `writev` when all your data is ready at once, because it handles the batching in a single syscall with no socket state to manage. Use `TCP_CORK` when the pieces arrive at different times and you need the buffering to span multiple calls. Never mix `TCP_NODELAY` and `TCP_CORK` on the same socket - they conflict and Linux will reject one of them.
 
 ---
 

@@ -8,20 +8,22 @@
 
 ## Topic Overview
 
-Transport Layer Security (TLS) is the backbone of secure network communication. In C++, two dominant libraries exist: **OpenSSL** — the de facto standard with a C API that demands careful resource management — and **Botan** — a modern C++ library with RAII-native TLS classes. Senior developers must understand both because OpenSSL dominates production deployments while Botan offers superior ergonomics and auditability.
+Transport Layer Security (TLS) is the backbone of secure network communication. In C++, two dominant libraries exist: **OpenSSL** - the de facto standard with a C API that demands careful resource management - and **Botan** - a modern C++ library with RAII-native TLS classes. Senior developers must understand both because OpenSSL dominates production deployments while Botan offers superior ergonomics and auditability.
 
-The fundamental challenge with OpenSSL in C++ is its C-style API: `SSL_CTX*`, `SSL*`, `BIO*` are raw pointers that leak if not freed correctly. Wrapping them in RAII types is non-negotiable. Beyond resource management, correct certificate verification, cipher suite selection, and protocol version pinning are critical — a single misconfiguration (e.g., not calling `SSL_CTX_set_verify`) silently disables peer verification, creating a false sense of security.
+The fundamental challenge with OpenSSL in C++ is its C-style API: `SSL_CTX*`, `SSL*`, `BIO*` are raw pointers that leak if not freed correctly. Wrapping them in RAII types is non-negotiable. Beyond resource management, correct certificate verification, cipher suite selection, and protocol version pinning are critical - a single misconfiguration (e.g., not calling `SSL_CTX_set_verify`) silently disables peer verification, creating a false sense of security.
 
-| Aspect               | OpenSSL                          | Botan                            |
+The table below gives you a quick comparison so you can decide which library fits your situation:
+
+| Aspect | OpenSSL | Botan |
 | --- | --- | --- |
-| API style             | C with manual resource mgmt      | Modern C++ with RAII             |
-| Maturity              | 25+ years, ubiquitous            | Mature, used in EU smartcards    |
-| Async integration     | Via BIO pairs or Asio SSL stream | Callback-based TLS::Channel      |
-| Certificate handling  | X509_STORE, manual chain build   | Certificate_Store, cleaner API   |
-| FIPS support          | Yes (FIPS module)                | Yes (via botan-fips)             |
-| Build complexity      | Moderate                         | CMake-native, simpler            |
+| API style | C with manual resource mgmt | Modern C++ with RAII |
+| Maturity | 25+ years, ubiquitous | Mature, used in EU smartcards |
+| Async integration | Via BIO pairs or Asio SSL stream | Callback-based TLS::Channel |
+| Certificate handling | X509_STORE, manual chain build | Certificate_Store, cleaner API |
+| FIPS support | Yes (FIPS module) | Yes (via botan-fips) |
+| Build complexity | Moderate | CMake-native, simpler |
 
-Async TLS with Boost.Asio uses `boost::asio::ssl::stream<tcp::socket>`, which wraps OpenSSL internally. The handshake, read, and write operations each become async operations that the io_context drives. For Botan, you implement `Botan::TLS::Callbacks` and feed raw bytes from your transport into `Botan::TLS::Channel`, receiving decrypted data via callbacks — this decouples TLS from the transport layer entirely.
+Async TLS with Boost.Asio uses `boost::asio::ssl::stream<tcp::socket>`, which wraps OpenSSL internally. The handshake, read, and write operations each become async operations that the io_context drives. For Botan, you implement `Botan::TLS::Callbacks` and feed raw bytes from your transport into `Botan::TLS::Channel`, receiving decrypted data via callbacks - this decouples TLS from the transport layer entirely.
 
 ---
 
@@ -29,8 +31,9 @@ Async TLS with Boost.Asio uses `boost::asio::ssl::stream<tcp::socket>`, which wr
 
 ### Q1: How do you wrap OpenSSL's SSL_CTX and SSL in RAII types and establish a TLS connection with proper certificate verification
 
-```cpp
+The reason this trips people up is that OpenSSL's API was designed in C, so every object is a raw pointer with a matching free function. If you forget to call `SSL_CTX_free` or `SSL_free`, you have a leak. The solution is to define custom deleters and pair them with `std::unique_ptr`, which then handles cleanup automatically. Pay close attention to the two lines that set verification - they are the most commonly skipped and the most important.
 
+```cpp
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
@@ -58,7 +61,7 @@ class TlsConnection {
 
 public:
     explicit TlsConnection(const std::string& hostname, int port) {
-        // Create context — TLS_client_method() negotiates highest available version
+        // Create context - TLS_client_method() negotiates highest available version
         ctx_.reset(SSL_CTX_new(TLS_client_method()));
         if (!ctx_) throw std::runtime_error("SSL_CTX_new failed");
 
@@ -74,7 +77,7 @@ public:
         ssl_.reset(SSL_new(ctx_.get()));
         if (!ssl_) throw std::runtime_error("SSL_new failed");
 
-        // Set SNI hostname — required for virtual hosting
+        // Set SNI hostname - required for virtual hosting
         SSL_set_tlsext_host_name(ssl_.get(), hostname.c_str());
 
         // Enable hostname verification (OpenSSL 1.1.0+)
@@ -109,13 +112,15 @@ public:
 // TlsConnection conn("example.com", 443);
 // conn.write("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n");
 // auto response = conn.read();
-
 ```
+
+Notice that `SSL_set_bio` transfers ownership of the `BIO` to the `SSL` object, which means `SSL_free` cleans it up. That is why you do not need a separate `BioDeleter` in use here - you only need it if you create a BIO that you do not hand off to an SSL object.
 
 ### Q2: How does Botan's TLS::Channel decouple TLS processing from the transport layer via callbacks
 
-```cpp
+Botan's design is fundamentally different from OpenSSL's. Instead of giving you a socket-aware TLS object, it gives you a pure TLS state machine. You feed raw bytes in, and TLS calls your callbacks with either encrypted bytes to send or decrypted application data to process. This means you can run TLS over any byte-stream transport - TCP, UDP, shared memory, a serial port - without changing the TLS code.
 
+```cpp
 #include <botan/tls_channel.h>
 #include <botan/tls_callbacks.h>
 #include <botan/tls_session_manager_memory.h>
@@ -158,7 +163,7 @@ public:
         std::cerr << "TLS alert: " << alert.type_string() << "\n";
     }
 
-    // Certificate verification — delegate to system store
+    // Certificate verification - delegate to system store
     void tls_verify_cert_chain(
         const std::vector<Botan::X509_Certificate>& chain,
         const std::vector<std::optional<Botan::OCSP::Response>>& ocsp,
@@ -167,7 +172,7 @@ public:
         std::string_view hostname,
         const Botan::TLS::Policy& policy) override
     {
-        // Default verification — throws on failure
+        // Default verification - throws on failure
         Botan::TLS::Callbacks::tls_verify_cert_chain(
             chain, ocsp, trusted, usage, hostname, policy);
     }
@@ -181,13 +186,15 @@ public:
 // 3. When TCP data arrives, feed it to channel.received_data()
 // 4. To send: call channel.send(plaintext_bytes)
 // 5. Botan calls tls_emit_data() with ciphertext to transmit
-
 ```
+
+The integration pattern at the bottom of the snippet is the mental model to hold. Your event loop calls `channel.received_data()` whenever bytes arrive from the network. Botan handles all the TLS record parsing internally and calls your `tls_record_received` callback when it has assembled a complete application-level record. You never touch ciphertext directly.
 
 ### Q3: How do you perform async TLS with Boost.Asio's ssl::stream including proper shutdown
 
-```cpp
+With Boost.Asio, TLS is layered on top of a TCP socket using `ssl::stream<tcp::socket>`. The important thing to understand is that the handshake, reads, and writes are all async operations, meaning they interleave with other work in your io_context. The coroutine style makes the sequencing look synchronous even though it is not.
 
+```cpp
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -211,7 +218,7 @@ asio::awaitable<void> tls_client(asio::io_context& ioc,
     // Create SSL stream over TCP
     ssl::stream<tcp::socket> stream(ioc, ssl_ctx);
 
-    // Set SNI hostname — critical for shared hosting
+    // Set SNI hostname - critical for shared hosting
     if (!SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()))
         throw boost::system::system_error(
             boost::asio::error::invalid_argument);
@@ -248,7 +255,7 @@ asio::awaitable<void> tls_client(asio::io_context& ioc,
     }
     std::cout << response.substr(0, 200) << "...\n";
 
-    // Graceful TLS shutdown — send close_notify
+    // Graceful TLS shutdown - send close_notify
     // Ignore errors: remote may close TCP before responding
     co_await stream.async_shutdown(
         asio::redirect_error(asio::use_awaitable, ec));
@@ -261,17 +268,18 @@ int main() {
 }
 
 // Build: g++ -std=c++20 -lssl -lcrypto -lboost_system -pthread
-
 ```
+
+The `redirect_error` on `async_shutdown` is deliberate. TLS shutdown requires both sides to send a `close_notify` alert before closing the TCP connection. In practice the remote end often closes the TCP connection first, which makes `async_shutdown` return an error. That error is harmless - you just ignore it rather than letting it propagate as an exception.
 
 ---
 
 ## Notes
 
-- **Always set `SSL_VERIFY_PEER`** — OpenSSL defaults to `SSL_VERIFY_NONE`, silently accepting any certificate.
-- **Always set SNI** via `SSL_set_tlsext_host_name` — without it, servers behind CDNs return the wrong certificate.
+- **Always set `SSL_VERIFY_PEER`** - OpenSSL defaults to `SSL_VERIFY_NONE`, silently accepting any certificate.
+- **Always set SNI** via `SSL_set_tlsext_host_name` - without it, servers behind CDNs return the wrong certificate.
 - **Pin minimum TLS version** to 1.2; TLS 1.0/1.1 are deprecated (RFC 8996).
 - Botan's callback model makes it trivial to use TLS over non-TCP transports (e.g., DTLS over UDP, TLS over shared memory).
-- For async Asio TLS, `async_shutdown` may fail if the peer closes TCP first — always use `redirect_error`.
+- For async Asio TLS, `async_shutdown` may fail if the peer closes TCP first - always use `redirect_error`.
 - In production, consider certificate pinning for mobile/embedded clients and OCSP stapling for servers.
 - OpenSSL's `SSL_CTX` is thread-safe for reads after creation; `SSL` objects are **not** thread-safe.

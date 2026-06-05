@@ -8,9 +8,13 @@
 
 ## Topic Overview
 
-C++ has no standard HTTP library, so developers choose between full-featured async frameworks and lightweight sync libraries. **Boost.Beast** provides HTTP and WebSocket built on Boost.Asio, offering complete control over async I/O at the cost of complexity. **cpp-httplib** is a header-only, single-file library for simple synchronous HTTP — ideal for internal tools, REST APIs with modest concurrency, and rapid prototyping.
+C++ has no standard HTTP library, so you have to pick one. The two most common choices are **Boost.Beast** and **cpp-httplib**, and they have almost nothing in common beyond both speaking HTTP.
 
-The design philosophies differ fundamentally. Beast exposes HTTP as message objects (`http::request`, `http::response`) composed with a body type (string, file, empty) and fields — it does not provide routing, middleware, or JSON handling. You build those on top. cpp-httplib provides a complete server with routing, multipart form parsing, and built-in compression — batteries included but single-threaded per connection.
+**Boost.Beast** is built on top of Boost.Asio and gives you full control over async I/O. It exposes HTTP as first-class objects - `http::request` and `http::response` - with interchangeable body types (string, file, empty). What it does *not* give you is routing, middleware, or JSON handling. You build all of that yourself, on top of the primitives Beast provides. That is the trade-off: maximum control, maximum responsibility.
+
+**cpp-httplib** takes the opposite approach. It is a single header file with batteries included - routing with regex patterns, multipart form parsing, built-in gzip, logging hooks. The catch is that it is synchronous, using one thread per connection. That is perfectly fine for internal tools and REST APIs with modest load, but it will not scale to tens of thousands of concurrent connections.
+
+The table below summarises the key differences. If the choice is not obvious from your requirements, a useful heuristic is: if you are writing a production service that expects many concurrent clients or needs WebSocket support, choose Beast. If you need an HTTP endpoint in 50 lines with no build system changes, choose cpp-httplib.
 
 | Feature                | Boost.Beast                    | cpp-httplib                  |
 | --- | --- | --- |
@@ -23,8 +27,9 @@ The design philosophies differ fundamentally. Beast exposes HTTP as message obje
 | Dependencies           | Boost                         | None (or OpenSSL for HTTPS)  |
 | Ideal for              | High-perf async servers       | Internal tools, prototypes   |
 
-```cpp
+Here is a sketch of how each library is structured internally. Beast revolves around an `io_context` and strands to manage concurrency; cpp-httplib wraps everything in a `Server` object with a built-in thread pool and router.
 
+```cpp
 Beast Architecture:                cpp-httplib Architecture:
 ┌──────────────┐                   ┌──────────────────┐
 │  io_context  │                   │  httplib::Server  │
@@ -35,10 +40,7 @@ Beast Architecture:                cpp-httplib Architecture:
 │  │└──────┘│  │                   │  Thread Pool     │
 │  └────────┘  │                   └──────────────────┘
 └──────────────┘
-
 ```
-
-For production HTTP servers in C++, Beast is the right choice when you need async I/O, WebSocket upgrade, or fine-grained control. cpp-httplib is the right choice when you need an HTTP endpoint in 50 lines with no build system changes.
 
 ---
 
@@ -46,8 +48,9 @@ For production HTTP servers in C++, Beast is the right choice when you need asyn
 
 ### Q1: Build an async HTTP server with Boost.Beast and C++20 coroutines that handles GET and POST with JSON
 
-```cpp
+The server below uses C++20 coroutines (`co_await`) to handle each connection asynchronously. Pay attention to the `handle_request` function, which acts as the router - it inspects the method and target and returns an appropriate response object. The `handle_session` coroutine drives the HTTP request/response loop for a single connection, and the `listener` coroutine accepts new connections and spawns a session for each one.
 
+```cpp
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -116,7 +119,7 @@ asio::awaitable<void> handle_session(tcp::socket socket) {
             if (!keep_alive) break;
         }
     } catch (const std::exception& e) {
-        // Connection closed or error — normal for HTTP
+        // Connection closed or error - normal for HTTP
     }
     beast::error_code ec;
     socket.shutdown(tcp::socket::shutdown_send, ec);
@@ -142,14 +145,16 @@ int main() {
     std::cout << "Listening on :8080\n";
     ioc.run();
 }
-
 ```
+
+Notice that Beast does not provide a router - `handle_request` is a plain function that you write yourself. In a larger project you would typically replace this with a `std::unordered_map` keyed on method+target, or a proper trie for prefix matching.
 
 ### Q2: Build the equivalent simple HTTP server and client with cpp-httplib in minimal code
 
-```cpp
+Here is how the same kind of service looks in cpp-httplib. The amount of boilerplate drops dramatically because the library handles routing, threading, and request parsing for you. The server below also demonstrates a pre-routing handler (useful as a logging middleware) and a thread-safe in-memory key-value store.
 
-// server.cpp — cpp-httplib with routing, logging middleware, and JSON
+```cpp
+// server.cpp - cpp-httplib with routing, logging middleware, and JSON
 #include "httplib.h"  // single header
 #include <iostream>
 #include <string>
@@ -163,7 +168,7 @@ int main() {
     std::unordered_map<std::string, std::string> store;
     std::mutex mu;
 
-    // Logging middleware — runs before every handler
+    // Logging middleware - runs before every handler
     svr.set_pre_routing_handler([](const httplib::Request& req,
                                     httplib::Response& /*res*/) {
         std::cout << req.method << " " << req.path << "\n";
@@ -175,7 +180,7 @@ int main() {
         res.set_content(R"({"status":"ok"})", "application/json");
     });
 
-    // GET /items/:id — path parameter
+    // GET /items/:id - path parameter
     svr.Get(R"(/items/(\w+))", [&](const httplib::Request& req,
                                      httplib::Response& res) {
         auto id = req.matches[1].str();
@@ -213,12 +218,12 @@ int main() {
     std::cout << "Serving on http://localhost:8080\n";
     svr.listen("0.0.0.0", 8080);
 }
-
 ```
 
-```cpp
+The client side is equally concise. You construct a `Client`, set timeouts, and call `Get`, `Post`, etc. The result is a `std::optional`-like object - always check it before reading the status or body, because a null result means the connection itself failed.
 
-// client.cpp — cpp-httplib client
+```cpp
+// client.cpp - cpp-httplib client
 #include "httplib.h"
 #include <iostream>
 
@@ -246,13 +251,13 @@ int main() {
         std::cout << "Health: " << auth_res->body << "\n";
     }
 }
-
 ```
 
 ### Q3: How do you serve static files and handle multipart file uploads with Beast
 
-```cpp
+Serving static files is a case where Beast's `file_body` body type really shines. Rather than reading a file into a string and then writing that string to the socket, `file_body` uses the OS-native `sendfile()` on Linux for a zero-copy path - the file data never has to pass through your process's memory. The code below shows both static file serving with path sanitization and a basic multipart body extraction. The path sanitization part is worth reading carefully: directory traversal (`../`) attacks are real and need to be blocked explicitly.
 
+```cpp
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/asio.hpp>
@@ -279,7 +284,7 @@ std::string_view mime_type(std::string_view path) {
 http::response<http::file_body>
 serve_file(const http::request<http::string_body>& req,
            const fs::path& doc_root) {
-    // Sanitize path — prevent directory traversal
+    // Sanitize path - prevent directory traversal
     std::string target(req.target());
     if (target.empty() || target[0] != '/' ||
         target.find("..") != std::string::npos) {
@@ -340,17 +345,18 @@ void handle_upload(const http::request<http::string_body>& req,
         out.write(data.data(), static_cast<std::streamsize>(data.size()));
     }
 }
-
 ```
+
+The double-check using `weakly_canonical` is important. A simple `target.find("..")` check alone can be bypassed with URL-encoded sequences in some configurations, so always resolve to a canonical path and verify the result is still within your document root.
 
 ---
 
 ## Notes
 
-- Beast does **not** provide routing — build a `std::unordered_map<string, Handler>` or use a trie for path matching.
-- Beast's `file_body` uses OS-native `sendfile()` on Linux for zero-copy file serving — much faster than reading into a string.
-- cpp-httplib's regex routing uses `std::regex` — avoid complex patterns in hot paths due to `std::regex` compilation overhead.
+- Beast does not provide routing - build a `std::unordered_map<string, Handler>` or use a trie for path matching.
+- Beast's `file_body` uses OS-native `sendfile()` on Linux for zero-copy file serving - much faster than reading into a string.
+- cpp-httplib's regex routing uses `std::regex` - avoid complex patterns in hot paths due to `std::regex` compilation overhead.
 - For JSON, pair Beast with `nlohmann/json` or `simdjson`; cpp-httplib has no built-in JSON but integrates trivially.
 - Always sanitize file paths to prevent directory traversal (`..`); canonicalize and verify the resolved path is within the document root.
 - cpp-httplib supports gzip compression with `svr.set_compress(true)` when compiled with zlib.
-- For HTTP/2, neither Beast nor cpp-httplib supports it — consider `nghttp2` or use a reverse proxy (nginx) in front.
+- For HTTP/2, neither Beast nor cpp-httplib supports it - consider `nghttp2` or use a reverse proxy (nginx) in front.

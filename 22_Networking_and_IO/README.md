@@ -38,13 +38,13 @@ I/O streams, async I/O, sockets, file handling, and serialization.
 
 ## Notes
 
-- Asio (Boost.Asio) is the de facto standard for async C++ networking — it influenced std::execution
-- std::iostream is slow for high-throughput I/O — prefer memory-mapped files or raw ead/write
-- Non-blocking I/O with epoll/io_uring (Linux) or IOCP (Windows) scales to thousands of connections
-- io_uring is the modern Linux async I/O interface — supports files, sockets, and timers uniformly
-- Use std::format (C++20) for string formatting instead of std::stringstream
-- Memory-mapped files (mmap/MapViewOfFile) provide zero-copy access to file contents
-- Scatter/gather I/O (eadv/writev) reduces system calls for multi-buffer operations
-- Serialize with protocol buffers, FlatBuffers, or Cap'n Proto for cross-language binary protocols
-- Always validate network input — buffer overflows and format string attacks remain prevalent
-- Connection pooling and keep-alive reduce the overhead of establishing new connections
+- Asio (Boost.Asio) is the de facto standard for async C++ networking - it influenced std::execution.
+- `std::iostream` is slow for high-throughput I/O - prefer memory-mapped files or raw read/write.
+- Non-blocking I/O with epoll/io_uring (Linux) or IOCP (Windows) scales to thousands of connections.
+- io_uring is the modern Linux async I/O interface - supports files, sockets, and timers uniformly.
+- Use `std::format` (C++20) for string formatting instead of `std::stringstream`.
+- Memory-mapped files (mmap/MapViewOfFile) provide zero-copy access to file contents.
+- Scatter/gather I/O (readv/writev) reduces system calls for multi-buffer operations.
+- Serialize with Protocol Buffers, FlatBuffers, or Cap'n Proto for cross-language binary protocols.
+- Always validate network input - buffer overflows and format string attacks remain prevalent.
+- Connection pooling and keep-alive reduce the overhead of establishing new connections.

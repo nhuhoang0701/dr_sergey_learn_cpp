@@ -8,25 +8,29 @@
 
 ## Topic Overview
 
-The Nagle algorithm and delayed ACK are two independent TCP optimizations that, when combined, cause 40-200ms latency spikes in request-response protocols. This topic complements #644 (TCP_NODELAY/CORK/buffer tuning).
+The Nagle algorithm and delayed ACK are two completely independent TCP optimizations that were each designed with good intentions - but when they meet inside a request-response protocol, they interact in the worst possible way and can add 40-200 ms of latency per request. Understanding why this deadlock happens, and knowing the three clean ways to escape it, is one of those things that separates people who diagnose mysterious latency spikes from people who spend days staring at Wireshark traces.
+
+Here is the deadlock visualized as a timeline. Read it left-to-right and you will immediately see why neither side makes progress:
 
 ```cpp
-
 Nagle + Delayed ACK deadlock:
 
   Client (Nagle ON):                    Server (Delayed ACK):
   write(header, 20B)                    recv(20B)
   -> sent immediately (nothing pending) -> start delayed ACK timer (40ms)
-  write(payload, 100B)                  
+  write(payload, 100B)
   -> HELD by Nagle!                     -> nothing to ACK yet...
      (waiting for ACK of header)           (waiting to piggyback ACK on response)
   ...40-200ms pass...                   ...timer expires...
                                         -> send standalone ACK
   -> ACK received, send payload         -> finally receives payload
-  
-  Total added latency: 40-200ms per request!
 
+  Total added latency: 40-200ms per request!
 ```
+
+The reason this trips people up is that both behaviors look perfectly sensible on their own. Nagle says: "don't send tiny packets, wait until you have something worth sending." Delayed ACK says: "don't waste a packet just on an ACK, wait briefly in case there's a response to piggyback it onto." But put them together with a write-write-read pattern and you get a classic deadlock: the client is waiting for an ACK that the server is deliberately withholding, and the server is waiting for more data that the client is deliberately holding back.
+
+The table below shows which combinations kill latency and which escape the trap:
 
 | Scenario | Nagle | Delayed ACK | Latency |
 | --- | --- | --- | --- |
@@ -41,9 +45,10 @@ Nagle + Delayed ACK deadlock:
 
 ### Q1: TCP_NODELAY and latency measurement
 
-```cpp
+The code below shows how to set up the measurement pattern. The key is the two consecutive small writes followed by a read - that is the exact sequence that triggers the deadlock. Notice what happens to the per-request latency depending on whether `TCP_NODELAY` is set:
 
-// Requires client+server — showing the setup pattern
+```cpp
+// Requires client+server - showing the setup pattern
 #include <iostream>
 #include <cstring>
 #include <chrono>
@@ -112,21 +117,23 @@ int main() {
     std::cout << "\nThe 40ms comes from Linux delayed ACK timer (40ms)\n";
     std::cout << "Some systems use 200ms (RFC 1122 allows up to 500ms)\n";
 }
-
 ```
+
+The 400x latency difference between `TCP_NODELAY ON` and `TCP_NODELAY OFF` for simple RPC calls is not an exaggeration - it is what you actually measure on Linux. The timer is real, and it fires on every single request.
 
 ### Q2: Nagle + delayed ACK 200ms spike
 
-The 200ms latency spike happens as follows:
+To really understand the deadlock, walk through each step:
 
 1. **Nagle's algorithm** (RFC 896, client-side): "If there is unacknowledged data AND the new data is smaller than MSS, buffer it until the ACK arrives."
 
 2. **Delayed ACK** (RFC 1122, server-side): "Don't send an ACK immediately. Wait up to 200ms (40ms on Linux) hoping to piggyback the ACK on a response packet."
 
-3. **The deadlock**: Client sends a small write (header). Server receives it, starts delayed ACK timer. Client sends second small write (payload) — but Nagle holds it because the first write's ACK hasn't arrived. Server is waiting to send ACK. Client is waiting for ACK to release payload. Nobody moves until the delayed ACK timer expires.
+3. **The deadlock**: Client sends a small write (header). Server receives it, starts delayed ACK timer. Client sends second small write (payload) - but Nagle holds it because the first write's ACK hasn't arrived. Server is waiting to send ACK. Client is waiting for ACK to release payload. Nobody moves until the delayed ACK timer expires.
+
+Here is the same sequence as a timeline so the causality is obvious:
 
 ```cpp
-
 Timeline (Nagle ON, Delayed ACK ON):
 
 t=0.0ms  Client -> [header 20B]        -> Server
@@ -140,7 +147,6 @@ t=40ms   Client: ACK received -> Nagle releases payload
 t=40ms   Client -> [payload 100B]      -> Server
 t=40ms   Server processes, sends response
 Total: 40ms added latency (or 200ms on some OSes!)
-
 ```
 
 **Three fixes:**
@@ -151,8 +157,9 @@ Total: 40ms added latency (or 200ms on some OSes!)
 
 ### Q3: writev / MSG_MORE to batch writes without disabling Nagle
 
-```cpp
+If you can't or don't want to disable Nagle (perhaps because you're doing bulk data transfer elsewhere on the same socket), you can still escape the deadlock by making the kernel see your header and payload as a single logical write. `writev`, `MSG_MORE`, and `TCP_CORK` are three ways to do exactly that:
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <sys/socket.h>
@@ -218,8 +225,9 @@ int main() {
     std::cout << "\nAll three avoid the Nagle+delayed ACK deadlock\n";
     std::cout << "while keeping Nagle's benefits for other traffic.\n";
 }
-
 ```
+
+Notice that `writev` is the cleanest option when all your data is available at once - it combines the scatter-gather into a single syscall, so Nagle never gets a chance to hold anything back. `MSG_MORE` is useful when you generate the pieces sequentially but still want them batched. `TCP_CORK` is the right choice when you're building a response incrementally (like an HTTP server writing status, headers, then body separately).
 
 ---
 

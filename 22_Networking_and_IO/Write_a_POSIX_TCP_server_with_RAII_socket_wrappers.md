@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-This topic focuses on building a complete TCP echo server using `unique_ptr` with custom deleters for RAII — complementing #726 (basic RAII class + TCP client) and #549 (move-only + socket options + EINTR).
+This topic focuses on building a complete TCP echo server using `unique_ptr` with custom deleters for RAII - complementing #726 (basic RAII class + TCP client) and #549 (move-only + socket options + EINTR).
+
+The `unique_ptr` with a custom deleter is an alternative to writing a full Socket class. It is lighter - you do not need to define a class at all - but slightly awkward because `unique_ptr<int, Closer>` stores a pointer to an int, which means a heap allocation for each descriptor. For a server socket or a handful of client sockets that is fine. For a server managing thousands of connections you would prefer a dedicated class. Both approaches are worth knowing.
 
 ```cpp
-
 TCP server lifecycle:
 
   socket()  -> bind()  -> listen()  -> accept() loop
@@ -26,7 +27,6 @@ TCP server lifecycle:
                                      close(client)
 
   RAII: unique_ptr<int, SocketCloser> ensures every fd is closed
-
 ```
 
 ---
@@ -35,8 +35,9 @@ TCP server lifecycle:
 
 ### Q1: unique_ptr with custom closer for socket fd
 
-```cpp
+The custom deleter calls `close()` on the descriptor and then frees the heap-allocated int. The output shows move semantics working correctly - after moving, the original pointer is null and only the destination pointer owns the descriptor.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <sys/socket.h>
@@ -81,13 +82,15 @@ int main() {
 //   sock is null: 1
 //   sock2 fd=3
 //   Closing fd=3
-
 ```
+
+The `Closing fd=3` message appears at scope exit, which demonstrates that the destructor is running exactly when `sock2` goes out of scope - not earlier, not later. That predictable timing is what makes RAII reliable.
 
 ### Q2: Echo server: socket, bind, listen, accept loop
 
-```cpp
+Now here is the full working server. Each step of the TCP server lifecycle - create, bind, listen, accept, echo, close - is shown in order. Pay attention to how `wrap_fd` is used for both the server socket and each accepted client socket: every descriptor that enters the program immediately gets an RAII owner.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <memory>
@@ -165,13 +168,15 @@ int main() {
     // server's unique_ptr destructor closes the listen fd!
 }
 // Test: echo "hello" | nc localhost 8080
-
 ```
+
+The inner send loop (`while (sent < n)`) is important and easy to overlook. `send` can return a short count on a non-blocking socket or under memory pressure - it does not guarantee that all `n` bytes were sent. Looping until `sent == n` handles partial writes correctly.
 
 ### Q3: EINTR retry on blocking syscalls
 
-```cpp
+This Q&A isolates the EINTR retry patterns so you can see them cleanly. The key rule: if a syscall returns `-1` and `errno == EINTR`, it is safe to call it again. The I/O did not happen; a signal interrupted the wait. There is one important exception at the end of the listing - `close` on Linux.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <cerrno>
@@ -230,15 +235,16 @@ int main() {
     std::cout << "  NOT auto-restart: accept, select, poll, epoll_wait\n";
     std::cout << "  -> Always handle EINTR explicitly for accept/poll!\n";
 }
-
 ```
+
+The `close` note at the end is genuinely tricky. On Linux, if `close` returns `EINTR`, the file descriptor has already been released by the kernel - retrying `close` would either be a no-op or accidentally close a descriptor that a different thread has since allocated with the same number. Do not retry `close` on Linux.
 
 ---
 
 ## Notes
 
 - Complementary to #726 (RAII Socket class + TCP client) and #549 (move-only + socket options).
-- unique_ptr<int, Closer> is a valid RAII pattern but slightly awkward (heap-allocates int). A dedicated Socket class (see #726, #549) is cleaner.
+- `unique_ptr<int, Closer>` is a valid RAII pattern but slightly awkward (heap-allocates int). A dedicated Socket class (see #726, #549) is cleaner.
 - SO_REUSEADDR is mandatory for server sockets that restart frequently.
 - For concurrent clients: fork(), threads, or epoll (see #639, #555).
 - close() on Linux: do NOT retry on EINTR (the fd is already released).

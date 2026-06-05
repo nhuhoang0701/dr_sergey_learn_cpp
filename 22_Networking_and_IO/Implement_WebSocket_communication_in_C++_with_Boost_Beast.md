@@ -8,9 +8,13 @@
 
 ## Topic Overview
 
-WebSocket provides full-duplex communication over a single TCP connection, making it the protocol of choice for real-time C++ applications: trading systems, telemetry dashboards, multiplayer game backends, and IoT gateways. Boost.Beast's WebSocket implementation sits on top of Asio, providing both synchronous and asynchronous APIs with full control over frames, ping/pong, and close handshakes.
+WebSocket provides full-duplex communication over a single TCP connection, which makes it the natural choice for anything real-time: trading systems, telemetry dashboards, multiplayer game backends, IoT gateways. Unlike HTTP, where every interaction is a request followed by a response, WebSocket lets both sides send messages independently at any time, without waiting for the other side to ask first.
 
-A WebSocket connection begins with an HTTP Upgrade handshake. Beast handles this transparently — you call `ws.handshake()` (client) or `ws.accept()` (server), and Beast negotiates the upgrade, validates the `Sec-WebSocket-Accept` header, and transitions the stream to WebSocket mode. After the handshake, the connection is symmetric: both sides can send and receive independently.
+Boost.Beast's WebSocket implementation sits on top of Asio and provides both synchronous and asynchronous APIs. You get full control over frames, ping/pong, and close handshakes.
+
+A WebSocket connection starts its life as an ordinary HTTP connection. The client sends an HTTP Upgrade request; the server responds with `101 Switching Protocols`. Beast handles this transparently - you call `ws.handshake()` on the client side or `ws.accept()` on the server side, and Beast takes care of all the header negotiation. After the handshake, the connection is fully symmetric: both sides can send and receive at will.
+
+The table below lists the frame types you will encounter. Most of the time you will only deal with text and binary frames, but understanding ping/pong and close frames matters when you are debugging keepalive issues or trying to shut down cleanly.
 
 | Frame Type   | Opcode | Beast API                          | Use Case                           |
 | --- | --- | --- | --- |
@@ -20,24 +24,24 @@ A WebSocket connection begins with an HTTP Upgrade handshake. Beast handles this
 | Pong        | 0xA    | Auto-sent by Beast on ping receipt | Required by RFC 6455               |
 | Close       | 0x8    | `ws.close(reason)`                 | Graceful shutdown                  |
 
-```cpp
+Here is the connection lifecycle at a glance:
 
+```cpp
 WebSocket Lifecycle:
 ┌────────┐  HTTP Upgrade   ┌────────┐
-│ Client │────────────────▶│ Server │
-│        │◀────────────────│        │
+│ Client │────────────────>│ Server │
+│        │<────────────────│        │
 │        │  101 Switching  │        │
 │        │                 │        │
-│        │◀═══════════════▶│        │  Full-duplex frames
+│        │<===============>│        │  Full-duplex frames
 │        │  text/binary    │        │
 │        │                 │        │
-│        │───close────────▶│        │
-│        │◀──close─────────│        │  Close handshake
+│        │───close─────────>        │
+│        │<──close─────────│        │  Close handshake
 └────────┘                 └────────┘
-
 ```
 
-Beast automatically handles control frames (ping/pong) during read operations. When a ping arrives while you're reading, Beast sends the pong and continues waiting for the next data frame. The close handshake is also semi-automatic: calling `ws.close()` sends a close frame and waits for the peer's close frame. Understanding this is crucial for avoiding deadlocks — if both sides initiate close simultaneously, both must complete the handshake.
+One subtlety worth knowing up front: Beast automatically handles control frames (ping/pong) during read operations. When a ping arrives while you are in the middle of a `read`, Beast sends the pong and then continues waiting for the next data frame. You do not have to do anything special. The close handshake is similar - calling `ws.close()` sends a close frame and then waits for the peer's close frame. The reason this trips people up is when both sides initiate close simultaneously. Beast handles this correctly, but you need to make sure both sides actually complete the handshake (by continuing to call `read` after sending close) - if one side just drops the TCP connection, the other side will see an error, not a clean close.
 
 ---
 
@@ -45,8 +49,9 @@ Beast automatically handles control frames (ping/pong) during read operations. W
 
 ### Q1: Implement an async WebSocket server with C++20 coroutines that broadcasts messages to all connected clients
 
-```cpp
+The server manages a `ClientHub` - a thread-safe registry of all currently connected WebSocket streams. When any client sends a message, the hub broadcasts it to everyone. The `handle_session` coroutine runs per connection: it accepts the WebSocket upgrade, registers with the hub, then enters a read loop. When the loop exits (either gracefully via a close frame or via an error), the guard lambda ensures the client is removed from the hub.
 
+```cpp
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -86,7 +91,7 @@ public:
             beast::error_code ec;
             client->text(true);
             client->write(asio::buffer(msg), ec);
-            // Ignore write errors — client may have disconnected
+            // Ignore write errors - client may have disconnected
         }
     }
 };
@@ -156,13 +161,15 @@ int main() {
     std::cout << "WebSocket server on ws://localhost:9001\n";
     ioc.run();
 }
-
 ```
+
+Note the `guard` lambda in `handle_session`. It calls `hub.leave` when the function exits, regardless of whether that exit is due to a normal close or an exception. This is the RAII pattern applied to cleanup logic - without something like this, disconnected clients would stay in the hub indefinitely and cause write errors on every subsequent broadcast.
 
 ### Q2: Implement an async WebSocket client with automatic reconnection and ping/pong keepalive
 
-```cpp
+A robust WebSocket client needs two things beyond the basic connect-and-read loop: keepalive pings to prevent NAT/firewall timeouts, and automatic reconnection with exponential backoff when the connection drops. Beast handles pings for you when you set `keep_alive_pings = true`. The reconnection logic in `run_with_reconnect` is a standard exponential backoff pattern - start at 500ms, double each attempt, cap at 30 seconds.
 
+```cpp
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -269,13 +276,13 @@ int main() {
     client.start();
     ioc.run();
 }
-
 ```
 
 ### Q3: How do you handle binary frames, message fragmentation, and graceful shutdown correctly
 
-```cpp
+This example brings together several practical patterns: a typed binary message with serialize/deserialize, explicit fragmentation for large payloads, graceful close with timeout protection, and the control callback for observing pings and pongs. Read through each function - they work together to show a complete production-quality handling story.
 
+```cpp
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/asio.hpp>
@@ -401,7 +408,7 @@ async_graceful_close(ws::stream<tcp::socket>& stream) {
     }
 }
 
-// Handling ping/pong manually (usually unnecessary — Beast auto-responds)
+// Handling ping/pong manually (usually unnecessary - Beast auto-responds)
 void setup_custom_ping_handler(ws::stream<tcp::socket>& stream) {
     // Beast automatically responds to pings with pongs.
     // Use control_callback to observe or log them:
@@ -420,17 +427,16 @@ void setup_custom_ping_handler(ws::stream<tcp::socket>& stream) {
             }
         });
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Beast **automatically replies to pings with pongs** during `read()` — you don't need to handle them manually unless you want to log or measure latency.
-- Set `stream_base::timeout::keep_alive_pings = true` for automatic periodic pings — essential for NAT/firewall keepalive.
+- Beast **automatically replies to pings with pongs** during `read()` - you don't need to handle them manually unless you want to log or measure latency.
+- Set `stream_base::timeout::keep_alive_pings = true` for automatic periodic pings - essential for NAT/firewall keepalive.
 - `write_some(fin, buffer)` enables explicit fragmentation; the receiving side's `read()` reassembles fragments transparently.
 - The close handshake is **bidirectional**: calling `close()` sends a close frame and waits for the peer's close frame. If both sides initiate simultaneously, Beast handles it correctly.
 - For text frames, Beast validates UTF-8 by default. Send `binary(true)` for non-UTF-8 to avoid validation overhead and errors.
-- In production broadcast scenarios, avoid synchronous `write()` to all clients in a loop — one slow client blocks all. Use per-client write queues with `async_write`.
-- WebSocket compression (`permessage-deflate`) can be enabled via `stream.set_option(ws::stream_base::decorator(...))` but adds CPU overhead — benchmark before enabling.
+- In production broadcast scenarios, avoid synchronous `write()` to all clients in a loop - one slow client blocks all. Use per-client write queues with `async_write`.
+- WebSocket compression (`permessage-deflate`) can be enabled via `stream.set_option(ws::stream_base::decorator(...))` but adds CPU overhead - benchmark before enabling.

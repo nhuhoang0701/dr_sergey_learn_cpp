@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-This topic focuses on the io_context event loop mechanics and implementing timeouts with `steady_timer` — complementing #643 (client + error handling) and #729 (server + thread pool).
+To write correct and efficient Asio programs, you need to understand two things well: how the `io_context` event loop actually works, and how to implement timeouts using `steady_timer`. This topic focuses on those mechanics, complementing #643 (client + error handling) and #729 (server + thread pool).
+
+The `io_context` is the heart of everything. Without it, no async work gets done at all. Here is what the loop is doing internally at each iteration:
 
 ```cpp
-
 asio::io_context lifecycle:
   io_context io;              // create the event loop
   co_spawn(io, coroutine());  // register work
@@ -23,8 +24,9 @@ asio::io_context lifecycle:
       event = epoll_wait/IOCP();    // wait for I/O or timer
       resume_coroutine(event);      // resume the suspended coroutine
     }
-
 ```
+
+It is worth really understanding what "has pending operations" means: `io.run()` keeps going as long as there is at least one registered async operation that has not yet completed. Once the last coroutine finishes or is destroyed, `run()` returns. This is why you need `make_work_guard` if you want a server that runs forever even when no clients are connected.
 
 | io_context method | Behavior |
 | --- | --- |
@@ -40,8 +42,9 @@ asio::io_context lifecycle:
 
 ### Q1: Async echo server with co_await
 
-```cpp
+A coroutine-based echo server has a clean two-level structure: an outer "accept loop" that spawns a new session coroutine for every incoming connection, and an inner "session" coroutine that handles one client. Both are async - the accept loop suspends while waiting for connections, and the session suspends while waiting for data:
 
+```cpp
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -84,13 +87,15 @@ int main() {
     std::cout << "Echo server on :8080\n";
     io.run();
 }
-
 ```
+
+Notice how each `co_spawn` for a new session is "fire and forget" (`asio::detached`). The accept loop does not wait for sessions to finish - it spawns them and immediately goes back to waiting for the next connection. All sessions then run concurrently on the same thread without any synchronization needed, because each session's data is owned entirely by that coroutine's frame.
 
 ### Q2: io_context::run() drives the event loop
 
-```cpp
+This example makes the lifecycle of `io.run()` concrete by showing three scenarios: calling it with no work registered, calling it with a coroutine that takes 1 second, and the pattern for keeping it running indefinitely:
 
+```cpp
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -132,13 +137,15 @@ int main() {
     std::cout << "  4. Resume coroutines whose I/O completed\n";
     std::cout << "  5. Repeat from step 1\n";
 }
-
 ```
+
+The `io.restart()` call between `run()` invocations is easy to forget. Once `run()` has returned, the `io_context` is in a "stopped" state and will return immediately if you call `run()` again without restarting it. This catches many people when writing tests or when re-using the same context across multiple phases of a program.
 
 ### Q3: Connection timeout with steady_timer
 
-```cpp
+Implementing timeouts in async code requires a "race" between the operation you care about and a timer. Whichever finishes first cancels the other. The pattern below shows both a connection timeout and a per-read timeout, because both are common needs in real network code:
 
+```cpp
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -229,8 +236,9 @@ int main() {
         asio::detached);
     io.run();
 }
-
 ```
+
+The key insight in the timeout pattern is that closing the socket is what causes the pending `async_connect` or `async_read_some` to fail with an error. When the timer fires, it calls `socket.close()`, which causes the in-progress async op to complete with an "operation cancelled" error, which then propagates as a `system_error` in the coroutine's `catch` block. You check `timed_out` to distinguish a real timeout from a different error.
 
 ---
 

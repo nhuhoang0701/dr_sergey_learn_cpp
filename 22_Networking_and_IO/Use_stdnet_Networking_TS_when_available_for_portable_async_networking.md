@@ -11,8 +11,9 @@
 
 The Networking TS (Technical Specification, N4771) proposes a standard async networking API heavily based on Asio. While not yet in the standard, Asio serves as the reference implementation. The API surface: `io_context`, `tcp::acceptor`, `tcp::socket`, `async_read`, `async_write`.
 
-```cpp
+If you have ever used Node.js or Python's `asyncio`, the mental model here is very similar: there is an event loop (`io_context`) that drives all the async operations, and you register callbacks (or coroutines) that run when I/O completes. The difference from raw epoll is that all the bookkeeping - registering interest, handling partial reads, managing lifetime - is done by the library, not by you.
 
+```cpp
 Networking TS architecture:
 
   io_context (event loop)            Proactor pattern
@@ -31,8 +32,9 @@ Networking TS architecture:
   Relationship to std::execution:
   Networking TS:   io_context = scheduler, async ops = senders
   Proposed: integrate with sender/receiver (P2300)
-
 ```
+
+You will mostly be using Asio today since the TS is not yet part of the standard. The good news is that the Networking TS is essentially Asio, so code you write now with `asio::` will require minimal changes if and when `std::net::` ships.
 
 | Component | Networking TS | Asio equivalent |
 | --- | --- | --- |
@@ -49,9 +51,9 @@ Networking TS architecture:
 
 ### Q1: Networking TS API surface
 
-**Core types and their roles:**
+Let's walk through the core types before looking at code. Understanding what each piece does makes the subsequent examples much easier to follow.
 
-**`io_context`** — The event loop / scheduler:
+**`io_context`** - The event loop / scheduler:
 
 - Runs async operations to completion.
 - `run()`: blocks and processes handlers until no work remains.
@@ -59,25 +61,26 @@ Networking TS architecture:
 - `stop()`: interrupts `run()`.
 - Thread-safe: multiple threads can call `run()` concurrently.
 
-**`tcp::acceptor`** — Listens for incoming connections:
+**`tcp::acceptor`** - Listens for incoming connections:
 
-- `open()`, `bind()`, `listen()` — or construct with endpoint.
-- `accept()` / `async_accept()` — returns a connected socket.
+- `open()`, `bind()`, `listen()` - or construct with endpoint.
+- `accept()` / `async_accept()` - returns a connected socket.
 
-**`tcp::socket`** — A connected TCP stream:
+**`tcp::socket`** - A connected TCP stream:
 
-- `connect()` / `async_connect()` — initiate outbound connection.
-- `read_some()` / `async_read_some()` — read available data.
-- `write_some()` / `async_write_some()` — write data.
+- `connect()` / `async_connect()` - initiate outbound connection.
+- `read_some()` / `async_read_some()` - read available data.
+- `write_some()` / `async_write_some()` - write data.
 - Composed operations: `async_read()`, `async_write()` read/write exact amounts.
 
-**`tcp::endpoint`** — IP address + port:
+**`tcp::endpoint`** - IP address + port:
 
-- `tcp::endpoint(ip::address_v4::any(), 8080)` — listen on all interfaces.
-- `tcp::resolver` — DNS resolution (also async).
+- `tcp::endpoint(ip::address_v4::any(), 8080)` - listen on all interfaces.
+- `tcp::resolver` - DNS resolution (also async).
+
+Here is the synchronous version first, which is the simplest way to see the API surface before layering in async callbacks:
 
 ```cpp
-
 // Using Asio as Networking TS reference implementation
 // Compile: g++ -std=c++20 -I/path/to/asio/include -DASIO_STANDALONE net_ts.cpp
 #include <asio.hpp>
@@ -111,13 +114,17 @@ int main() {
     // Write response
     asio::write(sock, asio::buffer("Hello from Networking TS!\n"));
 }
-
 ```
+
+Notice how `asio::buffer()` wraps your raw buffer so the library knows its size. The composed `asio::write()` keeps writing until all bytes are sent, unlike the raw `write_some()` which may send fewer.
 
 ### Q2: Minimal TCP echo server
 
-```cpp
+The async version uses a `Session` class that keeps itself alive via `shared_from_this()` while an async operation is in flight. This is the standard Asio lifetime management idiom and it trips people up at first, so it is worth understanding why it is needed.
 
+The reason is that async operations complete later - potentially after the code that started them has returned from the stack. The callback holds a shared_ptr to the Session, which keeps the object alive until the callback runs. Without that, the Session object could be destroyed while the kernel still has a pending operation referencing its buffer:
+
+```cpp
 // Async echo server using Asio (Networking TS reference)
 #include <asio.hpp>
 #include <iostream>
@@ -183,27 +190,25 @@ int main() {
     ctx.run();  // blocks, processes all async ops
 }
 // Test: echo "hello" | nc localhost 8080
-
 ```
+
+Each `Session` is a heap-allocated object that lives exactly as long as the connection is active. When `do_read()` sees an error (including clean disconnect), it does not reschedule the next read, so the last shared_ptr holding the Session drops, the destructor runs, and the socket closes. The `Server` object just loops calling `do_accept()` indefinitely.
 
 ### Q3: Networking TS and std::execution senders
 
-The Networking TS and `std::execution` (P2300 senders/receivers) are converging:
+The Networking TS and `std::execution` (P2300 senders/receivers) are converging. If you are wondering why the Networking TS has not been merged into the standard yet despite being around for years, this is why - the committee wants async operations to integrate cleanly with `std::execution` rather than having two separate async models.
 
 **Current Networking TS (callback-based):**
 
 ```cpp
-
 socket.async_read_some(buffer, [](error_code ec, size_t n) {
     // completion handler (callback)
 });
-
 ```
 
 **Future integration with senders:**
 
 ```cpp
-
 // Proposed: async operations return senders
 auto sender = socket.async_read_some(buffer, asio::use_sender);
 // Can be composed with std::execution algorithms:
@@ -211,10 +216,9 @@ auto pipeline = std::execution::then(sender, [](size_t n) {
     return process(n);
 });
 std::execution::sync_wait(pipeline);
-
 ```
 
-**Key connections:**
+The sender model is more composable - you can chain operations, add timeouts, and handle cancellation uniformly. The callback model works but leads to deeply nested code ("callback hell") when you chain many async operations. Coroutines (`co_await`) already solve the nesting problem with the current TS, but senders provide a library-level composition model that does not require language support.
 
 | Concept | Networking TS | std::execution |
 | --- | --- | --- |

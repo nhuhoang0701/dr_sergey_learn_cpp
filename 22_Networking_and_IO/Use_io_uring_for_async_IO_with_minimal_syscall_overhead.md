@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on batch submission and SQPOLL mode — complementing #640 (basic setup + CQ polling) and #551 (C++ RAII wrapper + SQ/CQ model).
+This topic focuses on batch submission and SQPOLL mode - complementing #640 (basic setup + CQ polling) and #551 (C++ RAII wrapper + SQ/CQ model).
+
+The biggest win io_uring offers over traditional async I/O is that you can submit many operations in a single syscall, and in SQPOLL mode you can eliminate submit syscalls entirely. Here is how those two ideas look conceptually:
 
 ```cpp
-
 Batch submission (multiple ops, one syscall):
   sqe1 = get_sqe()  -> prep_read(file1)
   sqe2 = get_sqe()  -> prep_read(file2)
@@ -22,8 +23,9 @@ SQPOLL mode (zero submit syscalls):
   Kernel thread continuously polls the SQ ring
   User writes SQE -> kernel picks it up automatically
   No io_uring_enter() needed for submission!
-
 ```
+
+The table below compares the four operational modes. The tradeoff is always latency versus privilege requirements:
 
 | Mode | Submit cost | Complete cost | Best for |
 | --- | --- | --- | --- |
@@ -38,8 +40,9 @@ SQPOLL mode (zero submit syscalls):
 
 ### Q1: Batch submit multiple read operations
 
-```cpp
+The key insight here is that you fill in all three SQEs before calling `io_uring_submit` once. Compare this with three separate `pread` calls, each of which is a syscall. With io_uring you pay one syscall for the whole batch regardless of how many operations you submit.
 
+```cpp
 // Requires: liburing
 // Compile: g++ -std=c++20 -luring batch_submit.cpp
 #include <iostream>
@@ -92,13 +95,15 @@ int main() {
     for (int i = 0; i < NFILES; ++i) close(fds[i]);
     io_uring_queue_exit(&ring);
 }
-
 ```
 
-### Q2: SQPOLL mode — zero syscall submission
+The `user_data` field on each SQE is how you correlate a completion back to the original request. When the CQE arrives, `cqe->user_data` carries back exactly the value you put in `sqe->user_data` - in this case the file index. That is the fundamental tagging mechanism for all io_uring work.
+
+### Q2: SQPOLL mode - zero syscall submission
+
+SQPOLL is where io_uring gets genuinely exotic. A kernel thread wakes up and continuously polls the submission ring. You write an SQE into shared memory and the kernel thread picks it up without you ever making a syscall. The tradeoff is that this kernel thread consumes a CPU core, so SQPOLL is only worthwhile at very high I/O rates where the thread stays busy most of the time.
 
 ```cpp
-
 #include <iostream>
 #include <cstring>
 #include <liburing.h>
@@ -154,12 +159,13 @@ int main() {
     close(fd);
     io_uring_queue_exit(&ring);
 }
-
 ```
+
+Note that `io_uring_submit()` in SQPOLL mode just wakes the kernel thread if it has gone idle - it does not perform a real submission syscall in the usual sense. If your workload is bursty, the thread will sleep between bursts and then be woken on demand. At sustained high load it stays awake and polls continuously, which is when you get the zero-syscall steady state.
 
 ### Q3: io_uring vs epoll+read throughput
 
-**Benchmark comparison for random 4KB reads from NVMe SSD:**
+The numbers below are representative benchmarks for random 4 KB reads from an NVMe SSD. They illustrate the performance cliff between the two approaches.
 
 | Metric | epoll + pread | io_uring (normal) | io_uring + SQPOLL |
 | --- | --- | --- | --- |
@@ -168,7 +174,7 @@ int main() {
 | p99 latency | ~15µs | ~5µs | ~3µs |
 | Batch efficiency | None | Excellent | Excellent |
 
-**Why io_uring is faster:**
+Here is why io_uring wins, broken down by mechanism:
 
 1. **Batch submission**: N operations per syscall vs 1 syscall per operation (epoll + read).
 2. **No context switches for completion**: CQE is in shared memory.
@@ -176,16 +182,18 @@ int main() {
 4. **Registered buffers**: `io_uring_register_buffers()` pins memory pages, avoiding per-I/O page-table walks.
 5. **Linked operations**: chain dependent ops (read -> process -> write) without returning to user space.
 
-```cpp
+The following snippet shows conceptually what the benchmark loop looks like for each approach:
 
+```cpp
 // Conceptual benchmark structure:
 // for (int i = 0; i < N; ++i) {
 //     // epoll: pread(fd, buf, 4096, random_offset); // 1 syscall per read
 //     // io_uring: prep_read + batch submit every 32 ops // ~1 syscall per 32 reads
 // }
 // io_uring wins by ~3-4x on NVMe, less on slow disks (I/O bound, not CPU bound)
-
 ```
+
+The last line is an important caveat. If your bottleneck is actual disk latency rather than syscall overhead, io_uring's advantage shrinks. Slow spinning disks spend 5-10 ms per seek regardless of how you submit the request, so reducing syscall overhead from microseconds to zero is irrelevant in that regime.
 
 ---
 

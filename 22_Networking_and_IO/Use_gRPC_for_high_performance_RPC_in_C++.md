@@ -10,28 +10,30 @@
 
 gRPC is Google's high-performance RPC framework built on HTTP/2 and Protocol Buffers. In C++, it provides both synchronous and asynchronous APIs, with the async `CompletionQueue` model offering maximum throughput for server workloads. Understanding gRPC at a senior level means knowing when to use sync vs async, how streaming RPCs work, and how to propagate deadlines and errors correctly.
 
-The gRPC C++ stack has three API tiers: the **sync API** (simple, one-thread-per-RPC), the **async API** (CompletionQueue-based, complex but high-performance), and the newer **callback API** (simpler async with lambdas). For most production servers handling thousands of concurrent RPCs, the async or callback API is necessary — the sync API blocks a thread per active RPC.
+The gRPC C++ stack has three API tiers: the **sync API** (simple, one-thread-per-RPC), the **async API** (CompletionQueue-based, complex but high-performance), and the newer **callback API** (simpler async with lambdas). For most production servers handling thousands of concurrent RPCs, the async or callback API is necessary - the sync API blocks a thread per active RPC.
 
-| RPC Type              | Client                     | Server                     | Use Case                          |
+Here is a quick reference for the four RPC patterns. Pick the one that matches the shape of your data flow:
+
+| RPC Type | Client | Server | Use Case |
 | --- | --- | --- | --- |
-| Unary                 | Send 1, Recv 1             | Recv 1, Send 1             | Simple request/response           |
-| Server streaming      | Send 1, Recv N             | Recv 1, Send N             | Large result sets, live feeds     |
-| Client streaming      | Send N, Recv 1             | Recv N, Send 1             | File upload, aggregation          |
-| Bidirectional         | Send N, Recv M             | Recv N, Send M             | Chat, real-time sync              |
+| Unary | Send 1, Recv 1 | Recv 1, Send 1 | Simple request/response |
+| Server streaming | Send 1, Recv N | Recv 1, Send N | Large result sets, live feeds |
+| Client streaming | Send N, Recv 1 | Recv N, Send 1 | File upload, aggregation |
+| Bidirectional | Send N, Recv M | Recv N, Send M | Chat, real-time sync |
+
+The diagram below shows how the `.proto` file feeds the `protoc` compiler, which generates C++ stubs that your sync, async, or callback server can then implement:
 
 ```cpp
-
-┌─────────┐   .proto    ┌───────────┐   protoc    ┌──────────────┐
-│  Schema  │────────────▶│  protoc   │────────────▶│  Generated   │
-│  (.proto)│             │  compiler │             │  C++ stubs   │
-└─────────┘             └───────────┘             │  .grpc.pb.h  │
-                                                   │  .grpc.pb.cc │
-                                                   └──────┬───────┘
-                                                          │
-                                          ┌───────────────┼───────────────┐
-                                          ▼               ▼               ▼
++----------+   .proto    +-----------+   protoc    +--------------+
+|  Schema  |------------>|  protoc   |------------>|  Generated   |
+|  (.proto)|             |  compiler |             |  C++ stubs   |
++----------+             +-----------+             |  .grpc.pb.h  |
+                                                   |  .grpc.pb.cc |
+                                                   +------+-------+
+                                                          |
+                                          +---------------+--------------+
+                                          v               v              v
                                     Sync Server     Async Server    Callback Server
-
 ```
 
 Deadlines are a first-class concept in gRPC: every RPC should have a deadline. Without one, a stuck server leaks client resources indefinitely. Deadlines propagate automatically through gRPC interceptors when you forward the `ServerContext` metadata, enabling end-to-end timeout enforcement across microservice chains.
@@ -42,8 +44,9 @@ Deadlines are a first-class concept in gRPC: every RPC should have a deadline. W
 
 ### Q1: Define a gRPC service with protobuf and implement a sync server and client with proper error handling
 
-```protobuf
+Start with the `.proto` schema. Everything flows from here - the service definition, the message types, and the streaming pattern are all declared in this file before you write a single line of C++.
 
+```protobuf
 // keyvalue.proto
 syntax = "proto3";
 package kvstore;
@@ -62,12 +65,12 @@ message PutResponse { bool success = 1; }
 
 message ListKeysRequest { string prefix = 1; }
 message KeyEntry { string key = 1; string value = 2; }
-
 ```
 
-```cpp
+Now here is the sync server implementation. Notice how each RPC handler checks `ctx->IsCancelled()` - this is good practice because the client may have timed out or disconnected before your handler even starts processing. The `shared_mutex` lets `Get` and `ListKeys` run concurrently while `Put` gets exclusive access.
 
-// server.cpp — Sync gRPC server
+```cpp
+// server.cpp - Sync gRPC server
 #include <grpcpp/grpcpp.h>
 #include "keyvalue.grpc.pb.h"
 #include <unordered_map>
@@ -139,14 +142,14 @@ void RunServer() {
     std::cout << "Server listening on " << addr << "\n";
     server->Wait();
 }
-
 ```
 
 ### Q2: Implement a gRPC client with deadline propagation and proper error status handling
 
-```cpp
+The most important habit to build here is always setting a deadline on `ClientContext` before making any RPC call. Without a deadline you are trusting the server to behave correctly forever - which in distributed systems it will not always do. After the call, inspect the status code carefully; each gRPC error code implies a different recovery strategy.
 
-// client.cpp — gRPC client with deadlines and error handling
+```cpp
+// client.cpp - gRPC client with deadlines and error handling
 #include <grpcpp/grpcpp.h>
 #include "keyvalue.grpc.pb.h"
 #include <chrono>
@@ -167,7 +170,7 @@ public:
         kvstore::GetResponse resp;
         grpc::ClientContext ctx;
 
-        // Set deadline — ALWAYS set a deadline in production
+        // Set deadline - ALWAYS set a deadline in production
         ctx.set_deadline(std::chrono::system_clock::now() + timeout);
 
         // Add metadata for tracing
@@ -235,14 +238,16 @@ int main() {
     client.Get("mykey", std::chrono::milliseconds(500));
     client.ListKeys("user_");
 }
-
 ```
+
+For streaming RPCs like `ListKeys`, always call `reader->Finish()` after the `Read` loop completes. The stream may have ended because the server finished normally, or because of an error. You only find out which by inspecting the status returned by `Finish`.
 
 ### Q3: How do you implement a gRPC server interceptor for logging and metrics
 
-```cpp
+Interceptors are the right place for cross-cutting concerns like logging, metrics, and authentication - not inside individual RPC handlers. Each interceptor wraps the RPC lifecycle and must call `methods->Proceed()` to pass control to the next stage. Forgetting that call will silently hang the RPC.
 
-// interceptor.cpp — gRPC server interceptor for observability
+```cpp
+// interceptor.cpp - gRPC server interceptor for observability
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/server_interceptor.h>
 #include <chrono>
@@ -266,7 +271,7 @@ public:
 
             // Log method name and latency
             std::cout << "[RPC] " << info_->method()
-                      << " | " << ms << "μs"
+                      << " | " << ms << "us"
                       << " | type=" << static_cast<int>(info_->type())
                       << "\n";
         }
@@ -291,16 +296,17 @@ public:
 //     grpc::experimental::ServerInterceptorFactoryInterface>> creators;
 // creators.push_back(std::make_unique<LoggingInterceptorFactory>());
 // builder.experimental().SetInterceptorCreators(std::move(creators));
-
 ```
+
+The factory pattern here is how gRPC creates a fresh interceptor instance per RPC. That is why `start_` can be a member variable - each RPC gets its own `LoggingInterceptor` object, so there is no shared state to worry about.
 
 ---
 
 ## Notes
 
-- **Always set deadlines** on client RPCs — unset deadlines mean infinite wait, leaking resources in failure scenarios.
+- **Always set deadlines** on client RPCs - unset deadlines mean infinite wait, leaking resources in failure scenarios.
 - gRPC status codes map to HTTP codes but are not identical; `NOT_FOUND` is gRPC 5, HTTP 404.
-- The sync API creates one thread per RPC — unsuitable for servers handling >1000 concurrent RPCs.
+- The sync API creates one thread per RPC - unsuitable for servers handling >1000 concurrent RPCs.
 - Use `grpc::ChannelArguments` to tune keepalive: `GRPC_ARG_KEEPALIVE_TIME_MS` prevents idle connections from being killed by load balancers.
 - Interceptors are the correct place for cross-cutting concerns (auth, logging, metrics), not middleware in handlers.
 - For bidirectional streaming, both `Read` and `Write` can be called concurrently from different threads, but each individually is not thread-safe.

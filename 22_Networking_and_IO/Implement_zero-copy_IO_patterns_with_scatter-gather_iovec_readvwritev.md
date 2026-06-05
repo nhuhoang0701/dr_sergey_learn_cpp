@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-Scatter-gather I/O lets you read into or write from multiple disjoint buffers in a single syscall. This avoids the common pattern of copying header + payload into a contiguous buffer before sending.
+When you send a network message that has a header and a payload, the naive approach is to copy both into a single contiguous buffer and then call `send`. That copy is unnecessary work. Scatter-gather I/O lets you point the kernel directly at multiple disjoint buffers and send them as a single logical unit, with no intermediate copy required.
+
+The interface is built around `struct iovec`, which is just a `(pointer, length)` pair. You build an array of these - one per buffer - and pass the array to `readv` or `writev`. The kernel handles the rest.
 
 ```cpp
-
 Traditional send (2 syscalls + 1 memcpy):
   memcpy(buf, header, 8);        // copy header into contiguous buffer
   memcpy(buf+8, payload, 1000);  // copy payload
@@ -21,7 +22,6 @@ Scatter-gather writev (1 syscall, zero copy):
   iov[0] = { header, 8 };   // point directly at header
   iov[1] = { payload, 1000}; // point directly at payload
   writev(fd, iov, 2);        // one syscall, no intermediate buffer!
-
 ```
 
 | Approach | Syscalls | Copies | Best for |
@@ -37,8 +37,9 @@ Scatter-gather writev (1 syscall, zero copy):
 
 ### Q1: Use readv() to scatter data into multiple buffers
 
-```cpp
+This example writes a length-prefixed "protocol message" to a temporary file and then reads it back using `readv` - splitting the 4-byte header and the 12-byte payload into separate buffers in a single syscall. In real networking code, you would call `readv` on the socket FD instead of a file FD, but the mechanics are identical.
 
+```cpp
 // Linux/POSIX example
 #include <iostream>
 #include <cstring>
@@ -83,13 +84,13 @@ int main() {
 //   readv returned: 16 bytes
 //   Header (length): 12
 //   Payload: Hello World!
-
 ```
 
 ### Q2: Use writev() to gather disjoint regions into a single send
 
-```cpp
+The `send_framed` function here is the workhorse pattern you will use any time you have a fixed-size header and a variable-length payload. It encodes the length header into a stack buffer, builds a two-element `iovec`, and sends both in one `writev` call. The while loop handles partial writes - `writev` on a socket is not guaranteed to write everything at once, so you adjust the `iovec` pointers and lengths and retry.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <cstdint>
@@ -153,31 +154,28 @@ int main() {
     close(pipefd[1]);
 }
 // Output: Read 24 bytes (4 header + 20 payload)
-
 ```
 
 ### Q3: How scatter-gather reduces memcpy in protocol parsing
 
+Let's make the benefit explicit with a side-by-side comparison. Without scatter-gather, parsing a protocol message involves reading everything into an intermediate buffer and then copying the pieces out. With scatter-gather, the data lands directly in its destination - the kernel does the splitting for you.
+
 **Without scatter-gather:**
 
 ```cpp
-
 Recv buffer:  [header1][payload1][header2][payload2]
                   |
                   v  Parse header, then memcpy payload to separate buffer
   Header buf: [header1]
   Payload buf: [payload1]     <- COPY!
-
 ```
 
 **With scatter-gather (readv):**
 
 ```cpp
-
 Recv via readv:
   iov[0] -> [header1]    direct into header buffer (no copy)
   iov[1] -> [payload1]   direct into payload buffer (no copy)
-
 ```
 
 **Protocol parser benefits:**
@@ -187,8 +185,9 @@ Recv via readv:
 3. **No memcpy**: data goes directly from kernel to destination buffers.
 4. **Better cache locality**: each buffer is sized and aligned for its purpose.
 
-```cpp
+Here is the same idea with concrete struct types. Notice how the scatter-gather version fills the struct fields in a single syscall with zero copying:
 
+```cpp
 // Example: HTTP-like protocol parser
 struct ProtocolMessage {
     uint32_t header[4];     // 16-byte header (type, flags, seqno, length)
@@ -205,17 +204,16 @@ struct ProtocolMessage {
 //   iov[0] = { msg.header,  16 };
 //   iov[1] = { msg.payload, 4096 };
 //   readv(fd, iov, 2);  // data lands directly in struct fields!
-
 ```
 
-For **sending**, the same benefit applies: you can prepend a header to an existing payload buffer without copying the payload into a new contiguous buffer. This is critical for high-throughput servers (100K+ msgs/sec) where memcpy becomes a bottleneck.
+For sending, the same benefit applies: you can prepend a header to an existing payload buffer without copying the payload into a new contiguous buffer. This is critical for high-throughput servers (100K+ msgs/sec) where memcpy becomes a measurable bottleneck.
 
 ---
 
 ## Notes
 
 - Complementary to #553 (scatter-gather basics + sendfile).
-- `writev()` may do partial writes — always loop and adjust iov pointers.
+- `writev()` may do partial writes - always loop and adjust iov pointers.
 - Maximum iov count: `sysconf(_SC_IOV_MAX)` (typically 1024 on Linux).
 - Windows equivalent: `WSASend()`/`WSARecv()` with `WSABUF` arrays.
 - For network sockets, `sendmsg()`/`recvmsg()` extend scatter-gather with ancillary data (SCM_RIGHTS, etc.).

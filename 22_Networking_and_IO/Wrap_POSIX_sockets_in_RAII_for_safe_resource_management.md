@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on move-only semantics, socket options, and EINTR handling in RAII socket wrappers — complementing #726 (basic RAII + TCP client + leak prevention) and #638 (TCP server with unique_ptr).
+This topic focuses on move-only semantics, socket options, and EINTR handling in RAII socket wrappers - complementing #726 (basic RAII + TCP client + leak prevention) and #638 (TCP server with unique_ptr).
+
+Move-only ownership is the right model for file descriptors because a descriptor is a unique kernel resource - there is no meaningful way to "copy" it. Deleting the copy operations enforces this in the type system, so the compiler will tell you immediately if you accidentally try to duplicate a socket. The EINTR retry pattern is a separate concern: the OS delivers a signal to your thread, the blocked syscall returns early with `EINTR`, and you need to retry the call because the I/O did not actually complete.
 
 ```cpp
-
 Move-only socket ownership:
 
   Socket a(AF_INET, SOCK_STREAM);   // a owns fd=3
@@ -23,8 +24,9 @@ Move-only socket ownership:
   do {
       n = ::recv(fd, buf, len, 0);
   } while (n < 0 && errno == EINTR);  // signal interrupted, retry
-
 ```
+
+Here is a reference table for the most useful socket options you will set in practice. These are the knobs that separate a toy socket from a production-quality one:
 
 | Socket option | Level | What it does |
 | --- | --- | --- |
@@ -41,8 +43,9 @@ Move-only socket ownership:
 
 ### Q1: Move-only RAII Socket class
 
-```cpp
+This design is slightly more sophisticated than the basic version in #726. It uses a private tag type to distinguish the "adopt existing fd" constructor from the "create new socket" constructor, which avoids the ambiguity of having two `int`-taking constructors.
 
+```cpp
 #include <iostream>
 #include <utility>
 #include <cstring>
@@ -118,13 +121,15 @@ int main() {
 //   a.fd=3
 //   After move: a.fd=-1 b.fd=3
 //   After reassign: b.fd=4
-
 ```
+
+The `from_fd` factory is useful when you receive a raw descriptor from a C API - for example, from `accept()` - and want to immediately transfer it into RAII ownership. Calling `Socket::from_fd(raw_fd)` is cleaner and more explicit than constructing with a raw integer.
 
 ### Q2: Socket options through the wrapper
 
-```cpp
+The templated `set_option` and `get_option` methods give you a type-safe way to call `setsockopt`/`getsockopt`. Rather than sprinkling `setsockopt` calls all over your connection setup code, each common option gets a named method. Notice that the kernel often silently adjusts the value you set - `SO_RCVBUF` is doubled internally as you can see in the output comment.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <stdexcept>
@@ -202,13 +207,13 @@ int main() {
 // Output:
 //   TCP_NODELAY: 1
 //   SO_RCVBUF: 131072  (kernel doubles the requested size)
-
 ```
 
 ### Q3: EINTR retry loop
 
-```cpp
+EINTR is one of those POSIX details that bites you the first time you add a signal handler to a server. When a signal arrives while a thread is blocked in `recv` or `accept`, the kernel immediately returns from the syscall with `errno == EINTR`. Your code needs to detect this and retry, because the I/O did not happen - it was just interrupted. The examples below show the three variants you will encounter in practice.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <cerrno>
@@ -280,8 +285,9 @@ int main() {
     std::cout << "  SA_RESTART flag makes some syscalls auto-restart,\n";
     std::cout << "  but NOT all (accept, select, poll don't auto-restart).\n";
 }
-
 ```
+
+The reason `accept` needs explicit EINTR handling even with `SA_RESTART` is that `SA_RESTART` does not cover all syscalls. The POSIX standard leaves it implementation-defined for some, and Linux does not auto-restart `accept`, `poll`, or `select`. Always handle EINTR explicitly for those.
 
 ---
 

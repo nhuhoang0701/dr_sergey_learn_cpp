@@ -9,10 +9,13 @@
 
 ## Topic Overview
 
-Binary protocols need framing to delimit messages on a byte stream (TCP). Length-prefixed framing prepends a fixed-size header (typically 4 bytes) containing the message body length. This is simpler and faster than delimiter-based framing.
+TCP is a byte stream, not a message stream. When you send 100 bytes, the receiver might get them as a single 100-byte chunk, or as two 50-byte chunks, or as 100 individual bytes. There is no concept of a message boundary at the TCP level. Your protocol has to impose that structure itself, and the mechanism for doing so is called **framing**.
+
+Length-prefix framing is the simplest and most common approach: you prepend a fixed-size header (typically 4 bytes) that tells the receiver how many bytes follow. The receiver reads the header, learns the payload length, and then reads exactly that many bytes. This is binary-safe (works for any payload content), O(1) to parse, and straightforward to implement. The alternatives - delimiter-based framing (e.g., newline-terminated) and TLV (Type-Length-Value) - have their uses but come with extra complexity.
+
+The diagram below shows both the wire format and the partial-read challenge, which is the part that catches new developers off guard. TCP can deliver your data in chunks that do not align with your message boundaries. A 4-byte header might arrive as 2 bytes in one `recv` call and 2 bytes in the next. Your framer must accumulate bytes until it has enough to make progress.
 
 ```cpp
-
 Wire format:
   +--------+--------+--------+--------+---...---+
   | len[0] | len[1] | len[2] | len[3] | payload |
@@ -23,7 +26,6 @@ Partial read handling:
   recv: [len0 len1]           -> need 2 more header bytes
   recv: [len2 len3 pay0 pay1] -> header complete, need (len-2) payload bytes
   recv: [pay2 ... payN]       -> message complete, dispatch!
-
 ```
 
 | Framing method | Pros | Cons |
@@ -39,8 +41,9 @@ Partial read handling:
 
 ### Q1: Write a framer with 4-byte big-endian length header
 
-```cpp
+The `Framer` class below uses the simplest possible strategy: it appends all incoming bytes to an internal buffer and then peels off complete messages in a loop. The `feed` function returns however many complete messages became available from the new data. Watch how it handles the partial delivery in `main` - the message arrives split across three calls, and the framer assembles it transparently.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cstdint>
@@ -131,13 +134,15 @@ int main() {
 //     msg: Hello
 //   After rest: 1 messages
 //     msg: World!
-
 ```
+
+The `MAX_MSG_SIZE` guard is not optional in production code. Without it, a malicious or buggy peer could send a length field of, say, 2 GB, and your framer would attempt to allocate that much memory before receiving a single payload byte. Always validate the length field before acting on it.
 
 ### Q2: Handle partial reads correctly
 
-```cpp
+The `Framer` in Q1 uses a simple append-to-vector approach that is easy to understand but has a performance cost: every `erase` from the front of a `std::vector` is O(n) because it shifts all remaining bytes. The `EfficientFramer` below avoids this by tracking state explicitly - it never copies bytes it has already processed. Instead, it remembers where it is in the current header or body and picks up exactly where it left off.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cstdint>
@@ -230,13 +235,15 @@ int main() {
     //   Complete message: "Hi!"
     //   Complete message: "World"
 }
-
 ```
+
+The byte-at-a-time loop in `main` is the stress test for partial read handling. If your framer can handle one byte at a time correctly, it can handle any real-world delivery pattern. This is a good test to add to your unit tests.
 
 ### Q3: Decode length field with bit manipulation (no htons)
 
-```cpp
+You have three practical options for encoding and decoding the 4-byte big-endian length header. This example shows all three and explains why the manual shift approach is preferred in most C++ codebases - it is portable, `constexpr`, and compiles down to the same instructions as the platform-specific alternatives.
 
+```cpp
 #include <iostream>
 #include <cstdint>
 #include <cstring>
@@ -305,7 +312,6 @@ int main() {
     //   2. Not constexpr
     //   3. Bit shifts are portable, constexpr, and compile to same instructions
 }
-
 ```
 
 ---

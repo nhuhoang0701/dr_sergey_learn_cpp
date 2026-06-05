@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on the page-fault model and cross-platform mmap (MapViewOfFile on Windows) — complementing #642 (basic mmap + madvise + benchmarks) and #552 (high-throughput + persistent KV store).
+This topic focuses on the page-fault model and cross-platform mmap (MapViewOfFile on Windows) - complementing #642 (basic mmap + madvise + benchmarks) and #552 (high-throughput + persistent KV store).
+
+The "zero-copy" claim is worth understanding concretely. When you call `fread()`, the OS reads data into a kernel buffer, then copies it into stdio's internal buffer, then copies it again into the buffer you provided - two copies, one syscall per fill. When you access an mmap'd region, the kernel maps the same physical page directly into your process's address space. Your pointer touches that page directly. There is nothing to copy.
 
 ```cpp
-
 Page-fault driven loading vs fread:
 
   fread (buffered I/O):           mmap (page-fault I/O):
@@ -29,8 +30,9 @@ Page-fault driven loading vs fread:
   | 2 copies                      | 0 copies (shared page)
   | 1 syscall per call             | 0 syscalls after fault
   +--------+                      +--------+
-
 ```
+
+The API to achieve this is different on Linux and Windows, but the concept is identical. Here is the mapping between the two:
 
 | Aspect | Linux (mmap) | Windows (MapViewOfFile) |
 | --- | --- | --- |
@@ -46,8 +48,9 @@ Page-fault driven loading vs fread:
 
 ### Q1: Cross-platform memory-mapped file access
 
-```cpp
+This is a single class that compiles and works correctly on both Linux and Windows. The `#ifdef _WIN32` blocks handle the platform difference so the calling code in `main()` stays clean and portable. Pay attention to the Windows side - it requires three separate handles (file handle, mapping handle, and view pointer) that all need to be closed in the right order:
 
+```cpp
 #include <iostream>
 #include <cstring>
 
@@ -148,15 +151,18 @@ int main() {
     std::cout.write(mmf.data(), mmf.size());
     std::cout << '\n';
 }
-
 ```
 
+On Windows, the reason you need both a mapping handle and a view pointer is that the mapping object tracks the kernel-side resource, while the view is the actual address-space projection. You can create multiple views from the same mapping (for example, mapping different byte ranges), which is why they are separate.
+
 ### Q2: Page-fault driven loading vs fread
+
+Here is the step-by-step breakdown of what actually happens under each approach. Understanding this is what lets you reason about when mmap is faster and when it is not.
 
 **fread (buffered stdio):**
 
 1. User calls `fread(buf, 1, n, fp)`.
-2. If stdio buffer empty: `read()` syscall → kernel copies data to kernel buffer.
+2. If stdio buffer empty: `read()` syscall - kernel copies data to kernel buffer.
 3. Kernel copies from kernel buffer to stdio buffer (copy #1).
 4. `fread` copies from stdio buffer to user buffer (copy #2).
 5. Returns. **2 copies + 1 syscall per buffer refill.**
@@ -164,14 +170,13 @@ int main() {
 **mmap (page-fault driven):**
 
 1. User accesses `ptr[offset]`.
-2. CPU translates virtual address → page table entry.
+2. CPU translates virtual address - page table entry.
 3. If page not present: **minor page fault** triggers.
 4. Kernel finds page in page cache (or reads from disk: **major fault**).
 5. Kernel maps the SAME physical page into process's address space.
-6. CPU retries the instruction — data is at `ptr[offset]`. **0 copies!**
+6. CPU retries the instruction - data is at `ptr[offset]`. **0 copies!**
 
 ```cpp
-
 Performance timeline for 1GB sequential read:
 
   fread:  [read 8KB][copy][copy][read 8KB][copy][copy]... 131K syscalls
@@ -181,12 +186,13 @@ Performance timeline for 1GB sequential read:
   After warm-up (pages in cache):
     fread: still copies data every call
     mmap:  direct memory access, zero overhead
-
 ```
 
-**Key insight:** After the first access, mmap pages stay in the page cache. Subsequent accesses are pure memory reads — no syscalls, no copies, no faults.
+**Key insight:** After the first access, mmap pages stay in the page cache. Subsequent accesses are pure memory reads - no syscalls, no copies, no faults. This is why mmap shines for files you access repeatedly or that are already warm in cache.
 
 ### Q3: mmap vs read() for sequential vs random access
+
+The pattern of your access matters a lot. Here is a breakdown of how the two approaches perform across different scenarios:
 
 | Pattern | read() + buffer | mmap |
 | --- | --- | --- |
@@ -197,8 +203,9 @@ Performance timeline for 1GB sequential read:
 | **Large file > RAM** | Buffer window slides | Pages evicted/loaded on demand |
 | **Small files** | Simple, low overhead | mmap() setup cost dominates |
 
-```cpp
+The random access case is where the gap is most dramatic. With `read()`, jumping to a random offset requires `lseek()` followed by `read()` - two syscalls per access, plus the kernel has to copy the data to your buffer each time. With mmap, it is one pointer dereference, and if the page is already cached it costs essentially nothing:
 
+```cpp
 // Random access comparison:
 // read(): lseek(fd, random_offset, SEEK_SET); read(fd, buf, 64);
 //   -> 2 syscalls per access (lseek + read)
@@ -206,8 +213,9 @@ Performance timeline for 1GB sequential read:
 // mmap(): ptr[random_offset];
 //   -> 0 syscalls (page fault only if page not cached)
 //   -> For 1M random accesses on a 4GB file: mmap is 5-10x faster
-
 ```
+
+For truly random access on a large file, mmap wins decisively. For a single sequential pass, the two approaches are much more similar - `read()` with a reasonably sized buffer is often comparable, and has the advantage of more predictable latency.
 
 ---
 
@@ -216,5 +224,5 @@ Performance timeline for 1GB sequential read:
 - Complementary to #642 (basic mmap + benchmarks) and #552 (high-throughput + persistent KV).
 - Windows: `MapViewOfFile` handles are reference-counted; must close ALL handles.
 - Portable wrapper libraries: Boost.Interprocess (`mapped_region`), mio (header-only).
-- mmap is NOT async — page faults block the thread. For true async file I/O, use io_uring.
+- mmap is NOT async - page faults block the thread. For true async file I/O, use io_uring.
 - 32-bit processes can only mmap ~2-3GB. 64-bit has virtually no limit.

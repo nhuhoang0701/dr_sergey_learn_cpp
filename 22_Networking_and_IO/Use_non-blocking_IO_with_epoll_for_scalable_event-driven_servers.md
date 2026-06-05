@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic covers building event-driven servers with epoll and non-blocking sockets — complementing #555 (basic epoll multiplexing). This file focuses on event loop architecture, edge-triggered mode, and scalable handler dispatch.
+This topic covers building event-driven servers with epoll and non-blocking sockets - complementing #555 (basic epoll multiplexing). This file focuses on event loop architecture, edge-triggered mode, and scalable handler dispatch.
+
+The reason you need epoll at all is that the naive approach to handling many clients - one thread per client - falls apart around a few thousand connections. Thread creation has overhead, each thread consumes stack memory, and the kernel spends significant time context-switching between them. epoll lets a single thread manage thousands of connections by asking the kernel "tell me which sockets have something new happening" and then acting only on those.
 
 ```cpp
-
 epoll event loop architecture:
 
   Listener socket (non-blocking)
@@ -31,8 +32,9 @@ epoll event loop architecture:
 
   Edge-triggered (EPOLLET): event fires ONCE when state changes
   Level-triggered (default): event fires as long as condition holds
-
 ```
+
+The choice between level-triggered and edge-triggered mode is one of the most important decisions you make when building an epoll server:
 
 | Mode | Event fires when | Must drain? | Advantage |
 | --- | --- | --- | --- |
@@ -46,8 +48,9 @@ epoll event loop architecture:
 
 ### Q1: Set O_NONBLOCK and register with EPOLLET
 
-```cpp
+There are two key things to set up correctly before the event loop starts: every socket must be set to non-blocking mode, and the listener must be registered with `EPOLLET`. Watch how `accept()` is called in a loop until `EAGAIN` - that drain-until-empty pattern is mandatory with edge-triggered mode:
 
+```cpp
 // Linux epoll echo server skeleton
 #include <iostream>
 #include <cstring>
@@ -126,13 +129,15 @@ int main() {
     close(epfd);
     close(listen_fd);
 }
-
 ```
+
+The reason the accept loop must run until `EAGAIN` is that in edge-triggered mode, epoll only notifies you once per transition from "no connections pending" to "connections pending." If three clients connect simultaneously and you only call `accept()` once, the other two will sit there waiting indefinitely - epoll will never fire again for the listener until a new connection arrives.
 
 ### Q2: Event loop with epoll_wait and handler dispatch
 
-```cpp
+This is the full read/write dispatch loop. Notice that the read handler also drains until `EAGAIN`, for the same reason as the accept loop. When write data becomes available, the code registers `EPOLLOUT` interest so it gets notified when the socket's send buffer has space:
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -232,27 +237,31 @@ int main() {
         }
     }
 }
-
 ```
+
+The `EPOLLOUT` interest is removed once the write buffer is empty. You do not want to leave it registered when you have nothing to write - the kernel would keep waking you up unnecessarily since the socket's send buffer is almost always writable when idle.
 
 ### Q3: Level-triggered vs edge-triggered
 
-**Level-triggered (LT) — default:**
+This is one of the most common sources of subtle bugs in epoll servers, so it is worth slowing down and making sure the mental model is solid.
+
+**Level-triggered (LT) - default:**
 
 - epoll_wait returns the fd as long as data is available.
 - If you read only 100 bytes but 1000 are buffered, epoll_wait fires again.
-- Simpler to program — partial reads are safe.
+- Simpler to program - partial reads are safe.
 - More epoll_wait wakeups under high load.
 
-**Edge-triggered (ET) — EPOLLET:**
+**Edge-triggered (ET) - EPOLLET:**
 
 - epoll_wait returns the fd only when NEW data arrives.
 - You MUST drain the fd (read until EAGAIN), or you'll miss data.
 - Fewer wakeups = higher throughput at scale.
 - Risk: forgetting to drain causes stalls.
 
-```cpp
+The reason edge-triggered is tricky is that the event is about the state transition, not the state itself. Think of it like a doorbell: ET rings once when someone arrives; LT is more like a motion sensor that keeps beeping as long as someone is standing at the door. If you ignore the ET ring and go do something else, the doorbell will not ring again even though the person is still there.
 
+```cpp
 Timeline with 2 packets arriving:
 
   Time:  ----[pkt1]--------[pkt2]---->
@@ -263,7 +272,6 @@ Timeline with 2 packets arriving:
   If you don't read all of pkt1:
   LT:    [wake again] - safe, you get another chance
   ET:    [no wake]    - STUCK until pkt2 arrives!
-
 ```
 
 **EPOLLONESHOT:**
@@ -271,6 +279,8 @@ Timeline with 2 packets arriving:
 - Fires once, then fd is disabled in epoll.
 - Must re-arm with `epoll_ctl(EPOLL_CTL_MOD)` after handling.
 - Safe for multi-threaded event loops (prevents two threads handling same fd).
+
+`EPOLLONESHOT` is especially useful when you have a thread pool processing events, because it ensures only one thread ever handles a given fd at a time. Without it, two threads could both wake up for the same fd if events arrive while the first thread is still processing.
 
 ---
 

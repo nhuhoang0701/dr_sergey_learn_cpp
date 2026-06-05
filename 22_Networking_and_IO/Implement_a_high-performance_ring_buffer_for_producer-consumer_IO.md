@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-A ring buffer (circular buffer) is the standard data structure for lock-free single-producer single-consumer (SPSC) I/O. It uses a fixed-size array with head/tail indices, avoiding all dynamic allocation and enabling wait-free progress.
+A ring buffer (also called a circular buffer) is the workhorse data structure for moving data between a producer and a consumer at high speed. The classic example in I/O is a network receive thread that pushes incoming packets into the ring buffer while a processing thread pops them out. The ring buffer lets these two threads operate at their own pace without locking.
+
+The idea is simple: a fixed-size array with two indices, `head` (where the next write goes) and `tail` (where the next read comes from). When an index reaches the end of the array, it wraps back to the beginning. Because the array size is a power of two, wrapping is done with a bitmask (`index & (capacity - 1)`) rather than a modulo operation, which matters in tight loops.
+
+The diagram below shows the layout and the full/empty conditions, plus the cache-line placement that makes the SPSC (single-producer single-consumer) version lock-free.
 
 ```cpp
-
 Ring buffer layout (capacity=8, power of 2):
   Index:   0   1   2   3   4   5   6   7
          +---+---+---+---+---+---+---+---+
@@ -19,7 +22,7 @@ Ring buffer layout (capacity=8, power of 2):
          +---+---+---+---+---+---+---+---+
                ^           ^
               tail=1      head=4
-  
+
   Mask:  index & (capacity - 1)  // power-of-2 wrapping (no modulo!)
   Empty: head == tail
   Full:  head - tail == capacity
@@ -27,7 +30,6 @@ Ring buffer layout (capacity=8, power of 2):
 Cache-line layout (avoid false sharing):
   [  tail (64B)  |  padding  |  head (64B)  |  padding  |  data[]  ]
    ^writer writes   ^reader reads
-
 ```
 
 | Feature | Ring buffer | mutex + std::queue |
@@ -37,14 +39,17 @@ Cache-line layout (avoid false sharing):
 | Cache behaviour | Sequential, predictable | Random (heap nodes) |
 | Throughput (SPSC) | ~200M ops/sec | ~20M ops/sec |
 
+The throughput difference is roughly 10x. For networking code where you might be processing hundreds of thousands of messages per second, this is a meaningful advantage.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Lock-free SPSC ring buffer with power-of-two modulo
 
-```cpp
+The key detail in this implementation is the pairing of `memory_order_acquire` and `memory_order_release`. The producer reads `tail` with `acquire` (to see any updates the consumer has published) and writes `head` with `release` (to publish the new element to the consumer). The consumer does the mirror image. This is the minimum memory ordering needed for correctness - using `seq_cst` everywhere would also work but costs extra synchronization that is not needed here.
 
+```cpp
 #include <iostream>
 #include <atomic>
 #include <array>
@@ -83,9 +88,7 @@ public:
 
     size_t size() const {
         return head_.load(std::memory_order_relaxed)
-
              - tail_.load(std::memory_order_relaxed);
-
     }
 
 private:
@@ -131,13 +134,15 @@ int main() {
 //   Pop: 20 (ok)
 //   Size: 2
 //   After wrap push, size: 3
-
 ```
+
+Notice that `head_` and `tail_` are each given their own 64-byte-aligned slot. This is the cache-line separation discussed in Q2, and it is already baked into the production design here.
 
 ### Q2: Cache-line separation between head and tail
 
-```cpp
+This example exists to make the false sharing problem concrete. When `head` and `tail` share a cache line, every write by the producer invalidates the cache line that the consumer is also using - and vice versa. Each side has to reload the line from the other core's cache before it can do anything, which turns a 5-cycle operation into a roughly 100-cycle round trip. That is the difference between 200M ops/sec and 20M ops/sec.
 
+```cpp
 #include <iostream>
 #include <atomic>
 #include <cstddef>
@@ -191,13 +196,15 @@ int main() {
     std::cout << "No new/delete, no heap, no malloc\n";
     std::cout << "Power-of-2 mask: index & (cap-1) avoids modulo (division)\n";
 }
-
 ```
+
+The `sizeof` output is the quickest way to verify the layout at runtime. `BadRingMeta` is 16 bytes (two 8-byte atomics packed together); `GoodRingMeta` is 128 bytes (two 64-byte-aligned slots).
 
 ### Q3: Benchmark ring buffer vs mutex+queue
 
-```cpp
+Numbers are convincing. This benchmark runs 10 million push/pop pairs through each implementation and measures how long it takes. The ring buffer and the mutex queue implement identical interfaces so you can swap them with a single template argument.
 
+```cpp
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -289,7 +296,6 @@ int main() {
     //   Mutex queue:  ~500 ms (20 M ops/sec)
     //   -> Ring buffer is ~10x faster for SPSC!
 }
-
 ```
 
 ---

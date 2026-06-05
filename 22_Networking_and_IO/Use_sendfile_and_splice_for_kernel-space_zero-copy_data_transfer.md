@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-sendfile() and splice() transfer data between file descriptors entirely in kernel space, avoiding the copy into user-space buffers.
+`sendfile()` and `splice()` transfer data between file descriptors entirely in kernel space, avoiding the copy into user-space buffers.
+
+The traditional way to serve a file over a socket is to `read()` the file into a buffer, then `write()` that buffer to the socket. That process involves two copies: once from the kernel's page cache into your user-space buffer, and again from your buffer into the socket's send buffer. Two copies, two syscalls, and your CPU has to be involved the whole time. `sendfile()` collapses that down to a single syscall and lets the kernel move data directly from the page cache to the NIC, without your process touching it at all.
 
 ```cpp
-
 Traditional file-to-socket:
   Disk -> [kernel buf] -> [user buf] -> [kernel buf] -> NIC  (2 copies + 2 syscalls)
            read()           write()
@@ -23,25 +24,27 @@ sendfile:
 splice:
   fd_in -> [pipe buffer] -> fd_out  (0 copies, data stays in kernel)
            splice()          splice()
-
 ```
+
+Here is a summary of all the zero-copy transfer tools and their constraints - the "one end must be a pipe" restriction on `splice()` is the main thing that catches people:
 
 | Syscall | Source | Destination | Copies | Limitations |
 | --- | --- | --- | --- | --- |
 | read() + write() | any fd | any fd | 2 | General purpose |
-| sendfile() | file (must support mmap) | socket | 0-1 | File → socket only (Linux 2.6+: file → any) |
+| sendfile() | file (must support mmap) | socket | 0-1 | File -> socket only (Linux 2.6+: file -> any) |
 | splice() | pipe or fd | pipe or fd | 0 | One end must be a pipe |
 | tee() | pipe | pipe | 0 | Duplicates pipe data |
-| copy_file_range() | file | file | 0 | File → file only (4.5+) |
+| copy_file_range() | file | file | 0 | File -> file only (4.5+) |
 
 ---
 
 ## Self-Assessment
 
-### Q1: sendfile() — file to socket
+### Q1: sendfile() - file to socket
+
+This demo sets up a minimal TCP server, waits for one client to connect, and then sends a file to it via `sendfile()`. The key line is the `sendfile()` call - it takes the destination socket, the source file, a byte offset, and a count, and does the whole transfer in the kernel. Notice there is no buffer declared anywhere:
 
 ```cpp
-
 // Linux only
 #include <iostream>
 #include <cstring>
@@ -94,13 +97,15 @@ int main() {
     close(server_fd);
     unlink(filepath);
 }
-
 ```
 
-### Q2: splice() — pipe-based zero-copy
+The `offset` parameter is updated by the kernel after the call, so if `sendfile()` sends fewer bytes than requested (which can happen), you can resume from exactly where it stopped without any bookkeeping on your side.
+
+### Q2: splice() - pipe-based zero-copy
+
+`splice()` is more flexible than `sendfile()` but has an unusual constraint: at least one of the two endpoints must be a pipe. The way you use it to copy a file to another file is therefore a two-step process: splice from the source file into a pipe, then splice from the pipe into the destination. The data never enters user space:
 
 ```cpp
-
 // Linux only
 #define _GNU_SOURCE
 #include <iostream>
@@ -166,10 +171,13 @@ int main() {
     unlink(src_path);
     unlink(dst_path);
 }
-
 ```
 
-### Q3: sendfile vs mmap+write — when each is faster
+`SPLICE_F_MOVE` is a hint telling the kernel to try to move pages rather than copy them. It is not guaranteed - the kernel may fall back to a copy - but when it works, the data is transferred with zero physical copies at all.
+
+### Q3: sendfile vs mmap+write - when each is faster
+
+If the table feels overwhelming, the key rule is: use `sendfile` when you just want to send a file without modifying it, use `mmap+write` when you need to transform the data first, and use `splice` for proxy-style socket-to-socket transfers.
 
 | Scenario | sendfile | mmap + write | Winner |
 | --- | --- | --- | --- |
@@ -183,7 +191,7 @@ int main() {
 
 **When sendfile is faster:**
 
-- Simple file → socket transfer (static HTTP serving).
+- Simple file -> socket transfer (static HTTP serving).
 - Streaming large files (offset parameter advances automatically).
 - When you don't need to touch the data.
 
@@ -193,10 +201,10 @@ int main() {
 - Random access patterns (sendfile is sequential by offset).
 - Non-Linux portability (mmap is more portable than sendfile behavior).
 
-**When neither — use splice instead:**
+**When neither - use splice instead:**
 
-- Proxying: socket → socket (via pipe). nginx uses splice for proxying.
-- Any fd → fd where you don't need to touch the data.
+- Proxying: socket -> socket (via pipe). nginx uses splice for proxying.
+- Any fd -> fd where you don't need to touch the data.
 
 ---
 

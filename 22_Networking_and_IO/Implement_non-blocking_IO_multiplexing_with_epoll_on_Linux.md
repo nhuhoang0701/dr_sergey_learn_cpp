@@ -8,10 +8,9 @@
 
 ## Topic Overview
 
-`epoll` is Linux's high-performance I/O multiplexer. Unlike `select`/`poll` which scan all file descriptors every call, epoll uses kernel callbacks and returns only ready FDs.
+`epoll` is Linux's answer to the question: how do you efficiently wait for I/O events across thousands of file descriptors? The older interfaces - `select` and `poll` - scan the entire list of file descriptors on every call. If you are watching 10,000 sockets and only 3 have data, you still pay the cost of checking all 10,000. `epoll` avoids this by using kernel callbacks: the kernel tracks which descriptors have events ready and hands you only those.
 
 ```cpp
-
 epoll architecture:
   epoll_create1(0)         -> epollfd
   epoll_ctl(ADD, sockfd)   -> register interest
@@ -19,7 +18,6 @@ epoll architecture:
 
   select/poll: O(N) scan all fds every call
   epoll:       O(1) add/remove, O(ready) per wait
-
 ```
 
 | Multiplexer | Add/Remove | Wait cost | Max FDs | Edge-trigger |
@@ -36,8 +34,9 @@ epoll architecture:
 
 ### Q1: Create epoll FD and register sockets with EPOLLIN | EPOLLET
 
-```cpp
+This is a complete, runnable echo server using edge-triggered epoll. It accepts new connections and echoes data back to each client. Pay close attention to the inner `for (;;)` loops - with edge-triggered mode, you *must* drain the file descriptor completely on each event, or you risk missing data. That is why both the accept loop and the read loop run until they get `EAGAIN`.
 
+```cpp
 // Linux-only example
 #include <iostream>
 #include <cstring>
@@ -119,10 +118,11 @@ int main() {
     close(listen_fd);
 }
 // Test: echo "Hello" | nc localhost 8080
-
 ```
 
 ### Q2: Level-triggered vs edge-triggered epoll
+
+This is the most important conceptual distinction in epoll programming. Getting it wrong causes data loss that is very hard to debug, because the data is not gone - it is sitting in the kernel buffer, but epoll will never wake you up for it again.
 
 **Level-Triggered (LT, default):**
 
@@ -139,7 +139,6 @@ int main() {
 - Efficient: fewer `epoll_wait` returns.
 
 ```cpp
-
 Data arrives: 1000 bytes
 
 Level-triggered:
@@ -156,21 +155,19 @@ Edge-triggered:
   ... data stuck until new data arrives ...
   FIX: read in a loop until EAGAIN:
     while (read(fd, buf, sizeof(buf)) > 0) { ... }
-
 ```
 
-**The Missed-Event Bug:**
+The missed-event bug is subtle because everything *looks* fine most of the time - data loss only occurs when the sender happens to fill the send buffer before you drain the receive side. Here is the pattern that causes it and the fix:
 
 ```cpp
-
-// BUG: edge-triggered + single read = data loss
+// BAD: edge-triggered + single read = data loss
 events[i].events = EPOLLIN | EPOLLET;
 // ...
 ssize_t n = read(fd, buf, sizeof(buf));  // reads partial data
 // Remaining bytes are NEVER reported by epoll_wait!
 // Data is stuck in the kernel buffer until new data arrives.
 
-// FIX: always drain in a loop
+// GOOD: always drain in a loop
 for (;;) {
     ssize_t n = read(fd, buf, sizeof(buf));
     if (n < 0) {
@@ -180,13 +177,13 @@ for (;;) {
     if (n == 0) { close(fd); break; }  // EOF
     process(buf, n);
 }
-
 ```
 
 ### Q3: Minimal reactor event loop with epoll_wait
 
-```cpp
+The reactor pattern is the design behind Asio, libevent, and libuv. The idea is simple: instead of a monolithic event loop with a giant switch statement, each file descriptor gets its own handler callback. When epoll says the FD is ready, you look up its handler and call it. New FDs can be added (or removed) dynamically, even from within handlers.
 
+```cpp
 // A reactor dispatches events to registered handlers
 #include <iostream>
 #include <functional>
@@ -272,7 +269,6 @@ int main() {
     std::cout << "  - Easy to compose (timer FDs, signal FDs, socket FDs)\n";
     std::cout << "  - Foundation for Asio, libevent, libuv\n";
 }
-
 ```
 
 ---

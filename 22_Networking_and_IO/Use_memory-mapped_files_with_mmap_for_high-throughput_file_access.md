@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on high-throughput mmap patterns including persistent key-value storage with msync — complementing #642 (basic mmap + madvise + benchmarks) and #727 (page-fault model + MapViewOfFile cross-platform).
+This topic focuses on high-throughput mmap patterns including persistent key-value storage with msync - complementing #642 (basic mmap + madvise + benchmarks) and #727 (page-fault model + MapViewOfFile cross-platform).
+
+One pattern that surprises people is using mmap not just for reading but as the storage backend for a persistent data structure. You map a file read-write, write your struct directly through the pointer, and then call `msync()` to flush those changes to disk. The kernel's page cache does the buffering for you, and `msync(MS_SYNC)` guarantees that the data has reached the disk before returning. This is the same basic technique used by some embedded databases and memory-mapped log files.
 
 ```cpp
-
 mmap + msync for persistent storage:
 
   Process memory              Page cache              Disk
@@ -23,8 +24,9 @@ mmap + msync for persistent storage:
 
   MS_SYNC:  blocks until pages written to disk (durable)
   MS_ASYNC: schedules writeback, returns immediately
-
 ```
+
+The choice of `mmap` flags controls behavior quite a bit. Here is a quick reference for the flags that come up most often in high-throughput scenarios:
 
 | mmap flag | Behavior | Use case |
 | --- | --- | --- |
@@ -40,8 +42,9 @@ mmap + msync for persistent storage:
 
 ### Q1: Map a large file and read it as a byte array
 
-```cpp
+Notice the `MAP_POPULATE` flag here - it tells the kernel to fault in all pages immediately at mmap time rather than lazily on first access. This trades a predictable up-front cost for eliminating unpredictable page-fault latency later. For a server handling requests, you usually prefer that predictability:
 
+```cpp
 // Linux/POSIX
 #include <iostream>
 #include <cstring>
@@ -99,13 +102,15 @@ int main() {
     munmap(addr, st.st_size);
     unlink(path);
 }
-
 ```
+
+After the mapping is established, both sequential and random access use the same plain pointer arithmetic. The kernel transparently handles loading pages from disk when needed.
 
 ### Q2: madvise(MADV_SEQUENTIAL) for prefetch-friendly scans
 
-```cpp
+`madvise()` must be called before you start accessing the data - it is a hint about what you are about to do, not a description of what you already did. Here we compare three hints on a 50 MB file to show how much the kernel's prefetching strategy matters:
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <chrono>
@@ -163,13 +168,15 @@ int main() {
 
     unlink(path);
 }
-
 ```
+
+`MADV_SEQUENTIAL` is usually the fastest for a linear scan because the kernel can pre-load pages while you are still processing the current ones - effectively hiding the I/O latency. `MADV_RANDOM` turns off read-ahead entirely, which is the right choice when you will be jumping around the file, since prefetching would just waste I/O bandwidth and RAM.
 
 ### Q3: Persistent key-value store with mmap + msync
 
-```cpp
+This example shows mmap used as a real storage engine, not just a reading tool. The `MmapKVStore` maps a file, writes key-value entries directly into the mapped memory as C structs, and calls `msync()` to flush. When the process restarts and remaps the same file, the data is still there:
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <sys/mman.h>
@@ -273,8 +280,9 @@ int main() {
 //   name:    Modern C++
 //   version: C++20
 //   topic:   mmap persistent storage
-
 ```
+
+Notice that `put()` uses `MS_ASYNC` for individual writes (schedule writeback without waiting) but the destructor uses `MS_SYNC` (wait until everything is on disk). The `ftruncate()` call before the first `mmap()` is critical - you must size the file before mapping it, because accessing memory beyond the file's size causes SIGBUS. This is a common trap when building mmap-based storage.
 
 ---
 

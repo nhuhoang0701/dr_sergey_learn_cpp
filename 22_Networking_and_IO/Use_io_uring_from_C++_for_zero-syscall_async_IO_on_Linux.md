@@ -8,10 +8,13 @@
 
 ## Topic Overview
 
-This topic focuses on wrapping liburing in C++ RAII and understanding the SQ/CQ ring buffer model — complementing #640 (basic setup + polling) and #728 (batch submission + SQPOLL).
+This topic focuses on wrapping liburing in C++ RAII and understanding the SQ/CQ ring buffer model - complementing #640 (basic setup + polling) and #728 (batch submission + SQPOLL).
+
+The key insight behind io_uring is that traditional system calls like `read()` and `write()` each require a full round-trip into the kernel - your thread stops, the CPU switches to kernel mode, the kernel does the work, and then control returns to you. For a server handling tens of thousands of I/O operations per second, those context switches add up fast. io_uring eliminates most of them by giving user space and the kernel a shared chunk of memory they both read and write directly.
+
+Here is the data flow. The diagram shows two ring buffers sitting in memory that is mapped into both user space and kernel space simultaneously:
 
 ```cpp
-
 SQ/CQ ring buffer model (shared memory):
 
   User space                 Kernel space
@@ -28,8 +31,11 @@ SQ/CQ ring buffer model (shared memory):
   +-----------+             +-----------+
 
   No data copy! Just atomic counter increments on shared memory.
-
 ```
+
+You write a Submission Queue Entry (SQE) describing your I/O request, bump the tail pointer, and the kernel sees it without any syscall. When the kernel finishes, it writes a Completion Queue Entry (CQE) to the other ring and bumps its own tail pointer. You read that result directly from memory - again, no syscall.
+
+Compare that to what traditional I/O requires every single time:
 
 | Traditional I/O | io_uring |
 | --- | --- |
@@ -44,8 +50,9 @@ SQ/CQ ring buffer model (shared memory):
 
 ### Q1: C++ RAII wrapper for io_uring
 
-```cpp
+Before looking at the code, notice what we're wrapping: `io_uring_queue_init` and `io_uring_queue_exit` are the open/close pair that allocate the shared rings. Those absolutely need RAII treatment - you do not want to forget `queue_exit` on an error path. The `FileDesc` class at the bottom is the same idea applied to plain file descriptors.
 
+```cpp
 // Requires: liburing-dev
 // Compile: g++ -std=c++20 -luring raii_uring.cpp
 #include <iostream>
@@ -141,8 +148,9 @@ int main() {
     std::cout << "Content: " << buf;
 }
 // RAII ensures: ring is destroyed, file is closed, even on exception
-
 ```
+
+The `user_data` field on the SQE is just a tag you can use to match completions back to the requests that spawned them. It passes through the kernel untouched and comes back on the CQE. In real code you'd often store a pointer to a context struct there.
 
 ### Q2: SQ/CQ model and why it reduces overhead
 
@@ -170,24 +178,27 @@ The SQ (Submission Queue) and CQ (Completion Queue) are ring buffers in shared m
 
 3. **Zero-copy completions**: CQEs are written directly to shared memory. No `copy_to_user()` needed.
 
-4. **No context switch for polling**: `io_uring_peek_cqe()` reads shared memory directly — no kernel transition.
+4. **No context switch for polling**: `io_uring_peek_cqe()` reads shared memory directly - no kernel transition.
 
-5. **With SQPOLL**: Even submission requires no syscall — kernel thread polls the SQ ring continuously.
+5. **With SQPOLL**: Even submission requires no syscall - kernel thread polls the SQ ring continuously.
+
+Here is a concrete comparison that shows just how dramatic the difference is for a burst of reads:
 
 ```cpp
-
 Syscall overhead comparison (10,000 reads):
   Traditional:  10,000 read() syscalls = 10,000 context switches
   epoll + read: 10,000 read() + epoll_wait calls
   io_uring:     ~300 io_uring_enter() (batches of ~32) + 0 CQ syscalls
   io_uring+SQP: 0 submit syscalls + 0 CQ syscalls = 0 context switches!
-
 ```
+
+The reason this matters so much is that a context switch is not just overhead in terms of CPU cycles - it also pollutes the instruction cache and TLB, which hurts performance for the user-space code that runs immediately after. Eliminating context switches is therefore a double win.
 
 ### Q3: io_uring vs epoll for 10K connections
 
-```cpp
+This is a conceptual walkthrough that makes the syscall difference between the two approaches concrete. The numbers at the bottom are representative of what you'd actually measure on a loaded system:
 
+```cpp
 // Conceptual comparison (pseudo-code)
 #include <iostream>
 
@@ -219,8 +230,9 @@ int main() {
     std::cout << "  io_uring: ~6K syscalls/sec, 5-8% CPU\n";
     std::cout << "  io_uring+SQPOLL: ~0 syscalls/sec, 3-5% CPU + SQ thread\n";
 }
-
 ```
+
+The io_uring path goes from syscall count scaling linearly with active connections down to a flat two syscalls per event loop iteration. That is what makes it so attractive for high-connection-count servers.
 
 ---
 
@@ -230,4 +242,4 @@ int main() {
 - liburing header: `#include <liburing.h>`, link with `-luring`.
 - Registered buffers (`io_uring_register_buffers`) avoid per-I/O get_user_pages.
 - Registered files (`io_uring_register_files`) avoid per-I/O fget/fput.
-- io_uring multishot: one SQE for recurring operations (accept, recv) — kernel 5.19+.
+- io_uring multishot: one SQE for recurring operations (accept, recv) - kernel 5.19+.

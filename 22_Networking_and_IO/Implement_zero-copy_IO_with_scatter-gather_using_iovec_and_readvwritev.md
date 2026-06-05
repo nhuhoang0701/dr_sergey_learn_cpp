@@ -10,8 +10,9 @@
 
 This topic extends scatter-gather basics (#641) to cover protocol framing with iovec and the `sendfile()` syscall for kernel-to-kernel zero-copy transfer.
 
-```cpp
+The central question in high-throughput I/O is: how many times does data get copied as it moves from disk or memory to the network? Every copy burns CPU time and memory bandwidth. The techniques below are ranked from best (fewest copies) to worst, so you can pick the right tool for the job.
 
+```cpp
 Zero-copy spectrum (least to most copies):
   sendfile:   file -> kernel -> NIC    (0 user-space copies)
   splice:     pipe -> kernel -> socket (0 user-space copies)
@@ -25,8 +26,9 @@ scatter-gather with iovec:
   };
   writev(fd, iov, count);  // gather write
   readv(fd, iov, count);   // scatter read
-
 ```
+
+The table below summarises each technique along two dimensions that matter most in practice - how many copies happen and how many syscalls you spend:
 
 | Technique | Copies | Syscalls | Use case |
 | --- | --- | --- | --- |
@@ -41,8 +43,9 @@ scatter-gather with iovec:
 
 ### Q1: readv/writev scatter-gather across non-contiguous buffers
 
-```cpp
+The classic use case is a network message with a fixed-size header struct and a variable payload sitting in different memory locations. Without `writev` you would need to either copy them into a single contiguous buffer first (wasting memory and CPU) or issue two separate `write` calls (wasting syscalls). With `writev` you just describe each piece using an `iovec` element and the kernel stitches them together in one shot.
 
+```cpp
 // Linux/POSIX only
 #include <iostream>
 #include <cstring>
@@ -104,13 +107,15 @@ int main() {
 //   readv: 22 bytes read
 //     type=1 length=13
 //     payload: Hello, World!
-
 ```
+
+Notice that the read side knows how much payload to expect because it reads the length out of the header first - that is the standard length-prefix framing pattern. The kernel scatters the incoming bytes directly into the right buffers; your header struct is filled with the first 8 bytes, the payload array receives the next 13, and so on.
 
 ### Q2: Protocol framing with two-element iovec
 
-```cpp
+Length-prefixed framing is everywhere in network protocols. The sender writes a fixed-size header containing the payload length, then the payload. Without `writev` you would typically concatenate them into a temporary buffer, which is an unnecessary copy. Here the `FramedWriter` uses a two-element iovec so the header and payload travel together in a single syscall.
 
+```cpp
 #include <iostream>
 #include <cstdint>
 #include <cstring>
@@ -191,13 +196,15 @@ int main() {
     close(pipefd[0]);
     close(pipefd[1]);
 }
-
 ```
+
+The reader has to do its header and payload reads separately because it does not know the payload length until it has parsed the header - that is the one place where a two-step read is unavoidable. Once you have the length, you could use a two-element `readv` to read header-of-next-message and payload together if you want to pipeline reads.
 
 ### Q3: sendfile() for kernel-to-kernel zero-copy
 
-```cpp
+`sendfile` is the gold standard for serving static files. The comments in the code walk through the exact data path - the key point is that with a modern DMA-capable NIC, the CPU never has to touch the file data at all. It just tells the kernel "send bytes from this file descriptor to that socket descriptor" and the hardware does the rest.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
@@ -249,8 +256,9 @@ int main() {
     close(file_fd);
     unlink("/tmp/sendfile_test.txt");
 }
-
 ```
+
+The bandwidth saving highlighted at the end is not hypothetical. For a 1 GB file, `read`+`write` moves 1 GB from kernel to user space and then 1 GB back - that is 2 GB of memory bus traffic just for copying. `sendfile` skips both of those trips. At scale, this translates directly to lower CPU utilisation and higher sustainable throughput.
 
 ---
 

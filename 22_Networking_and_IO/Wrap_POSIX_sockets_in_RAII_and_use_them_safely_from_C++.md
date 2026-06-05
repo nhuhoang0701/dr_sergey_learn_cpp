@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on building an RAII Socket class and using it for a TCP client — complementing #549 (move-only socket + socket options + EINTR) and #638 (TCP server with unique_ptr closer).
+This topic focuses on building an RAII Socket class and using it for a TCP client - complementing #549 (move-only socket + socket options + EINTR) and #638 (TCP server with unique_ptr closer).
+
+The core idea is simple: a file descriptor is a resource, so it needs an owner. The RAII Socket class is that owner. Once a descriptor lives inside a `Socket`, you cannot forget to close it because the destructor does it for you. Early returns, exceptions, and scope exits all trigger the destructor - you get cleanup for free regardless of how the code exits.
 
 ```cpp
-
 RAII socket lifecycle:
 
   Socket sock(AF_INET, SOCK_STREAM);   // constructor: socket()
@@ -27,7 +28,6 @@ RAII socket lifecycle:
   Exception thrown at any point -> destructor runs -> fd closed
   Early return at any point -> destructor runs -> fd closed
   No leak possible!
-
 ```
 
 ---
@@ -36,8 +36,9 @@ RAII socket lifecycle:
 
 ### Q1: RAII Socket class
 
-```cpp
+Here is a minimal but complete `Socket` class. The critical decisions are: throw in the constructor if the OS call fails (so you never hold an invalid descriptor), delete the copy operations (you cannot meaningfully duplicate a file descriptor), and implement move so the class can transfer ownership into containers and return values.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
@@ -120,13 +121,15 @@ int main() {
 //   Moved to sock2 fd=3
 //   Original fd=-1 (released)
 //   Sockets destroyed (RAII cleanup)
-
 ```
+
+After the move, `sock.fd()` returns `-1` because the source deliberately sets its descriptor to `-1` in the move constructor. The destructor checks for `-1` before calling `close`, so the moved-from object's destructor is a no-op. That is the standard pattern for RAII move semantics.
 
 ### Q2: TCP client using RAII socket
 
-```cpp
+Here is the `Socket` class put to practical use as a TCP client. Notice that the `try`/`catch` in `main` is not doing any resource management - it just prints the error. The resource management happens automatically through RAII regardless of whether the connection succeeds, the send fails, or the receive throws.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -193,13 +196,13 @@ int main() {
     }
     // Socket automatically closed by destructor, even on exception!
 }
-
 ```
 
 ### Q3: RAII prevents fd leaks
 
-```cpp
+This example makes the leak scenario concrete so you can see exactly what goes wrong without RAII and exactly what RAII fixes. The `without_raii` function has a file descriptor that never gets closed if an exception is thrown, which is a resource leak. The `with_raii` version lets the destructor handle it.
 
+```cpp
 #include <iostream>
 #include <stdexcept>
 #include <sys/socket.h>
@@ -223,7 +226,7 @@ private:
 };
 
 void without_raii() {
-    // BUG: fd leak on exception!
+    // BAD: fd leak on exception!
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     // ... some work ...
     throw std::runtime_error("oops");
@@ -271,8 +274,9 @@ int main() {
 //     Created fd=4
 //     Early return!
 //     ~Socket: closing fd=4
-
 ```
+
+File descriptor leaks are one of the nastier bugs to track down in long-running servers because they accumulate slowly. The process gradually uses up its file descriptor limit until new connections fail with "too many open files". RAII eliminates this entire class of bug.
 
 ---
 

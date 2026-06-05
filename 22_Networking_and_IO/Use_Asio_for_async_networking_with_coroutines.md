@@ -9,10 +9,11 @@
 
 ## Topic Overview
 
-This topic covers building an async TCP echo server with Asio coroutines and scaling it with a thread pool — complementing #643 (client + error handling) and #550 (echo server + timeouts).
+This topic covers building a full async TCP echo server with Asio coroutines and scaling it to multiple cores with a thread pool. It complements #643 (client + error handling) and #550 (echo server + timeouts).
+
+The architectural picture is worth having in your head before looking at any code. A single listener coroutine accepts connections and spawns a fresh session coroutine for each one. Those session coroutines all run concurrently on whichever thread happens to be available in the pool - no thread-per-connection overhead, no callback nesting:
 
 ```cpp
-
 Asio coroutine echo server architecture:
   co_spawn(io, listener())          // accept loop
     |-> co_spawn(io, session(sock)) // per-client coroutine
@@ -21,8 +22,9 @@ Asio coroutine echo server architecture:
 
 All sessions run on io.run() thread(s) cooperatively.
 No thread-per-connection overhead.
-
 ```
+
+The key tradeoff table: thread-per-connection is dead simple to write but falls apart at scale because each thread costs ~8 MB of stack. Coroutines cost a few hundred bytes each and can realistically serve hundreds of thousands of concurrent connections on a single machine.
 
 | Concurrency model | Threads | Connections | Complexity |
 | --- | --- | --- | --- |
@@ -36,8 +38,9 @@ No thread-per-connection overhead.
 
 ### Q1: Async TCP echo server with Asio coroutines
 
-```cpp
+Here is the complete single-threaded echo server. The structure is two coroutines: `session` handles one client until it disconnects, and `listener` runs forever accepting new connections and spawning sessions:
 
+```cpp
 // Requires: standalone Asio or Boost.Asio
 // Compile: g++ -std=c++20 -fcoroutines -I/path/to/asio -lpthread server.cpp
 #include <asio.hpp>
@@ -91,13 +94,15 @@ int main() {
     io.run();  // single-threaded event loop
 }
 // Test: echo "Hello" | nc localhost 8080
-
 ```
+
+Note that the `socket` is moved into the session coroutine - `std::move(socket)` transfers ownership of the file descriptor into the coroutine's frame, where it lives for the lifetime of the session. Once the session coroutine finishes (because the client disconnected or an error occurred), the socket destructor runs and the connection closes cleanly.
 
 ### Q2: Coroutines look sequential but don't block
 
-```cpp
+The hardest thing to internalize when first learning async coroutines is that `co_await` suspends the coroutine frame but does NOT block the thread. The thread is free to run other coroutines while this one is waiting. The demo below proves it: two coroutines with the same timer period interleave their output on a single thread:
 
+```cpp
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -154,13 +159,15 @@ int main() {
     // Output interleaved: A0 B0 A1 B1 A2 B2
     // (or similar, depending on timer resolution)
 }
-
 ```
+
+The interleaved output (`A0 B0 A1 B1 A2 B2` rather than `A0 A1 A2 B0 B1 B2`) is the proof that both coroutines genuinely ran concurrently on a single thread. While `task_a` was suspended waiting for its timer, `task_b` got to run, and vice versa. This cooperative scheduling is exactly how you get massive connection counts without massive thread counts.
 
 ### Q3: Thread pool executor for multi-core scaling
 
-```cpp
+Scaling to multiple cores is a one-line change in the architecture: instead of one thread calling `io.run()`, you launch a whole pool of threads all calling `io.run()` on the same `io_context`. Asio distributes the coroutine resumptions across all available threads automatically:
 
+```cpp
 #include <asio.hpp>
 #include <asio/co_spawn.hpp>
 #include <asio/use_awaitable.hpp>
@@ -212,8 +219,9 @@ int main() {
 // All threads call io.run() -> coroutines can be resumed on ANY thread
 // Asio uses implicit strand for each socket (safe without explicit locking)
 // Throughput scales linearly with core count for independent sessions
-
 ```
+
+The thread pool version requires no locking around individual socket operations because each `tcp::socket` has an implicit strand - Asio guarantees that the handlers for a single socket are never run concurrently, even in a multi-threaded pool. You only need explicit `asio::strand` when you have shared mutable state that multiple coroutines (on different sockets) could access simultaneously.
 
 ---
 

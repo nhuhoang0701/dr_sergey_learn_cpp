@@ -9,10 +9,13 @@
 
 ## Topic Overview
 
-DNS resolution via `getaddrinfo()` is a blocking OS call (can take 50ms–5s). In an async event loop (Asio, io_uring, epoll), a single blocking DNS call stalls **all** concurrent I/O operations on that thread. Asio provides `async_resolve` which performs resolution on a background thread and delivers results via the event loop.
+Here is a problem that trips up many developers who are new to async I/O: DNS resolution via `getaddrinfo()` is a **blocking** OS call. It can take anywhere from 50 milliseconds to 5 seconds or more depending on the DNS server, the network, and timeout settings. In a synchronous program that is annoying but not catastrophic. In an async event loop - Asio, io_uring, epoll - it is a serious correctness issue.
+
+The reason is that your event loop runs on one thread (or a small pool of threads). If that thread is sitting inside `getaddrinfo()` waiting for a DNS server to respond, it is not doing anything else. Every other connection that needs to send or receive data is silently stalled for the duration of that DNS lookup. You get exactly the scalability profile you were trying to avoid by using async I/O in the first place.
+
+The diagram below shows the difference concretely:
 
 ```cpp
-
 Blocking DNS (BAD in event loop):
   Thread: [IO] [IO] [getaddrinfo...........] [IO] [IO]
                      ^^^^^^^^^^^^^^^^^^^^^
@@ -21,8 +24,9 @@ Blocking DNS (BAD in event loop):
 Async DNS (GOOD):
   Main:   [IO] [IO] [IO] [IO] [IO] [IO] [callback: resolved!]
   Worker:        [getaddrinfo...........]
-
 ```
+
+Asio's `async_resolve` solves this by offloading the blocking `getaddrinfo` call to a background thread. Your event loop thread is freed immediately and continues driving all other I/O. When the DNS result arrives, Asio delivers it back to your event loop via a callback or coroutine continuation - so your handler code always runs on the event loop thread, with no manual synchronization needed.
 
 | Approach | Blocks event loop? | Thread-safe? | Caching? |
 | --- | --- | --- | --- |
@@ -37,8 +41,9 @@ Async DNS (GOOD):
 
 ### Q1: Use Asio's async_resolve to resolve a hostname without blocking
 
-```cpp
+The key thing to notice in this example is that the timer fires *before* the DNS result arrives. That proves the event loop was not blocked waiting for the DNS lookup - both operations ran concurrently, and the timer (which completes in 1 ms) finished first.
 
+```cpp
 // Requires: Asio standalone or Boost.Asio
 // Compile: g++ -std=c++20 -lpthread -o resolver resolver.cpp
 // (For standalone Asio: -DASIO_STANDALONE -I/path/to/asio/include)
@@ -87,13 +92,13 @@ int main() {
     //     93.184.216.34:443
     //     2606:2800:220:1:248:1893:25c8:1946:443
 }
-
 ```
 
 ### Q2: The getaddrinfo blocking danger
 
-```cpp
+This example demonstrates what you are protecting against. When you call `getaddrinfo` on a nonexistent hostname, the OS will try multiple nameservers and wait for timeouts before giving up - that can mean 5 seconds or more of your event loop thread doing absolutely nothing. The code also lists the safe alternatives at the end, which is a handy reference.
 
+```cpp
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -157,13 +162,15 @@ int main() {
     std::cout << "  3. std::async + getaddrinfo (DIY thread offload)\n";
     std::cout << "  4. getaddrinfo_a (glibc only, POSIX async DNS)\n";
 }
-
 ```
 
 ### Q3: Implement a DNS cache
 
-```cpp
+Neither `getaddrinfo` nor Asio's `async_resolve` caches results. That means every new outgoing connection - even to a hostname you connected to five seconds ago - triggers a fresh DNS lookup. For a service that opens many short-lived connections (think: an HTTP client that hits the same upstream on every request), those lookups add up.
 
+The cache below is simple but production-ready in its core logic: it checks for a hit, evicts expired entries, and stores new results with a configurable TTL. The commented code at the bottom shows how to hook this into Asio's `async_resolve` callback.
+
+```cpp
 #include <iostream>
 #include <string>
 #include <unordered_map>
@@ -256,7 +263,6 @@ int main() {
     //     93.184.216.34
     //     2606:2800:220:1::248
 }
-
 ```
 
 ---
@@ -264,7 +270,7 @@ int main() {
 ## Notes
 
 - `getaddrinfo` timeout depends on OS (Linux: ~5s per nameserver * retries).
-- Asio's `async_resolve` uses a thread pool internally — resolution is OS-blocking but off the event thread.
+- Asio's `async_resolve` uses a thread pool internally - resolution is OS-blocking but off the event thread.
 - c-ares provides truly non-blocking DNS using its own protocol implementation.
 - DNS TTL from the server should ideally guide cache expiration (300s is a common default).
 - For high-traffic servers, DNS caching prevents thundering herd on reconnection storms.
