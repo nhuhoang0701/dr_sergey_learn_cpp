@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic focuses on iterator validity checks and comparing hardening modes — complementing #558 (production hardening + perf analysis) and #650 (debug builds + OOB demos).
+This topic focuses on iterator validity checks and comparing hardening modes - complementing #558 (production hardening + perf analysis) and #650 (debug builds + OOB demos).
+
+Iterator invalidation is one of the most insidious categories of C++ bugs. The problem is that an iterator is just a pointer to memory that was valid at the moment you obtained it. If the container reallocates or you erase elements, that pointer is now dangling - but it looks exactly like a valid pointer. In release builds, using it reads or writes arbitrary memory and the program may continue running for a long time before anything observable goes wrong. In debug mode, the containers track which iterators they have handed out and immediately detect any use after invalidation.
 
 ```cpp
-
 Iterator invalidation bugs (silent in release, caught in debug):
 
   vector<int> v = {1, 2, 3};
@@ -26,7 +27,6 @@ Iterator invalidation bugs (silent in release, caught in debug):
           m.erase(it);  // Invalidates it! ++it is UB!
   // Release: sometimes works, sometimes crashes
   // Debug: immediate assertion failure
-
 ```
 
 ---
@@ -35,8 +35,9 @@ Iterator invalidation bugs (silent in release, caught in debug):
 
 ### Q1: _GLIBCXX_DEBUG for iterator validity
 
-```cpp
+This example demonstrates three different invalidation scenarios: reallocation from `push_back`, element shifting from `erase`, and the correct erase-in-loop pattern. The correct version using the return value of `erase` is worth studying carefully - it is the standard-safe pattern that avoids the bug entirely.
 
+```cpp
 // Compile: g++ -std=c++20 -D_GLIBCXX_DEBUG -g iter_debug.cpp
 #include <iostream>
 #include <vector>
@@ -98,13 +99,15 @@ int main() {
     std::cout << "  map/set erase: only erased element\n";
     std::cout << "  unordered_map rehash: all iterators\n";
 }
-
 ```
+
+The "WRONG" erase pattern in the map example is a bug that often goes undetected in release builds because `std::map` iterators are not invalidated by erasing other elements - only the erased element's iterator becomes invalid. The code happens to work most of the time because the map node was erased before `++it` ran, but the behavior is technically undefined and the debug mode correctly flags it.
 
 ### Q2: libc++ hardening mode preconditions
 
-```cpp
+The libc++ hardening system gives you four distinct levels rather than a single on/off switch. This is useful because you can match the level to the build type - more thorough checking during development, lighter checking in production, no checking only for measured hot paths.
 
+```cpp
 // Compile with libc++:
 // clang++ -std=c++20 -stdlib=libc++ \
 //   -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE precond.cpp
@@ -146,13 +149,15 @@ int main() {
     std::cout << "  DEBUG:     best for local development\n";
     std::cout << "  NONE:      only for benchmarks (rare)\n";
 }
-
 ```
+
+"Move-from-a-moved-object detection" in the DEBUG level is worth calling out. After you move from an object, the standard says that object is in a "valid but unspecified state." Using it may or may not crash. The DEBUG level tracks moved-from objects and aborts if you try to use them as if they were intact - catching a whole category of use-after-move bugs that are otherwise invisible.
 
 ### Q3: OOB caught in debug, silent in release
 
-```cpp
+This example captures what real production bugs often look like: an off-by-one loop error that "works" in most cases because the adjacent heap memory happens to contain benign values, and only fails mysteriously under specific conditions.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <string>
@@ -188,15 +193,16 @@ int main() {
     std::cout << "  - Clear error message with location\n";
     std::cout << "  - Bug fixed before it reaches production\n";
 }
-
 ```
+
+The Heartbleed bug is the canonical example here: a missing bounds check in a TLS heartbeat handler let attackers read up to 64 KB of the server's heap memory per request, including private keys, session tokens, and passwords. The fix was one added bounds check. The lesson is that "my tests never showed a problem" is not the same as "the code is correct" - hardened mode turns those silent heap reads into immediate, loud failures.
 
 ---
 
 ## Notes
 
 - Complementary to #558 (production flags + perf) and #650 (debug build + demos).
-- `_GLIBCXX_DEBUG` adds a wrapper around every container — ABI-incompatible with release builds.
+- `_GLIBCXX_DEBUG` adds a wrapper around every container - ABI-incompatible with release builds.
 - MSVC `/sdl` (Security Development Lifecycle) enables some checks similarly.
 - GCC 14+: `-D_GLIBCXX_ASSERTIONS` is enabled by default in some distros.
 - Always enable at least `_GLIBCXX_ASSERTIONS` or `FAST` hardening in production.

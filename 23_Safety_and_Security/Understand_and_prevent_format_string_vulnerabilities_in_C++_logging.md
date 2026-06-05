@@ -9,24 +9,28 @@
 
 ## Topic Overview
 
-Format string vulnerabilities occur when **user-controlled input** is passed as the format string argument to `printf`-family or logging functions. The attacker embeds format specifiers (`%x`, `%s`, `%n`) to read/write arbitrary memory. This topic focuses specifically on how these vulnerabilities manifest in **logging frameworks** and how C++20's `std::format`/`std::print` eliminate the attack surface entirely.
+Format string vulnerabilities occur when user-controlled input is passed as the format string argument to `printf`-family or logging functions. The attacker embeds format specifiers (`%x`, `%s`, `%n`) to read or write arbitrary memory. This topic focuses specifically on how these vulnerabilities manifest in logging frameworks and how C++20's `std::format`/`std::print` eliminate the attack surface entirely.
+
+Logging is a particularly dangerous place for this vulnerability because developers tend to trust their own logging calls. The instinct is "it's just a log message" - but if user input flows into that message as the format string rather than as a data argument, the attacker is in the driver's seat.
 
 ### Attack Surface in Logging
 
-```cpp
+Here's the flow that matters. The difference between the vulnerable path and the safe path is just where user input enters the pipeline:
 
+```cpp
 Logging call flow:
-  Application code → Logger API → Format engine → Output sink
+  Application code -> Logger API -> Format engine -> Output sink
 
 VULNERABLE path (user controls format string):
-  log(user_input)           →  printf(user_input)
-  spdlog::info(user_input)  →  fmt::format(user_input)  [runtime_format]
+  log(user_input)           ->  printf(user_input)
+  spdlog::info(user_input)  ->  fmt::format(user_input)  [runtime_format]
 
 SAFE path (user is only DATA):
-  log("{}", user_input)             →  printf("%s", user_input)
-  spdlog::info("{}", user_input)    →  fmt::format("{}", user_input)
-
+  log("{}", user_input)             ->  printf("%s", user_input)
+  spdlog::info("{}", user_input)    ->  fmt::format("{}", user_input)
 ```
+
+The rule is the same in both cases: user input must always appear after a fixed, developer-controlled format string. Never as the format string itself.
 
 ### Why Logging Is Especially Dangerous
 
@@ -37,21 +41,24 @@ SAFE path (user is only DATA):
 | Developers assume logging is "safe" | Less scrutiny in code review |
 | Log output may go to terminals, files, databases | Secondary injection targets (log injection) |
 
+The "less scrutiny" point is worth dwelling on. In security-critical code like authentication or input validation, developers are naturally careful. In logging code, they often aren't - which is exactly why attackers target it.
+
 ### Core Example
 
-```cpp
+Here's the simplest possible illustration: the same user input handled unsafely and safely, and then using the modern C++23 approach:
 
+```cpp
 #include <cstdio>
 #include <format>
 #include <print>
 #include <string>
 
 void unsafe_log(const char* message) {
-    std::printf(message); // user_input IS the format string — VULNERABLE!
+    std::printf(message); // user_input IS the format string - VULNERABLE!
 }
 
 void safe_log_printf(const char* message) {
-    std::printf("%s", message); // user_input is DATA, not format — safe
+    std::printf("%s", message); // user_input is DATA, not format - safe
 }
 
 void safe_log_modern(const std::string& message) {
@@ -65,8 +72,9 @@ int main() {
     safe_log_printf(user_input);  // prints literal "%x %x %x %n"
     safe_log_modern(user_input);  // prints literal "%x %x %x %n"
 }
-
 ```
+
+The `unsafe_log` line is commented out because on a real system it would leak stack data and potentially write to memory. The two safe versions just print the `%x %x %x %n` string as literal text - those characters have no special meaning when the user is the argument rather than the format string.
 
 ---
 
@@ -76,8 +84,9 @@ int main() {
 
 **Answer:**
 
-```cpp
+This example actually runs the vulnerable call (commented out) and the safe one, so you can see exactly what output each produces and understand why the outputs differ:
 
+```cpp
 #include <cstdio>
 #include <cstring>
 #include <iostream>
@@ -85,7 +94,7 @@ int main() {
 // Compile: g++ -std=c++20 -Wall -Wformat -Wformat-security fmt_vuln.cpp
 
 int main() {
-    // ═══════════ The Vulnerability ═══════════
+    // The Vulnerability
 
     int secret = 0xDEADBEEF;
     int write_target = 0;
@@ -102,25 +111,25 @@ int main() {
     // Attacker sees stack contents: local variables, return addresses, canaries.
     //
     // Worse: %n WRITES to memory!
-    //   printf("%100x%n") → writes 100 to address read from stack
-    //   This enables arbitrary write → code execution
+    //   printf("%100x%n") -> writes 100 to address read from stack
+    //   This enables arbitrary write -> code execution
 
     std::printf("\n");
 
-    // ═══════════ The Fix ═══════════
+    // The Fix
 
     // SAFE: user_input is DATA (argument to %s)
     std::printf("Safe output: ");
     std::printf("%s", user_input);
     //          ^^^^  ^^^^^^^^^^
-    // Format string is the literal "%s" — controlled by developer.
+    // Format string is the literal "%s" - controlled by developer.
     // user_input is passed as the string argument.
     // printf outputs it verbatim: "%08x.%08x.%08x.%08x"
     // No format specifiers are interpreted!
 
     std::printf("\n");
 
-    // ═══════════ Compiler Warning ═══════════
+    // Compiler Warning
     // With -Wformat-security, the compiler warns:
     //   warning: format string is not a string literal (potentially insecure)
     //
@@ -131,17 +140,17 @@ int main() {
     // Vulnerable output: deadbeef.00000000.7ffd1234.004005a0  (stack leak!)
     // Safe output: %08x.%08x.%08x.%08x                       (literal text)
 }
-
 ```
 
-**Explanation:** When `printf(user_input)` is called, `printf` scans `user_input` for `%` specifiers and reads arguments from the caller's stack frame. Since no extra arguments were passed, it reads whatever is on the stack — leaking secrets. With `printf("%s", user_input)`, the format string is the developer-controlled literal `"%s"`, so `user_input` is treated purely as a string value. The `%x` characters in `user_input` are printed literally.
+When `printf(user_input)` is called, `printf` scans `user_input` for `%` specifiers and reads arguments from the caller's stack frame. Since no extra arguments were passed, it reads whatever is on the stack - leaking secrets. With `printf("%s", user_input)`, the format string is the developer-controlled literal `"%s"`, so `user_input` is treated purely as a string value. The `%x` characters in `user_input` are printed literally.
 
 ### Q2: Demonstrate that std::format / std::print eliminates format string vulnerabilities by design
 
 **Answer:**
 
-```cpp
+This example shows not just that `std::format` is safer, but exactly why - and what happens if you try each of the attacks that work against `printf`:
 
+```cpp
 #include <format>
 #include <print>
 #include <string>
@@ -155,18 +164,18 @@ int main() {
 int main() {
     std::string user_input = "%x %x %x %n";  // attacker payload
 
-    // ═══════════ std::format: Format string is compile-time ═══════════
+    // std::format: Format string is compile-time
     auto result = std::format("{}", user_input);
     std::cout << result << "\n";
     // Output: %x %x %x %n
     // The "{}" is a compile-time constant. user_input is the argument.
-    // The %x characters are just data — std::format doesn't interpret them.
+    // The %x characters are just data - std::format doesn't interpret them.
 
-    // ═══════════ std::print: Same safety ═══════════
+    // std::print: Same safety
     std::print("User said: {}\n", user_input);
     // Output: User said: %x %x %x %n
 
-    // ═══════════ Why attack CANNOT work ═══════════
+    // Why attack CANNOT work
 
     // Attempt 1: Pass malicious string as format
     // std::format(user_input);  // COMPILE ERROR!
@@ -177,13 +186,13 @@ int main() {
     auto runtime_result = std::vformat(user_input, std::make_format_args());
     // This COMPILES but throws std::format_error at RUNTIME
     // because "%x" is not a valid std::format specifier.
-    // Even if it were, there are no arguments to read — no stack leak.
+    // Even if it were, there are no arguments to read - no stack leak.
 
     // Attempt 3: There is no {n} or equivalent write specifier
     // std::format has NO mechanism to write to memory via format specifiers.
     // The worst case is a runtime exception, never memory corruption.
 
-    // ═══════════ Type safety comparison ═══════════
+    // Type safety comparison
     int value = 42;
     // printf: type mismatch is silent UB
     // printf("%s", value);  // UB: reads 42 as pointer, crashes or leaks
@@ -193,25 +202,25 @@ int main() {
     auto safe = std::format("{}", value);  // OK: "42"
     std::println("Value: {}", safe);
 
-    // ═══════════ Logging library integration ═══════════
+    // Logging library integration
     // spdlog (uses fmt::format internally):
     //   spdlog::info("{}", user_input);      // SAFE: user is data
     //   spdlog::info(user_input);            // DANGEROUS with fmt < 10
     //   spdlog::info(fmt::runtime(user_input)); // Explicit opt-in to runtime format
 
-    std::println("All outputs are safe — attacker payload was treated as data.");
+    std::println("All outputs are safe - attacker payload was treated as data.");
 }
-
 ```
 
-**Explanation:** `std::format` requires the format string to be a compile-time constant (`consteval` validation via `basic_format_string`). This means user input literally cannot be used as the format string without explicit `std::vformat` — and even then, there is no `%n` equivalent and arguments are type-safe (no varargs stack reading). The vulnerability class is eliminated by design.
+`std::format` requires the format string to be a compile-time constant (`consteval` validation via `basic_format_string`). This means user input literally cannot be used as the format string without explicit `std::vformat` - and even then, there is no `%n` equivalent and arguments are type-safe (no varargs stack reading). The vulnerability class is eliminated by design, not mitigated.
 
 ### Q3: Audit a logging framework for user-controlled format strings and fix them
 
 **Answer:**
 
-```cpp
+A real-world audit has four steps: find the vulnerable patterns, redesign the API to make them impossible, fix all call sites, and add CI checks to prevent regressions. Here's all four steps in code:
 
+```cpp
 #include <format>
 #include <print>
 #include <string>
@@ -220,13 +229,13 @@ int main() {
 #include <iostream>
 #include <chrono>
 
-// ═══════════ Step 1: Identify vulnerable patterns ═══════════
+// Step 1: Identify vulnerable patterns
 
 // Simulated logging framework (simplified spdlog-like API)
 namespace old_logger {
     // VULNERABLE: accepts runtime format string
     void log(const char* fmt, ...) {
-        // Uses va_list internally → classic printf vulnerability
+        // Uses va_list internally -> classic printf vulnerability
         va_list args;
         va_start(args, fmt);
         std::vprintf(fmt, args);
@@ -252,7 +261,7 @@ void audit_examples(const std::string& username, const std::string& action) {
     // SAFE: format string is literal, user data is argument
 }
 
-// ═══════════ Step 2: Build a safe logging API ═══════════
+// Step 2: Build a safe logging API
 
 namespace safe_logger {
     enum class Level { DEBUG, INFO, WARN, ERROR };
@@ -289,7 +298,7 @@ namespace safe_logger {
     }
 }
 
-// ═══════════ Step 3: Fix all call sites ═══════════
+// Step 3: Fix all call sites
 
 void fixed_examples(const std::string& username, const std::string& action) {
     // ALL patterns: user input is always an ARGUMENT, never the format string
@@ -306,7 +315,7 @@ void fixed_examples(const std::string& username, const std::string& action) {
     // If it came from user input, vformat would throw on invalid format specifiers.
 }
 
-// ═══════════ Step 4: Audit checklist ═══════════
+// Step 4: Audit checklist
 
 // clang-tidy checks:
 //   -checks='cert-err33-c,bugprone-format*,modernize-use-std-print'
@@ -332,30 +341,19 @@ int main() {
     // [2024-01-15 10:30:45] [INFO] User logged in: alice%x%x%n
     // [2024-01-15 10:30:45] [INFO] User alice%x%x%n performed login
     // [2024-01-15 10:30:45] [INFO] Localized: Benutzer: alice%x%x%n, Aktion: login
-    // The %x%n is printed literally — no stack leak, no memory write.
+    // The %x%n is printed literally - no stack leak, no memory write.
 }
-
 ```
 
-**Explanation:** The audit process: (1) Find all logging calls where the first argument is a variable, not a string literal. (2) Replace the logging API to require `std::format_string<Args...>` which enforces compile-time format validation. (3) Fix every call site so user data is always a `{}` argument. (4) Enforce `-Wformat-security` and clang-tidy checks in CI to prevent regressions.
+The audit process: (1) Find all logging calls where the first argument is a variable, not a string literal. (2) Replace the logging API to require `std::format_string<Args...>` which enforces compile-time format validation. (3) Fix every call site so user data is always a `{}` argument. (4) Enforce `-Wformat-security` and clang-tidy checks in CI to prevent regressions.
 
 ---
 
 ## Notes
 
 - **CWE-134 (Use of Externally-Controlled Format String)** is in the Top 25.
-- **`-Wformat-security`** (GCC/Clang) warns when format string is not a literal — enable with `-Werror=format-security`.
-- **spdlog ≥ 1.13 / fmt ≥ 10:** By default require compile-time format strings; runtime strings need explicit `fmt::runtime()`.
-- **Log injection:** Even with safe formatting, check for newline injection (`\n`) in log messages — attackers can forge log entries.
+- **`-Wformat-security`** (GCC/Clang) warns when format string is not a literal - enable with `-Werror=format-security`.
+- **spdlog >= 1.13 / fmt >= 10:** By default require compile-time format strings; runtime strings need explicit `fmt::runtime()`.
+- **Log injection:** Even with safe formatting, check for newline injection (`\n`) in log messages - attackers can forge log entries.
 - **`std::vformat`** is the explicit opt-in for runtime format strings. It cannot write to memory (no `%n` equivalent) and throws on invalid specifiers.
 - Compile with `-std=c++23 -Wformat -Wformat-security -Werror=format-security`.
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```

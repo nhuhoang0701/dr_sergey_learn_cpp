@@ -8,21 +8,21 @@
 
 ## Topic Overview
 
-This topic focuses on debug-build hardening with out-of-bounds examples — complementing #558 (production hardening + performance analysis) and #735 (iterator validity + mode comparison).
+This topic focuses on debug-build hardening with out-of-bounds examples - complementing #558 (production hardening + performance analysis) and #735 (iterator validity + mode comparison).
+
+The reason out-of-bounds access is so dangerous in release builds is that it almost never crashes immediately. The program reads whatever happens to be adjacent to your buffer in memory - which is often valid-looking data - and continues running. That means the bug can silently corrupt behavior or leak sensitive memory for a long time before anything explodes. With debug hardening enabled, the access aborts immediately with a clear message telling you exactly what went wrong.
 
 ```cpp
-
 Out-of-bounds access detection:
 
   Without hardening:           With hardening:
   v = {1, 2, 3}               v = {1, 2, 3}
   v[5] -> ???                  v[5] -> ABORT!
-  
+
   Release: reads garbage       Debug mode:
   or crashes randomly          "vector::operator[]: index 5
   or silently corrupts          out of range for container
   memory -> RCE exploit         of size 3"
-
 ```
 
 ---
@@ -31,8 +31,9 @@ Out-of-bounds access detection:
 
 ### Q1: _GLIBCXX_DEBUG for bounds checking
 
-```cpp
+`_GLIBCXX_DEBUG` is the libstdc++ debug mode flag. When you compile with it, every container gets extra instrumentation: subscript bounds are checked, iterator validity is tracked, and algorithm preconditions (like requiring a sorted range for `binary_search`) are verified. Compile with `-D_GLIBCXX_DEBUG -g -O0` and run your test suite to catch bugs that would otherwise be invisible in release.
 
+```cpp
 // Compile: g++ -std=c++20 -D_GLIBCXX_DEBUG -g -O0 debug_vector.cpp
 #include <iostream>
 #include <vector>
@@ -71,13 +72,15 @@ int main() {
     std::cout << "  Invalidated iterator use\n";
     std::cout << "  Algorithm preconditions (sorted, etc.)\n";
 }
-
 ```
+
+The algorithm precondition check is especially valuable: calling `binary_search` on an unsorted range is undefined behavior that compilers will never warn about. In release builds it returns wrong answers silently. With `_GLIBCXX_DEBUG` it aborts immediately, pointing you straight to the bug.
 
 ### Q2: _LIBCPP_ENABLE_HARDENED_MODE for libc++
 
-```cpp
+If you are using Clang's libc++ instead of GCC's libstdc++, the equivalent feature is the libc++ hardening mode system. The `FAST` mode is designed to be production-safe: it checks the most common preconditions (bounds, empty-container access, null dereferences) at roughly 1-5% overhead. Uncomment any of the lines below and watch the process abort with a clear error.
 
+```cpp
 // Compile: clang++ -std=c++20 -stdlib=libc++ \
 //   -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST hardened.cpp
 
@@ -112,13 +115,15 @@ int main() {
     // Clang 17: _LIBCPP_ENABLE_HARDENED_MODE=1
     // Clang 18: _LIBCPP_HARDENING_MODE = FAST/EXTENSIVE/DEBUG/NONE
 }
-
 ```
+
+Notice that `std::span` gets the same treatment as `std::vector` here. `span` is a non-owning view, so it has no way to do runtime size checking by itself unless the library adds the instrumentation - which hardened mode does.
 
 ### Q3: OOB access: crashes with hardening, silent without
 
-```cpp
+This example is the clearest illustration of why hardening matters. Compile it both ways and compare what happens.
 
+```cpp
 // Compile two ways:
 //   g++ -std=c++20 -O2 oob.cpp -o oob_release
 //   g++ -std=c++20 -D_GLIBCXX_DEBUG -O0 -g oob.cpp -o oob_debug
@@ -159,8 +164,9 @@ int main() {
     std::cout << "  v[100] -> __glibcxx_assert fails -> abort\n";
     std::cout << "  ~5% overhead, no ABI change\n";
 }
-
 ```
+
+The Heartbleed reference in the comments is real: that famous OpenSSL vulnerability was an out-of-bounds read that returned up to 64 KB of adjacent heap memory per request - including private keys, passwords, and session tokens. A bounds check in the right place would have stopped it cold. This is exactly why CWE-125 and CWE-787 sit at the top of the CWE Top 25 every year.
 
 ---
 

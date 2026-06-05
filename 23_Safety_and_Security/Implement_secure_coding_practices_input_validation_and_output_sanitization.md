@@ -13,23 +13,23 @@ Secure coding in C++ requires validating all inputs at trust boundaries and sani
 
 ### Trust Boundary Model
 
+The mental model here is simple: draw a line around the part of your program where data is trusted. Everything crossing that line inbound needs validation; everything crossing it outbound needs sanitization. Skipping either direction is how injection vulnerabilities happen.
+
 ```cpp
-
-┌──────────────────────────────────────────────────┐
-│  Trusted Zone (your validated data)              │
-│                                                  │
-│  ┌──── Input Validation ◄───── User input        │
-│  │     - Range checks         - Network data     │
-│  │     - Type checks          - File contents    │
-│  │     - Length limits         - Environment vars │
-│  │     - Format validation    - CLI arguments     │
-│  │                                               │
-│  └──── Output Sanitization ────► SQL queries     │
-│        - Escaping              - Shell commands  │
-│        - Encoding              - HTML output     │
-│        - Parameterized queries - Log messages    │
-└──────────────────────────────────────────────────┘
-
++--------------------------------------------------+
+|  Trusted Zone (your validated data)              |
+|                                                  |
+|  +---- Input Validation <----- User input        |
+|  |     - Range checks         - Network data     |
+|  |     - Type checks          - File contents    |
+|  |     - Length limits        - Environment vars |
+|  |     - Format validation    - CLI arguments    |
+|  |                                               |
+|  +---- Output Sanitization -----> SQL queries    |
+|        - Escaping              - Shell commands  |
+|        - Encoding              - HTML output     |
+|        - Parameterized queries - Log messages    |
++--------------------------------------------------+
 ```
 
 ### Common Vulnerability Classes
@@ -45,8 +45,9 @@ Secure coding in C++ requires validating all inputs at trust boundaries and sani
 
 ### Core Example
 
-```cpp
+Here is a compact but complete demonstration of the two sides of the boundary: an integer parser that rejects everything that does not look exactly like a valid port number, a username validator that uses an allowlist, and a SQL escaper. Notice how each function has a single clear definition of what it accepts.
 
+```cpp
 #include <string>
 #include <string_view>
 #include <stdexcept>
@@ -94,8 +95,9 @@ int main() {
               << is_safe_username("'; DROP TABLE") << "\n"; // false
     std::cout << escape_sql_string("O'Brien") << "\n";  // O''Brien
 }
-
 ```
+
+The `std::from_chars` approach for integer parsing is worth internalizing. It does not skip leading spaces, it does not accept locale-dependent formats, and it tells you exactly how many characters it consumed - so you can reject trailing garbage. This is much harder to get wrong than `atoi` or `strtol`.
 
 ---
 
@@ -106,7 +108,6 @@ int main() {
 **Answer:**
 
 ```cpp
-
 #include <iostream>
 #include <string_view>
 #include <charconv>
@@ -187,24 +188,22 @@ int main() {
     // Sign change detection:
     try {
         int neg = -1;
-        auto u = safe_narrow<unsigned>(neg); // -1 → huge positive
+        auto u = safe_narrow<unsigned>(neg); // -1 -> huge positive
         (void)u;
     } catch (const std::overflow_error& e) {
         std::cout << "Sign: " << e.what() << "\n";
         // Output: Sign: Sign change in narrowing conversion
     }
 }
-
 ```
 
-**Explanation:** Every integer input must be validated for: (1) syntactic correctness (is it actually a number?), (2) range (does it fit the target type?), (3) truncation (does narrowing lose data?). Using `from_chars` avoids locale and exception overhead during parsing. The round-trip check in `safe_narrow` catches any data loss during type conversion.
+Every integer input needs three layers of validation: syntactic correctness (is it actually a number?), range (does it fit the target type?), and truncation (does narrowing lose data?). Using `from_chars` avoids locale and exception overhead during parsing. The round-trip check in `safe_narrow` catches any data loss during type conversion - if converting to a smaller type and back does not give you the same value, something was lost.
 
 ### Q2: Sanitize all strings used in SQL queries or shell commands to prevent injection attacks
 
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <string_view>
 #include <iostream>
@@ -251,7 +250,7 @@ std::string escape_sql(std::string_view input) {
 void run_UNSAFE(std::string_view filename) {
     std::string cmd = "cat " + std::string(filename);
     // system(cmd.c_str()); // NEVER do this!
-    // Input: "; rm -rf /" → executes: cat ; rm -rf /
+    // Input: "; rm -rf /" -> executes: cat ; rm -rf /
     std::cout << "[UNSAFE] Would run: " << cmd << "\n";
 }
 
@@ -298,17 +297,15 @@ int main() {
     std::cout << escape_html("<script>alert('xss')</script>") << "\n";
     // Output: &lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;
 }
-
 ```
 
-**Explanation:** The golden rule is **never concatenate untrusted input into structured commands** (SQL, shell, HTML). Use parameterized queries for SQL, avoid `system()` for shell commands (use `exec`-family with explicit argument arrays), and escape all special characters before outputting to HTML. Allowlist validation (only permit known-safe characters) is stronger than blocklist escaping.
+The golden rule is: never concatenate untrusted input into structured commands (SQL, shell, HTML). Use parameterized queries for SQL - the `?` placeholder approach means user data is never interpreted as SQL syntax, regardless of what characters it contains. Avoid `system()` for shell commands and use `exec`-family with explicit argument arrays instead. Escape all special characters before outputting to HTML. And notice that `is_safe_filename` explicitly blocks `..` path components to prevent directory traversal - an allowlist of valid characters alone is not enough if you do not also check for traversal patterns.
 
 ### Q3: Use a fuzzer to stress-test parsing code and find crashes in input validation logic
 
 **Answer:**
 
 ```cpp
-
 // === Fuzz target for libFuzzer ===
 // Compile: clang++ -fsanitize=fuzzer,address -std=c++20 fuzz_parser.cpp
 
@@ -367,7 +364,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         if (config.timeout_ms < 0) __builtin_trap();
         if (config.max_connections < 1) __builtin_trap();
     } catch (const std::exception&) {
-        // Expected — invalid input should throw, not crash
+        // Expected - invalid input should throw, not crash
     }
     // If we get here without crash/trap, the parser handled the input safely
     return 0;
@@ -388,16 +385,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 //   -runs=1000000       Number of test cases
 //   -dict=config.dict   Dictionary of interesting tokens (":", "65535", etc.)
 //   -jobs=4             Parallel fuzzing jobs
-
 ```
 
-**Explanation:** Fuzz testing feeds random/mutated inputs to your parser to find crashes, undefined behavior, and logic bugs. libFuzzer (integrated with Clang) is coverage-guided: it tracks which code paths each input exercises and mutates inputs to explore new paths. Combined with AddressSanitizer (`-fsanitize=address`) and UBSan (`-fsanitize=undefined`), it catches memory errors and undefined behavior that might not crash on their own.
+Fuzz testing feeds random and mutated inputs to your parser to find crashes, undefined behavior, and logic bugs. libFuzzer (integrated with Clang) is coverage-guided, meaning it tracks which code paths each input exercises and preferentially mutates inputs that reach new paths. This makes it much more effective than pure random testing - it finds the edge cases your unit tests missed. Combined with AddressSanitizer (`-fsanitize=address`) and UBSan (`-fsanitize=undefined`), it catches memory errors and undefined behavior that might not crash immediately on their own. The `__builtin_trap()` calls after successful parsing are there to verify post-conditions: if the parser claims to have succeeded but the values are out of range, that is a logic bug worth finding.
 
 ---
 
 ## Notes
 
-- **Defense in depth:** Layer multiple protections — input validation, output sanitization, memory-safe types, and runtime sanitizers.
+- **Defense in depth:** Layer multiple protections - input validation, output sanitization, memory-safe types, and runtime sanitizers.
 - **Allowlist over blocklist:** It's safer to define what's allowed than to try to enumerate all dangerous characters.
 - **Never trust `system()`:** Use `execvp()` or `posix_spawn()` with explicit argv arrays. The shell interprets metacharacters.
 - **Fuzz early, fuzz often:** Add fuzz targets for all parsing code and run them in CI pipelines.

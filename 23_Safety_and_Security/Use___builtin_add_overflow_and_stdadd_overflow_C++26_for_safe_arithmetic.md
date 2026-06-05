@@ -9,32 +9,36 @@
 
 ## Topic Overview
 
-Signed integer overflow is **undefined behavior** in C++. The compiler is allowed to assume it never happens and optimize accordingly — removing overflow checks, making infinite loops, or producing completely unexpected code. `__builtin_add_overflow` (GCC/Clang) and the upcoming `std::add_overflow` (C++26) perform the addition and **report whether overflow occurred** without triggering UB.
+Signed integer overflow is **undefined behavior** in C++. The compiler is allowed to assume it never happens and optimize accordingly - removing overflow checks, making infinite loops, or producing completely unexpected code. `__builtin_add_overflow` (GCC/Clang) and the upcoming `std::add_overflow` (C++26) perform the addition and **report whether overflow occurred** without triggering UB.
+
+The reason this trips people up is that overflow checks that look reasonable in source code can be silently removed by the optimizer. You write a check, you think you're protected, and the compiled binary does not contain the check at all. That is not a compiler bug - it is the standard explicitly allowing this optimization because signed overflow is UB.
 
 ### The Overflow Problem
 
-```cpp
+The distinction between signed and unsigned overflow is important because the language treats them completely differently:
 
+```cpp
 Signed overflow is UB:
   int x = INT_MAX;
-  x + 1  →  UNDEFINED BEHAVIOR
+  x + 1  ->  UNDEFINED BEHAVIOR
   Compiler may: return INT_MIN (wrapping), optimize away checks, anything
 
 Unsigned "overflow" is well-defined (modular arithmetic):
   unsigned x = UINT_MAX;
-  x + 1  →  0  (wrapping, always defined)
+  x + 1  ->  0  (wrapping, always defined)
   But the wrap is rarely what you want!
 
 __builtin_add_overflow:
   int result;
   if (__builtin_add_overflow(a, b, &result)) {
-      // overflow occurred — result contains the wrapped value
+      // overflow occurred - result contains the wrapped value
       // but we detected it without UB!
   }
-
 ```
 
 ### Overflow Detection Functions
+
+The GCC/Clang builtins exist today; the `std::` versions are coming in C++26. For portable code that needs to compile with both GCC/Clang and MSVC in the meantime, you can fall back to the pre-check approach shown in Q3:
 
 | Function | Available | Detects |
 | --- | --- | --- |
@@ -49,8 +53,9 @@ __builtin_add_overflow:
 
 ### Core Example
 
-```cpp
+Here is the minimal form. Notice the compile output comment - `INT_MAX + 1` is detected cleanly without triggering any UB, and the compiler generates a single `add` + `jo` instruction pair for it:
 
+```cpp
 #include <iostream>
 #include <climits>
 #include <cstdint>
@@ -68,7 +73,6 @@ int main() {
     }
     // Output: Overflow detected! 2147483647 + 1 doesn't fit in int
 }
-
 ```
 
 ---
@@ -79,13 +83,14 @@ int main() {
 
 **Answer:**
 
-```cpp
+The most important use case here is the allocation size check at the bottom - multiplying a count by an element size to get a `malloc` argument is one of the most common integer overflow vulnerabilities in real code:
 
+```cpp
 #include <iostream>
 #include <climits>
 #include <cstdint>
 
-// ═══════════ __builtin_add_overflow ═══════════
+// __builtin_add_overflow
 //
 // Signature:
 //   bool __builtin_add_overflow(type1 a, type2 b, type3 *result);
@@ -116,7 +121,7 @@ bool safe_mul(int a, int b, int& result) {
     return true;
 }
 
-// ═══════════ Cross-type overflow detection ═══════════
+// Cross-type overflow detection
 // Can detect overflow when converting between types:
 
 bool safe_size_to_int(size_t sz, int& result) {
@@ -159,34 +164,34 @@ int main() {
     int elem_size = 4000;
     int total_size;
     if (!safe_mul(count, elem_size, total_size)) {
-        std::cerr << "Allocation size overflow — reject!\n";
+        std::cerr << "Allocation size overflow - reject!\n";
     }
-    // Output: Allocation size overflow — reject!
+    // Output: Allocation size overflow - reject!
 
     // Compiles to efficient code:
     //   addl %esi, %edi
     //   jo   .overflow    ; single instruction checks overflow flag!
     // No branch prediction penalty on non-overflow path.
 }
-
 ```
 
-**Explanation:** `__builtin_add_overflow(a, b, &result)` performs the addition and returns `true` if the mathematical result cannot be represented in the type of `*result`. It does NOT trigger undefined behavior — the overflow is detected cleanly. On x86, it compiles to a single `add` instruction followed by a `jo` (jump on overflow) check of the CPU's overflow flag, making it extremely efficient.
+**Explanation:** `__builtin_add_overflow(a, b, &result)` performs the addition and returns `true` if the mathematical result cannot be represented in the type of `*result`. It does NOT trigger undefined behavior - the overflow is detected cleanly. On x86, it compiles to a single `add` instruction followed by a `jo` (jump on overflow) check of the CPU's overflow flag, making it extremely efficient.
 
 ### Q2: Implement a saturating_add function that returns INT_MAX on overflow instead of wrapping
 
 **Answer:**
 
-```cpp
+Saturating arithmetic is exactly what you want for things like audio mixing - if two loud samples add up past the maximum, you clamp to the maximum rather than wrapping around to a completely wrong value. The `if constexpr` on signedness means this single template handles both signed and unsigned correctly:
 
+```cpp
 #include <iostream>
 #include <climits>
 #include <cstdint>
 #include <limits>
 #include <type_traits>
 
-// ═══════════ Saturating arithmetic ═══════════
-// Instead of overflow → UB or wrap, clamp to min/max.
+// Saturating arithmetic
+// Instead of overflow -> UB or wrap, clamp to min/max.
 // Used in: audio processing, image processing, financial calculations
 
 template <typename T>
@@ -194,14 +199,14 @@ template <typename T>
 T saturating_add(T a, T b) {
     T result;
     if (__builtin_add_overflow(a, b, &result)) {
-        // Overflow occurred — determine direction
+        // Overflow occurred - determine direction
         if constexpr (std::is_signed_v<T>) {
-            // If a and b are both positive → overflow to max
-            // If a and b are both negative → underflow to min
+            // If a and b are both positive -> overflow to max
+            // If a and b are both negative -> underflow to min
             return (a > 0) ? std::numeric_limits<T>::max()
                            : std::numeric_limits<T>::min();
         } else {
-            // Unsigned: overflow always wraps high → saturate to max
+            // Unsigned: overflow always wraps high -> saturate to max
             return std::numeric_limits<T>::max();
         }
     }
@@ -240,22 +245,22 @@ T saturating_mul(T a, T b) {
 }
 
 int main() {
-    // Signed overflow → clamp to INT_MAX
+    // Signed overflow -> clamp to INT_MAX
     std::cout << "saturating_add(INT_MAX, 1):       "
               << saturating_add(INT_MAX, 1) << "\n";
     // Output: 2147483647 (INT_MAX)
 
-    // Signed underflow → clamp to INT_MIN
+    // Signed underflow -> clamp to INT_MIN
     std::cout << "saturating_add(INT_MIN, -1):      "
               << saturating_add(INT_MIN, -1) << "\n";
     // Output: -2147483648 (INT_MIN)
 
-    // No overflow → normal result
+    // No overflow -> normal result
     std::cout << "saturating_add(100, 200):          "
               << saturating_add(100, 200) << "\n";
     // Output: 300
 
-    // Unsigned overflow → clamp to UINT_MAX
+    // Unsigned overflow -> clamp to UINT_MAX
     std::cout << "saturating_add(UINT_MAX, 1u):     "
               << saturating_add(UINT_MAX, 1u) << "\n";
     // Output: 4294967295 (UINT_MAX)
@@ -271,7 +276,7 @@ int main() {
     int16_t mixed = saturating_add(sample1, sample2);
     std::cout << "Audio mix 30000 + 20000:           "
               << mixed << "\n";
-    // Output: 32767 (INT16_MAX — no clipping distortion from wrap)
+    // Output: 32767 (INT16_MAX - no clipping distortion from wrap)
 
     // Without saturation:
     // int16_t bad_mix = sample1 + sample2;  // UB! (signed overflow)
@@ -285,7 +290,6 @@ int main() {
     // saturating_mul(INT_MAX, 2):        2147483647
     // Audio mix 30000 + 20000:           32767
 }
-
 ```
 
 **Explanation:** `saturating_add` uses `__builtin_add_overflow` to detect overflow, then clamps to `INT_MAX` or `INT_MIN` (for signed) or `T_MAX` (for unsigned) depending on the overflow direction. This is the correct behavior for audio processing (prevents digital clipping), image processing (pixel values stay in range), and any domain where wrapping/UB is worse than clamping.
@@ -294,32 +298,33 @@ int main() {
 
 **Answer:**
 
-```cpp
+This is one of the most important examples in the safety section. The reason this trips people up is that the "obvious" overflow check `x + 100 < x` is mathematically correct and works fine at `-O0`, but is provably removed by the optimizer at `-O2`. The compiler is not wrong to remove it - the standard says it can assume overflow never happens, so the comparison is always false:
 
+```cpp
 #include <iostream>
 #include <climits>
 #include <cstdint>
 
-// ═══════════ The compiler ASSUMES signed overflow never happens ═══════════
+// The compiler ASSUMES signed overflow never happens
 //
 // The C++ standard says signed integer overflow is UB.
 // Compilers use this to OPTIMIZE: if x + 1 > x is always true
 // (because overflow "can't happen"), the compiler removes the check.
 
-// ═══════════ Example 1: Infinite loop ═══════════
+// Example 1: Infinite loop
 
 // void count_forever() {
 //     for (int i = 0; i >= 0; ++i) {
 //         // Programmer assumes: when i reaches INT_MAX and wraps to INT_MIN,
 //         //                     i < 0, loop exits.
 //         // Compiler assumes:   i starts at 0, only increments, so i >= 0 ALWAYS.
-//         //                     Loop condition is always true → infinite loop!
+//         //                     Loop condition is always true -> infinite loop!
 //     }
 // }
-// With -O2: compiler removes the check → truly infinite loop.
+// With -O2: compiler removes the check -> truly infinite loop.
 // With -O0: may appear to work (wraps on most architectures).
 
-// ═══════════ Example 2: Removed bounds check ═══════════
+// Example 2: Removed bounds check
 
 bool check_overflow_buggy(int x) {
     // Programmer's intent: detect if x+100 overflows
@@ -329,17 +334,17 @@ bool check_overflow_buggy(int x) {
     // Compiler optimizes to: return false;  (always!)
 }
 
-// ═══════════ Example 3: Compiler eliminates null check ═══════════
+// Example 3: Compiler eliminates null check
 //
 // void process(int* p) {
-//     int x = *p;       // dereferences p → UB if p is null
+//     int x = *p;       // dereferences p -> UB if p is null
 //     if (p == nullptr)  // compiler: "p was already dereferenced,
 //         return;        //  so p can't be null (otherwise UB already happened)"
 //     use(x);           // dead code from compiler's perspective
 // }
 // Result: null check is REMOVED, crash on null pointer.
 
-// ═══════════ Safe overflow check ═══════════
+// Safe overflow check
 
 bool check_overflow_safe(int x) {
     int result;
@@ -347,7 +352,7 @@ bool check_overflow_safe(int x) {
     // This is well-defined! Returns true if overflow occurs.
 }
 
-// ═══════════ Pre-check without builtins ═══════════
+// Pre-check without builtins
 
 bool will_add_overflow(int a, int b) {
     // Check BEFORE the operation to avoid UB
@@ -360,12 +365,12 @@ int main() {
     // Demonstrate the compiler optimization
     std::cout << "check_overflow_buggy(INT_MAX): "
               << check_overflow_buggy(INT_MAX) << "\n";
-    // With -O2: always prints 0 (false) — check was optimized away!
+    // With -O2: always prints 0 (false) - check was optimized away!
     // The compiler treated x+100 < x as always false.
 
     std::cout << "check_overflow_safe(INT_MAX):  "
               << check_overflow_safe(INT_MAX) << "\n";
-    // Always prints 1 (true) — correctly detects overflow.
+    // Always prints 1 (true) - correctly detects overflow.
 
     // Pre-check method
     std::cout << "will_add_overflow(INT_MAX, 1):  "
@@ -376,7 +381,7 @@ int main() {
               << will_add_overflow(100, 200) << "\n";
     // Output: 0 (false)
 
-    // ═══════════ Why -fwrapv is not the answer ═══════════
+    // Why -fwrapv is not the answer
     //
     // g++ -fwrapv: makes signed overflow defined (two's complement wrap)
     // Problem: disables ALL overflow-based optimizations
@@ -394,18 +399,17 @@ int main() {
     // will_add_overflow(INT_MAX, 1):  1
     // will_add_overflow(100, 200):    0
 }
-
 ```
 
-**Explanation:** The compiler assumes signed overflow never occurs (because it's UB). This means overflow checks written as `x + 100 < x` are optimized to `false` at `-O2` — the compiler proves that for non-overflowing `int` arithmetic, the result of `x + 100` is always `≥ x`. The check is silently removed, leaving the code exactly as vulnerable as without the check. `__builtin_add_overflow` is the correct tool: it's explicitly defined to check for overflow without triggering UB, and compiles to a single CPU flag check.
+**Explanation:** The compiler assumes signed overflow never occurs (because it's UB). This means overflow checks written as `x + 100 < x` are optimized to `false` at `-O2` - the compiler proves that for non-overflowing `int` arithmetic, the result of `x + 100` is always >= `x`. The check is silently removed, leaving the code exactly as vulnerable as without the check. `__builtin_add_overflow` is the correct tool: it's explicitly defined to check for overflow without triggering UB, and compiles to a single CPU flag check.
 
 ---
 
 ## Notes
 
 - **`std::add_overflow`** (C++26, P0543) will standardize `__builtin_add_overflow` as a portable API.
-- **`__builtin_*_overflow`** works with ANY integer types and cross-type conversions (e.g., add two `int`s and store in `int64_t` — no overflow).
-- **`-ftrapv`** (GCC/Clang) traps (aborts) on signed overflow at runtime — useful for debugging but not production.
-- **`-fwrapv`** makes signed overflow defined as two's complement wrapping — disables useful optimizations, not recommended for general use.
-- **`-fsanitize=signed-integer-overflow`** (UBSan) reports overflow at runtime with a diagnostic — use in CI testing.
-- **Allocation size checks** (`count * size`) are the most critical use case — integer overflow in `malloc(n * sizeof(T))` leads to heap overflow (CWE-190).
+- **`__builtin_*_overflow`** works with ANY integer types and cross-type conversions (e.g., add two `int`s and store in `int64_t` - no overflow).
+- **`-ftrapv`** (GCC/Clang) traps (aborts) on signed overflow at runtime - useful for debugging but not production.
+- **`-fwrapv`** makes signed overflow defined as two's complement wrapping - disables useful optimizations, not recommended for general use.
+- **`-fsanitize=signed-integer-overflow`** (UBSan) reports overflow at runtime with a diagnostic - use in CI testing.
+- **Allocation size checks** (`count * size`) are the most critical use case - integer overflow in `malloc(n * sizeof(T))` leads to heap overflow (CWE-190).

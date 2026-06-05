@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic covers why `rand()` is broken for security and how to use OS entropy and CSPRNG — complementing #653 (seeding mt19937 properly, OS entropy for key material).
+This topic covers why `rand()` is broken for security and how to use OS entropy and CSPRNG - complementing #653 (seeding mt19937 properly, OS entropy for key material).
+
+Here is the big picture view of the randomness quality ladder. Think of it as a spectrum from "trivially predictable" to "cryptographically solid":
 
 ```cpp
-
 Randomness quality ladder:
 
   rand()              -> Predictable, biased, NOT for security
@@ -20,8 +21,9 @@ Randomness quality ladder:
   getrandom()         -> Direct OS entropy (Linux 3.17+)
   BCryptGenRandom()   -> Direct OS entropy (Windows)
   Hardware RNG (RDRAND) -> CPU instruction, feeds OS pool
-
 ```
+
+The column that matters most in security discussions is "Unpredictable?" - an attacker who can predict your random numbers owns your system.
 
 | Source | Uniform? | Unpredictable? | Speed | Use for |
 | --- | --- | --- | --- | --- |
@@ -36,8 +38,9 @@ Randomness quality ladder:
 
 ### Q1: rand() problems
 
-```cpp
+Let's make every flaw in `rand()` visible and measurable. Each problem below is demonstrated directly so you can see the output for yourself.
 
+```cpp
 #include <iostream>
 #include <cstdlib>
 #include <ctime>
@@ -81,13 +84,15 @@ int main() {
         std::cout << (rand() & 1);  // may alternate 0,1,0,1,...
     std::cout << '\n';
 }
-
 ```
+
+The first two output lines will be identical - that alone should tell you everything you need to know. When an attacker knows your seed (and `time(0)` narrows it to about a million guesses per day), every value you generate is predictable. The modulo bias is a subtler issue: even if the underlying generator were perfect, `% N` is not uniform unless `RAND_MAX + 1` is a multiple of `N`. It rarely is.
 
 ### Q2: std::random_device + CSPRNG
 
-```cpp
+Now for the right approach. `std::random_device` pulls entropy from the OS, which collects it from hardware events (interrupt timing, RDRAND, etc.). The key insight is that `random_device` is slow but genuinely unpredictable, while mt19937 is fast but not cryptographic. For non-security randomness you seed mt19937 with `random_device`; for security-sensitive values you draw from `random_device` directly.
 
+```cpp
 #include <iostream>
 #include <random>
 #include <array>
@@ -128,13 +133,15 @@ int main() {
     uint64_t auth_token = token_dist(rd);  // crypto-quality
     std::cout << "\nAuth token: " << auth_token << '\n';
 }
-
 ```
+
+Notice the "bad" seeding comment: passing a single `rd()` call to mt19937 gives only 32 bits of entropy for a generator that has 19937 bits of internal state. That means an attacker only needs to try 2^32 seeds - a matter of seconds on modern hardware. The `seed_seq` path seeds all 624 state words from the OS and is the right way to do it.
 
 ### Q3: OS APIs for crypto random bytes
 
-```cpp
+When you need raw cryptographic bytes - for a key, a nonce, a session token - you want to talk to the OS directly rather than going through the C++ standard library. Here is a cross-platform wrapper that chooses the right OS call per platform.
 
+```cpp
 #include <iostream>
 #include <cstring>
 #include <iomanip>
@@ -190,8 +197,9 @@ int main() {
     std::cout << "  macOS: getentropy(2) or arc4random_buf()\n";
     std::cout << "  All feed from hardware entropy (RDRAND, interrupt timing)\n";
 }
-
 ```
+
+The reason to prefer `getrandom` over opening `/dev/urandom` yourself is that `getrandom` is a proper syscall - it does not require a file descriptor, it cannot be affected by `chroot`, and it blocks (safely) until the kernel entropy pool is initialized at boot. This matters during early startup before the system has collected enough entropy.
 
 ---
 
@@ -199,6 +207,6 @@ int main() {
 
 - Complementary to #653 (seeding mt19937 + OS entropy details).
 - `std::random_device` on MinGW may be deterministic! Always verify `entropy() > 0`.
-- For crypto: never use mt19937 (observing 624 outputs reveals the entire state).
+- For crypto: never use mt19937 - observing 624 outputs reveals the entire state.
 - `getrandom(buf, len, GRND_RANDOM)` blocks if pool empty; `GRND_NONBLOCK` returns error.
-- CWE-338: Use of Cryptographically Weak PRNG — one of the most common security bugs.
+- CWE-338: Use of Cryptographically Weak PRNG - one of the most common security bugs.

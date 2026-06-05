@@ -35,13 +35,13 @@ Memory safety, input validation, secure coding practices, and vulnerability prev
 
 ## Notes
 
-- Buffer overflows are the most exploited C++ vulnerability — use std::span, std::array, and bounds checks
-- Use std::string / std::string_view instead of raw char* for string handling
-- Integer overflow on signed types is undefined behavior — use unsigned or check before arithmetic
-- Always initialize variables — uninitialized reads are UB and a common source of vulnerabilities
-- Use RAII to prevent resource leaks that can lead to denial-of-service
-- Static analysis tools (Clang-Tidy, Coverity, PVS-Studio) catch security issues before deployment
-- The C++ Core Guidelines define profiles (bounds, type, lifetime) for safety enforcement
-- std::format eliminates format string vulnerabilities present in printf
-- Avoid einterpret_cast and oid* — they bypass the type system and enable type confusion
-- Fuzz testing (libFuzzer, AFL) discovers edge cases that manual testing misses
+- Buffer overflows are the most exploited C++ vulnerability - use `std::span`, `std::array`, and bounds checks instead of raw C arrays.
+- Use `std::string` / `std::string_view` instead of raw `char*` for string handling - automatic memory management eliminates whole categories of bugs.
+- Integer overflow on signed types is undefined behavior - use unsigned arithmetic or check before performing the operation.
+- Always initialize variables - uninitialized reads are UB and a common source of vulnerabilities that attackers can exploit.
+- Use RAII to prevent resource leaks that can lead to denial-of-service or exploitable states.
+- Static analysis tools (Clang-Tidy, Coverity, PVS-Studio) catch security issues before deployment - integrate them into CI.
+- The C++ Core Guidelines define profiles (bounds, type, lifetime) for safety enforcement across a codebase.
+- `std::format` eliminates format string vulnerabilities that are present in `printf` - the format string is validated at compile time.
+- Avoid `reinterpret_cast` and `void*` - they bypass the type system and enable type confusion vulnerabilities.
+- Fuzz testing (libFuzzer, AFL) discovers edge cases that manual testing misses, especially in parsing and input-handling code.

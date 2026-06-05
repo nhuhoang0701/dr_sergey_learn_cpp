@@ -8,10 +8,11 @@
 
 ## Topic Overview
 
-This topic covers libstdc++ debug mode and libc++ hardening for bounds checking — complementing #650 (debug builds focus) and #735 (iterator validity checks).
+This topic covers libstdc++ debug mode and libc++ hardening for bounds checking - complementing #650 (debug builds focus) and #735 (iterator validity checks).
+
+There is a spectrum of protection you can apply to your C++ standard library containers, ranging from zero overhead with zero safety to full iterator tracking at the cost of significant slowdown. The right choice depends on whether you are running a debug build, a CI test build, or a production binary handling untrusted input. The key insight is that the "hardened" modes (fast and assertions) are cheap enough for production - you are paying 1-5% to eliminate an entire class of vulnerabilities.
 
 ```cpp
-
 Standard library hardening levels:
 
   Release (no checks):   v[10] on size-5 vector -> UB (silent corruption)
@@ -22,7 +23,6 @@ Standard library hardening levels:
     libstdc++: -D_GLIBCXX_DEBUG [-D_GLIBCXX_DEBUG_PEDANTIC]
     libc++:    -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST  (Clang 18+)
                -D_LIBCPP_ENABLE_HARDENED_MODE=1  (Clang 17)
-
 ```
 
 | Mode | Library | Checks | Overhead | Use |
@@ -40,8 +40,9 @@ Standard library hardening levels:
 
 ### Q1: _GLIBCXX_DEBUG bounds checking
 
-```cpp
+`_GLIBCXX_DEBUG` is the full-power debug mode for libstdc++. It wraps every container with a debug overlay that tracks bounds, iterator validity, and algorithm preconditions. The important practical note: it changes the internal layout of containers, which means it is an ABI break - you must compile every object file in your program with the same setting, or you will get link errors or crashes.
 
+```cpp
 // Compile: g++ -std=c++20 -D_GLIBCXX_DEBUG bounds.cpp
 #include <iostream>
 #include <vector>
@@ -85,13 +86,15 @@ int main() {
     std::cout << "  - Algorithm preconditions (sorted ranges)\n";
     std::cout << "  - String bounds and null pointer\n";
 }
-
 ```
+
+Notice the `push_back` invalidation example: `push_back` may cause the vector to reallocate, which moves its buffer to a new address and leaves any existing iterators pointing at freed memory. In release builds this is a silent use-after-free. With `_GLIBCXX_DEBUG`, the debug mode tracks which iterators belong to which container and marks them invalid on any operation that could invalidate them - so the dereference is caught immediately.
 
 ### Q2: libc++ hardened mode
 
-```cpp
+The libc++ hardening system takes a different philosophy than libstdc++ debug mode: instead of one all-or-nothing debug flag, it offers four levels so you can tune the tradeoff between protection and performance. The `FAST` level is specifically designed to be usable in production.
 
+```cpp
 // Compile with Clang/libc++:
 // clang++ -std=c++20 -stdlib=libc++ \
 //   -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST hardened.cpp
@@ -130,8 +133,9 @@ int main() {
     std::cout << "  CI/testing: EXTENSIVE or DEBUG\n";
     std::cout << "  Never: NONE in security-critical code\n";
 }
-
 ```
+
+The `*opt` case for `std::optional` is easy to forget about. Dereferencing an empty optional is UB in the same way as a null pointer dereference, but compilers do not warn about it. The `FAST` hardening level adds the check for free.
 
 ### Q3: Performance cost analysis
 
@@ -152,13 +156,13 @@ int main() {
 **When to use what:**
 
 ```cpp
-
 Debug build:      -D_GLIBCXX_DEBUG -O0 -g  (full checks)
 CI/test build:    -D_GLIBCXX_ASSERTIONS -O2 -g  (moderate checks)
 Release build:    -D_GLIBCXX_ASSERTIONS -O2  (or FAST for libc++)
 Ultra-perf build: no hardening -O3  (only for measured bottlenecks)
-
 ```
+
+The right mental model is: start with `_GLIBCXX_DEBUG` in your day-to-day development build, use `_GLIBCXX_ASSERTIONS` in CI and production, and only strip all checks for the rare cases where you have profiled a specific hot path and determined that the overhead is genuinely unacceptable.
 
 ---
 
@@ -166,6 +170,6 @@ Ultra-perf build: no hardening -O3  (only for measured bottlenecks)
 
 - Complementary to #650 (debug build focus) and #735 (iterator validity).
 - `_GLIBCXX_DEBUG` changes ABI! Don't mix debug/release object files.
-- `_GLIBCXX_ASSERTIONS` does NOT change ABI — safe for partial adoption.
+- `_GLIBCXX_ASSERTIONS` does NOT change ABI - safe for partial adoption.
 - MSVC: `/sdl` enables bounds checking for `std::vector::operator[]` in debug mode.
 - Consider AddressSanitizer (`-fsanitize=address`) alongside hardened STL for testing.
