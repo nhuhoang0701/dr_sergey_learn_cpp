@@ -1,6 +1,6 @@
 # Implement an event bus using std::variant and type-indexed dispatch
 
-**Category:** Design Patterns — Modern Takes  
+**Category:** Design Patterns - Modern Takes  
 **Item:** #675  
 **Standard:** C++17  
 **Reference:** <https://en.cppreference.com/w/cpp/types/type_index>  
@@ -9,30 +9,29 @@
 
 ## Topic Overview
 
-An **event bus** decouples publishers from subscribers — components fire events without knowing who listens. Using `std::type_index` as the key and `std::any`-wrapped handlers, we get a fully type-safe event system with no macros or inheritance hierarchies.
+An **event bus** decouples publishers from subscribers - components fire events without knowing who listens. Using `std::type_index` as the key and `std::any`-wrapped handlers, we get a fully type-safe event system with no macros or inheritance hierarchies.
+
+The beauty of this design is that publishers and subscribers never reference each other at all. A button click handler calls `bus.publish(ButtonClicked{})` and has no idea whether one listener, ten listeners, or zero listeners are subscribed. Subscribers register for exactly the type they care about and are called only when that type is published. This makes it trivially easy to add or remove subsystems without touching the code that fires events.
 
 ### Architecture
 
 ```cpp
-
 Publisher:                        EventBus:                       Subscribers:
   bus.publish(MouseClick{x,y})      handlers[type_index(MouseClick)]     handler1(MouseClick)
-                                    → [handler1, handler2]               handler2(MouseClick)
+                                    -> [handler1, handler2]               handler2(MouseClick)
   bus.publish(KeyPress{'A'})        handlers[type_index(KeyPress)]       handler3(KeyPress)
-                                    → [handler3]
-
+                                    -> [handler3]
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Define EventBus that maps event types to lists of handlers using std::unordered_map<type_index, vector<any>>
+### Q1: Define EventBus that maps event types to handler lists using type_index and vector of any
 
-**Answer:**
+The `std::type_index` is the key - it's a stable, comparable wrapper around a `std::type_info` that you can use in a map. The handlers themselves are stored as `std::any`, which lets us hold `std::function<void(const T&)>` values for different `T` types all in the same vector.
 
 ```cpp
-
 #include <iostream>
 #include <any>
 #include <vector>
@@ -41,7 +40,7 @@ Publisher:                        EventBus:                       Subscribers:
 #include <functional>
 
 class EventBus {
-    // Map: event type → list of handlers (type-erased as std::any)
+    // Map: event type -> list of handlers (type-erased as std::any)
     std::unordered_map<std::type_index, std::vector<std::any>> handlers_;
 
 public:
@@ -52,12 +51,12 @@ public:
         handlers_[key].push_back(std::move(handler));
     }
 
-    // Publish an event — calls all registered handlers for type T
+    // Publish an event - calls all registered handlers for type T
     template<typename T>
     void publish(const T& event) {
         auto key = std::type_index(typeid(T));
         auto it = handlers_.find(key);
-        if (it == handlers_.end()) return;  // No subscribers — no-op
+        if (it == handlers_.end()) return;  // No subscribers - no-op
 
         for (auto& handler_any : it->second) {
             auto& handler = std::any_cast<std::function<void(const T&)>&>(handler_any);
@@ -72,7 +71,7 @@ public:
     }
 };
 
-// ═══════════ Event types (plain structs, no base class needed) ═══════════
+// Event types (plain structs, no base class needed)
 struct MouseClick  { int x, y; int button; };
 struct KeyPress    { char key; bool shift; };
 struct WindowClose {};
@@ -96,7 +95,7 @@ int main() {
     });
 
     bus.subscribe<WindowClose>([](const WindowClose&) {
-        std::cout << "Window closing — saving state...\n";
+        std::cout << "Window closing - saving state...\n";
     });
 
     // Publish events
@@ -104,26 +103,24 @@ int main() {
     bus.publish(KeyPress{'A', true});
     bus.publish(WindowClose{});
 }
-
 ```
+
+Notice that both `MouseClick` handlers fire when a click is published - the bus calls them in registration order. There's no inheritance or virtual dispatch involved; `std::any_cast` recovers the concrete `std::function` type at dispatch time.
 
 **Output:**
 
 ```text
-
 Click at (100, 200)
 Left click detected
 Key pressed: A +Shift
-Window closing — saving state...
-
+Window closing - saving state...
 ```
 
-### Q2: Subscribe and publish events with type safety: bus.subscribe<MouseEvent>(handler)
+### Q2: Subscribe and publish events with type safety using bus.subscribe and bus.publish
 
-**Answer:**
+A bare `subscribe`/`publish` interface is fine for demos, but real applications need to be able to remove individual handlers - for example, when a UI component is destroyed. Adding subscription IDs solves this. The enhanced bus returns a `HandlerID` from `subscribe` that you can pass to `unsubscribe` later.
 
 ```cpp
-
 #include <iostream>
 #include <any>
 #include <vector>
@@ -132,14 +129,14 @@ Window closing — saving state...
 #include <functional>
 #include <string>
 
-// ═══════════ Enhanced EventBus with subscription IDs ═══════════
+// Enhanced EventBus with subscription IDs
 class EventBus {
     using HandlerID = std::size_t;
     struct HandlerEntry {
         HandlerID id;
         std::any handler;
     };
-    
+
     std::unordered_map<std::type_index, std::vector<HandlerEntry>> handlers_;
     HandlerID next_id_ = 0;
 
@@ -207,26 +204,22 @@ int main() {
     bus.unsubscribe(id1);
     bus.publish(PlayerDamaged{"Bob", 60});    // Only "CRITICAL HIT!" handler fires
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Alice took 75 damage
 CRITICAL HIT!
 Alice healed for 30
 CRITICAL HIT!
-
 ```
 
 ### Q3: Show that publishing an unsubscribed event type is a no-op, not an error
 
-**Answer:**
+One of the nice properties of the bus design is graceful handling of events nobody cares about. When `publish` looks up the event type in the map and finds nothing, it returns immediately. No exception, no crash, no diagnostic. This is intentional: publishers shouldn't need to know whether anyone is listening.
 
 ```cpp
-
 #include <iostream>
 #include <any>
 #include <vector>
@@ -246,8 +239,8 @@ public:
     void publish(const T& event) {
         auto it = handlers_.find(std::type_index(typeid(T)));
         if (it == handlers_.end()) {
-            // No handlers registered for this type — silent no-op
-            // This is intentional: publishers shouldn't know/care if anyone listens
+            // No handlers registered for this type - silent no-op.
+            // This is intentional: publishers shouldn't know/care if anyone listens.
             return;
         }
         for (auto& h : it->second) {
@@ -270,31 +263,28 @@ int main() {
     });
 
     // Publish various events:
-    bus.publish(Click{10, 20});    // ✅ Handler called
-    bus.publish(Hover{30, 40});    // ✅ No crash, no error — just a no-op
-    bus.publish(Scroll{-3});       // ✅ No crash, no error — just a no-op
-    bus.publish(Resize{800, 600}); // ✅ No crash, no error — just a no-op
+    bus.publish(Click{10, 20});    // Handler called
+    bus.publish(Hover{30, 40});    // No crash, no error - just a no-op
+    bus.publish(Scroll{-3});       // No crash, no error - just a no-op
+    bus.publish(Resize{800, 600}); // No crash, no error - just a no-op
 
     std::cout << "All events published safely\n";
-    // Only Click produced output — all others were silent no-ops
+    // Only Click produced output - all others were silent no-ops
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Click handler: (10, 20)
 All events published safely
-
 ```
 
 ---
 
 ## Notes
 
-- **Thread safety:** wrap `handlers_` access in `std::shared_mutex` for concurrent publish/subscribe
-- **Event queuing:** instead of immediate dispatch, store events and process them in batch
-- **Alternatives:** `std::function<void(const std::variant<Events...>&)>` for a closed set of event types (no type erasure overhead)
-- **Performance:** `std::any_cast` has overhead — for hot paths, consider a template-based bus with `std::tuple` of handler vectors
+- **Thread safety:** wrap `handlers_` access in `std::shared_mutex` for concurrent publish/subscribe - the current implementation is not thread-safe.
+- **Event queuing:** instead of immediate dispatch, you can store events in a queue and process them in batch at a defined point in the frame. This avoids re-entrancy issues.
+- **Alternatives:** `std::function<void(const std::variant<Events...>&)>` gives you a closed set of event types with no type erasure overhead - good when you know all event types up front.
+- **Performance:** `std::any_cast` has some overhead at dispatch time. For hot paths, consider a template-based bus with `std::tuple` of handler vectors (like the variant bus from the previous file).

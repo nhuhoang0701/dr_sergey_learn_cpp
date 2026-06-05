@@ -11,13 +11,15 @@
 
 This second Command pattern file focuses on using `std::deque` for bounded history, `unique_ptr` polymorphism for type-erased commands, and the mechanics of transferring ownership between undo and redo stacks.
 
+The reason `deque` comes up here is a practical one: if you want to cap history at, say, 50 entries and drop the oldest, you need to remove from the front. With `std::vector`, that is O(n) - it has to shift every element. With `std::deque`, `pop_front()` is O(1). That's the entire story.
+
 ### Deque vs Vector for Command History
 
 | Feature | `std::vector` | `std::deque` |
 | --- | --- | --- |
 | Push back | O(1) amortized | O(1) |
 | Pop back | O(1) | O(1) |
-| Pop front (limit history) | O(n) — expensive! | O(1) — ideal |
+| Pop front (limit history) | O(n) - expensive! | O(1) - ideal |
 | Contiguous memory | Yes | No (chunked) |
 | **Best for** | Unbounded history | Bounded history with max depth |
 
@@ -29,14 +31,15 @@ This second Command pattern file focuses on using `std::deque` for bounded histo
 
 **Answer:**
 
-```cpp
+The spreadsheet example below also demonstrates an important pattern for commands that modify existing state: capture the *old* value at execute time, not at construction time. Notice that `SetCellCommand` saves `old_value_` inside `execute()`, after which it can restore it in `undo()`.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <memory>
 #include <deque>
 
-// ═══════════ Command interface ═══════════
+// Command interface
 class Command {
 public:
     virtual ~Command() = default;
@@ -44,7 +47,7 @@ public:
     virtual void undo() = 0;
 };
 
-// ═══════════ Spreadsheet model ═══════════
+// Spreadsheet model
 class Spreadsheet {
     std::string cells_[3][3];  // 3x3 grid
 public:
@@ -59,7 +62,7 @@ public:
     }
 };
 
-// ═══════════ SetCellCommand ═══════════
+// SetCellCommand
 class SetCellCommand : public Command {
     Spreadsheet& sheet_;
     int row_, col_;
@@ -78,7 +81,7 @@ public:
     }
 };
 
-// ═══════════ Bounded history with deque ═══════════
+// Bounded history with deque
 class CommandHistory {
     std::deque<std::unique_ptr<Command>> history_;
     static constexpr size_t MAX_HISTORY = 50;
@@ -117,15 +120,17 @@ int main() {
     // [ ] [ ] [ ]
     // [ ] [ ] [ ]
 }
-
 ```
 
-### Q2: Use unique_ptr<Command> to store commands by type and std::move to transfer ownership to the history stack
+The `MAX_HISTORY = 50` limit is enforced right after `push_back` with a `pop_front()`. Because we're using a deque, that front removal is O(1) regardless of how large the history gets.
+
+### Q2: Use unique\_ptr\<Command\> to store commands by type and std::move to transfer ownership to the history stack
 
 **Answer:**
 
-```cpp
+`unique_ptr<Command>` is what makes polymorphic command storage work cleanly. The history stack stores a single type (`unique_ptr<Command>`) but at runtime each slot may point to a completely different concrete command class. The example below also introduces the **Composite command** pattern - a command that contains other commands and executes them as a group, which is itself usable anywhere a `Command` is expected.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <deque>
@@ -138,7 +143,7 @@ public:
     virtual void undo() = 0;
 };
 
-// ═══════════ Multiple command types stored polymorphically ═══════════
+// Multiple command types stored polymorphically
 class PrintCommand : public Command {
     std::string message_;
 public:
@@ -182,19 +187,21 @@ int main() {
     // << undo: Step 2
     // << undo: Step 1
 
-    // The composite is itself a Command — can be stored in history
+    // The composite is itself a Command - can be stored in history
     std::deque<std::unique_ptr<Command>> history;
     history.push_back(std::move(macro));  // macro is now nullptr
 }
-
 ```
+
+The reason composite commands undo in reverse order is fundamental: if step 2 depended on step 1 having run, then undoing step 1 before undoing step 2 would leave things in an inconsistent state. Reverse order is always the safe choice.
 
 ### Q3: Implement redo by re-executing commands from a redo stack, transferring ownership back
 
 **Answer:**
 
-```cpp
+This brings together everything from the previous two answers: deque-backed stacks, polymorphic commands, and ownership transfer between stacks on undo and redo.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <deque>
@@ -217,7 +224,7 @@ public:
     void undo() override    { target_.erase(target_.size() - text_.size()); }
 };
 
-// ═══════════ Full undo/redo with deque ═══════════
+// Full undo/redo with deque
 class Editor {
     std::string buffer_;
     std::deque<std::unique_ptr<Command>> undo_stack_;
@@ -263,14 +270,15 @@ int main() {
     ed.type("!");        ed.show();  // "Hello!"  (redo cleared)
     ed.redo();           ed.show();  // "Hello!"  (nothing to redo)
 }
-
 ```
+
+The last two lines show the key behavior: after undoing " World" and typing "!" instead, `redo_stack_` was cleared by the new `type()` call. So the final `redo()` does nothing - there is no longer a future to redo into.
 
 ---
 
 ## Notes
 
-- `std::deque` is preferred for bounded history because `pop_front()` is O(1) vs vector's O(n)
-- Composite commands (macros) are themselves `Command` — enables recording multi-step actions as a single undo unit
-- Always undo composite commands in **reverse order** to maintain consistency
-- Clearing redo on new execute prevents branching history (though some editors support undo trees)
+- `std::deque` is preferred for bounded history because `pop_front()` is O(1) vs vector's O(n). If your history has no size limit, either container works fine.
+- Composite commands (macros) are themselves `Command` objects - this enables recording multi-step actions as a single undo unit, which is what most users expect from "undo" in a real application.
+- Always undo composite commands in **reverse order** to maintain consistency.
+- Clearing redo on new execute prevents branching history; some editors support undo trees instead, but that's a significantly more complex data structure.

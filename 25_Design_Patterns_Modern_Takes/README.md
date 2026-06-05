@@ -1,4 +1,4 @@
-# Design Patterns — Modern Takes
+# Design Patterns - Modern Takes
 
 Classic design patterns reimagined with modern C++ features: CRTP, type erasure, variant visitors, etc.
 
@@ -34,13 +34,13 @@ Classic design patterns reimagined with modern C++ features: CRTP, type erasure,
 
 ## Notes
 
-- Modern C++ replaces many GoF patterns with language features — lambdas replace Strategy, variants replace Visitor
-- Type erasure (like std::function) provides runtime polymorphism without inheritance hierarchies
-- CRTP replaces virtual dispatch for static polymorphism — zero overhead at runtime
-- std::variant + std::visit implements the Visitor pattern without double dispatch
-- The Singleton pattern is often an anti-pattern — prefer dependency injection
-- Policy-based design (templates as mixins) replaces deep inheritance for configurable behavior
-- std::unique_ptr with custom deleters implements the RAII-based Handle pattern
-- The Builder pattern benefits from C++20 designated initializers and aggregate init
-- std::expected chain replaces the traditional error-handling Command pattern
-- Event-driven systems use signal/slot or observer patterns — consider std::function + containers
+- Modern C++ replaces many GoF patterns with language features - lambdas replace Strategy, variants replace Visitor.
+- Type erasure (like `std::function`) provides runtime polymorphism without inheritance hierarchies.
+- CRTP replaces virtual dispatch for static polymorphism, giving you zero overhead at runtime.
+- `std::variant` + `std::visit` implements the Visitor pattern without double dispatch.
+- The Singleton pattern is often an anti-pattern - prefer dependency injection.
+- Policy-based design (templates as mixins) replaces deep inheritance for configurable behavior.
+- `std::unique_ptr` with custom deleters implements the RAII-based Handle pattern.
+- The Builder pattern benefits from C++20 designated initializers and aggregate init.
+- `std::expected` chains replace the traditional error-handling Command pattern.
+- Event-driven systems use signal/slot or observer patterns - consider `std::function` + containers.

@@ -1,6 +1,6 @@
 # Implement an Entity-Component-System (ECS) architecture in C++
 
-**Category:** Design Patterns — Modern Takes  
+**Category:** Design Patterns - Modern Takes  
 **Item:** #572  
 **Reference:** <https://en.wikipedia.org/wiki/Entity_component_system>  
 
@@ -10,22 +10,22 @@
 
 This second ECS file focuses on **advanced storage strategies**: type-erased component arrays, the AoS vs SoA debate, and the **sparse set** data structure that enables O(1) component operations without hash maps.
 
+If the first ECS file was about the idea, this one is about the engineering. Real ECS frameworks don't use `optional<T>[MAX_ENTITIES]` - they use carefully designed storage that minimizes indirection, maximizes cache hits, and keeps add/remove at O(1). Each of the three questions here addresses one of those concerns.
+
 ### AoS vs SoA Layout
 
 ```cpp
-
-AoS (Array of Structs) — traditional OOP:
+AoS (Array of Structs) - traditional OOP:
   entities[] = [ {pos, vel, hp}, {pos, vel, hp}, {pos, vel, hp} ]
   Cache line: |pos|vel|hp|pos|vel|hp|...
-  Problem: iterating only positions loads vel+hp into cache too → waste
+  Problem: iterating only positions loads vel+hp into cache too -> waste
 
-SoA (Struct of Arrays) — ECS style:
-  positions[]  = [ pos, pos, pos, pos, pos ]  ← contiguous
-  velocities[] = [ vel, vel, vel, vel, vel ]  ← contiguous
-  healths[]    = [ hp,  hp,  hp,  hp,  hp ]   ← contiguous
-  Cache line: |pos|pos|pos|pos|...  ← only what you need
+SoA (Struct of Arrays) - ECS style:
+  positions[]  = [ pos, pos, pos, pos, pos ]  <- contiguous
+  velocities[] = [ vel, vel, vel, vel, vel ]  <- contiguous
+  healths[]    = [ hp,  hp,  hp,  hp,  hp ]   <- contiguous
+  Cache line: |pos|pos|pos|pos|...  <- only what you need
   Result: 3-5x faster iteration for systems that touch 1-2 components
-
 ```
 
 ---
@@ -34,10 +34,9 @@ SoA (Struct of Arrays) — ECS style:
 
 ### Q1: Design an ECS where entities are integer IDs, components are stored in type-erased arrays, and systems iterate component views
 
-**Answer:**
+The key architectural idea here is the `World` class acting as a registry. It holds one `ComponentPool<T>` per type, keyed by `std::type_index`. Because `ComponentPool<T>` inherits from `IComponentPool`, the world can store all pools in one map without knowing the concrete types at compile time.
 
 ```cpp
-
 #include <iostream>
 #include <memory>
 #include <unordered_map>
@@ -49,7 +48,7 @@ SoA (Struct of Arrays) — ECS style:
 
 using Entity = std::uint32_t;
 
-// ═══════════ Type-erased component storage base ═══════════
+// Type-erased component storage base
 class IComponentPool {
 public:
     virtual ~IComponentPool() = default;
@@ -92,7 +91,7 @@ public:
     Entity entity_at(std::size_t i) const { return entities_[i]; }
 };
 
-// ═══════════ World: manages entities and type-erased pools ═══════════
+// World: manages entities and type-erased pools
 class World {
     Entity next_entity_ = 0;
     std::unordered_map<std::type_index, std::unique_ptr<IComponentPool>> pools_;
@@ -116,7 +115,7 @@ public:
     template<typename T>
     bool has(Entity e) { return get_pool<T>().has(e); }
 
-    // ═══════════ View: iterate entities with specific components ═══════════
+    // View: iterate entities with specific components
     template<typename... Ts, typename Func>
     void each(Func&& func) {
         // Use the smallest pool for iteration
@@ -156,28 +155,28 @@ int main() {
               << ", " << world.get<Position>(player).y << ")\n";
     // Output: Player: (1, 2)
 }
-
 ```
+
+The `each<Position, Velocity>()` call uses a fold expression `(get_pool<Ts>().has(e) && ...)` to check all required component types in one shot. If any is missing, the entity is skipped. The lambda then receives references to each component directly - no indirection, no casts.
 
 ### Q2: Show why AoS is poor for ECS and how SoA component pools improve cache performance
 
-**Answer:**
+This is the core performance argument for ECS. The move system needs `pos_x`, `pos_y`, `vel_x`, `vel_y` - 16 bytes per entity. In AoS layout, each entity struct is 28 bytes, so 43% of every cache line is wasted data the system doesn't use. In SoA layout, position and velocity each live in their own tightly-packed arrays, so every cache line holds only useful data. The compiler can even auto-vectorize the SoA loop using SIMD instructions.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <chrono>
 #include <cstdint>
 
-// ═══════════ AoS: Array of Structs (poor cache usage) ═══════════
+// AoS: Array of Structs (poor cache usage)
 struct EntityAoS {
     float pos_x, pos_y;   // Position
     float vel_x, vel_y;   // Velocity
     int health;            // Health
     int texture_id;        // Sprite
     float ai_timer;        // AI state
-    // 28 bytes per entity — but move system only needs 16 bytes (pos + vel)
+    // 28 bytes per entity - but move system only needs 16 bytes (pos + vel)
 };
 
 void move_system_aos(std::vector<EntityAoS>& entities, float dt) {
@@ -187,7 +186,7 @@ void move_system_aos(std::vector<EntityAoS>& entities, float dt) {
     }
 }
 
-// ═══════════ SoA: Struct of Arrays (cache-friendly) ═══════════
+// SoA: Struct of Arrays (cache-friendly)
 struct WorldSoA {
     std::vector<float> pos_x, pos_y;  // Contiguous position data
     std::vector<float> vel_x, vel_y;  // Contiguous velocity data
@@ -233,15 +232,15 @@ int main() {
     std::cout << "Speedup: " << aos_ms / soa_ms << "x\n";
     // Typical: SoA is 3-5x faster due to cache efficiency + SIMD
 }
-
 ```
 
 ### Q3: Implement a sparse set for O(1) component add/remove/has without hash maps
 
-**Answer:**
+The sparse set is worth slowing down on because the idea is genuinely clever. The reason a hash map isn't used here is that `std::unordered_map` has unpredictable memory access patterns - each lookup follows a pointer to a bucket. The sparse set avoids this by using two plain arrays. `sparse[entity]` gives you an index into `dense[]` in one step, and `dense[]` stays packed (no gaps) so iteration is just a sequential scan.
+
+The reason this trips people up is the `remove` operation. You can't just set `sparse[e] = INVALID` and leave a hole in `dense[]` - that would break iteration. The trick is to swap the removed element with the last element of `dense[]`, pop the back, and update the sparse index for the entity that was just moved.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <cstdint>
@@ -249,19 +248,19 @@ int main() {
 
 using Entity = std::uint32_t;
 
-// ═══════════ Sparse Set: O(1) add, remove, has, iteration ═══════════
+// Sparse Set: O(1) add, remove, has, iteration
 // Two arrays:
-//   sparse[entity] → index into dense (or invalid)
-//   dense[index]   → entity ID
-// dense is always packed (no gaps) → cache-friendly iteration
+//   sparse[entity] -> index into dense (or invalid)
+//   dense[index]   -> entity ID
+// dense is always packed (no gaps) -> cache-friendly iteration
 
 template<typename T>
 class SparseSet {
     static constexpr Entity INVALID = ~Entity{0};
 
-    std::vector<Entity> sparse_;  // entity ID → dense index
-    std::vector<Entity> dense_;   // dense index → entity ID
-    std::vector<T> components_;   // dense index → component data
+    std::vector<Entity> sparse_;  // entity ID -> dense index
+    std::vector<Entity> dense_;   // dense index -> entity ID
+    std::vector<T> components_;   // dense index -> component data
 
     void ensure_sparse(Entity e) {
         if (e >= sparse_.size())
@@ -325,45 +324,36 @@ int main() {
     std::cout << "Has 5: " << positions.has(5) << '\n';  // true
     std::cout << "Has 2: " << positions.has(2) << '\n';  // false
 
-    // Remove entity 5 — O(1), maintains packed dense array
+    // Remove entity 5 - O(1), maintains packed dense array
     positions.remove(5);
     std::cout << "Has 5 after remove: " << positions.has(5) << '\n'; // false
     std::cout << "Dense size: " << positions.size() << '\n';          // 2
 
-    // Iterate — no gaps, cache-friendly
+    // Iterate - no gaps, cache-friendly
     for (std::size_t i = 0; i < positions.size(); ++i) {
         auto e = positions.entity_at(i);
         auto& p = positions.component_at(i);
         std::cout << "Entity " << e << " at (" << p.x << ", " << p.y << ")\n";
     }
 }
-
 ```
 
 **Output:**
 
 ```text
-
 Has 5: true
 Has 2: false
 Has 5 after remove: false
 Dense size: 2
 Entity 0 at (10, 20)
 Entity 3 at (30, 40)
-
 ```
 
 ---
 
 ## Notes
 
-- **Sparse set** is the core data structure in EnTT (most popular C++ ECS library)
-- **Archetype-based ECS** (flecs) groups entities by component combination for even better iteration
-- **SoA is essential for SIMD:** compilers can auto-vectorize SoA loops but cannot vectorize AoS
-- **Trade-off:** sparse set uses O(max_entity) memory for the sparse array, but operations are all O(1)
-
-```cpp
-
-// Your practice code
-
-```
+- **Sparse set** is the core data structure in EnTT, the most popular C++ ECS library. Understanding it gives you genuine insight into how production-grade ECS works.
+- **Archetype-based ECS** (used by flecs) groups entities by their exact component combination, which allows even tighter cache packing for iteration.
+- **SoA is essential for SIMD:** compilers can auto-vectorize SoA loops using SSE/AVX instructions but generally cannot vectorize AoS because the data isn't contiguous.
+- **Trade-off:** the sparse set uses O(max_entity) memory for the sparse array, but all operations are O(1) and iteration is cache-friendly with no gaps.

@@ -8,21 +8,23 @@
 
 ## Topic Overview
 
-This third ECS file focuses on **Structure of Arrays (SoA) layout for cache performance** and **component queries** (archetypes) — the two pillars that make ECS faster than traditional OOP hierarchies for data-heavy game/simulation workloads.
+This third ECS file focuses on **Structure of Arrays (SoA) layout for cache performance** and **component queries** (archetypes) - the two pillars that make ECS faster than traditional OOP hierarchies for data-heavy game and simulation workloads.
+
+The core performance insight is about cache lines. A modern CPU cache line is 64 bytes. When you iterate over a million entities updating their positions, you want each cache line to be full of position data - not a mixture of position, health, name, and whatever else the entity struct holds. SoA achieves exactly that.
 
 ### AoS vs SoA Memory Layout
 
-```cpp
+The diagram below shows why the layout choice matters. When you run a movement system that only touches position and velocity, you don't want health and name data polluting your cache lines.
 
+```cpp
 AoS (Array of Structs):             SoA (Struct of Arrays):
   Entity[0]: {pos, vel, health}       positions:  [p0, p1, p2, p3, ...]
   Entity[1]: {pos, vel, health}       velocities: [v0, v1, v2, v3, ...]
   Entity[2]: {pos, vel, health}       health:     [h0, h1, h2, h3, ...]
-  
+
   Cache line loads pos+vel+health     Cache line loads pos0+pos1+pos2+...
   for ONE entity                      for MANY entities
   Bad for: iterate all positions      Good for: iterate all positions
-
 ```
 
 ---
@@ -33,22 +35,23 @@ AoS (Array of Structs):             SoA (Struct of Arrays):
 
 **Answer:**
 
-```cpp
+The fundamental ECS insight is the separation of concerns: entities are just IDs with no behavior, components are just data with no behavior, and systems are just functions that operate on component arrays. Nothing is hidden behind a virtual function table. This is what lets the compiler and CPU optimize the inner loops aggressively.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <cstdint>
 #include <cmath>
 
-// ═══════════ Entity = just an ID ═══════════
+// Entity = just an ID
 using Entity = uint32_t;
 
-// ═══════════ Components = plain data ═══════════
+// Components = plain data
 struct Position { float x, y; };
 struct Velocity { float dx, dy; };
 struct Health   { int hp, max_hp; };
 
-// ═══════════ SoA component storage ═══════════
+// SoA component storage
 struct World {
     std::vector<Entity> entities;
     std::vector<Position> positions;
@@ -66,7 +69,7 @@ struct World {
     size_t count() const { return entities.size(); }
 };
 
-// ═══════════ Systems = free functions over components ═══════════
+// Systems = free functions over components
 void movement_system(World& w, float dt) {
     for (size_t i = 0; i < w.count(); ++i) {
         w.positions[i].x += w.velocities[i].dx * dt;
@@ -99,15 +102,17 @@ int main() {
     // Entity 0: pos=(2,1) hp=85
     // Entity 1: pos=(9,7) hp=65
 }
-
 ```
+
+Notice that `movement_system` only touches `positions` and `velocities` - it never looks at `health`. In the SoA layout, those two arrays are laid out contiguously in memory, so iterating through them is extremely cache-friendly.
 
 ### Q2: Use a SoA layout for component storage and show cache performance vs AoS
 
 **Answer:**
 
-```cpp
+The benchmark below makes the cache difference measurable. The AoS entity struct has extra fields (`name`, `faction`, `armor`, `damage`) that the position update loop doesn't need. Every time the CPU loads a cache line to read a position, it also loads those unused fields - wasting cache capacity. The SoA version packs only position and velocity into tightly contiguous arrays, so the useful data density per cache line is much higher.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -115,7 +120,7 @@ int main() {
 
 struct Vec2 { float x, y; };
 
-// ═══════════ AoS: Array of Structs ═══════════
+// AoS: Array of Structs
 struct AoS_Entity {
     Vec2 position;
     Vec2 velocity;
@@ -133,7 +138,7 @@ void update_positions_aos(std::vector<AoS_Entity>& entities, float dt) {
     }
 }
 
-// ═══════════ SoA: Struct of Arrays ═══════════
+// SoA: Struct of Arrays
 struct SoA_World {
     std::vector<float> pos_x, pos_y;
     std::vector<float> vel_x, vel_y;
@@ -181,22 +186,24 @@ int main() {
     // AoS loads 56 bytes per entity (most unused)
     // SoA loads 8 bytes per entity (pos_x + vel_x, tightly packed)
 }
-
 ```
+
+The reason this trips people up is that the AoS version *looks* clean and object-oriented. The struct groups related data nicely. But when a tight loop only needs two of the ten fields in that struct, the other eight fields are dead weight that fills up cache lines and forces more memory traffic.
 
 ### Q3: Implement component queries that return all entities with a given set of components
 
 **Answer:**
 
-```cpp
+Not every entity has every component. A camera entity has a position but no health. A trigger zone has no position in the physical sense but triggers events. Component queries let a system ask "give me all entities that have both Position and Velocity" - only the entities that can meaningfully participate in the movement system. The component mask using `std::bitset` makes that check a single bitwise AND operation.
 
+```cpp
 #include <iostream>
 #include <vector>
 #include <bitset>
 #include <cstdint>
 #include <optional>
 
-// ═══════════ Component type IDs ═══════════
+// Component type IDs
 enum ComponentType : size_t {
     POSITION = 0,
     VELOCITY = 1,
@@ -212,7 +219,7 @@ struct Position { float x, y; };
 struct Velocity { float dx, dy; };
 struct Health   { int hp; };
 
-// ═══════════ World with component masks ═══════════
+// World with component masks
 struct World {
     std::vector<ComponentMask> masks;
     std::vector<std::optional<Position>> positions;
@@ -241,7 +248,7 @@ struct World {
         health[e] = h;
     }
 
-    // ═══════════ Query: find entities matching a component mask ═══════════
+    // Query: find entities matching a component mask
     std::vector<Entity> query(ComponentMask required) const {
         std::vector<Entity> result;
         for (size_t i = 0; i < masks.size(); ++i) {
@@ -291,14 +298,15 @@ int main() {
     for (auto e : alive) std::cout << e << " ";
     std::cout << '\n';  // 0 2
 }
-
 ```
+
+The query `(masks[i] & required) == required` checks whether every required bit is set in the entity's mask. If the entity has extra components beyond what was requested, that's fine - the check still passes. Entity 0 has all three components and shows up in both queries as expected.
 
 ---
 
 ## Notes
 
-- **SoA wins** when systems touch few components per entity (movement only reads pos+vel, not health/name/etc.)
-- **AoS wins** when you frequently access all components of one entity (serialization, deep copy)
-- Component masks (`bitset`) enable O(1) per-entity matching; production ECS uses **archetypes** (groups of entities with identical masks) for even faster iteration
-- Real ECS frameworks (EnTT, flecs) use sparse sets for O(1) add/remove and cache-friendly iteration
+- **SoA wins** when systems touch few components per entity - the movement system only reads position and velocity, so AoS wastes cache loading health, name, and other unused fields.
+- **AoS wins** when you frequently access all components of one entity at once - serialization, deep copy, or UI inspection of a single selected object.
+- Component masks (`bitset`) enable O(1) per-entity matching. Production ECS frameworks use **archetypes** - groups of entities with identical masks - for even faster iteration, since all entities in an archetype can be iterated without any per-entity mask check.
+- Real ECS frameworks (EnTT, flecs) use sparse sets for O(1) component add/remove and cache-friendly iteration over archetypes.

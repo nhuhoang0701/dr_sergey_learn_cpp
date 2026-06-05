@@ -9,9 +9,13 @@
 
 ## Topic Overview
 
-`std::expected<T, E>` (C++23) holds either a value of type `T` or an error of type `E`. Its **monadic interface** (`and_then`, `transform`, `or_else`, `transform_error`) enables chaining fallible operations without manual `if`-checking at each step — similar to Rust's `Result::and_then` or Haskell's `>>=`.
+`std::expected<T, E>` (C++23) holds either a value of type `T` or an error of type `E`. The really useful part is its **monadic interface** - the methods `and_then`, `transform`, `or_else`, and `transform_error` - which lets you chain fallible operations into a clean pipeline without manually checking for errors at each step. If you've used Rust's `Result::and_then` or Haskell's `>>=`, this is the same idea landing in C++.
 
-### Expected vs Exceptions — At a Glance
+The core insight is that once an error occurs in the pipeline, every subsequent step is automatically skipped. You write the happy path from top to bottom, and error propagation takes care of itself.
+
+### Expected vs Exceptions - At a Glance
+
+If you're used to exceptions, the table below captures the tradeoffs. The biggest practical differences are that `std::expected` keeps error information in the type signature (so callers can't ignore it) and avoids stack unwinding on failure (which can be significant when errors are frequent).
 
 | Aspect | `std::expected` pipeline | `try/catch` exceptions |
 | --- | --- | --- |
@@ -29,8 +33,9 @@
 
 **Answer:**
 
-```cpp
+Here's the key thing to observe: each of the five steps returns `std::expected<something, Error>`. When you chain them with `.and_then()`, the chain short-circuits the moment any step returns an error - later steps never run. At the call site, you write a clean linear pipeline and check once at the end.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
@@ -39,7 +44,7 @@
 
 using Error = std::string;
 
-// ═══════════ Five fallible steps ═══════════
+// Five fallible steps
 auto step1_read(const std::string& input)
     -> std::expected<std::string, Error>
 {
@@ -79,7 +84,7 @@ auto step5_format(double v)
 }
 
 int main() {
-    // ═══════════ Chain five steps — ZERO if-checks ═══════════
+    // Chain five steps - ZERO if-checks in between
     auto result = step1_read("144.0")
         .and_then(step2_parse)
         .and_then(step3_validate)
@@ -89,7 +94,7 @@ int main() {
     if (result)
         std::cout << *result << '\n';   // Result = 12.000000
 
-    // Error propagation — step3 fails, steps 4-5 skipped
+    // Error propagation - step3 fails, steps 4-5 skipped
     auto bad = step1_read("-9")
         .and_then(step2_parse)
         .and_then(step3_validate)   // fails here
@@ -100,20 +105,22 @@ int main() {
         std::cout << "Error: " << bad.error() << '\n';
     // Error: negative value
 }
-
 ```
+
+Notice that the second pipeline fails at `step3_validate` because of the negative value, and the remaining two steps are never called. The error just flows through automatically.
 
 ### Q2: Use transform_error to convert between error types at pipeline boundaries
 
 **Answer:**
 
-```cpp
+Real systems often have multiple layers - a database layer, a service layer, an API layer - each with its own error type. `transform_error` lets you map from one error type to another as the result crosses a boundary, without losing any context. Think of it as a lens that only activates when something went wrong.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
 
-// ═══════════ Layer-specific error types ═══════════
+// Layer-specific error types
 struct DbError  { int code; std::string detail; };
 struct AppError { std::string source; std::string message; };
 
@@ -135,7 +142,7 @@ auto process_user(const std::string& name)
 }
 
 int main() {
-    // Convert DbError → AppError at the boundary
+    // Convert DbError -> AppError at the boundary
     auto result = db_lookup(0)
         .transform_error([](DbError e) -> AppError {
             return AppError{
@@ -160,21 +167,23 @@ int main() {
     if (good) std::cout << *good << '\n';
     // Processed: user_42
 }
-
 ```
+
+When the lookup succeeds, the `transform_error` lambda is never called - it only runs if there's actually an error to transform. This makes it safe to use in both success and error paths without any extra branching.
 
 ### Q3: Compare the readability of an expected pipeline with a traditional exception hierarchy
 
 **Answer:**
 
-```cpp
+The reason this comparison matters is that exception-based code forces you to think about two control flows simultaneously - the happy path and the error path interleave through nested `try/catch` blocks. The `expected` approach collapses them into a single linear chain that reads top-to-bottom.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
 #include <stdexcept>
 
-// ═══════════ APPROACH 1: Traditional exceptions ═══════════
+// APPROACH 1: Traditional exceptions
 namespace exc_style {
     std::string fetch(int id) {
         if (id <= 0) throw std::runtime_error("invalid id");
@@ -209,7 +218,7 @@ namespace exc_style {
     }
 }
 
-// ═══════════ APPROACH 2: Expected pipeline ═══════════
+// APPROACH 2: Expected pipeline
 namespace exp_style {
     using Error = std::string;
 
@@ -239,18 +248,19 @@ namespace exp_style {
 }
 
 int main() {
-    exc_style::process();  // Nested try/catch — hard to follow
-    exp_style::process();  // Linear pipeline — clear data flow
+    exc_style::process();  // Nested try/catch - hard to follow
+    exp_style::process();  // Linear pipeline - clear data flow
 }
 // Both print: Price: 49.95
-
 ```
+
+The exception version has the same logic but it's scattered across three nesting levels. The `expected` version reads almost like a description of what should happen, left-to-right.
 
 ---
 
 ## Notes
 
-- `and_then(f)` requires `f` to return `expected<U, E>` (same error type)
-- `transform(f)` wraps `f`'s return in `expected` automatically (pure mapping)
-- Error propagation is automatic — once an error occurs, subsequent `and_then`/`transform` calls are skipped
-- The monadic interface requires C++23; for C++17 use `tl::expected` from <https://github.com/TartanLlama/expected>
+- `and_then(f)` requires `f` to return `expected<U, E>` (same error type) - use this for steps that can themselves fail.
+- `transform(f)` wraps `f`'s return in `expected` automatically - use this for pure mapping steps that can't fail.
+- Error propagation is automatic: once an error occurs, subsequent `and_then`/`transform` calls are skipped and the error passes through unchanged.
+- The monadic interface requires C++23; for C++17 use `tl::expected` from <https://github.com/TartanLlama/expected>.

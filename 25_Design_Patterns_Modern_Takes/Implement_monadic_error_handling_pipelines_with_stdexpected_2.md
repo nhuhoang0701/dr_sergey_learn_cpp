@@ -9,26 +9,28 @@
 
 ## Topic Overview
 
-This file focuses on a **practical parse→validate→transform pipeline** where each step returns `expected<T, E>`, demonstrating real-world data processing with monadic chaining and `transform` for pure value mapping.
+This file focuses on a **practical parse -> validate -> transform pipeline** where each step returns `expected<T, E>`, demonstrating real-world data processing with monadic chaining and `transform` for pure value mapping.
+
+The distinction between `and_then` and `transform` is worth paying attention to here. Use `and_then` when the next step is itself fallible and returns an `expected`. Use `transform` when the next step is a pure function that can't fail - `transform` automatically wraps the return value in `expected` for you.
 
 ### Pipeline Architecture
 
-```cpp
+Here's the shape of the pipeline you'll be building. Each arrow is one `.and_then()` or `.transform()` call, and a failure at any stage stops the chain immediately.
 
+```cpp
 Input string
     │
     ▼
-  parse()        → expected<RawData, Error>
+  parse()        -> expected<RawData, Error>
     │ .and_then()
     ▼
-  validate()     → expected<ValidData, Error>
+  validate()     -> expected<ValidData, Error>
     │ .and_then()
     ▼
-  transform()    → expected<Output, Error>
+  transform()    -> expected<Output, Error>
     │ .transform()
     ▼
-  format()       → expected<string, Error>   (pure mapping, auto-wrapped)
-
+  format()       -> expected<string, Error>   (pure mapping, auto-wrapped)
 ```
 
 ---
@@ -39,8 +41,9 @@ Input string
 
 **Answer:**
 
-```cpp
+This example processes CSV lines through three typed stages. Notice how the types change across each step - `RawRecord` becomes `ValidRecord` becomes `Report` - and how the final `.transform()` call at the end is a pure formatting step that can't fail on its own.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
@@ -48,7 +51,7 @@ Input string
 
 struct Error { std::string stage; std::string detail; };
 
-// ═══════════ Domain types ═══════════
+// Domain types
 struct RawRecord {
     std::string name;
     std::string age_str;
@@ -67,7 +70,7 @@ struct Report {
     bool eligible;
 };
 
-// ═══════════ Step 1: Parse CSV line ═══════════
+// Step 1: Parse CSV line
 auto parse(const std::string& line)
     -> std::expected<RawRecord, Error>
 {
@@ -83,7 +86,7 @@ auto parse(const std::string& line)
     };
 }
 
-// ═══════════ Step 2: Validate & convert types ═══════════
+// Step 2: Validate & convert types
 auto validate(RawRecord raw)
     -> std::expected<ValidRecord, Error>
 {
@@ -105,7 +108,7 @@ auto validate(RawRecord raw)
     return ValidRecord{raw.name, age, score};
 }
 
-// ═══════════ Step 3: Transform to domain output ═══════════
+// Step 3: Transform to domain output
 auto evaluate(ValidRecord rec)
     -> std::expected<Report, Error>
 {
@@ -120,7 +123,7 @@ auto evaluate(ValidRecord rec)
 }
 
 int main() {
-    // ═══════════ Full pipeline ═══════════
+    // Full pipeline
     std::string lines[] = {
         "Alice,25,92.5",
         "Bob,17,85.0",
@@ -149,15 +152,17 @@ int main() {
     // [validate] invalid age: abc
     // [parse] expected 3 comma-separated fields
 }
-
 ```
+
+The error output tells you exactly which stage caught the problem - that's the `stage` field in the `Error` struct, set by each step individually. That kind of precise attribution is hard to achieve cleanly with exceptions.
 
 ### Q2: Use and_then to propagate success and transform_error to enrich error context
 
 **Answer:**
 
-```cpp
+`transform_error` is handy whenever you want to add context to an error as it bubbles up through pipeline stages. Think of it like wrapping an error message with "this happened while doing X" - each layer can add its own context without disturbing the normal flow.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
@@ -201,23 +206,25 @@ int main() {
         std::cout << result.error().msg << " (" << result.error().context << ")\n";
     // file not found (while loading app config)
 }
-
 ```
+
+Because `load_config("")` fails immediately, the second `transform_error` is never reached - the context added by the first one is already in the error. If `load_config` had succeeded but `extract_timeout` failed instead, it would be the second `transform_error` that adds context.
 
 ### Q3: Compare the expected pipeline with a try/catch chain for readability and performance
 
 **Answer:**
 
-```cpp
+Beyond readability, there is a real performance story here. Throwing an exception causes the runtime to walk the call stack and unwind it - that's expensive and non-trivial even for modern implementations. With `std::expected`, returning an error is just returning a value, with no stack unwinding at all. The benchmark below makes this concrete.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <expected>
 #include <chrono>
 
-// ═══════════ Performance comparison ═══════════
+// Performance comparison
 // Exception path: stack unwinding is expensive when errors are frequent
-// Expected path:  returning a value — same cost as a normal return
+// Expected path:  returning a value - same cost as a normal return
 
 using Error = std::string;
 
@@ -278,13 +285,14 @@ int main() {
         } catch (const Step1Error&) { ... }
     */
 }
-
 ```
+
+The 1000x difference in the comment is a realistic worst case when every other call fails. In practice the gap depends on your compiler, platform, and how often the error path is actually hit - but the trend is always the same direction.
 
 ---
 
 ## Notes
 
-- `transform(f)` vs `and_then(f)`: `transform` wraps `f`'s return in `expected` automatically; `and_then` expects `f` to return `expected` directly
-- When errors are **rare** (e.g., I/O failures), exceptions may be acceptable; when errors are **frequent** or **expected** (e.g., parsing user input), `std::expected` avoids stack unwinding overhead
-- The pipeline style makes it trivial to add/remove/reorder steps — just insert another `.and_then()`
+- `transform(f)` vs `and_then(f)`: `transform` wraps `f`'s return in `expected` automatically; `and_then` expects `f` to return `expected` directly. Pick the one that matches your step's signature.
+- When errors are **rare** (for example, I/O failures), exceptions may be perfectly acceptable; when errors are **frequent** or **expected** (for example, parsing user input), `std::expected` avoids stack unwinding overhead.
+- The pipeline style makes it trivial to add, remove, or reorder steps - just insert another `.and_then()` where you need it.

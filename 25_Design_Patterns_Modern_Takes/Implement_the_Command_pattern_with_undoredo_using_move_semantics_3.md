@@ -11,36 +11,37 @@
 
 This third Command pattern file focuses on **lambda-based commands** (avoiding the virtual interface entirely), **command merging** (coalescing consecutive similar commands), and practical considerations for production undo/redo systems.
 
+The reason you might want lambda-based commands is sheer ergonomics. If you have twenty different action types in a small editor, defining twenty subclasses is a lot of boilerplate. Lambdas let you express an action and its inverse inline at the call site, with no separate class needed at all.
+
 ### Lambda vs Virtual Command Comparison
 
 ```cpp
-
 Virtual Command:                Lambda Command:
   class InsertCmd : Command       auto cmd = MakeCmd(
     void execute() override         [&]{ doc.insert(pos, s); },
     void undo() override            [&]{ doc.erase(pos, s.size()); }
   };                              );
   // Separate class per action    // Inline, no class needed
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Model each command as a struct with execute() and undo() methods, stored in a deque<unique_ptr<Command>>
+### Q1: Model each command as a struct with execute() and undo() methods, stored in a deque\<unique\_ptr\<Command\>\>
 
 **Answer:**
 
-```cpp
+Instead of a class hierarchy, `LambdaCommand` stores two `std::function<void()>` objects - one for execute and one for undo. The `make_command` factory keeps construction tidy. All the capturing of needed state happens inside the lambdas themselves.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <memory>
 #include <deque>
 #include <functional>
 
-// ═══════════ Lambda-based Command — no virtual interface ═══════════
+// Lambda-based Command - no virtual interface
 struct LambdaCommand {
     std::function<void()> exec;
     std::function<void()> undo_fn;
@@ -64,7 +65,7 @@ int main() {
     std::string text;
     std::deque<std::unique_ptr<LambdaCommand>> history;
 
-    // Create commands with lambdas — no subclasses needed
+    // Create commands with lambdas - no subclasses needed
     auto cmd1 = make_command("type Hello",
         [&]{ text += "Hello"; },
         [&]{ text.erase(text.size() - 5); }
@@ -87,22 +88,24 @@ int main() {
     history.pop_back();
     std::cout << text << '\n';  // Hello
 }
-
 ```
+
+One thing to watch out for with capture-by-reference (`[&]`): the lambda must not outlive the captured variables. Here `text` lives in `main`, so it's fine. In a longer-lived system, prefer capturing by value or use a shared data structure.
 
 ### Q2: Use std::move to transfer commands into the history without copying
 
 **Answer:**
 
-```cpp
+Command merging is a quality-of-life feature you'll appreciate as a user: typing "Hello World" one character at a time produces eleven separate history entries by default, but after merging they collapse into a single undo unit. One Ctrl+Z removes the whole word, not one letter. The trick is to check whether the new command can be merged into the previous one before pushing it onto the stack.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <deque>
 #include <string>
 #include <functional>
 
-// ═══════════ Command merging — coalesce consecutive similar commands ═══════════
+// Command merging - coalesce consecutive similar commands
 struct TypeCommand {
     std::string& target;
     std::string typed;
@@ -128,7 +131,7 @@ public:
         // Try to merge with previous command
         if (!stack_.empty() && stack_.back()->can_merge(*cmd)) {
             stack_.back()->merge(std::move(*cmd));
-            // cmd is consumed — no need to push
+            // cmd is consumed - no need to push
         } else {
             stack_.push_back(std::move(cmd));
         }
@@ -159,15 +162,17 @@ int main() {
     history.undo();  // Undoes entire "Hello World" in one step
     std::cout << "After undo: \"" << buffer << "\"\n";  // ""
 }
-
 ```
+
+After typing all eleven characters, the history depth is still 1 because every new `TypeCommand` was merged into the previous one. A real editor would break the merge when the user pauses typing, switches to a different location, or presses a non-character key - but the merge mechanism itself is the same.
 
 ### Q3: Show that redo is implemented by moving commands from a redo stack back to the undo stack
 
 **Answer:**
 
-```cpp
+This example combines lambda commands with a `TransactionManager` that supports grouping multiple commands into a single atomic undo unit. The transaction concept is important in real applications: "Replace All" might change hundreds of locations, but from the user's perspective it should be one single undo step.
 
+```cpp
 #include <iostream>
 #include <memory>
 #include <deque>
@@ -181,7 +186,7 @@ struct Command {
     void undo()    { undo_fn(); }
 };
 
-// ═══════════ Production undo/redo with transaction groups ═══════════
+// Production undo/redo with transaction groups
 class TransactionManager {
     std::deque<std::unique_ptr<Command>> undo_stack_;
     std::deque<std::unique_ptr<Command>> redo_stack_;
@@ -211,7 +216,7 @@ public:
         auto cmd = std::move(undo_stack_.back());
         undo_stack_.pop_back();
         cmd->undo();
-        redo_stack_.push_back(std::move(cmd));   // → redo stack
+        redo_stack_.push_back(std::move(cmd));   // -> redo stack
     }
 
     void redo() {
@@ -219,7 +224,7 @@ public:
         auto cmd = std::move(redo_stack_.back());
         redo_stack_.pop_back();
         cmd->execute();
-        undo_stack_.push_back(std::move(cmd));   // → undo stack
+        undo_stack_.push_back(std::move(cmd));   // -> undo stack
     }
 };
 
@@ -246,14 +251,15 @@ int main() {
     mgr.redo();  // redo y+=20
     std::cout << "x=" << x << " y=" << y << '\n';  // x=10 y=20
 }
-
 ```
+
+The redo mechanics here are the same as in the virtual-command version - commands move from the redo stack back to the undo stack via `std::move`. The difference is just that the commands themselves are plain structs holding lambdas rather than polymorphic class instances.
 
 ---
 
 ## Notes
 
-- **Lambda commands** eliminate boilerplate — ideal when you have many small action types
-- **Command merging** reduces history depth: typing "Hello" character-by-character becomes one undo unit
-- **Transaction groups** let multi-step operations (e.g., "Replace All") undo as a single action
-- `std::function` has small overhead from type erasure; for hot paths, consider using templates or `std::move_only_function` (C++23)
+- **Lambda commands** eliminate boilerplate - ideal when you have many small action types and don't want a separate class per action.
+- **Command merging** reduces history depth: typing "Hello" character-by-character becomes one undo unit instead of five. Real editors typically also break merges on a timer or when the cursor position changes.
+- **Transaction groups** let multi-step operations (for example, "Replace All") undo as a single action from the user's perspective.
+- `std::function` has some overhead from type erasure; for performance-sensitive hot paths, consider templates or `std::move_only_function` (C++23).

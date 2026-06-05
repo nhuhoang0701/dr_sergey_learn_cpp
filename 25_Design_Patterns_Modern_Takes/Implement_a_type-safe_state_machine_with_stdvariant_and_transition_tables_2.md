@@ -1,6 +1,6 @@
 # Implement a type-safe state machine with std::variant and transition tables
 
-**Category:** Design Patterns — Modern Takes  
+**Category:** Design Patterns - Modern Takes  
 **Item:** #749  
 **Standard:** C++17  
 **Reference:** <https://en.cppreference.com/w/cpp/utility/variant>  
@@ -11,16 +11,16 @@
 
 This third state machine file focuses on **state data, entry/exit actions**, and ensuring compile-time safety when adding new states. It demonstrates a more complete FSM with guards and side effects on transitions.
 
+The traditional FSM treats states as simple labels with no attached information. The extended version covered here treats states as types that carry context - so `Saving` doesn't just mean "we are saving," it means "we are saving *this filename* and have written *this many bytes* so far." That extra context lives inside the state itself, which is exactly what variant alternatives are good at.
+
 ### Extended State Machine Features
 
 ```cpp
-
 Traditional FSM:             Extended FSM (this file):
   State = enum value          State = type with data
-  Transition = state→state    Transition = state→state + guard + action
+  Transition = state->state   Transition = state->state + guard + action
   No entry/exit actions       Entry/exit functions per state
   No state data               States carry context (connection info, etc.)
-
 ```
 
 ---
@@ -29,16 +29,15 @@ Traditional FSM:             Extended FSM (this file):
 
 ### Q1: Encode states as types in a std::variant and transitions as a constexpr table of (state, event) -> state
 
-**Answer:**
+A document editor is a good domain for this because the states have natural data - you need to know *which* file is being saved, and *how many bytes* have been written so far. Notice the guard in the `Editing + Save` lambda: it checks `s.modified` before transitioning. Guards fit naturally as `if` statements inside transition lambdas.
 
 ```cpp
-
 #include <iostream>
 #include <variant>
 #include <string>
 #include <optional>
 
-// ═══════════ States with data ═══════════
+// States with data
 struct Editing {
     std::string filename;
     bool modified = false;
@@ -57,7 +56,7 @@ struct Error {
 
 using State = std::variant<Editing, Saving, Saved, Error>;
 
-// ═══════════ Events ═══════════
+// Events
 struct Modify   { std::string change; };
 struct Save     {};
 struct Progress { int bytes; };
@@ -66,19 +65,19 @@ struct Fail     { std::string error; };
 
 using Event = std::variant<Modify, Save, Progress, Complete, Fail>;
 
-// ═══════════ Overload helper ═══════════
+// Overload helper
 template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-// ═══════════ Transition function with state data ═══════════
+// Transition function with state data
 State process(const State& state, const Event& event) {
     return std::visit(overloaded{
-        // Editing + Modify → Editing (with modified flag)
+        // Editing + Modify -> Editing (with modified flag)
         [](const Editing& s, const Modify& e) -> State {
             std::cout << "Modified: " << e.change << "\n";
             return Editing{s.filename, true};
         },
-        // Editing + Save → Saving (guard: must be modified)
+        // Editing + Save -> Saving (guard: must be modified)
         [](const Editing& s, const Save&) -> State {
             if (!s.modified) {
                 std::cout << "Nothing to save\n";
@@ -87,22 +86,22 @@ State process(const State& state, const Event& event) {
             std::cout << "Saving " << s.filename << "...\n";
             return Saving{s.filename, 0};
         },
-        // Saving + Progress → Saving (update bytes)
+        // Saving + Progress -> Saving (update bytes)
         [](const Saving& s, const Progress& e) -> State {
             std::cout << "Written " << e.bytes << " bytes\n";
             return Saving{s.filename, s.bytes_written + e.bytes};
         },
-        // Saving + Complete → Saved
+        // Saving + Complete -> Saved
         [](const Saving& s, const Complete& e) -> State {
             std::cout << "Saved " << s.filename << " (" << e.total << " bytes)\n";
             return Saved{s.filename, e.total};
         },
-        // Saving + Fail → Error
+        // Saving + Fail -> Error
         [](const Saving&, const Fail& e) -> State {
             std::cout << "Save failed: " << e.error << "\n";
             return Error{e.error};
         },
-        // Saved + Modify → back to Editing
+        // Saved + Modify -> back to Editing
         [](const Saved& s, const Modify& e) -> State {
             std::cout << "Re-editing: " << e.change << "\n";
             return Editing{s.filename, true};
@@ -125,15 +124,15 @@ int main() {
     state = process(state, Complete{1024});             // Saved!
     state = process(state, Modify{"new edit"});         // Re-editing
 }
-
 ```
+
+The guard pattern (`if (!s.modified) return s;`) keeps the state in place without needing a special "no transition" sentinel. Returning the current state is idiomatic here.
 
 ### Q2: Use std::visit to dispatch the current state and apply the transition
 
-**Answer:**
+Entry and exit actions are a common requirement in real state machines - you want to know when you're leaving a state (to clean up) and when you're entering a new one (to initialize). The trick is comparing `new_state.index()` with `state_.index()` to detect whether the state actually changed before firing those side effects.
 
 ```cpp
-
 #include <iostream>
 #include <variant>
 #include <functional>
@@ -150,16 +149,16 @@ using AuthState = std::variant<LoggedOut, LoggingIn, LoggedIn>;
 template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-// ═══════════ State machine with entry/exit actions ═══════════
+// State machine with entry/exit actions
 class AuthMachine {
     AuthState state_ = LoggedOut{};
 
-    // Entry actions — called when entering a new state
+    // Entry actions - called when entering a new state
     void on_enter(const LoggedOut&)  { std::cout << "  [enter] Showing login screen\n"; }
     void on_enter(const LoggingIn& s){ std::cout << "  [enter] Verifying " << s.username << "...\n"; }
     void on_enter(const LoggedIn& s) { std::cout << "  [enter] Welcome " << s.username << " (session " << s.session_id << ")\n"; }
 
-    // Exit actions — called when leaving a state
+    // Exit actions - called when leaving a state
     void on_exit(const LoggedOut&)   { std::cout << "  [exit] Hiding login screen\n"; }
     void on_exit(const LoggingIn&)   { std::cout << "  [exit] Cancelling verification\n"; }
     void on_exit(const LoggedIn& s)  { std::cout << "  [exit] Cleaning up session " << s.session_id << "\n"; }
@@ -169,7 +168,7 @@ public:
     void process(const E& event) {
         auto new_state = std::visit([&](const auto& current) -> AuthState {
             using S = std::decay_t<decltype(current)>;
-            
+
             if constexpr (std::is_same_v<S, LoggedOut> && std::is_same_v<E, std::string>) {
                 return LoggingIn{event};
             } else if constexpr (std::is_same_v<S, LoggingIn> && std::is_same_v<E, int>) {
@@ -192,19 +191,19 @@ public:
 
 int main() {
     AuthMachine auth;
-    auth.process(std::string("alice"));   // LoggedOut → LoggingIn
-    auth.process(42);                      // LoggingIn → LoggedIn
-    auth.process(std::monostate{});        // LoggedIn → LoggedOut
+    auth.process(std::string("alice"));   // LoggedOut -> LoggingIn
+    auth.process(42);                      // LoggingIn -> LoggedIn
+    auth.process(std::monostate{});        // LoggedIn -> LoggedOut
 }
-
 ```
+
+The `index()` comparison is the guard that prevents spurious entry/exit calls on invalid transitions (where the state stays the same). It's a clean pattern that keeps the side-effect logic separate from the transition logic.
 
 ### Q3: Show that adding a new state forces all transition table entries to be updated at compile time
 
-**Answer:**
+The key takeaway from this example is the contrast between the two visitors. The exhaustive one gets a hard compile error if a state is unhandled. The one with `auto&&` compiles fine but gives you an unhelpful "OTHER" message for any new state - which is exactly the silent-miss bug that variants are supposed to prevent. The right default is the exhaustive visitor.
 
 ```cpp
-
 #include <iostream>
 #include <variant>
 
@@ -219,7 +218,7 @@ using DocState = std::variant<Draft, Review, Approved, Published /* , Archived *
 template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };
 template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
-// ═══════════ Visitor WITHOUT auto&& catch-all ═══════════
+// Visitor WITHOUT auto&& catch-all
 // If Archived is added to DocState, this FAILS to compile:
 std::string describe(const DocState& s) {
     return std::visit(overloaded{
@@ -234,7 +233,7 @@ std::string describe(const DocState& s) {
     }, s);
 }
 
-// ═══════════ Best practice: static_assert for completeness ═══════════
+// Best practice: static_assert for completeness
 template<typename Variant, typename... Handlers>
 constexpr bool all_alternatives_handled = (
     std::is_invocable_v<overloaded<Handlers...>,
@@ -246,14 +245,13 @@ int main() {
     DocState s = Review{};
     std::cout << describe(s) << '\n';  // Document is under review
 }
-
 ```
 
 ---
 
 ## Notes
 
-- **States with data** (e.g., `Saving{filename, bytes}`) are the key advantage over enum-based FSMs
-- **Entry/exit actions** provide a clean place for side effects without cluttering transition logic
-- **Guards** (conditional transitions) naturally fit as `if` checks inside transition lambdas
-- **Avoid `auto&&` catch-all** if you want compile-time exhaustiveness — it silently handles new states
+- **States with data** (e.g., `Saving{filename, bytes}`) are the key advantage over enum-based FSMs - you don't need parallel arrays or external variables to remember what was happening inside a state.
+- **Entry/exit actions** provide a clean place for side effects such as updating a UI or releasing resources, without cluttering the transition logic itself.
+- **Guards** (conditional transitions) fit naturally as `if` checks inside transition lambdas - return the current state to indicate "no transition."
+- **Avoid `auto&&` catch-all** if you want compile-time exhaustiveness - it silently handles new states and trades away the main safety benefit of using a variant.
