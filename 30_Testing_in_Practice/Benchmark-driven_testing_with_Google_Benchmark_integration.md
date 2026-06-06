@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-**Performance testing** ensures code meets latency and throughput targets. Google Benchmark (gbenchmark) is the standard micro-benchmarking framework for C++. It handles warmup, statistical analysis, and output formatting. Integrating benchmarks into CI prevents performance regressions.
+**Performance testing** ensures your code meets latency and throughput targets. The idea is not just to check that a function produces the right answer - it is to check that it does so fast enough to matter in production. Google Benchmark (gbenchmark) is the standard micro-benchmarking framework for C++. It handles warmup, statistical analysis, and output formatting automatically, so you can focus on writing the benchmark logic rather than fighting timing machinery. Integrating benchmarks into CI prevents performance regressions from sneaking in unnoticed.
 
 ### Micro-benchmark vs Macro-benchmark
+
+These two approaches answer different questions. Micro-benchmarks tell you how fast a single function is. Macro-benchmarks tell you whether the overall system meets its SLAs. You need both, but for catching algorithmic regressions, micro-benchmarks are where Google Benchmark shines.
 
 | Aspect | Micro-benchmark (gbenchmark) | Macro-benchmark |
 | --- | --- | --- |
@@ -26,8 +28,9 @@
 
 **Answer:**
 
-```cmake
+First, bring in Google Benchmark via CMake's FetchContent, which is the easiest way to add it without a system-level install:
 
+```cmake
 # === CMake setup ===
 include(FetchContent)
 FetchContent_Declare(
@@ -40,11 +43,11 @@ FetchContent_MakeAvailable(benchmark)
 
 add_executable(my_benchmarks bench_main.cpp)
 target_link_libraries(my_benchmarks benchmark::benchmark benchmark::benchmark_main)
-
 ```
 
-```cpp
+Now here are several benchmark functions showing the key patterns. Notice the `DoNotOptimize` and `ClobberMemory` calls - these are critical. Without them, the compiler sees that the result of the benchmark loop is never used and optimizes the entire loop away, giving you zero nanoseconds for everything.
 
+```cpp
 #include <benchmark/benchmark.h>
 #include <vector>
 #include <algorithm>
@@ -127,15 +130,17 @@ static void BM_UnorderedMapLookup(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_UnorderedMapLookup)->RangeMultiplier(10)->Range(10, 1000000);
-
 ```
+
+The `->Range(64, 1 << 20)` calls generate multiple benchmark runs at geometrically spaced sizes, which is how you see whether your algorithm's complexity matches theory. `SetComplexityN` then lets Google Benchmark fit a curve and report the measured Big-O.
 
 ### Q2: Integrate benchmarks into CI to catch performance regressions
 
 **Answer:**
 
-```yaml
+Running benchmarks in CI requires a bit more machinery than just running tests, because you need to compare results against a previous baseline. The workflow below captures benchmark output as JSON, then uses a Python snippet to flag any benchmark that slowed down by more than 10%.
 
+```yaml
 # === GitHub Actions CI benchmark job ===
 name: Benchmarks
 on:
@@ -146,34 +151,25 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v4
-
       - name: Build benchmarks
-
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target my_benchmarks
-
       - name: Run benchmarks (JSON output)
-
         run: |
           ./build/my_benchmarks \
             --benchmark_format=json \
             --benchmark_out=benchmark_results.json \
             --benchmark_repetitions=5 \
             --benchmark_min_time=0.5
-
       - name: Compare with baseline
-
         run: |
           # Download previous baseline
           # Use google/benchmark's compare.py tool
           python3 tools/compare.py benchmarks \
             baseline.json benchmark_results.json
-
       - name: Check for regressions (>10% slower)
-
         run: |
           python3 - <<'EOF'
           import json, sys
@@ -181,11 +177,11 @@ jobs:
               results = json.load(f)
           with open('baseline.json') as f:
               baseline = json.load(f)
-          
+
           baseline_map = {b['name']: b['cpu_time']
                           for b in baseline['benchmarks']
                           if b.get('run_type') == 'iteration'}
-          
+
           regressions = []
           for bench in results['benchmarks']:
               if bench.get('run_type') != 'iteration':
@@ -195,7 +191,7 @@ jobs:
                   ratio = bench['cpu_time'] / baseline_map[name]
                   if ratio > 1.10:  # 10% regression threshold
                       regressions.append(f"{name}: {ratio:.2f}x slower")
-          
+
           if regressions:
               print("PERFORMANCE REGRESSIONS DETECTED:")
               for r in regressions:
@@ -203,15 +199,17 @@ jobs:
               sys.exit(1)
           print("No regressions detected.")
           EOF
-
 ```
+
+The 10% threshold accounts for natural noise on shared CI runners. If you tighten it to 5%, you will get false positives. If you loosen it to 20%, you will miss real regressions. Tune this based on how noisy your runners are.
 
 ### Q3: Advanced benchmarking techniques
 
 **Answer:**
 
-```cpp
+The examples above cover basic cases. Here are three more patterns you will reach for regularly: fixture-based setup, custom throughput counters, multi-threaded benchmarks, and template benchmarks.
 
+```cpp
 #include <benchmark/benchmark.h>
 #include <vector>
 #include <string>
@@ -289,18 +287,19 @@ static void BM_ContainerIterate(benchmark::State& state) {
 }
 BENCHMARK_TEMPLATE(BM_ContainerIterate, std::vector<int>)->Range(64, 1 << 16);
 BENCHMARK_TEMPLATE(BM_ContainerIterate, std::list<int>)->Range(64, 1 << 16);
-
 ```
+
+The fixture pattern is particularly useful when your benchmark needs non-trivial setup (loading data, building a tree, connecting to a test database) that should not be counted in the benchmark time. The `SetUp` cost is excluded from the measured loop automatically.
 
 ---
 
 ## Notes
 
-- **Always build benchmarks with `-O2` or `Release`** — debug builds are meaningless for performance
-- `DoNotOptimize()` prevents the compiler from eliminating dead code in the benchmark loop
-- `ClobberMemory()` forces memory writes to be visible (prevents store elimination)
-- Use `--benchmark_repetitions=N` with `--benchmark_report_aggregates_only` for statistical robustness
-- `state.SetItemsProcessed()` and `state.SetBytesProcessed()` enable throughput reporting
-- Benchmark names appear in output exactly as the function name — use descriptive names
-- CI regression detection should allow 5-10% noise margin on shared runners
-- Use `--benchmark_filter=regex` to run specific benchmarks during development
+- Always build benchmarks with `-O2` or the Release configuration - debug builds are meaningless for performance measurement.
+- `DoNotOptimize()` prevents the compiler from eliminating dead code in the benchmark loop. Never skip it when the result is not otherwise observable.
+- `ClobberMemory()` forces memory writes to be visible and prevents store elimination. Use it after writes whose results are "consumed" only by the next benchmark iteration.
+- Use `--benchmark_repetitions=N` with `--benchmark_report_aggregates_only` for statistical robustness across multiple runs.
+- `state.SetItemsProcessed()` and `state.SetBytesProcessed()` enable throughput reporting in the output, which is much more useful than raw nanoseconds for I/O-heavy code.
+- Benchmark names appear in output exactly as the function name, so use descriptive names from the start.
+- CI regression detection should allow a 5-10% noise margin on shared runners - those machines have variable load.
+- Use `--benchmark_filter=regex` to run specific benchmarks during development instead of waiting for the full suite.

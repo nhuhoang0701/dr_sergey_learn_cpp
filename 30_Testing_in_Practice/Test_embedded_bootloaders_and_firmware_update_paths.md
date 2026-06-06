@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Bootloaders** are the most critical embedded code — a bug can permanently brick a device. Testing bootloaders requires simulating the entire update process: image download, verification, flash programming, rollback on failure, and multi-slot management. Host-based testing with simulated flash catches most logic bugs.
+**Bootloaders** are the most critical embedded code you'll ever write - a single bug can permanently brick a device with no way to recover. That's what makes testing them so important and, frankly, so nerve-wracking in practice. Testing bootloaders means simulating the entire update lifecycle: image download, verification, flash programming, rollback on failure, and multi-slot management. The good news is that host-based testing with a simulated flash driver catches the vast majority of logic bugs before any hardware is involved.
+
+The reason this is harder than ordinary unit testing is that flash memory has real physical constraints: erased sectors read as `0xFF`, writes can only clear bits (never set them without an erase), and a power loss in the middle of a write can leave the flash in a half-written state. Your test infrastructure needs to model all of this faithfully.
 
 ### Bootloader Test Coverage Matrix
 
@@ -26,10 +28,9 @@
 
 ### Q1: Design testable bootloader architecture with simulated flash
 
-**Answer:**
+The key insight here is the flash abstraction. Instead of calling hardware registers directly, the bootloader talks to an `IFlashDriver` interface. In production that interface wraps real flash; in tests it wraps a `std::vector<uint8_t>` that models the same physics. Notice especially the `&= data[i]` write in `FlashSimulator` - that one line captures the real behavior that you can only clear bits without erasing first.
 
 ```cpp
-
 #include <cstdint>
 #include <vector>
 #include <span>
@@ -181,15 +182,15 @@ private:
 
     IFlashDriver& flash_;
 };
-
 ```
+
+The `inject_write_failure()` helper is worth noting. It sets a flag so the very next write call returns `false`. That lets you simulate a power-loss mid-write in a single line of test setup, without needing any threading tricks.
 
 ### Q2: Test all bootloader update scenarios
 
-**Answer:**
+Now that we have the infrastructure, every row in the coverage matrix becomes a unit test. The `make_image` helper builds a properly-formed firmware image with correct CRC so you get a clean baseline - then each test corrupts one thing to drive the specific error path.
 
 ```cpp
-
 #include <gtest/gtest.h>
 
 class BootloaderTest : public ::testing::Test {
@@ -266,15 +267,15 @@ TEST_F(BootloaderTest, OversizedImageRejected) {
     EXPECT_EQ(bootloader_.apply_update(image, Bootloader::SLOT_A_ADDR),
               Bootloader::UpdateResult::TooLarge);
 }
-
 ```
+
+The version downgrade test is a two-step sequence: first apply version 2 successfully, then try to apply version 1 and confirm the bootloader rejects it. This is exactly the kind of state-dependent scenario that only makes sense with a persistent flash simulator across calls.
 
 ### Q3: Test A/B slot switching and rollback
 
-**Answer:**
+A/B slot (dual-bank) firmware is one of the most important reliability features in embedded systems. The idea is that slot A and slot B are completely independent flash regions - you can update one while the other stays intact as a rollback target. These tests verify that independence holds.
 
 ```cpp
-
 TEST_F(BootloaderTest, ABSlotIndependent) {
     auto imageA = make_image(1, {0xAA});
     auto imageB = make_image(2, {0xBB});
@@ -302,17 +303,18 @@ TEST_F(BootloaderTest, EmptyImageRejected) {
     EXPECT_EQ(bootloader_.apply_update(empty, Bootloader::SLOT_A_ADDR),
               Bootloader::UpdateResult::BadMagic);
 }
-
 ```
+
+After both updates succeed, we read the headers directly from the simulator's raw memory and confirm each slot holds the version we wrote. This verifies that writing to slot B doesn't overwrite slot A - exactly the kind of addressing bug that would be catastrophic in production.
 
 ---
 
 ## Notes
 
-- **Bootloader code must be tested more rigorously** than application code — a bug bricks the device
-- Flash simulator should model flash physics: erase sets to 0xFF, write can only clear bits
-- Test power-loss scenarios by injecting write failures at different points in the update sequence
-- A/B slot (dual bank) updates enable rollback — test both slot A→B and B→A transitions
-- CRC verification after writing catches bit-rot and flash programming errors
-- Version downgrade prevention is a security requirement — always test it
-- Integration tests should verify the full sequence: download → verify → erase → write → verify → boot
+- Bootloader code must be tested more rigorously than application code - a bug bricks the device permanently with no recovery path.
+- Your flash simulator should model flash physics: erase sets to `0xFF`, write can only clear bits (never set them without an erase first).
+- Test power-loss scenarios by injecting write failures at different points in the update sequence - not just at the very end.
+- A/B slot (dual bank) updates enable rollback - test both slot A->B and B->A transitions, and verify that the two slots genuinely don't interfere with each other.
+- CRC verification after writing is not optional; it catches both bit-rot and flash programming errors.
+- Version downgrade prevention is a security requirement, not just a nice-to-have - always test it explicitly.
+- Integration tests should verify the full sequence end-to-end: download -> verify -> erase -> write -> verify -> boot.

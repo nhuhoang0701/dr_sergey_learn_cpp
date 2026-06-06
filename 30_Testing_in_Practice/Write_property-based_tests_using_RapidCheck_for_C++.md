@@ -8,6 +8,8 @@
 
 **Property-based testing (PBT)** generates random inputs and verifies that certain **properties** (invariants) always hold, rather than checking specific example inputs. This finds edge cases that human-written examples miss. **RapidCheck** is the leading C++ PBT library, inspired by Haskell's QuickCheck.
 
+The key mental shift with PBT is moving from "does this specific input produce this specific output?" to "does this operation always satisfy this general rule?". You cannot write an example-based test for every possible integer - but you can write a property that says "for any two integers, addition is commutative" and have the framework throw hundreds of random pairs at it. If any pair breaks the property, RapidCheck will automatically **shrink** the failing input down to the smallest reproduction case, which is invaluable for debugging.
+
 ### Example-Based vs Property-Based
 
 | Example-Based Testing | Property-Based Testing |
@@ -36,8 +38,9 @@
 
 **Answer:**
 
-```cpp
+Each of the properties below captures a different guarantee that `std::sort` should satisfy. They work together as a complete specification: the output is sorted, it contains the same elements as the input, sorting again produces the same result, and the size is preserved. No single example-based test could express all four of these at once.
 
+```cpp
 #include <rapidcheck.h>
 #include <rapidcheck/gtest.h>  // Google Test integration
 #include <gtest/gtest.h>
@@ -108,15 +111,17 @@ RC_GTEST_PROP(ReverseProperties, PreservesLength, ()) {
 
     RC_ASSERT(s.size() == len);
 }
-
 ```
+
+The `*rc::gen::arbitrary<int>()` syntax is how you generate a random value and dereference it into an actual `int`. The `*` here is the RapidCheck dereference operator - it pulls the generated value out of the generator.
 
 ### Q2: Write custom generators for domain-specific types
 
 **Answer:**
 
-```cpp
+The built-in `arbitrary<std::string>()` generates completely random strings including non-ASCII characters and empty strings. For an `Email` type you need strings that look like valid emails, which means writing a custom generator. The specialization of `rc::Arbitrary<Email>` below tells RapidCheck how to build an `Email` from its component parts.
 
+```cpp
 #include <rapidcheck.h>
 #include <rapidcheck/gtest.h>
 
@@ -212,15 +217,17 @@ RC_GTEST_PROP(VectorModel, MatchesReference, ()) {
         RC_ASSERT(model == sut);
     }
 }
-
 ```
+
+The stateful (model-based) pattern at the bottom is the most powerful technique PBT offers for data structures. You run a random sequence of operations against both your implementation and a trusted reference, checking after every step that they agree. RapidCheck will find the shortest sequence of operations that triggers any disagreement.
 
 ### Q3: Find real bugs with property-based testing
 
 **Answer:**
 
-```cpp
+This is where PBT earns its keep. The two bugs below are easy to write and easy to overlook in code review - but a property test will find them because it generates inputs specifically designed to explore the edge cases of integer ranges and array boundaries.
 
+```cpp
 #include <rapidcheck.h>
 #include <rapidcheck/gtest.h>
 
@@ -269,18 +276,19 @@ RC_GTEST_PROP(BinarySearchProperties, FindsExistingElements, ()) {
     RC_ASSERT(found >= 0);
     RC_ASSERT(vec[found] == target);
 }
-
 ```
+
+The reason `46341 * 46341` is the shrunk minimal case for the overflow bug is that `46341^2 = 2147488281`, which just barely overflows a 32-bit signed integer. RapidCheck did not know that - it started with some large failing input and automatically minimized it to the smallest pair that still causes a failure. That is the shrinking feature in action.
 
 ---
 
 ## Notes
 
-- RapidCheck **shrinks** failing inputs to the smallest reproduction case — invaluable for debugging
-- `RC_GTEST_PROP` integrates with Google Test — failures appear as gtest failures
-- Default: 100 test cases per property. Configure with `RC_PARAMS(maxSuccess=1000)`
-- Common properties: roundtrip (serialize/deserialize), idempotence, invariant preservation
-- Custom generators ensure inputs satisfy preconditions (e.g., sorted vectors, valid emails)
-- **Stateful testing** (model-based) is the most powerful PBT technique for data structures
-- PBT complements example-based tests — use both. PBT finds edge cases; examples document intent
-- CMake integration: `FetchContent_Declare(rapidcheck GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git)`
+- RapidCheck **shrinks** failing inputs to the smallest reproduction case - invaluable for debugging.
+- `RC_GTEST_PROP` integrates with Google Test - failures appear as gtest failures.
+- Default: 100 test cases per property. Configure with `RC_PARAMS(maxSuccess=1000)`.
+- Common properties: roundtrip (serialize/deserialize), idempotence, invariant preservation.
+- Custom generators ensure inputs satisfy preconditions (e.g., sorted vectors, valid emails).
+- **Stateful testing** (model-based) is the most powerful PBT technique for data structures.
+- PBT complements example-based tests - use both. PBT finds edge cases; examples document intent.
+- CMake integration: `FetchContent_Declare(rapidcheck GIT_REPOSITORY https://github.com/emil-e/rapidcheck.git)`.

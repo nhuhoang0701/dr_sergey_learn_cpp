@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Sanitizers** are compiler-instrumented runtime checkers that detect undefined behavior, memory errors, data races, and uninitialized reads that regular tests and static analysis miss. They are the single highest-value testing tool for C++ after basic unit tests.
+**Sanitizers** are compiler-instrumented runtime checkers that detect undefined behavior, memory errors, data races, and uninitialized reads that regular tests and static analysis miss. Think of them as a very smart invisible observer that watches your program run and screams the moment something goes wrong - before that wrongness has a chance to corrupt state further down the line. They are the single highest-value testing tool for C++ after basic unit tests.
+
+The reason this matters so much is that C++ bugs like out-of-bounds writes and data races are *silent* by default. Your tests may all pass while the program is quietly overwriting adjacent memory or reading garbage. Sanitizers make those silent bugs loud.
 
 ### Sanitizer Overview
 
@@ -19,11 +21,13 @@
 
 ### Compatibility
 
+Some sanitizers instrument the same memory regions and cannot coexist in the same binary. Keep this table in mind when planning your CI matrix - you will need separate build configurations for TSan and MSan.
+
 | Combination | Compatible? |
 | --- | --- |
 | ASan + UBSan | Yes (recommended default) |
-| ASan + TSan | **No** (mutually exclusive) |
-| ASan + MSan | **No** (mutually exclusive) |
+| ASan + TSan | No (mutually exclusive) |
+| ASan + MSan | No (mutually exclusive) |
 | TSan + UBSan | Yes |
 | MSan + UBSan | Yes |
 
@@ -35,8 +39,9 @@
 
 **Answer:**
 
-```cmake
+The approach here is to add CMake options for each sanitizer and guard against invalid combinations at configure time. This way you get a clear error message instead of a mysterious runtime crash when you accidentally mix incompatible sanitizers.
 
+```cmake
 # === CMakeLists.txt ===
 
 # Sanitizer options
@@ -76,11 +81,11 @@ if(SANITIZER_FLAGS)
     add_compile_options(${SANITIZER_FLAGS})
     add_link_options(${SANITIZER_FLAGS})
 endif()
-
 ```
 
-```bash
+Notice that the same flags go to both the compiler and the linker - the sanitizer runtime is a shared library that needs to be linked in. With those flags in place, here is how you drive the builds from the command line:
 
+```bash
 # Build and run with ASan + UBSan (recommended default)
 cmake -B build-asan \
     -DCMAKE_BUILD_TYPE=Debug \
@@ -95,15 +100,17 @@ cmake -B build-tsan \
     -DENABLE_TSAN=ON
 cmake --build build-tsan
 ctest --test-dir build-tsan --output-on-failure
-
 ```
+
+You really do need two separate build trees if you want both ASan and TSan coverage. That is not a workaround - it is the intended workflow.
 
 ### Q2: Show what each sanitizer catches with concrete examples
 
 **Answer:**
 
-```cpp
+Here is a tour of each sanitizer with the exact kind of bug it catches. Pay attention to the error messages in the comments - sanitizer output is surprisingly readable and usually pinpoints the exact line.
 
+```cpp
 #include <vector>
 #include <thread>
 #include <cstring>
@@ -169,15 +176,17 @@ void msan_example() {
         // WARNING: MemorySanitizer: use-of-uninitialized-value
     }
 }
-
 ```
+
+The key insight is that each of these bugs is *silent* without a sanitizer. Your program might run for hours before the corrupted memory causes an observable symptom - and by then the original cause is long gone. Sanitizers catch the problem at the exact site where it happens.
 
 ### Q3: Integrate sanitizers into CI with suppressions and environment tuning
 
 **Answer:**
 
-```yaml
+Running sanitizers in CI is where they really pay off. You want a matrix build that runs ASan+UBSan and TSan on every push, with the sanitizer options set to abort immediately on any error.
 
+```yaml
 # === GitHub Actions CI with sanitizer matrix ===
 name: Sanitizers
 on: [push, pull_request]
@@ -186,39 +195,30 @@ jobs:
     strategy:
       matrix:
         include:
-
           - name: ASan+UBSan
-
             cmake_flags: -DENABLE_ASAN=ON -DENABLE_UBSAN=ON
             env_vars: "ASAN_OPTIONS=detect_leaks=1:halt_on_error=1"
-
           - name: TSan
-
             cmake_flags: -DENABLE_TSAN=ON
             env_vars: "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1"
-    
+
     runs-on: ubuntu-latest
     name: ${{ matrix.name }}
     steps:
-
       - uses: actions/checkout@v4
-      
       - name: Build
-
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Debug ${{ matrix.cmake_flags }}
           cmake --build build -j$(nproc)
-      
       - name: Test
-
         env:
           ASAN_OPTIONS: ${{ matrix.env_vars }}
         run: ctest --test-dir build --output-on-failure -j$(nproc)
-
 ```
 
-```bash
+Sometimes sanitizers will report issues in third-party code you cannot fix, or benign patterns the sanitizer misidentifies. Suppression files let you silence specific known issues without disabling the sanitizer entirely. Use them sparingly - each suppression is a place where a real bug could hide.
 
+```bash
 # === Suppression files for known issues ===
 
 # asan_suppressions.txt
@@ -226,17 +226,17 @@ jobs:
 leak:third_party::LibraryInit
 leak:libprotobuf
 
-# tsan_suppressions.txt  
+# tsan_suppressions.txt
 # Known benign race in logging (write-only, no read dependency)
 race:Logger::instance
 
 # ubsan_suppressions.txt
 unsigned-integer-overflow:fast_hash.cpp  # Intentional wrapping
-
 ```
 
-```bash
+Finally, the environment variables give you fine-grained control over sanitizer behavior. Setting `halt_on_error=1` is especially important - without it, UBSan defaults to printing a warning and continuing, which means a test might "pass" even with detected undefined behavior.
 
+```bash
 # === Environment variables for tuning ===
 
 # ASan options
@@ -259,19 +259,20 @@ export TSAN_OPTIONS="\
     second_deadlock_stack=1:\
     history_size=7:\
     suppressions=tsan_suppressions.txt"
-
 ```
+
+With `halt_on_error=1` in place, any sanitizer violation causes the process to exit non-zero, which CTest treats as a test failure. That is exactly the behavior you want in CI.
 
 ---
 
 ## Notes
 
-- **Always run ASan+UBSan in CI** — they catch the most common C++ bugs with acceptable overhead
-- TSan requires a **separate build** because it's incompatible with ASan
-- MSan is Clang-only and requires **all dependencies** built with MSan (including libc++) — hardest to set up
-- Use `-fno-sanitize-recover=all` with UBSan to make UB errors fatal (not just warnings)
-- `-fno-omit-frame-pointer` gives much better stack traces in sanitizer reports
-- ASan's `detect_leaks=1` enables LeakSanitizer (LSan) — reports memory leaks at exit
-- Sanitizers work best with **Debug** or **RelWithDebInfo** builds for readable stack traces
-- Sanitizer builds should NOT be used for performance benchmarking
-- Hardware-assisted ASan (HWASan) is available on AArch64 for lower overhead in production
+- Always run ASan+UBSan in CI - they catch the most common C++ bugs with acceptable overhead.
+- TSan requires a separate build because it is incompatible with ASan.
+- MSan is Clang-only and requires all dependencies built with MSan (including libc++) - it is the hardest sanitizer to set up correctly.
+- Use `-fno-sanitize-recover=all` with UBSan to make UB errors fatal, not just warnings.
+- `-fno-omit-frame-pointer` gives much better stack traces in sanitizer reports and is worth the tiny performance cost.
+- ASan's `detect_leaks=1` enables LeakSanitizer (LSan) and reports memory leaks at exit.
+- Sanitizers work best with Debug or RelWithDebInfo builds so stack traces are readable.
+- Never use sanitizer builds for performance benchmarking - the overhead is too high to be meaningful.
+- Hardware-assisted ASan (HWASan) is available on AArch64 for lower overhead in production monitoring.

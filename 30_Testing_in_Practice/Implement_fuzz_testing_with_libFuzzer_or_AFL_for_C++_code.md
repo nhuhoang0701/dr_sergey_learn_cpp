@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Fuzz testing** feeds random/mutated inputs to code to find crashes, hangs, and memory errors. It discovers edge cases humans never think of. Combined with sanitizers, it catches bugs like buffer overflows, use-after-free, and undefined behavior automatically.
+**Fuzz testing** feeds random and mutated inputs to your code to find crashes, hangs, and memory errors. The key insight is that humans are terrible at imagining edge cases, especially for parsers, protocol handlers, and serialization code. A fuzzer does not think like a human - it mutates inputs in ways that trigger off-by-one errors, unexpected empty inputs, malformed headers, and integer boundaries that your hand-written tests would never cover.
+
+Combined with sanitizers, fuzz testing is extraordinarily effective. The fuzzer finds the inputs; the sanitizers detect the bugs those inputs trigger. Together they catch buffer overflows, use-after-free, and undefined behavior that might otherwise lurk in production for years.
 
 ### Fuzzer Comparison
 
@@ -20,6 +22,8 @@
 | **Dictionaries** | Yes | Yes | Yes |
 | **Structure-aware** | Custom mutators | Custom mutators | Custom mutators |
 
+libFuzzer is the easiest to get started with for C++ since it ships with Clang and requires no separate installation.
+
 ---
 
 ## Self-Assessment
@@ -28,8 +32,9 @@
 
 **Answer:**
 
-```cpp
+A libFuzzer fuzz target is just a function named `LLVMFuzzerTestOneInput` that takes a byte array and a size. libFuzzer calls this function thousands of times per second with different mutations, tracking which inputs cause new code paths to execute. Every time it finds a new path, it keeps that input in the corpus and uses it as a seed for further mutations.
 
+```cpp
 // === fuzz_json_parser.cpp ===
 // Fuzz target: entry point called by libFuzzer with random data
 
@@ -64,11 +69,13 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // Any crash, ASAN error, or UBSan error is a bug
     return 0;
 }
-
 ```
 
-```bash
+The `try/catch` is intentional: throwing an exception for invalid input is correct behavior. What you are hunting for is anything that *bypasses* the exception - crashes, infinite loops, or sanitizer violations.
 
+To build and run the fuzzer, you need Clang with `-fsanitize=fuzzer`:
+
+```bash
 # === Build with libFuzzer + sanitizers ===
 clang++ -g -O1 \
     -fsanitize=fuzzer,address,undefined \
@@ -89,11 +96,13 @@ mkdir -p corpus
 echo '{"key": "value"}' > corpus/seed1
 echo '[1, 2, 3]' > corpus/seed2
 echo 'null' > corpus/seed3
-
 ```
 
-```cpp
+A seed corpus of known-valid inputs dramatically accelerates the fuzzer. It starts from working inputs and mutates them, which explores real parsing paths rather than spending most of its time on inputs that are rejected at the very first byte.
 
+Providing a dictionary of protocol-specific tokens helps even more. Here is an example for JSON:
+
+```cpp
 # === json.dict (fuzzer dictionary) ===
 "{"
 "}"
@@ -105,15 +114,15 @@ echo 'null' > corpus/seed3
 "false"
 "null"
 "\""
-
 ```
 
 ### Q2: Build a CMake project with fuzzing targets
 
 **Answer:**
 
-```cmake
+Fuzz targets need to be guarded behind an option because they require Clang and produce binaries that are not useful for normal testing. The CMake setup below also wires the saved crash inputs into the regular test suite as regression tests, which is good practice - once you find a bug, you want to make sure it never comes back.
 
+```cmake
 # === CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.16)
 project(my_project)
@@ -151,11 +160,11 @@ if(ENABLE_FUZZING)
         )
     endforeach()
 endif()
-
 ```
 
-```bash
+When you pass a single file (instead of a corpus directory) to a libFuzzer binary, it runs just that one input and exits. That is how the regression tests work - each `add_test` entry runs the fuzzer binary against a single saved crash input.
 
+```bash
 # Build and run
 cmake -B build-fuzz -DENABLE_FUZZING=ON \
     -DCMAKE_CXX_COMPILER=clang++
@@ -167,15 +176,15 @@ cmake --build build-fuzz
 # When a crash is found, it's saved as crash-<hash>
 # Add it to corpus for regression testing
 cp crash-* fuzz/corpus/parser/
-
 ```
 
 ### Q3: Write a structure-aware fuzzer with custom mutators
 
 **Answer:**
 
-```cpp
+Pure random mutation is inefficient for binary protocols because most randomly-mutated inputs fail at header validation before reaching any interesting parsing logic. A custom mutator solves this by generating structurally valid mutations - tweaking header fields intelligently while leaving the overall message format intact.
 
+```cpp
 // === fuzz_protocol.cpp ===
 // Structure-aware fuzzer for a binary protocol
 
@@ -265,65 +274,56 @@ extern "C" size_t LLVMFuzzerCustomCrossOver(
 
     return total;
 }
-
 ```
 
-```yaml
+The crossover mutator is a nice touch - it combines the header from one corpus entry with the payload from another. This can create combinations that neither input alone would produce, covering code paths that depend on specific header/payload interactions.
 
+For CI integration, run the fuzzer on a time budget rather than to completion (it never "completes"). Save the growing corpus as an artifact so future runs start from a richer set of seeds.
+
+```yaml
 # === CI integration: OSS-Fuzz style ===
 name: Fuzz Testing
 on:
   schedule:
-
     - cron: '0 2 * * *'  # Nightly
 
 jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-
       - uses: actions/checkout@v4
-
       - name: Build fuzz targets
-
         run: |
           cmake -B build-fuzz -DENABLE_FUZZING=ON \
               -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
-
       - name: Run fuzzer (time-limited)
-
         run: |
           ./build-fuzz/fuzz_parser fuzz/corpus/parser/ \
               -max_total_time=600 \
               -print_final_stats=1
-
       - name: Upload new corpus
-
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-corpus
           path: fuzz/corpus/
-
       - name: Upload crashes
-
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes
           path: crash-*
-
 ```
 
 ---
 
 ## Notes
 
-- **Always fuzz with sanitizers** (ASan + UBSan minimum) — the fuzzer finds inputs, sanitizers detect the bugs
-- Save crash-reproducing inputs as regression tests in your corpus directory
-- Use dictionaries (`.dict` files) to seed the fuzzer with protocol-specific tokens
-- `max_len` should match realistic input sizes — too large wastes time, too small misses bugs
-- Structure-aware fuzzing (custom mutators) is dramatically more effective for protocols and file formats
-- Coverage-guided fuzzing finds bugs in minutes that random testing misses in hours
-- Consider OSS-Fuzz for open-source projects — Google runs it continuously for free
-- libFuzzer is built into Clang; no separate installation needed
+- Always fuzz with sanitizers (ASan + UBSan at minimum) - the fuzzer finds the inputs; the sanitizers detect the bugs those inputs trigger.
+- Save crash-reproducing inputs as regression tests in your corpus directory so fixed bugs can never come back silently.
+- Use dictionaries (`.dict` files) to seed the fuzzer with protocol-specific tokens - this can multiply coverage speed by an order of magnitude for structured input formats.
+- Set `max_len` to match realistic input sizes. Too large wastes fuzzer effort on inputs your code would never realistically see; too small misses overflow bugs in large inputs.
+- Structure-aware fuzzing with custom mutators is dramatically more effective for binary protocols and complex file formats, where purely random bytes almost never pass initial validation.
+- Coverage-guided fuzzing finds bugs in minutes that random testing would miss in hours, because it actively steers toward unexplored code paths.
+- Consider OSS-Fuzz for open-source projects - Google runs it continuously for free and has found tens of thousands of bugs in popular libraries.
+- libFuzzer is built into Clang and requires no separate installation.

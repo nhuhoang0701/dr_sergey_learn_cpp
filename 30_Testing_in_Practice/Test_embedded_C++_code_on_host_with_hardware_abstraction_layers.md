@@ -6,12 +6,15 @@
 
 ## Topic Overview
 
-**Hardware Abstraction Layers (HAL)** decouple application logic from hardware-specific code, enabling you to run and test embedded firmware on a regular PC ("host testing"). This catches logic bugs instantly without flashing to hardware, dramatically shortening the edit-compile-test cycle.
+**Hardware Abstraction Layers (HAL)** are the architectural pattern that makes embedded code testable. The idea is simple: instead of calling GPIO or UART hardware registers directly from your application logic, you call through a pure virtual interface. On the real device, that interface is backed by the actual hardware driver. On your development PC, it's backed by a mock or simulator class that you control.
+
+This matters enormously for your development speed. Flashing firmware to a microcontroller, waiting for it to boot, and attaching a debugger takes at minimum tens of seconds per iteration. Running a host test suite takes milliseconds. If you can catch 80% of your bugs before you ever touch hardware, you've dramatically shortened the debug cycle for the harder 20% that genuinely requires the real device.
+
+The reason this trips people up is the architecture has to be decided early. It's very hard to retrofit a HAL onto firmware that was written with direct hardware register access throughout. The time to set up the interfaces and the mock implementations is at the start of the project, not after the firmware is mostly written.
 
 ### Testing Strategy Layers
 
 ```cpp
-
   +-----------------------------+
   | Application Logic           |  <-- Tested on host (fast)
   +-----------------------------+
@@ -19,7 +22,6 @@
   +-----------------------------+
   | Host Mock  | Real Hardware  |  <-- Test vs Production
   +------------+----------------+
-
 ```
 
 | Approach | Speed | Fidelity | Setup |
@@ -36,8 +38,9 @@
 
 **Answer:**
 
-```cpp
+Here are three minimal HAL interfaces covering the most common peripherals. Notice that each interface is deliberately narrow - it only exposes what application code actually needs, not every feature the hardware supports. A narrow interface is easier to mock, easier to keep stable, and less likely to leak hardware-specific details into your application.
 
+```cpp
 // === hal/gpio.h - Abstract interface ===
 #pragma once
 #include <cstdint>
@@ -79,11 +82,11 @@ public:
     virtual void stop() = 0;
     virtual uint32_t elapsed_ms() const = 0;
 };
-
 ```
 
-```cpp
+On the target hardware, the implementation wraps the vendor HAL (here STM32's `HAL_GPIO_*` API). This is the only place where vendor-specific code lives - everything above the interface boundary is portable:
 
+```cpp
 // === hal/stm32/gpio_stm32.h - Real hardware implementation ===
 #pragma once
 #include "hal/gpio.h"
@@ -108,11 +111,11 @@ public:
         return HAL_GPIO_ReadPin(GPIOA, (1U << pin)) ? Level::High : Level::Low;
     }
 };
-
 ```
 
-```cpp
+For testing you have two choices: a `GpioMock` that uses gmock's `MOCK_METHOD` for precise call expectations, or a `GpioSimulator` that actually tracks pin states. The simulator is better when you're testing multi-step interactions where you need to read back what was written:
 
+```cpp
 // === hal/host/gpio_mock.h - Host test mock ===
 #pragma once
 #include "hal/gpio.h"
@@ -156,15 +159,15 @@ private:
     std::map<uint8_t, Direction> directions_;
     std::map<uint8_t, Level> pin_states_;
 };
-
 ```
 
 ### Q2: Test application logic using HAL mocks
 
 **Answer:**
 
-```cpp
+Here are two application classes that each take a HAL interface by reference. Neither class knows anything about how GPIO or UART is implemented - it only knows the interface. This is dependency injection, and it's what makes the mocking work.
 
+```cpp
 // === app/led_controller.h ===
 #pragma once
 #include "hal/gpio.h"
@@ -223,11 +226,11 @@ public:
 private:
     IUart& uart_;
 };
-
 ```
 
-```cpp
+Now the tests. Notice the distinction between `GpioMock` (for the first two tests, where we care about exact call sequences) and `GpioSimulator` (for the toggle test, where we want to verify the actual pin state after two calls):
 
+```cpp
 // === tests/test_led_controller.cpp ===
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
@@ -261,15 +264,17 @@ TEST(LedControllerTest, ToggleAlternates) {
     led.toggle();
     EXPECT_EQ(gpio.get_pin_state(3), IGpio::Level::Low);
 }
-
 ```
+
+`NiceMock<GpioMock>` in the second test suppresses gmock warnings for calls that don't have matching `EXPECT_CALL` entries. You need this for the constructor's `configure()` call - you only care about the `write()` call in that particular test.
 
 ### Q3: CMake dual-target build for host and embedded
 
 **Answer:**
 
-```cmake
+The `CMAKE_CROSSCOMPILING` variable is the natural dividing line. When you configure with a cross-compilation toolchain file, CMake sets `CMAKE_CROSSCOMPILING` to `TRUE` and you build the embedded target. When you configure natively, you build the host tests. The same `CMakeLists.txt` handles both cases:
 
+```cmake
 # === CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.20)
 project(embedded_app)
@@ -307,11 +312,11 @@ else()
     )
     add_test(NAME host_tests COMMAND host_tests)
 endif()
-
 ```
 
-```bash
+The two build commands are cleanly separated:
 
+```bash
 # Build for host (testing)
 cmake -B build-host
 cmake --build build-host
@@ -320,17 +325,18 @@ ctest --test-dir build-host
 # Build for target (flashing)
 cmake -B build-arm --toolchain arm-toolchain.cmake
 cmake --build build-arm
-
 ```
+
+The separation of `app_logic` from any HAL implementation is the key architectural decision. `app_logic` has no platform-specific includes and no `#ifdef` soup - it's plain C++ that compiles and runs anywhere.
 
 ---
 
 ## Notes
 
-- **HAL interfaces must be stable** — changing the interface requires updating all implementations and tests
-- Keep HAL interfaces minimal — expose only what the application needs, not every hardware register
-- Use `NiceMock<>` for interactions you don't care about, strict mocks for critical sequences
-- `GpioSimulator` (with state) is better than `GpioMock` when testing multi-step interactions
-- Host tests catch ~80% of firmware bugs (logic, state machines, protocol parsing) in milliseconds
-- The remaining 20% (timing, interrupts, electrical) require hardware-in-the-loop testing
-- Separate `app_logic` library from HAL is the key architectural decision for testability
+- HAL interfaces must be stable - changing the interface requires updating all implementations and tests.
+- Keep HAL interfaces minimal - expose only what the application needs, not every hardware register.
+- Use `NiceMock<>` for interactions you don't care about; use strict mocks for critical sequences.
+- `GpioSimulator` (with state) is better than `GpioMock` when testing multi-step interactions.
+- Host tests catch roughly 80% of firmware bugs (logic, state machines, protocol parsing) in milliseconds.
+- The remaining 20% (timing, interrupts, electrical) require hardware-in-the-loop testing.
+- Separating `app_logic` from the HAL is the key architectural decision for testability.

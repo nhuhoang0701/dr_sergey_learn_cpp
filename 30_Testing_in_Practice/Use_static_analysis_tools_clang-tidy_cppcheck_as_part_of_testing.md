@@ -8,7 +8,11 @@
 
 **Static analysis** examines code without executing it, catching bugs, style violations, and undefined behavior at compile time. It complements dynamic testing (unit tests, sanitizers) by finding issues that may not manifest in test runs. clang-tidy and cppcheck are the two most widely used open-source C++ static analyzers.
 
+Think of static analysis as a second set of eyes that never gets tired. It can spot a use-after-move, a narrowing conversion, or a missing `override` keyword consistently across every file in your project - things that are easy to miss in code review. The key insight is that it works without running the code, so it catches bugs in paths that your tests may never exercise.
+
 ### Tool Comparison
+
+The two tools are genuinely complementary - they use different internal representations and catch different categories of problems. Running both together is better than either alone.
 
 | Feature | clang-tidy | cppcheck | clang static analyzer |
 | --- | --- | --- | --- |
@@ -28,8 +32,9 @@
 
 **Answer:**
 
-```yaml
+The `.clang-tidy` file lives at your project root and is picked up automatically. The strategy shown here is "start with everything disabled, then opt into specific check families" - this avoids being flooded with warnings on an existing codebase and lets you add categories incrementally.
 
+```yaml
 # === .clang-tidy (project root) ===
 ---
 Checks: >
@@ -73,11 +78,11 @@ CheckOptions:
 
     value: 'std::shared_ptr;std::unique_ptr'
 ...
-
 ```
 
-```cmake
+Integrating clang-tidy into your CMake build means it runs automatically as part of compilation. The two options below show per-target and global integration.
 
+```cmake
 # === CMakeLists.txt integration ===
 
 # Export compile_commands.json (required by clang-tidy)
@@ -94,11 +99,11 @@ set(CMAKE_CXX_CLANG_TIDY
     -p ${CMAKE_BINARY_DIR}
     --warnings-as-errors=bugprone-*
 )
-
 ```
 
-```bash
+You can also run it manually or on changed files only. The changed-files approach is particularly useful in CI where you only want to check what was actually modified in a pull request.
 
+```bash
 # Run manually
 clang-tidy -p build src/*.cpp --fix
 
@@ -113,15 +118,17 @@ float f = static_cast<float>(some_double);  // Intentional
 
 // Single line suppression:
 int x = 42;  // NOLINT(readability-magic-numbers)
-
 ```
+
+Use `NOLINT` sparingly and always leave a comment explaining why. A suppression without a reason is a future maintenance problem.
 
 ### Q2: Set up cppcheck and combine with clang-tidy
 
 **Answer:**
 
-```bash
+cppcheck can run directly on source files without needing a compilation database, which makes it fast and easy to integrate. For the most accurate results, point it at your `compile_commands.json` so it sees the same include paths and defines that your compiler does.
 
+```bash
 # === cppcheck basic usage ===
 cppcheck --enable=all \
     --std=c++20 \
@@ -136,11 +143,11 @@ cppcheck --enable=all \
     --xml --xml-version=2 \
     --project=build/compile_commands.json \
     2> cppcheck_results.xml
-
 ```
 
-```cmake
+A custom CMake target lets you run both tools in one command, which is convenient for local development.
 
+```cmake
 # === Custom CMake target for all static analysis ===
 
 find_program(CLANG_TIDY clang-tidy)
@@ -158,11 +165,11 @@ add_custom_target(static-analysis
         --project=${CMAKE_BINARY_DIR}/compile_commands.json
     COMMENT "Running static analysis..."
 )
-
 ```
 
-```yaml
+The GitHub Actions workflow below runs both tools on every push and pull request. Block PRs on new violations from day one - it is much harder to enforce this retroactively.
 
+```yaml
 # === GitHub Actions CI ===
 name: Static Analysis
 on: [push, pull_request]
@@ -172,21 +179,21 @@ jobs:
     steps:
 
       - uses: actions/checkout@v4
-      
+
       - name: Install tools
 
         run: sudo apt-get install -y clang-tidy cppcheck
-      
+
       - name: Configure (generate compile_commands.json)
 
         run: cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-      
+
       - name: clang-tidy
 
         run: |
           find src -name '*.cpp' | \
             xargs clang-tidy -p build --warnings-as-errors='*'
-      
+
       - name: cppcheck
 
         run: |
@@ -194,15 +201,15 @@ jobs:
             --error-exitcode=1 \
             --suppress=missingIncludeSystem \
             --project=build/compile_commands.json
-
 ```
 
 ### Q3: Show key clang-tidy checks that catch real bugs
 
 **Answer:**
 
-```cpp
+The examples below are not hypothetical edge cases - these are patterns that appear in real codebases and cause real bugs. Each one is the kind of mistake that compiles without warning but misbehaves at runtime.
 
+```cpp
 // === bugprone-use-after-move ===
 std::string s = "hello";
 auto s2 = std::move(s);
@@ -245,18 +252,19 @@ take_by_value(d2);  // Object sliced!
 void fn() noexcept {
     throw std::runtime_error("oops");  // WARNING: exception escapes noexcept
 }
-
 ```
+
+The `bugprone-dangling-handle` and `bugprone-use-after-move` checks are particularly valuable because these bugs produce undefined behavior that can be intermittent and hard to reproduce in testing. Static analysis catches them deterministically at compile time.
 
 ---
 
 ## Notes
 
-- **Always use `CMAKE_EXPORT_COMPILE_COMMANDS=ON`** — both tools need it for accurate analysis
-- clang-tidy's `--fix` can automatically modernize code (use-nullptr, use-override, etc.)
-- Use `// NOLINT` sparingly and always document the reason
-- cppcheck catches different bugs than clang-tidy — use both for defense in depth
-- `clang-tidy` checks are prefixed by category: `bugprone-`, `modernize-`, `performance-`, `readability-`
-- Start strict (`WarningsAsErrors` for `bugprone-*`), relax only for documented false positives
-- Static analysis is a CI gate, not a developer inconvenience — block PRs on new violations
-- Consider also: `include-what-you-use` (iwyu) for header hygiene
+- **Always use `CMAKE_EXPORT_COMPILE_COMMANDS=ON`** - both tools need it for accurate analysis.
+- clang-tidy's `--fix` can automatically modernize code (use-nullptr, use-override, etc.).
+- Use `// NOLINT` sparingly and always document the reason.
+- cppcheck catches different bugs than clang-tidy - use both for defense in depth.
+- `clang-tidy` checks are prefixed by category: `bugprone-`, `modernize-`, `performance-`, `readability-`.
+- Start strict (`WarningsAsErrors` for `bugprone-*`), relax only for documented false positives.
+- Static analysis is a CI gate, not a developer inconvenience - block PRs on new violations.
+- Consider also: `include-what-you-use` (iwyu) for header hygiene.

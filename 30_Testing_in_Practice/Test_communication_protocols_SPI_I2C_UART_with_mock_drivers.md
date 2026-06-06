@@ -6,7 +6,11 @@
 
 ## Topic Overview
 
-Embedded systems communicate with sensors, actuators, and other MCUs via serial protocols. Testing protocol handling logic requires simulating the bus behavior. **Mock drivers** capture transmitted data and inject responses, verifying correct framing, timing, and error handling without hardware.
+Embedded systems spend a lot of their time talking to sensors, actuators, and other microcontrollers over serial buses. The challenge is that the protocol handling logic - framing, addressing, checksums, register maps, error recovery - is exactly the kind of code that's rich with bugs, but it's also tightly coupled to hardware that you can't easily access in a unit test or CI pipeline.
+
+The solution is **mock drivers**: software implementations of the bus interface that capture transmitted data and inject controlled responses. Your protocol code calls the same interface it would use with real hardware, but the underlying implementation is a C++ class under your control. This lets you test that your driver sends the right bytes, handles NAKs and timeouts correctly, and interprets sensor responses accurately - all without a single piece of physical hardware.
+
+The reason to write a simulator mock (one that actually models the device register state) rather than just using `EXPECT_CALL` everywhere is depth. A simple mock verifies the sequence of calls. A simulator verifies that the right data flows through those calls in response to different device states, which catches a much wider class of bugs.
 
 ### Protocol Quick Reference
 
@@ -24,8 +28,9 @@ Embedded systems communicate with sensors, actuators, and other MCUs via serial 
 
 **Answer:**
 
-```cpp
+The design starts with a pure abstract interface for the I2C bus. Your application code depends only on this interface, which is what makes the mock substitution possible. The interface covers the three fundamental I2C operations: write, read, and the combined write-then-read (used to set a register address before reading its value).
 
+```cpp
 #include <cstdint>
 #include <vector>
 #include <span>
@@ -139,11 +144,11 @@ public:
 private:
     II2cBus& bus_;
 };
-
 ```
 
-```cpp
+Now the tests. Notice that `SetUp` populates the simulator with the exact register values a real BME280 would present, including the chip ID that `init()` verifies. The `force_nak` test checks that the driver handles a missing device correctly - this is the kind of error path that's tedious to trigger with real hardware but trivial with a mock:
 
+```cpp
 // === Tests ===
 #include <gtest/gtest.h>
 
@@ -176,15 +181,15 @@ TEST_F(Bme280Test, ReadsTemperature) {
     ASSERT_TRUE(temp.has_value());
     EXPECT_GT(*temp, 0.0f);
 }
-
 ```
 
 ### Q2: Mock a UART protocol with framing and checksums
 
 **Answer:**
 
-```cpp
+UART mocks work on a different model from I2C. Instead of simulating device registers, you capture a transmit buffer (what the code under test sends) and maintain an inject-able receive buffer (what it will read back). This pattern directly tests that protocol framing is correct.
 
+```cpp
 // === UART mock with TX logging and RX injection ===
 class UartMock : public IUart {
 public:
@@ -278,15 +283,17 @@ TEST(ModbusTest, SendsCorrectFrame) {
     EXPECT_EQ(tx[1], 0x03);  // Function: read holding registers
     EXPECT_EQ(tx.size(), 8);  // 6 bytes + 2 CRC
 }
-
 ```
+
+The test pre-loads the mock's receive buffer with a well-formed response, then asserts on the bytes the driver actually transmitted. This is a clean way to test both sides of a transaction in a single test case.
 
 ### Q3: Mock SPI with full-duplex transaction recording
 
 **Answer:**
 
-```cpp
+SPI is full-duplex - every byte you send, you also receive a byte back simultaneously. The `SpiRecorder` below captures complete transactions: for each chip-select cycle it records both the TX bytes sent and the RX bytes returned. This makes it easy to write tests that verify not just what was sent but also that the driver reads the right positions in the response buffer.
 
+```cpp
 // === SPI interface ===
 class ISpi {
 public:
@@ -339,17 +346,18 @@ private:
     std::vector<uint8_t> rx_queue_;
     std::vector<Transaction> transactions_;
 };
-
 ```
+
+With the recorder you can assert on `transactions()[0].tx_bytes` to verify the exact command bytes sent during a chip-select window, and check `transactions()[0].rx_bytes` to verify the driver correctly consumed the response. This is especially useful for SPI flash and ADC drivers where the command-response structure is precise.
 
 ---
 
 ## Notes
 
-- **Simulator mocks** (with state and register maps) test protocol logic more thoroughly than simple EXPECT_CALL mocks
-- Always test both success paths and error conditions (NAK, timeout, CRC mismatch)
-- SPI full-duplex recording catches bugs where TX/RX timing matters
-- For I2C, simulate multi-byte register reads with auto-incrementing addresses
-- Protocol CRC/checksum validation should be tested with known-good vectors
-- Keep mock drivers simple — they should model the bus, not reimplementing the real hardware
-- Transaction logging (TX/RX buffers) helps debug protocol compliance issues in test output
+- Simulator mocks (with state and register maps) test protocol logic more thoroughly than simple `EXPECT_CALL` mocks.
+- Always test both success paths and error conditions (NAK, timeout, CRC mismatch).
+- SPI full-duplex recording catches bugs where TX/RX timing matters.
+- For I2C, simulate multi-byte register reads with auto-incrementing addresses.
+- Protocol CRC/checksum validation should be tested with known-good vectors.
+- Keep mock drivers simple - they should model the bus, not reimplement the real hardware.
+- Transaction logging (TX/RX buffers) helps debug protocol compliance issues in test output.

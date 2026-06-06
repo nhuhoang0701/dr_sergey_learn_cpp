@@ -6,30 +6,34 @@
 
 ## Topic Overview
 
-Code coverage measures what percentage of your source code is executed during testing. It's a **necessary but not sufficient** quality metric — 100% coverage doesn't mean bug-free, but low coverage guarantees blind spots. The major tools for C++ are **gcov** (GCC), **llvm-cov** (Clang), and **lcov** (HTML report generator).
+Code coverage answers a simple question: which parts of your source code actually ran during your test suite? It's a **necessary but not sufficient** quality metric - 100% coverage doesn't mean your code is bug-free, but low coverage tells you with certainty that you have untested blind spots. The major tools for C++ are **gcov** (GCC's built-in coverage tool), **llvm-cov** (Clang's equivalent), and **lcov** (a front-end that turns raw coverage data into readable HTML reports).
+
+The important mental model here is that coverage is about building confidence, not about hitting a magic number. A function that gets called but whose edge cases are never exercised can show as "covered" even though important paths were skipped. That's why branch coverage is more valuable than line coverage - it forces you to think about every `if`/`else` arm, not just whether a line of code was touched.
 
 ### Coverage Metrics
 
+The table below summarizes the main metrics you'll encounter. If it feels like a lot, the short version is: start with line coverage to find dead code, then move to branch coverage for real confidence.
+
 | Metric | What It Measures | Usefulness |
 | --- | --- | --- |
-| **Line coverage** | Lines executed / total lines | Basic — misses branch logic |
-| **Branch coverage** | Branches taken / total branches | Better — catches untested if/else |
+| **Line coverage** | Lines executed / total lines | Basic - misses branch logic |
+| **Branch coverage** | Branches taken / total branches | Better - catches untested if/else |
 | **Function coverage** | Functions called / total functions | Finds dead code |
 | **Region coverage** (llvm-cov) | Code regions executed | Most precise |
 | **MC/DC** | Modified condition/decision | Required for safety-critical (DO-178C) |
 
 ### Tool Chain
 
-```cpp
+Here's how the pieces fit together. Your source and test code get compiled with special instrumentation flags that tell the compiler to count executions. When you run the tests, the runtime writes out that count data, and then the coverage tools read both the compile-time notes and the runtime data to produce a report.
 
-Source + Tests → Compile with coverage flags → Run tests
+```cpp
+Source + Tests -> Compile with coverage flags -> Run tests
     │                                              │
     │           .gcno (compile-time notes)         │ .gcda (runtime data)
     │                                              │
     └────────► gcov / llvm-cov ─────────────────┘
                     │
-              lcov / genhtml → HTML report
-
+              lcov / genhtml -> HTML report
 ```
 
 ---
@@ -40,8 +44,9 @@ Source + Tests → Compile with coverage flags → Run tests
 
 **Answer:**
 
-```cmake
+The first thing you need is a CMake option that adds the right compiler flags when coverage is requested. You don't want these flags in your normal build - coverage instrumentation slows execution by 2-5x and bloats the binary.
 
+```cmake
 # === CMakeLists.txt: coverage build type ===
 option(ENABLE_COVERAGE "Build with coverage instrumentation" OFF)
 
@@ -54,11 +59,13 @@ if(ENABLE_COVERAGE)
         add_link_options(-fprofile-instr-generate)
     endif()
 endif()
-
 ```
 
-```bash
+Note that `--coverage` is just shorthand for `-fprofile-arcs -ftest-coverage` on GCC. Both spellings work; the long form makes what's happening more explicit.
 
+Once you've built with coverage enabled and run your tests, here's the full lcov workflow that takes you from raw `.gcda` files all the way to an HTML report:
+
+```bash
 # === GCC + gcov + lcov workflow ===
 
 # 1. Build with coverage
@@ -90,11 +97,13 @@ genhtml coverage_filtered.info \
 # 7. Check coverage threshold (fails if below 80%)
 lcov --summary coverage_filtered.info | grep -E 'lines|functions'
 # Output: lines......: 85.3% (256 of 300 lines)
-
 ```
 
-```bash
+The filtering step (step 4) is important - without it your metrics will be polluted by system headers and the test framework itself, which would make your numbers look either better or worse than they really are.
 
+If you want to look at a single file in detail rather than the full report, `gcov` can annotate the source directly:
+
+```bash
 # === Per-file coverage with gcov ===
 gcov -b -c src/calculator.cpp
 # Produces calculator.cpp.gcov with line-by-line annotations:
@@ -103,15 +112,17 @@ gcov -b -c src/calculator.cpp
 #     -:   14: }
 #####:   15: double Calculator::unused_method() {
 # ^^^^^ means line was never executed
-
 ```
+
+The `#####` marker is your signal that a line was never hit. Any function showing that is a candidate for either a new test or deletion if the code is truly dead.
 
 ### Q2: Set up coverage with Clang/llvm-cov
 
 **Answer:**
 
-```bash
+Clang uses a different instrumentation format that's generally more precise than GCC's. The extra step of merging `.profraw` files into a `.profdata` file might seem annoying, but it allows you to merge data from multiple test runs cleanly - useful when you have different test executables covering different parts of the code.
 
+```bash
 # === Clang + llvm-cov workflow ===
 
 # 1. Build with coverage
@@ -143,11 +154,13 @@ llvm-cov show ./test_runner \
 llvm-cov export ./test_runner \
     -instr-profile=test.profdata \
     -format=lcov > coverage.lcov
-
 ```
 
-```bash
+The export to lcov format at the end is worth doing even if you primarily use llvm-cov for local analysis - it makes the output compatible with Codecov, Coveralls, and similar CI reporting tools.
 
+When you want to drill into a specific file, the report command accepts a filename filter:
+
+```bash
 # === Check specific file coverage ===
 llvm-cov report ./test_runner \
     -instr-profile=test.profdata \
@@ -156,15 +169,17 @@ llvm-cov report ./test_runner \
 # Output:
 # Filename         Regions  Miss  Cover  Lines  Miss  Cover  Branches  Miss  Cover
 # calculator.cpp        12     1  91.7%     45     3  93.3%        8     2  75.0%
-
 ```
+
+That three-column breakdown (Regions / Lines / Branches) gives you a much richer picture than line coverage alone. The branch column in particular tends to reveal the gaps that pure line coverage hides.
 
 ### Q3: Enforce coverage thresholds in CI and integrate with CMake
 
 **Answer:**
 
-```cmake
+The most common pattern is a CMake custom target that automates the whole workflow - reset counters, run tests, capture, filter, and generate the report in one `cmake --build build --target coverage` command.
 
+```cmake
 # === CMake custom target for coverage ===
 if(ENABLE_COVERAGE)
     find_program(LCOV lcov)
@@ -190,11 +205,11 @@ if(ENABLE_COVERAGE)
         COMMENT "Generating code coverage report..."
     )
 endif()
-
 ```
 
-```yaml
+In CI you want to not only generate the report but also fail the build if coverage drops below your threshold. The GitHub Actions workflow below handles that, and also uploads to Codecov so you get trend tracking across PRs:
 
+```yaml
 # === GitHub Actions: enforce coverage threshold ===
 name: Coverage
 on: [push, pull_request]
@@ -239,19 +254,20 @@ jobs:
         with:
           files: coverage_filtered.info
           fail_ci_if_error: true
-
 ```
+
+The threshold check in the "Enforce minimum coverage" step is the key part - it extracts the line coverage percentage from `lcov --summary` and exits with an error if you're below 80%. That makes coverage enforcement automatic rather than something a reviewer has to notice manually.
 
 ---
 
 ## Notes
 
-- **Coverage is a necessary but not sufficient metric** — it shows what code runs, not whether it's correct
-- Aim for **80%+ line coverage** as a baseline; 90%+ for critical code
-- **Branch coverage** is more valuable than line coverage — catches missed if/else paths
-- Always filter out test code, third-party code, and generated code from metrics
-- `--coverage` is shorthand for `-fprofile-arcs -ftest-coverage` (GCC)
-- Use `LLVM_PROFILE_FILE` environment variable to control output location
-- Coverage slows execution 2-5x — use dedicated coverage builds, not release builds
-- `gcovr` is a Python alternative to lcov that produces Cobertura XML (for Jenkins/GitLab)
-- Mutation testing (see separate topic) is a stronger quality metric than coverage
+- Coverage is a necessary but not sufficient metric - it shows what code runs, not whether it's correct.
+- Aim for 80%+ line coverage as a baseline; 90%+ for critical code.
+- Branch coverage is more valuable than line coverage - it catches missed if/else paths.
+- Always filter out test code, third-party code, and generated code from metrics.
+- `--coverage` is shorthand for `-fprofile-arcs -ftest-coverage` (GCC).
+- Use `LLVM_PROFILE_FILE` environment variable to control output location.
+- Coverage slows execution 2-5x - use dedicated coverage builds, not release builds.
+- `gcovr` is a Python alternative to lcov that produces Cobertura XML (for Jenkins/GitLab).
+- Mutation testing (see separate topic) is a stronger quality metric than coverage.

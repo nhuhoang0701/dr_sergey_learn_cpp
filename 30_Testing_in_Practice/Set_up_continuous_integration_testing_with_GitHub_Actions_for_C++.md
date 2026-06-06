@@ -6,12 +6,15 @@
 
 ## Topic Overview
 
-**Continuous Integration (CI)** automatically builds and tests code on every push/PR. GitHub Actions is the most popular CI platform for GitHub-hosted projects. A well-configured C++ CI pipeline catches build failures, test regressions, and code quality issues before they reach the main branch.
+**Continuous Integration (CI)** automatically builds and tests your code on every push and pull request, so regressions are caught before they reach the main branch rather than after. GitHub Actions is currently the most popular CI platform for GitHub-hosted projects, and it has excellent support for C++ workflows including matrix builds, caching, and integration with coverage and sanitizer tools.
+
+The key insight behind a well-designed C++ CI pipeline is layering. You want cheap checks (basic build) to run first and block the expensive checks (sanitizers, coverage) from even starting if the basics are broken. This is what the `needs:` keyword in GitHub Actions does for you - it sequences jobs so you're not wasting 20 minutes of sanitizer time on a build that has a compilation error.
 
 ### CI Pipeline Stages
 
-```cpp
+Here's the overall shape of a mature C++ CI pipeline. Each column represents a separate job that can run in parallel once its dependencies complete:
 
+```cpp
 Push/PR -> Build -> Unit Tests -> Integration Tests -> Static Analysis -> Deploy
    |          |          |              |                    |
    |       Matrix:    CTest         Label-based          clang-tidy
@@ -19,7 +22,6 @@ Push/PR -> Build -> Unit Tests -> Integration Tests -> Static Analysis -> Deploy
    |     C++17/20/23  sanitizers      coverage
    v           v         v               v                   v
            Fail fast on first error, report all results
-
 ```
 
 ---
@@ -30,8 +32,9 @@ Push/PR -> Build -> Unit Tests -> Integration Tests -> Static Analysis -> Deploy
 
 **Answer:**
 
-```yaml
+The workflow below covers the most important concerns: a matrix build across OS/compiler/build-type combinations, a sanitizer job that only runs if the basic build passes, and a coverage job. The `fail-fast: false` setting in the matrix is important - it means all matrix configurations finish even when one fails, so you get complete information rather than having to re-run the whole pipeline to find additional failures.
 
+```yaml
 # === .github/workflows/ci.yml ===
 name: C++ CI
 
@@ -205,15 +208,17 @@ jobs:
             echo "::error::Coverage ${COVERAGE}% is below 80% threshold"
             exit 1
           fi
-
 ```
+
+Notice the `timeout-minutes: 10` on the test step and `timeout-minutes: 20` on the sanitizer step. Always set these - without them, a deadlock or infinite loop in your tests will consume the full GitHub Actions job timeout (6 hours by default), blocking other PRs and burning through your CI minutes.
 
 ### Q2: Cache dependencies for faster builds
 
 **Answer:**
 
-```yaml
+Without caching, every CI run downloads googletest, rebuilds all your source, and recompiles your dependencies from scratch. That's wasteful. GitHub Actions caching works by hashing a key file - if the hash hasn't changed, the cache is restored and you skip the download/rebuild. The two most impactful things to cache for C++ are the build directory (especially when using `FetchContent`) and `ccache` for incremental compilation.
 
+```yaml
 # === Add to the build job steps (before Configure) ===
 
       - name: Cache CMake build
@@ -259,15 +264,17 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-
 ```
+
+The `restore-keys` fallback is worth understanding. When the exact cache key doesn't match (e.g., after a `CMakeLists.txt` change), GitHub Actions tries the fallback keys in order. Using a prefix without the hash as the fallback means you'll get a partial cache hit from the previous build of the same compiler/OS combination - much faster than a cold start.
 
 ### Q3: Add branch protection and PR status checks
 
 **Answer:**
 
-```yaml
+The point of branch protection is that required status checks must pass before a PR can merge. The trick is to configure a single summary job (`all-checks`) as the required check, rather than listing every individual matrix combination - otherwise adding a new OS to the matrix requires updating the branch protection rules too.
 
+```yaml
 # === Separate static analysis job ===
   static-analysis:
     runs-on: ubuntu-latest
@@ -310,29 +317,30 @@ jobs:
             echo "One or more required checks failed"
             exit 1
           fi
-
 ```
 
-```cpp
+Running clang-tidy only on changed files in PRs (rather than the whole codebase) keeps analysis time fast. You get full analysis on pushes to main where runtime cost is less of a concern. The `CMAKE_EXPORT_COMPILE_COMMANDS=ON` flag is required for clang-tidy to understand your include paths and preprocessor definitions correctly.
 
+Branch protection settings to configure (Settings -> Branches -> main):
+
+```cpp
 Branch Protection Rules (Settings > Branches > main):
 
 - Require status checks: "all-checks"
 - Require up-to-date branches
 - Require linear history (optional: enforce rebase)
 - Include administrators
-
 ```
 
 ---
 
 ## Notes
 
-- **`fail-fast: false`** in matrix builds ensures all configurations are tested even if one fails
-- Use `needs:` to sequence expensive jobs (sanitizers) after basic build succeeds
-- Cache `build/`, `~/.ccache`, and package manager caches for 2-5x faster builds
-- Run clang-tidy only on changed files in PRs — full analysis on main branch pushes
-- Set `timeout-minutes` on test steps to catch infinite loops and deadlocks
-- Use a summary job (`all-checks`) as the single required status check for branch protection
-- Sanitizer builds should use `-O1` not `-O0` — some bugs only manifest with optimization
-- Coverage thresholds prevent test erosion: fail PR if coverage drops below threshold
+- `fail-fast: false` in matrix builds ensures all configurations are tested even if one fails.
+- Use `needs:` to sequence expensive jobs (sanitizers) after basic build succeeds.
+- Cache `build/`, `~/.ccache`, and package manager caches for 2-5x faster builds.
+- Run clang-tidy only on changed files in PRs - full analysis on main branch pushes.
+- Set `timeout-minutes` on test steps to catch infinite loops and deadlocks.
+- Use a summary job (`all-checks`) as the single required status check for branch protection.
+- Sanitizer builds should use `-O1` not `-O0` - some bugs only manifest with optimization.
+- Coverage thresholds prevent test erosion: fail the PR if coverage drops below threshold.

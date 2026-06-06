@@ -6,7 +6,11 @@
 
 ## Topic Overview
 
-Stack overflow and memory leaks are critical in embedded systems where RAM is limited (often 8-256 KB). Unlike desktop apps, embedded systems can't recover from stack overflow — it silently corrupts data. Monitoring techniques: **compile-time stack analysis**, **runtime stack painting**, **leak detection in tests**, and **linker map file analysis**.
+Stack overflow and memory leaks are among the most critical bugs in embedded systems, and they're particularly nasty because the hardware doesn't give you much warning. When a desktop application leaks memory, the OS will eventually kill it. When an embedded system overflows its stack, it silently corrupts whatever happens to live at the memory addresses below the stack pointer - often other variables, other tasks' stacks, or the heap. The system continues running but behaves unpredictably, and the real cause can be very far from where you observe the symptoms.
+
+The reason this trips people up is that stack overflows are non-deterministic during development. Your code might work fine during testing with short call chains, then overflow in the field when an interrupt fires during a deep function call. That's why you need to measure and enforce stack budgets before the firmware ships, not after.
+
+RAM on typical microcontrollers is very limited - often 8 to 256 KB for the entire system including stack, heap, and static data. The four main techniques for staying within budget are: **compile-time stack analysis** (know per-function maximums before you run), **runtime stack painting** (measure actual high-water marks during testing), **leak detection in test builds** (catch heap leaks on the host), and **linker map file analysis** (verify total static allocation fits the MCU).
 
 ### Memory Monitoring Approaches
 
@@ -27,8 +31,9 @@ Stack overflow and memory leaks are critical in embedded systems where RAM is li
 
 **Answer:**
 
-```bash
+GCC's `-fstack-usage` flag makes the compiler emit a `.su` file alongside each `.o` file. Each line in the `.su` file tells you how many bytes of stack a particular function uses and whether that's a static (known at compile time) or dynamic (bounded or unbounded, depending on whether it uses VLAs) value. This is zero-overhead analysis - it happens at compile time and has no effect on the compiled binary.
 
+```bash
 # === GCC -fstack-usage: per-function stack analysis ===
 arm-none-eabi-g++ -fstack-usage -c src/main.cpp -o build/main.o
 # Creates main.su alongside main.o:
@@ -38,11 +43,11 @@ arm-none-eabi-g++ -fstack-usage -c src/main.cpp -o build/main.o
 
 # Parse .su files to find stack hogs
 find build -name '*.su' -exec cat {} \; | sort -t: -k5 -n -r | head -20
-
 ```
 
-```python
+To turn that raw data into an automated pass/fail check, a small Python script can parse all `.su` files and flag any function that exceeds your stack budget per function:
 
+```python
 # === stack_analyzer.py: Parse .su files and check against limits ===
 import sys
 from pathlib import Path
@@ -68,11 +73,11 @@ def analyze_stack(build_dir: str, max_stack: int = 512):
 if __name__ == '__main__':
     ok = analyze_stack('build', max_stack=512)
     sys.exit(0 if ok else 1)
-
 ```
 
-```cmake
+You can wire both the compiler flag and the post-build analysis check directly into CMake so they run automatically on every build:
 
+```cmake
 # === CMake: Enable stack analysis and linker map ===
 target_compile_options(firmware PRIVATE
     -fstack-usage
@@ -90,15 +95,19 @@ add_custom_command(TARGET firmware POST_BUILD
             ${CMAKE_BINARY_DIR} --max-stack 512
     COMMENT "Checking stack usage..."
 )
-
 ```
+
+The `-Wl,--print-memory-usage` linker flag gives you a quick sanity check like `FLASH: 45KB / 256KB, RAM: 12KB / 64KB` right at the end of the build output. If you're anywhere near the limits, you'll know immediately.
 
 ### Q2: Runtime stack monitoring with stack painting
 
 **Answer:**
 
-```cpp
+Compile-time analysis tells you the worst case per function, but it can't tell you which combination of nested calls actually occurs at runtime. Stack painting fills this gap by writing a known byte pattern across the unused portion of the stack at startup, then later measuring how far into that pattern a real call chain reached. This "high-water mark" approach is the standard technique on RTOS systems.
 
+The reason this works is simple: if you fill the whole stack with `0xDEADBEEF` at boot and later inspect it from the bottom upward, the first word that's no longer `0xDEADBEEF` marks where the stack was actually used.
+
+```cpp
 // === Stack painting: fill stack with known pattern at boot ===
 // Implemented in startup code or RTOS task creation
 
@@ -158,15 +167,19 @@ TEST(StackPaintTest, FullStackShowsFullUsage) {
     size_t used = measure_stack_used(stack.data(), stack.size());
     EXPECT_EQ(used, 256 * sizeof(uint32_t));
 }
-
 ```
+
+Notice that the painting and measuring functions have no hardware dependencies - they just work on arrays of `uint32_t`. That means you can unit-test them on the host (exactly as shown above) before trusting them on real hardware.
 
 ### Q3: Integrate memory leak detection into test infrastructure
 
 **Answer:**
 
-```cpp
+For host tests of embedded code you want to know if any test leaves heap allocations uncollected. The most portable approach is to override the global `operator new` and `operator delete` to maintain an allocation counter. Any test that ends with a net-positive allocation count has a leak.
 
+The reason to use a global test listener rather than per-test assertions is that leaks are often in teardown paths that only run after the test body has already passed. The listener catches them reliably regardless of where in the test lifecycle they happen.
+
+```cpp
 #include <gtest/gtest.h>
 #include <cstdlib>
 #include <atomic>
@@ -232,18 +245,19 @@ private:
 // Register in main:
 // auto& listeners = ::testing::UnitTest::GetInstance()->listeners();
 // listeners.Append(new MemoryCheckListener);
-
 ```
+
+The peak heap usage printed at program end is a bonus - it tells you the maximum heap demand across all tests, which you can compare against your MCU's available SRAM to verify the code would fit on the real device.
 
 ---
 
 ## Notes
 
-- `-fstack-usage` is GCC-specific; Clang has limited support — use `-Wframe-larger-than=` for warnings
-- Stack painting works on any platform but only detects high-water mark, not per-call depth
-- Global `operator new/delete` override is a simple but effective leak detector for test builds
-- Parse linker `.map` files to verify total static RAM usage fits in the MCU's SRAM
-- RTOS task stacks should have 20-30% margin above measured high-water mark
-- Combine compile-time (`-fstack-usage`) and runtime (painting) for defense in depth
-- In CI: fail the build if any function exceeds the stack budget or if leaks are detected
-- `-Wl,--print-memory-usage` gives a quick summary: `FLASH: 45KB / 256KB, RAM: 12KB / 64KB`
+- `-fstack-usage` is GCC-specific; Clang has limited support - use `-Wframe-larger-than=` for warnings instead.
+- Stack painting works on any platform but only detects the high-water mark, not per-call depth.
+- Global `operator new/delete` override is a simple but effective leak detector for test builds.
+- Parse linker `.map` files to verify total static RAM usage fits in the MCU's SRAM.
+- RTOS task stacks should have 20-30% margin above the measured high-water mark.
+- Combine compile-time (`-fstack-usage`) and runtime (painting) for defense in depth.
+- In CI: fail the build if any function exceeds the stack budget or if leaks are detected.
+- `-Wl,--print-memory-usage` gives a quick summary: `FLASH: 45KB / 256KB, RAM: 12KB / 64KB`.

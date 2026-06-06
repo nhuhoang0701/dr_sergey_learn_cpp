@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**CTest** is CMake's built-in test driver. It discovers, runs, filters, and reports on tests registered via `add_test()` or auto-discovery macros like `gtest_discover_tests()`. CTest integrates with CDash for dashboard reporting and supports parallel execution, timeouts, labels, and test fixtures.
+**CTest** is CMake's built-in test driver, and it's more capable than most people realize. It discovers tests, runs them (in parallel if you want), filters them by name or label, handles timeouts, and produces output in JUnit XML format for CI systems. The key insight is that CTest doesn't run your tests directly - it runs test executables that you've registered, and those executables report pass/fail. `gtest_discover_tests()` makes the registration automatic for Google Test binaries.
+
+The reason you want to invest in this infrastructure is that it standardizes how tests are run. Every developer runs `ctest --test-dir build` and gets the same results. CI uses the same command. You add labels to separate fast unit tests from slow integration tests, and CI can run just the unit tests on every commit and the integration tests on merge.
 
 ### CTest Key Features
 
@@ -28,10 +30,9 @@
 
 ### Q1: Set up CTest with multiple test categories and properties
 
-**Answer:**
+Start with the top-level `CMakeLists.txt`. The `enable_testing()` call must go here - not in a subdirectory - or CTest won't work at all. This is the single most common setup mistake.
 
 ```cmake
-
 # === CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.14)
 project(MyProject LANGUAGES CXX)
@@ -41,11 +42,11 @@ enable_testing()  # Must be in top-level CMakeLists.txt
 
 add_subdirectory(src)
 add_subdirectory(tests)
-
 ```
 
-```cmake
+In the test subdirectory, you use `gtest_discover_tests()` instead of `add_test()` when you're using Google Test. The difference matters: `gtest_discover_tests()` runs the test binary at build time to enumerate individual test names, so CTest knows about each test case individually. This means you can filter by test name, get per-test results, and run a single failing test in isolation.
 
+```cmake
 # === tests/CMakeLists.txt ===
 include(FetchContent)
 FetchContent_Declare(googletest
@@ -101,11 +102,11 @@ add_test(NAME expected_failure COMMAND unit_tests --gtest_filter="*Broken*")
 set_tests_properties(expected_failure PROPERTIES
     WILL_FAIL TRUE  # Test passes if the command returns non-zero
 )
-
 ```
 
-```bash
+Once the build is configured, here's how you drive the different test categories from the command line:
 
+```bash
 # Run all unit tests
 ctest --test-dir build -L unit --output-on-failure -j$(nproc)
 
@@ -117,15 +118,13 @@ ctest --test-dir build -E "benchmark" -j8
 
 # Run specific tests by regex
 ctest --test-dir build -R "Math.*Add" --output-on-failure
-
 ```
 
 ### Q2: Use CTest fixtures for resource setup/teardown between test groups
 
-**Answer:**
+CTest fixtures are different from Google Test fixtures. A CTest fixture is a setup or cleanup test that CTest runs automatically before or after a group of tests that require it. This is how you manage external resources - databases, servers, file system state - that need to be started before your tests run and torn down cleanly afterward.
 
 ```cmake
-
 # CTest FIXTURES: manage test dependencies and resource lifecycle
 # Not to be confused with Google Test fixtures
 
@@ -154,11 +153,11 @@ gtest_discover_tests(integration_tests
 # 1. start_database     (FIXTURES_SETUP)
 # 2. integration_tests  (FIXTURES_REQUIRED)
 # 3. stop_database      (FIXTURES_CLEANUP)
-
 ```
 
-```cmake
+You can compose multiple fixtures for tests that need several external resources. CTest takes care of the ordering automatically - you just declare the dependencies.
 
+```cmake
 # === Multiple fixtures can be composed ===
 
 # Redis setup
@@ -172,25 +171,21 @@ set_tests_properties(stop_redis PROPERTIES FIXTURES_CLEANUP Redis)
 set_tests_properties(cache_integration_test PROPERTIES
     FIXTURES_REQUIRED "Database;Redis"  # Both fixtures required
 )
-
 ```
 
 ### Q3: Show CI-optimized CTest configuration with JUnit output and failure handling
 
-**Answer:**
+For CI, you want CTest to produce JUnit XML output (most CI platforms can parse this and display per-test results), to run tests in parallel, and to handle flaky tests gracefully with a rerun mechanism. CMake Presets standardize all of this so every developer and every CI job uses the same configuration.
 
 ```cmake
-
 # === CTestConfig.cmake (optional: CDash integration) ===
 set(CTEST_PROJECT_NAME "MyProject")
 set(CTEST_NIGHTLY_START_TIME "01:00:00 UTC")
 
 # === CMake presets for testing (CMakePresets.json) ===
-
 ```
 
 ```json
-
 {
   "version": 6,
   "testPresets": [
@@ -228,11 +223,11 @@ set(CTEST_NIGHTLY_START_TIME "01:00:00 UTC")
     }
   ]
 }
-
 ```
 
-```yaml
+The GitHub Actions workflow below puts it all together. Notice the `--rerun-failed --repeat until-pass:3` step that only runs on failure - this is how you handle tests that are occasionally flaky without letting them block every merge. You still want to investigate flaky tests, but this prevents them from completely stopping your CI pipeline.
 
+```yaml
 # === GitHub Actions CI ===
 # .github/workflows/test.yml
 name: Test
@@ -283,11 +278,11 @@ jobs:
         run: ctest --test-dir build --rerun-failed
                    --output-on-failure
                    --repeat until-pass:3
-
 ```
 
-```bash
+A few useful commands for day-to-day work with CTest that don't appear in the workflow above:
 
+```bash
 # === Useful CTest commands ===
 
 # List all tests without running
@@ -304,18 +299,17 @@ ctest --test-dir build -T memcheck
 
 # Cost-based ordering (run slow tests first for better parallelism)
 ctest --test-dir build --test-load 4  # Limit to 4 parallel test processes
-
 ```
 
 ---
 
 ## Notes
 
-- `enable_testing()` MUST be in the top-level `CMakeLists.txt` for CTest to work
-- `gtest_discover_tests()` runs at build time; `gtest_add_tests()` runs at configure time
-- Use labels (`LABELS` property) to separate unit/integration/benchmark tests
-- CTest fixtures (FIXTURES_SETUP/REQUIRED/CLEANUP) manage resource lifecycle across tests
-- `--output-on-failure` should be your default — don't output everything, just failures
-- `--no-tests=error` fails CI if no tests are found (catches build misconfigurations)
-- CMake presets (`testPresets`) standardize test invocation across developers and CI
-- CTest cost file (`CTestCostData.txt`) records test durations for optimal scheduling
+- `enable_testing()` must be in the top-level `CMakeLists.txt` for CTest to work. Putting it in a subdirectory is a common mistake that silently causes no tests to be registered.
+- `gtest_discover_tests()` runs at build time to enumerate test names; `gtest_add_tests()` runs at configure time. The discovery approach is more reliable for large test suites.
+- Use labels (`LABELS` property) to separate unit, integration, and benchmark tests. This lets CI run fast tests on every commit and slow tests only on merge.
+- CTest fixtures (`FIXTURES_SETUP`/`FIXTURES_REQUIRED`/`FIXTURES_CLEANUP`) manage resource lifecycle across test groups - use them for databases, servers, and any other external state.
+- `--output-on-failure` should be your default in CI - you don't want every test's output flooding your logs, but you do want to see output when something fails.
+- `noTestsAction: error` in your test preset fails the build if no tests are found. This catches the case where a build misconfiguration silently registers zero tests and everything appears to pass.
+- CMake presets (`testPresets`) standardize test invocation across developers and CI so everyone runs tests the same way.
+- CTest writes a cost file (`CTestCostData.txt`) that records historical test durations. CTest uses this for optimal scheduling when you run in parallel, so slow tests start first.

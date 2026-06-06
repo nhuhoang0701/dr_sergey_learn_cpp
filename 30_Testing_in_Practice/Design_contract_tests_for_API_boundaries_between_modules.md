@@ -6,9 +6,13 @@
 
 ## Topic Overview
 
-**Contract testing** verifies that modules interact correctly at their boundaries. Instead of mocking everything, contract tests define the expected behavior of an interface and verify both the provider and consumer honor it. This catches integration bugs early without requiring a full system test.
+**Contract testing** verifies that modules interact correctly at their boundaries. The key idea is this: instead of mocking everything and hoping the real implementations behave the same way, you define the expected behavior of an interface as a reusable test suite and then run that same suite against every implementation. This catches integration bugs early, without requiring a full system test running against all the real infrastructure.
+
+The mental model is a legal contract. The interface says "I promise to behave this way." The contract tests prove whether a given implementation actually keeps that promise.
 
 ### Testing Level Comparison
+
+It helps to see where contract tests sit relative to other testing strategies:
 
 | Level | Scope | Speed | Catches |
 | --- | --- | --- | --- |
@@ -17,10 +21,13 @@
 | Integration test | Multiple components | Slow | Wiring bugs |
 | System test | Full application | Very slow | End-to-end failures |
 
+Contract tests are faster than integration tests because they can use in-process implementations. They are more rigorous than unit tests because they verify behavior at the public boundary, not internal logic.
+
 ### Contract Test Patterns
 
-```cpp
+Here is the structural relationship the pattern creates:
 
+```cpp
  Consumer         Contract              Provider
  +--------+      +---------+           +---------+
  | Module |----->| IStore  |<----------| SQLite  |
@@ -29,12 +36,12 @@
                       ^
                       |
                  Contract Tests:
-
                  - Store/retrieve roundtrip
                  - Error on missing key
                  - Thread safety guarantees
-
 ```
+
+The contract test suite depends only on the interface - never on any specific implementation. Each implementation is plugged in separately.
 
 ---
 
@@ -44,8 +51,9 @@
 
 **Answer:**
 
-```cpp
+The key technique here is Google Test's typed test suite. You write the tests once against the interface type, then register each implementation separately. The test infrastructure runs the full suite for every registered implementation automatically.
 
+```cpp
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -136,15 +144,17 @@ REGISTER_TYPED_TEST_SUITE_P(KeyValueStoreContractTest,
     RemoveMissingReturnsFalse,
     SizeTracksEntries,
     ClearRemovesAll);
-
 ```
+
+Notice that `REGISTER_TYPED_TEST_SUITE_P` just collects the tests - it does not instantiate them yet. Instantiation happens in the next step with `INSTANTIATE_TYPED_TEST_SUITE_P`, once for each implementation you want to verify.
 
 ### Q2: Apply contract tests to multiple implementations
 
 **Answer:**
 
-```cpp
+Here are two concrete implementations and the factory types that connect them to the contract suite. The registration at the bottom is the only code you add when a new implementation arrives.
 
+```cpp
 #include <unordered_map>
 
 // === Implementation 1: In-memory store ===
@@ -208,15 +218,17 @@ INSTANTIATE_TYPED_TEST_SUITE_P(FileBacked, KeyValueStoreContractTest, FileBacked
 
 // Both implementations must pass ALL contract tests.
 // If FileBackedStore fails PutOverwritesExisting, we know it violates the contract.
-
 ```
+
+When `FileBackedStore` fails `PutOverwritesExisting`, the failure message will say `FileBacked/KeyValueStoreContractTest.PutOverwritesExisting` - immediately telling you which implementation broke which clause of the contract.
 
 ### Q3: Contract tests for async/callback-based interfaces
 
 **Answer:**
 
-```cpp
+Async interfaces are trickier because you cannot just call a method and check the return value - you have to wait for a callback to fire. The pattern here uses `std::promise` and `std::future` to bridge from callback-style to synchronous assertion code, with an explicit timeout so a test never hangs forever.
 
+```cpp
 #include <gtest/gtest.h>
 #include <future>
 #include <chrono>
@@ -294,17 +306,18 @@ REGISTER_TYPED_TEST_SUITE_P(MessageBrokerContractTest,
     SubscriberReceivesMessages,
     UnsubscribeStopsDelivery,
     TopicsAreIndependent);
-
 ```
+
+The five-second timeout in `wait_for` is important. Without it, a broken implementation that never delivers a message would hang the test runner indefinitely. The timeout converts a hang into a clean `ASSERT_EQ` failure.
 
 ---
 
 ## Notes
 
-- Contract tests define **what** an interface must do, not **how** — they're implementation-agnostic
-- Use `TYPED_TEST_SUITE_P` to run the same tests against all implementations
-- Add new implementations? Just register them — all contract tests run automatically
-- Contract tests complement unit tests: unit tests test internal logic, contracts test boundaries
-- For async interfaces, use `std::promise`/`std::future` with timeouts to avoid hanging tests
-- Good contract test suites become the definitive specification for an interface
-- When a contract test fails for one implementation, the fix is in the implementation, not the test
+- Contract tests define *what* an interface must do, not *how* - they are implementation-agnostic by design.
+- Use `TYPED_TEST_SUITE_P` to write the tests once and run them against all implementations.
+- Adding a new implementation? Just register it with `INSTANTIATE_TYPED_TEST_SUITE_P` - all contract tests run automatically with no changes to the test code.
+- Contract tests complement unit tests: unit tests verify internal logic, contract tests verify observable behavior at public boundaries.
+- For async interfaces, use `std::promise`/`std::future` with explicit timeouts to avoid hanging tests.
+- A good contract test suite becomes the definitive, executable specification for an interface.
+- When a contract test fails for one implementation, the fix belongs in that implementation - not in the test.

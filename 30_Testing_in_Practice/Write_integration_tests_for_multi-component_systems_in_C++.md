@@ -6,17 +6,17 @@
 
 ## Topic Overview
 
-**Integration tests** verify that separately developed modules work together correctly. Unlike unit tests (isolated, fast) or system tests (full stack), integration tests exercise real interactions between 2-3 components — databases, network layers, file systems, or inter-module APIs.
+**Integration tests** verify that separately developed modules work together correctly. Unlike unit tests (isolated, fast) or system tests (full stack), integration tests exercise real interactions between 2-3 components - databases, network layers, file systems, or inter-module APIs.
+
+The reason integration tests exist as a separate tier is that unit tests, by design, mock out dependencies. You can have a perfectly green unit test suite and still have a wiring bug where component A produces output in a format that component B cannot parse. Integration tests catch exactly that class of problem - the mismatches at the seams.
 
 ### Test Pyramid Positioning
 
 ```cpp
-
          /  System  \         <- Few, slow, end-to-end
         / Integration \       <- Moderate, verify wiring
        /    Unit Tests  \     <- Many, fast, isolated
       /___________________\
-
 ```
 
 | Aspect | Unit | Integration | System |
@@ -35,8 +35,9 @@
 
 **Answer:**
 
-```cpp
+This test exercises the real interaction between `ConfigParser` and `ConnectionManager`. There is no mocking of file I/O - the test actually creates a temporary file on disk and reads it. That is intentional: you want to verify that the real parser, reading a real file, produces output that the connection manager can actually use. The fixture handles cleanup so no test artifacts remain after the run.
 
+```cpp
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
@@ -82,7 +83,6 @@ public:
 
     Connection connect(const ConfigParser::Config& cfg) {
         std::string addr = (cfg.tls_enabled ? "tls://" : "tcp://")
-
                            + cfg.host + ":" + std::to_string(cfg.port);
 
         return {addr, true};
@@ -137,15 +137,17 @@ TEST_F(ConfigToConnectionTest, MissingFileThrows) {
     EXPECT_THROW(parser_.parse(test_dir_ / "nonexistent.conf"),
                  std::runtime_error);
 }
-
 ```
+
+The `TearDown` calling `fs::remove_all` is essential. Without it, repeated test runs accumulate temp directories, and the tests may fail if a stale file from a previous run confuses the parser. Always clean up in `TearDown`, not in `SetUp` - if setup crashes midway, `TearDown` still runs.
 
 ### Q2: Integration test a pipeline of processing stages
 
 **Answer:**
 
-```cpp
+This test exercises a four-stage pipeline end to end. Notice that intermediate results are verified at each stage boundary - this is a good practice because if the pipeline produces a wrong final result, the per-stage assertions tell you which stage broke.
 
+```cpp
 #include <gtest/gtest.h>
 #include <vector>
 #include <string>
@@ -250,15 +252,17 @@ TEST_F(DataPipelineTest, EmptyInputProducesEmptyReport) {
 
     EXPECT_THAT(report, ::testing::HasSubstr("Count: 0"));
 }
-
 ```
+
+Using `HasSubstr` rather than `EXPECT_EQ` for the formatted report is deliberate. You want the test to survive formatting changes (adding decimal places, reordering fields) as long as the semantic content is correct. Testing the full string literal would make the test brittle.
 
 ### Q3: Manage test environments and resource lifecycle
 
 **Answer:**
 
-```cpp
+When integration tests need a resource that is expensive to create - a real database schema, a server process, a large test data set - you want to create it once and share it across the entire test binary. `::testing::Environment` is the right tool for that. Per-test isolation is then achieved by using transactions and rolling back after each test.
 
+```cpp
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <memory>
@@ -312,18 +316,19 @@ protected:
 // Run only integration tests:
 //   ctest --label-regex integration
 //   ctest --rerun-failed --output-on-failure
-
 ```
+
+The `LABELS "integration"` CTest property is important for team workflow. Developers running tests locally can skip the slow integration suite with `ctest --exclude-labels integration`, while CI always runs everything. The label makes it easy to enforce that policy without any manual filtering.
 
 ---
 
 ## Notes
 
-- Integration tests should use **real components** but may stub external services (databases, networks)
-- Use temp directories with RAII cleanup — never leave test artifacts on the filesystem
-- Label integration tests separately (`LABELS "integration"`) so devs can skip them locally
-- Integration tests are inherently slower — keep the count lower than unit tests
-- Use `::testing::Environment` for expensive shared setup (database creation, server startup)
-- Use per-test transactions/rollbacks for isolation between tests in the same suite
-- Flaky integration tests often indicate race conditions — fix the code, don't just retry
-- Run integration tests in CI with longer timeouts than unit tests
+- Integration tests should use **real components** but may stub external services (databases, networks).
+- Use temp directories with RAII cleanup - never leave test artifacts on the filesystem.
+- Label integration tests separately (`LABELS "integration"`) so devs can skip them locally.
+- Integration tests are inherently slower - keep the count lower than unit tests.
+- Use `::testing::Environment` for expensive shared setup (database creation, server startup).
+- Use per-test transactions/rollbacks for isolation between tests in the same suite.
+- Flaky integration tests often indicate race conditions - fix the code, don't just retry.
+- Run integration tests in CI with longer timeouts than unit tests.

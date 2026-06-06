@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Google Mock (gmock)** enables creating mock objects that verify interactions between components. It's built around three concepts: **matchers** (what arguments to expect), **actions** (what the mock does when called), and **expectations** (how many times and in what order).
+**Google Mock (gmock)** lets you create mock objects that verify how your code interacts with its collaborators. Unlike a simple stub that just returns a fixed value, a mock also checks that the right methods were called with the right arguments, the right number of times, in the right order.
+
+The framework is built around three concepts. **Matchers** constrain what argument values are acceptable. **Actions** define what the mock does when a matching call happens (return a value, throw, call a lambda). **Expectations** declare how many times a call is expected to occur and in what sequence. You combine all three in a single `EXPECT_CALL` statement.
 
 ### Core Concepts
 
@@ -20,15 +22,15 @@
 
 ### EXPECT_CALL Syntax
 
-```cpp
+Here is the full shape of an `EXPECT_CALL` statement with all optional clauses. In practice you rarely use all of them at once - the most common form is just `EXPECT_CALL(mock, method(matcher)).WillOnce(Return(value))`.
 
+```cpp
 EXPECT_CALL(mock_object, method_name(matchers))
     .Times(cardinality)
     .WillOnce(action)
     .WillRepeatedly(action)
     .InSequence(seq)
     .RetiresOnSaturation();
-
 ```
 
 ---
@@ -39,8 +41,9 @@ EXPECT_CALL(mock_object, method_name(matchers))
 
 **Answer:**
 
-```cpp
+The workflow is always the same: define the interface, define the mock class using `MOCK_METHOD` macros, write the code under test against the interface, then in tests create mock instances and set `EXPECT_CALL` expectations before handing the mock to the code under test.
 
+```cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <string>
@@ -145,15 +148,19 @@ TEST(UserRepositoryTest, ConnectionFailureReturnsFalse) {
     UserRepository repo(mock_db);
     EXPECT_FALSE(repo.initialize());
 }
-
 ```
+
+Notice how `HasSubstr` lets you verify that the SQL contains the right user ID without hard-coding the exact query string. This makes the test more resilient to irrelevant formatting changes while still catching the meaningful regression.
+
+Expectations are checked when the mock object is destroyed - not when `EXPECT_CALL` is written, not when the code runs, but at destruction time. Make sure the mock object outlives the code under test or the verification will never happen.
 
 ### Q2: Use advanced matchers, actions, and sequence verification
 
 **Answer:**
 
-```cpp
+Real tests often need more than `Return(value)`. You might need to save an argument for later inspection, call a lambda based on what was passed in, or verify that a sequence of calls happens in a specific order. Here are the tools for all three.
 
+```cpp
 using ::testing::Invoke;
 using ::testing::DoAll;
 using ::testing::SetArgReferee;
@@ -249,17 +256,19 @@ TEST(MockTypes, StrictMockFailsOnUnexpectedCalls) {
 
     UserRepository repo(strict_mock);
     repo.initialize();
-    // repo.find_user(1);  // Would FAIL — no EXPECT_CALL for query()
+    // repo.find_user(1);  // Would FAIL - no EXPECT_CALL for query()
 }
-
 ```
+
+The reason `NiceMock` vs `StrictMock` matters is that the default behavior (called "Naggy") prints a warning for uninteresting calls but does not fail. For focused unit tests, `StrictMock` makes the test fail immediately if any unexpected call slips through. For high-level tests where you only care about one specific interaction, `NiceMock` reduces noise.
 
 ### Q3: Show mocking patterns for complex real-world scenarios
 
 **Answer:**
 
-```cpp
+Here are two practical patterns you will reach for often: using `ON_CALL` in `SetUp` to establish sensible defaults for a whole test fixture, and wrapping free functions in an interface so they become mockable.
 
+```cpp
 // === Pattern 1: Mock with ON_CALL defaults + specific overrides ===
 
 class MockFileSystem : public IFileSystem {
@@ -272,7 +281,7 @@ public:
 class ConfigServiceTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Set defaults with ON_CALL — applied unless overridden by EXPECT_CALL
+        // Set defaults with ON_CALL - applied unless overridden by EXPECT_CALL
         ON_CALL(fs_, exists(_)).WillByDefault(Return(false));
         ON_CALL(fs_, read(_)).WillByDefault(Return("{}"));
         ON_CALL(fs_, write(_, _)).WillByDefault(Return(true));
@@ -333,17 +342,18 @@ TEST(RateLimiterTest, AllowsRequestWithinLimit) {
     EXPECT_TRUE(limiter.allow());
     EXPECT_TRUE(limiter.allow());
 }
-
 ```
+
+The `ON_CALL` / `EXPECT_CALL` distinction is subtle but important. `ON_CALL` sets a behavior without registering an expectation - calls may happen zero or more times and the test does not care. `EXPECT_CALL` sets a behavior *and* registers an expectation that the mock will verify at destruction time. Use `ON_CALL` in `SetUp` for defaults, `EXPECT_CALL` in individual tests for the interactions that actually matter for that test's scenario.
 
 ---
 
 ## Notes
 
-- `MOCK_METHOD` is the modern syntax (GMock 1.10+); the old `MOCK_METHODn` macros are deprecated
-- Default mock type is **Naggy** — warns about uninteresting calls but doesn't fail
-- `ON_CALL` sets defaults; `EXPECT_CALL` sets expectations. Use `ON_CALL` in `SetUp()` for common defaults
-- Expectations are verified in the mock destructor — ensure mocks outlive the code under test
-- `EXPECT_CALL` expectations are matched in **reverse order** (last matching expectation wins)
-- Mock only at **boundaries** (interfaces) — don't mock everything
-- If you find yourself mocking too much, the code may need better decomposition
+- `MOCK_METHOD` is the modern syntax (GMock 1.10+). The old `MOCK_METHODn` family of macros is deprecated and should not appear in new code.
+- The default mock type is "Naggy" - it warns about uninteresting calls but does not fail. Use `NiceMock` to suppress those warnings or `StrictMock` to make them failures.
+- `ON_CALL` sets default behaviors; `EXPECT_CALL` sets expectations. Keep `ON_CALL` in `SetUp()` for fixture-wide defaults, and `EXPECT_CALL` in individual tests for what matters in that scenario.
+- Expectations are verified in the mock destructor - make sure mocks outlive the code under test so verification actually runs.
+- `EXPECT_CALL` expectations are matched in reverse order - the last matching expectation wins. This is useful for setting a default and then overriding it for specific argument values, but can be surprising if you forget it.
+- Mock only at boundaries (interfaces) - do not mock everything in sight. If you find yourself needing many mocks for a single unit test, the code under test probably has too many responsibilities.
+- If you find yourself writing mocks for things that are simple to just instantiate directly, a hand-written fake struct might be cleaner than a full Google Mock class.

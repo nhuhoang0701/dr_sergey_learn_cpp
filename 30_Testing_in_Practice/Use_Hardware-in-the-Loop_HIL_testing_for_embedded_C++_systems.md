@@ -6,18 +6,20 @@
 
 ## Topic Overview
 
-**Hardware-in-the-Loop (HIL)** testing connects real embedded hardware (the device under test) to a test system that simulates the environment. The test host drives inputs, monitors outputs, and verifies timing/behavior against requirements. HIL bridges the gap between host simulation and field testing.
+**Hardware-in-the-Loop (HIL)** testing connects real embedded hardware (the device under test) to a test system that simulates the environment. The test host drives inputs, monitors outputs, and verifies timing and behavior against requirements. HIL bridges the gap between host simulation and field testing - it gives you real silicon running your real firmware, but in a controlled, repeatable environment driven by scripts.
+
+The reason HIL exists as its own testing level is that host unit tests and emulators, however good, cannot catch everything. Real hardware has timing tolerances, ADC noise floors, GPIO glitch behavior, and watchdog interactions that only show up when you are running on the actual chip. HIL lets you stress-test that behavior automatically.
 
 ### Testing Pyramid for Embedded
 
-```cpp
+The diagram below shows where HIL sits. Each layer builds on the one below it - you should have many more host unit tests than HIL tests, because HIL is slower and requires physical hardware.
 
+```cpp
          /  Field Test  \         <- Real environment, expensive
         /     HIL Test    \       <- Real HW, simulated environment
        /   QEMU / Emulator  \     <- Simulated HW, real firmware
       /    Host Unit Tests    \   <- No HW, logic only
      /_________________________\
-
 ```
 
 | Level | Hardware | Environment | Speed | Catches |
@@ -35,8 +37,9 @@
 
 **Answer:**
 
-```python
+The pattern here is a Python class that speaks a simple binary protocol over UART to a test adapter board. The adapter board (an Arduino, Raspberry Pi, or a dedicated HIL board) is wired to the device under test and can drive its GPIO pins, inject ADC values, and measure timing. The CI runner talks to the adapter; the adapter talks to the DUT.
 
+```python
 # === hil_framework.py: Python-based HIL test runner ===
 import serial
 import time
@@ -111,15 +114,17 @@ class HilTestBench:
         resp = self.serial.read(1)
         if not resp or resp[0] != 0xAA:
             raise RuntimeError("DUT did not acknowledge")
-
 ```
+
+The `_wait_ack` method is the small but important detail - every command that modifies hardware state waits for a confirmation byte so the test never races ahead before the adapter has had time to act.
 
 ### Q2: Write HIL tests with timing constraints
 
 **Answer:**
 
-```python
+These tests use pytest as the runner. The `scope="session"` fixture opens the serial port once for the whole test session, while the `autouse` fixture power-cycles the DUT before every individual test so each test starts from a known clean boot state. Notice how the timing test has an explicit requirement baked into the assertion message.
 
+```python
 # === test_hil.py: pytest-based HIL tests ===
 import pytest
 from hil_framework import HilTestBench
@@ -217,15 +222,17 @@ def test_settings_survive_power_cycle(bench):
     bench.send_uart_to_dut(b'GET:threshold\n')
     response = bench.capture_uart_output(0.5)
     assert b'75' in response
-
 ```
+
+The `test_settings_survive_power_cycle` test is a good example of what makes HIL uniquely valuable - you literally cannot write this test as a host unit test. It verifies that data written to flash actually persists across a real power loss, which involves the flash driver, the wear-leveling code, and the boot-time initialization code all working together correctly on real hardware.
 
 ### Q3: CI pipeline with HIL test execution
 
 **Answer:**
 
-```yaml
+HIL tests need a self-hosted GitHub Actions runner - a machine physically connected to the test bench. The workflow below flashes the freshly-built firmware onto the DUT, then runs the test suite. The `runs-on: [self-hosted, hil-bench-1]` label routes the job to exactly that machine.
 
+```yaml
 # === .github/workflows/hil.yml ===
 # Requires a self-hosted runner connected to HIL test bench
 name: HIL Tests
@@ -280,11 +287,11 @@ jobs:
           name: HIL Test Results
           path: hil_results.xml
           reporter: java-junit
-
 ```
 
-```cpp
+The architecture of the whole system looks like this. The CI runner flashes the DUT over SWD/JTAG, then talks to it through a test adapter over GPIO and UART:
 
+```cpp
 HIL Test Bench Architecture:
 
   +-----------+      USB/UART      +-----------+
@@ -302,18 +309,17 @@ HIL Test Bench Architecture:
        |
   Flash via
   pyOCD/OpenOCD
-
 ```
 
 ---
 
 ## Notes
 
-- **HIL tests are slow** (seconds per test) — keep the count small and focused on HW-dependent behavior
-- Use self-hosted GitHub Actions runners connected to physical test benches
-- Run HIL tests on main branch only (not every PR) to avoid hardware contention
-- Test timing requirements (response latency, watchdog timeout) that host tests can't verify
-- Power-cycle testing catches flash corruption, boot failures, and state persistence bugs
-- The test adapter (Arduino, RPi, dedicated HIL board) drives DUT inputs and reads outputs
-- Python + pytest is the standard HIL test framework — serial communication is simple
-- Label HIL tests separately; developers run host tests locally, HIL runs in CI only
+- **HIL tests are slow** (seconds per test) - keep the count small and focused on HW-dependent behavior.
+- Use self-hosted GitHub Actions runners connected to physical test benches.
+- Run HIL tests on main branch only (not every PR) to avoid hardware contention.
+- Test timing requirements (response latency, watchdog timeout) that host tests can't verify.
+- Power-cycle testing catches flash corruption, boot failures, and state persistence bugs.
+- The test adapter (Arduino, RPi, dedicated HIL board) drives DUT inputs and reads outputs.
+- Python + pytest is the standard HIL test framework - serial communication is simple.
+- Label HIL tests separately; developers run host tests locally, HIL runs in CI only.

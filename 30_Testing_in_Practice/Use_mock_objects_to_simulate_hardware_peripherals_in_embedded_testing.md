@@ -8,7 +8,11 @@
 
 Embedded firmware interacts with hardware peripherals (SPI flash, ADC, I2C sensors, DMA controllers). **Mock objects** simulate these peripherals in host-based tests, enabling fast verification of firmware logic without physical hardware. Google Mock provides the framework; the key challenge is designing mockable peripheral interfaces.
 
+The reason this matters so much in embedded development is that you cannot practically run every logical test on real silicon. Flashing, booting, and communicating with a device is slow. If you put an abstract interface between your firmware logic and the hardware registers, you can run the firmware logic entirely on your development machine - catching most bugs before the hardware is even involved.
+
 ### Mock Strategy by Peripheral Type
+
+Different peripherals call for different simulation strategies. A GPIO is simple state - just track high/low. An ADC benefits from realistic noise modeling because filtering bugs only appear when the data is not perfectly clean.
 
 | Peripheral | Mock Approach | Key Behaviors to Simulate |
 | --- | --- | --- |
@@ -27,8 +31,9 @@ Embedded firmware interacts with hardware peripherals (SPI flash, ADC, I2C senso
 
 **Answer:**
 
-```cpp
+There are two distinct simulation tools shown here. `SpiFlashMock` is a Google Mock - use it when you want to verify exactly what function calls your code makes (protocol compliance, call ordering). `SpiFlashSimulator` actually stores data in a `std::vector` and models flash physics - use it for integration-style tests where you want real data to persist across reads and writes. Both implement the same `ISpiFlash` interface, so you can swap them out without changing the firmware code under test.
 
+```cpp
 // === Interface: SPI Flash ===
 #pragma once
 #include <cstdint>
@@ -102,15 +107,17 @@ private:
     std::vector<uint8_t> memory_;
     uint32_t erase_count_ = 0;
 };
-
 ```
+
+Notice the `write` implementation uses AND (`&=`) rather than direct assignment. Real NOR flash can only change bits from 1 to 0 - you need an erase cycle to turn bits back to 1. Modeling this correctly means your tests will catch bugs where the firmware writes to an already-written sector without erasing first.
 
 ### Q2: Test firmware file system logic using the flash mock
 
 **Answer:**
 
-```cpp
+The `FileStorage` class below is the firmware code under test - it knows nothing about how the flash is implemented. When tests use `SpiFlashSimulator`, they exercise the real read/write/erase logic. When the `StrictMock` test runs, it verifies the exact sequence of flash operations, catching bugs like writing without erasing first.
 
+```cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <cstring>
@@ -231,15 +238,17 @@ TEST(FileStorageMockTest, SaveErasesBeforeWriting) {
     std::vector<uint8_t> data = {1, 2, 3};
     storage.save("test", data);
 }
-
 ```
+
+The `StrictMock` test verifies the erase-before-write ordering using `InSequence`. If the firmware were ever refactored to call `write` before `erase_sector`, the `InSequence` expectation would fail and catch that regression immediately.
 
 ### Q3: Mock an ADC with noise injection and error simulation
 
 **Answer:**
 
-```cpp
+A completely clean ADC that always returns the exact configured value is unrealistic and will hide filtering bugs. The `AdcSimulator` below adds configurable Gaussian noise so you can test that your noise-filtering code actually works before running on hardware.
 
+```cpp
 // === ADC interface ===
 class IAdc {
 public:
@@ -312,7 +321,7 @@ public:
             sum += result.raw_value;
         }
         float avg = sum / 10.0f;
-        return (avg / 4095.0f) * 150.0f - 50.0f;  // -50 to 100°C range
+        return (avg / 4095.0f) * 150.0f - 50.0f;  // -50 to 100 degrees C range
     }
 
 private:
@@ -322,13 +331,13 @@ private:
 
 TEST(TemperatureSensorTest, ReadsWithNoise) {
     AdcSimulator adc;
-    adc.set_base_value(0, 2730);  // ~50°C
+    adc.set_base_value(0, 2730);  // ~50 degrees C
     adc.set_noise(5.0);           // Moderate noise
 
     TemperatureSensor sensor(adc, 0);
     auto temp = sensor.read_celsius();
     ASSERT_TRUE(temp.has_value());
-    EXPECT_NEAR(*temp, 50.0f, 2.0f);  // Within 2°C due to noise
+    EXPECT_NEAR(*temp, 50.0f, 2.0f);  // Within 2 degrees C due to noise
 }
 
 TEST(TemperatureSensorTest, HandlesAdcError) {
@@ -338,17 +347,18 @@ TEST(TemperatureSensorTest, HandlesAdcError) {
     TemperatureSensor sensor(adc, 0);
     EXPECT_FALSE(sensor.read_celsius().has_value());
 }
-
 ```
+
+The `force_error` mechanism lets you verify that your firmware's error-handling path is correct. Without it you would need to physically break the ADC hardware to test that path. With it, one line of test setup is all it takes.
 
 ---
 
 ## Notes
 
-- **Simulators with state** (flash memory contents, pin levels) are better than mock expectations for integration tests
-- **Strict mocks** verify exact call sequences — use for protocol compliance testing (SPI transaction order)
-- **Noise injection** in ADC simulators catches filtering bugs that clean test data misses
-- **Error simulation** (`force_error()`) verifies firmware gracefully handles hardware failures
-- Keep mock/simulator complexity proportional to the test value — don't over-simulate
-- The flash simulator correctly models flash physics: erase sets to 0xFF, write can only clear bits
-- Test both the "happy path" (simulator) and exact call sequences (mock) for complete coverage
+- **Simulators with state** (flash memory contents, pin levels) are better than mock expectations for integration tests.
+- **Strict mocks** verify exact call sequences - use for protocol compliance testing (SPI transaction order).
+- **Noise injection** in ADC simulators catches filtering bugs that clean test data misses.
+- **Error simulation** (`force_error()`) verifies firmware gracefully handles hardware failures.
+- Keep mock/simulator complexity proportional to the test value - don't over-simulate.
+- The flash simulator correctly models flash physics: erase sets to 0xFF, write can only clear bits.
+- Test both the "happy path" (simulator) and exact call sequences (mock) for complete coverage.

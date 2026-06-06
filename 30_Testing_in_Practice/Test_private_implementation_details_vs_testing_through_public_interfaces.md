@@ -6,13 +6,15 @@
 
 ## Topic Overview
 
-One of the most debated testing questions: should you test private methods directly, or only through the public interface? The answer is almost always **test through the public interface**, but understanding when and why exceptions exist makes you a better test designer.
+One of the most debated testing questions you'll encounter: should you test private methods directly, or only through the public interface? The answer is almost always **test through the public interface**, but understanding when and why exceptions exist will make you a better test designer - and a better class designer.
+
+The reason this matters is that tests are a form of contract. When you test through the public interface, you're saying "I promise this behavior is stable." When you test a private method directly, you're coupling your tests to an internal implementation decision. If you later refactor - say, merging two private methods into one - those tests break even though the behavior is identical. That's the worst kind of false positive.
 
 ### Decision Matrix
 
 | Situation | Recommendation | Why |
 | --- | --- | --- |
-| Simple private helper | **Test via public** | It's an implementation detail — may change |
+| Simple private helper | **Test via public** | It's an implementation detail - may change |
 | Complex algorithm in private method | **Test via public**, but thoroughly | Cover all code paths through public API |
 | Private method is really a separate concern | **Extract to its own class**, test directly | It's hiding a missing abstraction |
 | Template metaprogramming internals | **Test the public result** | Testing TMP internals is fragile |
@@ -20,14 +22,15 @@ One of the most debated testing questions: should you test private methods direc
 
 ### Why Testing Internals Is Usually Wrong
 
-```cpp
+Here's the mental model. Your class has a public interface on the outside and private helpers on the inside. Tests belong on the outside - they verify what the class promises to the world, not how it delivers on that promise.
 
+```cpp
 Public Interface (stable contract):
 ┌────────────────────────────────────┐
-│  process(input) → output           │  ← Test THIS
-│    ├── validate(input)  [private]  │  ← Don't test this directly
-│    ├── transform(data)  [private]  │  ← Don't test this directly
-│    └── format(result)   [private]  │  ← Don't test this directly
+│  process(input) -> output           │  <- Test THIS
+│    ├── validate(input)  [private]  │  <- Don't test this directly
+│    ├── transform(data)  [private]  │  <- Don't test this directly
+│    └── format(result)   [private]  │  <- Don't test this directly
 └────────────────────────────────────┘
 
 If you test validate() directly:
@@ -35,7 +38,6 @@ If you test validate() directly:
 - Refactoring (e.g., merging validate + transform) breaks tests
 - Tests don't prove the PUBLIC behavior works
 - Tests are coupled to implementation, not behavior
-
 ```
 
 ---
@@ -44,10 +46,9 @@ If you test validate() directly:
 
 ### Q1: Show how to test complex behavior through the public interface
 
-**Answer:**
+The `MarkdownParser` below has four private methods - `split_lines`, `extract_title`, `extract_sections`, `extract_code_blocks` - any of which you might be tempted to test directly. Don't. Every one of them is fully exercised by driving `parse()` with appropriate inputs. The tests at the bottom cover all four private implementations without ever naming them.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -72,7 +73,7 @@ public:
     }
 
 private:
-    // These are implementation details — we DON'T test them directly
+    // These are implementation details - we DON'T test them directly
     std::vector<std::string> split_lines(const std::string& text) {
         std::vector<std::string> lines;
         std::string line;
@@ -163,15 +164,15 @@ TEST(MarkdownParserTest, NoTitle) {
 // We fully test split_lines, extract_title, etc.
 // through parse() without coupling to their names.
 // If we refactor internals, these tests still pass.
-
 ```
+
+If you later decide to merge `split_lines` and `extract_title` into a single pass, or switch to a regex-based implementation, none of these tests need to change. That's the payoff.
 
 ### Q2: When is testing private methods justified, and what are the approaches
 
-**Answer:**
+Sometimes the urge to test a private method is a signal - it's telling you that the private method has grown into something with its own identity that deserves to be its own class. The first approach (extracting a class) is almost always the right move when you reach that point.
 
 ```cpp
-
 // === Approach 1 (RECOMMENDED): Extract class ===
 // If a private method is complex enough to need its own tests,
 // it's telling you it should be its own class.
@@ -237,28 +238,26 @@ TEST_F(WidgetInternalTest, ChecksumComputation) {
 // Mark it as tech debt to be refactored.
 
 
-// === Approach 3 (PREPROCESSOR HACK — AVOID) ===
+// === Approach 3 (PREPROCESSOR HACK - AVOID) ===
 // Some codebases use:
 // #define private public
 // #include "widget.h"
 // This is undefined behavior and breaks with modern compilers.
 // NEVER do this.
-
 ```
 
 **Guidelines:**
 
-1. If you feel the need to test a private method → consider extracting it as a class
-2. If extraction is impractical (legacy code) → use `friend` as a tactical compromise
-3. Never use `#define private public` — it's UB
-4. If you can't achieve coverage through public API → the design needs refactoring
+1. If you feel the need to test a private method, consider extracting it as a class first.
+2. If extraction is impractical (legacy code with no safe refactoring path), use `friend` as a tactical compromise.
+3. Never use `#define private public` - it causes undefined behavior and will break with modern compilers.
+4. If you can't achieve the coverage you need through the public API, the design probably needs refactoring.
 
 ### Q3: Show strategies for testing internal state transitions without exposing internals
 
-**Answer:**
+State machines are the classic case where developers reach for private access. "I need to verify the state is `Connected`," they say - and then they expose a `state_` getter or use `#define private public`. You don't need to do that. The state only matters because it affects behavior, so test the behavior.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <string>
 
@@ -267,7 +266,7 @@ TEST_F(WidgetInternalTest, ChecksumComputation) {
 class Connection {
 public:
     bool connect(const std::string& host) {
-        // Transitions: Disconnected → Connecting → Connected
+        // Transitions: Disconnected -> Connecting -> Connected
         // Don't test internal state_ variable directly!
         host_ = host;
         state_ = State::Connected;
@@ -284,7 +283,7 @@ public:
         state_ = State::Disconnected;
     }
 
-    // Observable queries — THESE are what we test against
+    // Observable queries - THESE are what we test against
     bool is_connected() const { return state_ == State::Connected; }
     size_t bytes_sent() const { return sent_bytes_; }
 
@@ -329,17 +328,18 @@ TEST(ConnectionTest, IsConnectedReflectsState) {
 
 // We fully verify the state machine without ever accessing
 // the private State enum or state_ variable.
-
 ```
+
+The key design move here is adding `is_connected()` and `bytes_sent()` as observable queries. These aren't exposing internals - they're expressing the public contract of the class. Adding queries like these is almost always the right answer when you're tempted to expose private state for testing purposes.
 
 ---
 
 ## Notes
 
-- **Default rule: test through public interface only** — tests prove behavior, not implementation
-- Private methods that are "too complex" to test indirectly are **missing abstractions** wanting to be extracted
-- `friend class TestFixture` is a tactical compromise, not a design pattern
-- The need for testing internals often signals **SRP violation** — the class does too much
-- Add **observable queries** (`is_connected()`, `size()`) to make state testable without exposing internals
-- Remember: if you refactor internals and tests break → those tests were testing implementation, not behavior
-- Code coverage tools can confirm private methods are exercised through public API tests
+- The default rule is: test through public interface only. Tests prove behavior, not implementation.
+- Private methods that are "too complex" to test indirectly are missing abstractions that want to be extracted as their own class.
+- `friend class TestFixture` is a tactical compromise for legacy code, not a design pattern to reach for first.
+- The need to test internals often signals an SRP violation - the class is doing too many distinct things.
+- Add observable queries (`is_connected()`, `size()`) to make state testable without exposing private members directly.
+- Remember the golden rule: if you refactor internals and tests break, those tests were testing implementation, not behavior. That's the sign you went too deep.
+- Code coverage tools can confirm that private methods are exercised through public API tests - use them to verify your public-interface tests are reaching all the private code paths.

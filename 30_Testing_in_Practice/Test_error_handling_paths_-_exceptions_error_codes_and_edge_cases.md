@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-Error handling code is the most under-tested part of most C++ projects, yet it runs in the most critical situations. Testing error paths requires exercising exception throw/catch, `std::error_code` propagation, `std::expected`/`std::optional` failure cases, boundary conditions, and resource cleanup under failure.
+Error handling code is the most under-tested part of most C++ projects, yet it runs in exactly the situations that matter most - when something goes wrong in production. It's tempting to focus your tests on the happy path because that's where your feature lives, but your error paths need the same rigor. Bugs in error handling code lead to crashes, data corruption, or resource leaks at the worst possible moments.
+
+Testing error paths means exercising exception throw and catch, `std::error_code` propagation, `std::expected`/`std::optional` failure cases, boundary conditions, and resource cleanup under failure. Each of these mechanisms has different failure modes and requires different testing approaches.
 
 ### Error Handling Mechanisms to Test
 
@@ -20,8 +22,9 @@ Error handling code is the most under-tested part of most C++ projects, yet it r
 
 ### Edge Cases to Always Test
 
-```cpp
+Here's a quick mental checklist of the edge cases that catch most real-world bugs. If you test all of these for every non-trivial function, you'll catch the overwhelming majority of latent errors:
 
+```cpp
 ┌─────────────────────────────────────────────┐
 │ Boundary values:  0, -1, MAX, MIN, empty    │
 │ Null/empty:       nullptr, "", {}, nullopt   │
@@ -30,7 +33,6 @@ Error handling code is the most under-tested part of most C++ projects, yet it r
 │ Overflow:         integer, buffer, stack     │
 │ Invalid state:    double-free, use-after-move│
 └─────────────────────────────────────────────┘
-
 ```
 
 ---
@@ -39,10 +41,9 @@ Error handling code is the most under-tested part of most C++ projects, yet it r
 
 ### Q1: Test exception handling paths thoroughly
 
-**Answer:**
+The trick with exception testing is to combine Google Mock's `Throw` action with `EXPECT_CALL`. This lets you make a specific mock method throw a specific exception type on demand, without any special test infrastructure. Notice how the test verifies not just the return value but also that the logger was called with the right message - that's the part most developers forget to check.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <stdexcept>
@@ -179,15 +180,15 @@ TEST(PaymentServiceTest, InvalidAmountNegative) {
 
     EXPECT_FALSE(result.success);
 }
-
 ```
+
+The `GatewayThrowsUnexpectedException` test is the one people usually forget. You verified the `runtime_error` path, but what about `std::bad_alloc` or some other unexpected exception type? Those hit the second catch clause and produce a different error message. Both paths need coverage.
 
 ### Q2: Test error code and std::expected error paths
 
-**Answer:**
+`std::error_code` is the C++ standard's type-safe error reporting mechanism for operations that can fail without throwing. The reason this trips people up is that `error_code` comparisons use `operator==` between two `error_code` objects from the same category - comparing against a plain integer won't work. The test below also shows the boundary value discipline: test both endpoints of the valid range (1 and 65535) plus both just-outside values (0 and 65536).
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <system_error>
 #include <string>
@@ -291,15 +292,15 @@ TEST(ExpectedTest, BoundaryValues) {
     EXPECT_FALSE(has_value<int, std::string>(parse_port("0")));
     EXPECT_FALSE(has_value<int, std::string>(parse_port("65536")));
 }
-
 ```
+
+The `BoundaryValues` test is doing four checks in one go - the two valid endpoints and the two invalid neighbors. This pattern is useful any time you have a range validation: the exact boundary value is almost always where off-by-one bugs live.
 
 ### Q3: Test resource cleanup and RAII under error conditions
 
-**Answer:**
+This is where RAII testing gets interesting. You want to verify that destructors actually run when an exception unwinds the stack - not just assume that they do. The logging trick here is elegant: the `Resource` class writes to a `vector<string>` on construction and destruction, so after catching the exception you can inspect the log to confirm the right things happened in the right order.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <memory>
 #include <vector>
@@ -381,23 +382,24 @@ TEST(ScopeGuardTest, DismissedGuardDoesNotCleanUp) {
 
     {
         ScopeGuard guard([&] { cleaned_up = true; });
-        guard.dismiss();  // Success path — don't clean up
+        guard.dismiss();  // Success path - don't clean up
     }
 
     EXPECT_FALSE(cleaned_up);
 }
-
 ```
+
+The LIFO destruction order check (`B released` before `A released`) is important. C++ guarantees destructors run in reverse construction order, but a broken RAII wrapper could violate that. The log makes the guarantee visible and testable. The `ScopeGuard` tests cover both branches: the guard fires on exception, but `dismiss()` prevents it on the success path.
 
 ---
 
 ## Notes
 
-- **Test the error path as thoroughly as the happy path** — errors happen more often in production
-- Use `EXPECT_THROW(expr, type)` for specific exception types, `EXPECT_ANY_THROW` for any
-- Use `EXPECT_THROW_WITH` (custom) or `EXPECT_THAT` with matchers to verify exception messages
-- Always test that **state is consistent after an error** — no partial updates
-- Test **boundary values**: 0, -1, empty, MAX, MIN, off-by-one
-- Test **resource leaks**: verify destructors run via logging or counters
-- Sanitizers (ASan, UBSan) complement error path tests by catching undefined behavior
-- `EXPECT_NO_THROW` is useful for verifying that valid inputs don't throw
+- Test the error path as thoroughly as the happy path - errors happen more often in production than you think, and nobody tests them as carefully as the main flow.
+- Use `EXPECT_THROW(expr, type)` for specific exception types, and `EXPECT_ANY_THROW` when you just need to confirm something throws without caring about the exact type.
+- Use `EXPECT_THAT` with matchers like `HasSubstr` to verify exception messages contain the right information.
+- Always test that state is consistent after an error - no partial updates, no half-initialized objects left behind.
+- Test boundary values religiously: 0, -1, empty, MAX, MIN, and off-by-one are where most logic bugs hide.
+- Test resource leaks explicitly by logging or counting constructor/destructor calls - don't assume RAII is working correctly.
+- Sanitizers (ASan, UBSan) complement error path tests by catching undefined behavior that your assertions might miss.
+- `EXPECT_NO_THROW` is useful for verifying that valid inputs don't accidentally throw.

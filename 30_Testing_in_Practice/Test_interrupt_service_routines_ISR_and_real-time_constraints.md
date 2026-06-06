@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Interrupt Service Routines (ISRs)** are among the hardest embedded code to test. They execute asynchronously, have strict timing requirements, can't use blocking operations, and interact with hardware registers. Testing strategies: extract logic from ISRs into testable functions, simulate interrupt-driven behavior on host, and verify timing constraints.
+**Interrupt Service Routines (ISRs)** are among the hardest embedded code to test, and the reason is fundamental: they execute asynchronously, they have strict timing requirements, they can't use blocking operations, and they interact with hardware registers that don't exist on your development machine. If you try to unit-test an ISR as-is, you'll find it's essentially impossible on the host.
+
+The solution is a structural shift in how you write ISRs. Instead of putting logic inside the interrupt handler, you extract the logic into a plain C++ class and keep the ISR wrapper as thin as possible - ideally just a few lines. The ISR wrapper itself becomes too trivial to be worth testing. The extracted class becomes a regular C++ object that you can test freely on the host with no hardware involved.
 
 ### ISR Testing Challenges
 
@@ -25,12 +27,11 @@
 
 ### Q1: Extract testable logic from ISRs
 
-**Answer:**
+The core strategy is: everything in the ISR that has any logic in it belongs in a separate class. The actual interrupt handler should be trivially obvious at a glance. Here's what that looks like before and after the refactoring.
 
 ```cpp
-
 // === BAD: Untestable ISR with embedded logic ===
-// Can't test this on host — depends on hardware registers
+// Can't test this on host - depends on hardware registers
 // void TIM2_IRQHandler() {
 //     if (TIM2->SR & TIM_SR_UIF) {
 //         TIM2->SR &= ~TIM_SR_UIF;
@@ -77,11 +78,11 @@ private:
 //         gpio_hal.toggle(LED_PIN);
 //     }
 // }
-
 ```
 
-```cpp
+The production ISR becomes three lines of code, each of which is either a HAL call (testable via mocking) or a method call on the extracted class. There's nothing to go wrong. Now the interesting logic lives in `BlinkController` where you can drive it directly:
 
+```cpp
 // === Tests for extracted logic ===
 #include <gtest/gtest.h>
 
@@ -112,15 +113,15 @@ TEST(BlinkControllerTest, ResetClearsCounter) {
     ctrl.reset();
     EXPECT_EQ(ctrl.count(), 0);
 }
-
 ```
+
+Notice how the `TogglesAtPeriod` test loops 99 times to verify nothing fires early, then checks that tick 100 fires. That's 100 function calls in a test, but it's the only rigorous way to confirm the timing is right. No shortcuts here.
 
 ### Q2: Test ISR-to-main communication (ring buffers, flags)
 
-**Answer:**
+The standard way for an ISR to send data to the main loop is a lock-free ring buffer. The ISR is the producer, the main loop is the consumer, and neither can block waiting for the other. This is a genuinely tricky concurrent data structure to get right. The memory ordering in `push` and `pop` matters: the `release` on the write end and the `acquire` on the read end establish the happens-before relationship that prevents the consumer from reading data before the producer has finished writing it.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <atomic>
 #include <thread>
@@ -238,15 +239,15 @@ TEST(RingBufferTest, ConcurrentProducerConsumer) {
     producer.join();
     EXPECT_TRUE(rb.empty());
 }
-
 ```
+
+The `ConcurrentProducerConsumer` test is the important one. It sends 100,000 integers through the buffer across two threads and verifies they arrive in order without any data being lost or reordered. Run this test with ThreadSanitizer enabled to catch memory ordering bugs that might pass on your machine but fail on different hardware.
 
 ### Q3: Verify ISR timing constraints on host
 
-**Answer:**
+You can't measure absolute microsecond timings on the host - that requires a real target and an oscilloscope or cycle counter. But you can measure relative performance and spot algorithmic regressions before they ever reach hardware. The approach here is to extract the ISR hot path into a class, write functional tests to verify correctness, and then add a Google Benchmark microbenchmark to guard against performance regressions.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <benchmark/benchmark.h>
 #include <chrono>
@@ -353,17 +354,18 @@ static void BM_UartRxPerByte(benchmark::State& state) {
     }
 }
 BENCHMARK(BM_UartRxPerByte);
-
 ```
+
+The `BM_UartRxPerByte` benchmark measures how long a single call to `on_byte_received` takes in the steady state. If someone adds a loop, a dynamic allocation, or an expensive string operation to this function in the future, the benchmark will catch the regression on the next CI run - long before the code reaches hardware.
 
 ---
 
 ## Notes
 
-- **Extract, don't mock ISRs** — move logic into plain C++ classes, call them from thin ISR wrappers
-- ISR logic must be O(1) or bounded — no dynamic allocation, no unbounded loops
-- Ring buffers are the standard ISR-to-main communication primitive — test them thoroughly
-- Use ThreadSanitizer on producer-consumer tests to verify lock-free correctness
-- Host benchmarks show relative timing; use real hardware profiling for absolute µs measurements
-- Verify that ISR handlers never call blocking functions (static analysis can check this)
-- Power-of-2 buffer sizes enable fast modulo via bitwise AND
+- Extract, don't mock ISRs - move logic into plain C++ classes and call them from thin ISR wrappers. The wrappers become too trivial to break.
+- ISR logic must be O(1) or bounded - no dynamic allocation, no unbounded loops, no blocking primitives of any kind.
+- Ring buffers are the standard ISR-to-main communication primitive - test them thoroughly, including the full-buffer and empty-buffer edge cases.
+- Use ThreadSanitizer on producer-consumer tests to verify lock-free correctness - data races in ring buffer code can be invisible without it.
+- Host benchmarks show relative timing; always use real hardware profiling for absolute microsecond measurements before signing off on real-time budgets.
+- Verify statically that ISR handlers never call blocking functions - static analysis tools can check this.
+- Power-of-2 buffer sizes enable fast modulo via bitwise AND, which matters when `pop` and `push` are called from interrupt context.

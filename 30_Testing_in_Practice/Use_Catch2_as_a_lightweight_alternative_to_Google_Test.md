@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-**Catch2** is a header-only (v2) or single-library (v3) C++ test framework known for its expressive syntax, minimal boilerplate, and BDD-style sections. Unlike Google Test, Catch2 requires no test registration macros — tests are self-registering.
+**Catch2** is a header-only (v2) or single-library (v3) C++ test framework known for its expressive syntax, minimal boilerplate, and BDD-style sections. Unlike Google Test, Catch2 requires no test registration macros - tests are self-registering. If you have ever been frustrated by the ceremony around `TEST_F` and `INSTANTIATE_TEST_SUITE_P`, Catch2's approach will feel refreshingly direct.
 
 ### Google Test vs Catch2
+
+The table below summarizes the main differences. The columns that matter most in practice are the fixture model and the parameterization story - those are where the two frameworks feel most different.
 
 | Feature | Google Test | Catch2 |
 | --- | --- | --- |
@@ -30,8 +32,9 @@
 
 **Answer:**
 
-```cpp
+The key thing to understand before reading this code is the `SECTION` model. Each `SECTION` block causes Catch2 to re-run all the code above it - so the stack `s` is freshly constructed before each section executes. You get fixture-level isolation without a fixture class.
 
+```cpp
 // === CMakeLists.txt for Catch2 v3 ===
 /*
 include(FetchContent)
@@ -129,15 +132,17 @@ TEST_CASE("CHECK continues on failure", "[stack]") {
     CHECK(s.top() == 2);    // Continues even if above fails
     REQUIRE(s.pop() == 2);  // Fatal
 }
-
 ```
+
+The `REQUIRE` vs `CHECK` split maps directly onto Google Test's `ASSERT_*` vs `EXPECT_*`. Use `REQUIRE` when the remaining assertions are meaningless if this one fails; use `CHECK` when you want to accumulate all failures in one run.
 
 ### Q2: Use Catch2's BDD syntax and GENERATE for parameterized tests
 
 **Answer:**
 
-```cpp
+The `SCENARIO`/`GIVEN`/`WHEN`/`THEN` macros are just renamed `TEST_CASE` and `SECTION` under the hood - they add no runtime overhead, they only improve readability for requirement-style tests. `GENERATE` is Catch2's killer feature for data-driven tests: you declare the set of inputs inline, right where they are used, without any separate `INSTANTIATE_TEST_SUITE_P` boilerplate.
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
@@ -202,15 +207,17 @@ TEST_CASE("String operations", "[string]") {
     std::transform(result.begin(), result.end(), result.begin(), ::toupper);
     REQUIRE(result == expected_upper);
 }
-
 ```
+
+Notice `CAPTURE(n)` - that is Catch2's way of printing the current value of a variable when a test fails. This is invaluable when a parameterized test fails and you need to know which input triggered it.
 
 ### Q3: Show Catch2 matchers and custom matchers for domain assertions
 
 **Answer:**
 
-```cpp
+Matchers give you much richer failure messages than plain `REQUIRE(a == b)`. When a plain assertion fails, you see the raw values. When a matcher fails, you see a sentence like "expected 3.14 to be within 0.001 of 3.14159" - which makes the nature of the failure immediately obvious. Writing a custom matcher for your own domain types is straightforward, as the example below shows.
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_all.hpp>
 #include <vector>
@@ -276,18 +283,19 @@ TEST_CASE("Custom matchers", "[matchers]") {
     REQUIRE_THAT("user@example.com", IsValidEmail());
     REQUIRE_THAT("invalid", !IsValidEmail());
 }
-
 ```
+
+The `describe()` method is what appears in the failure message, so make it a proper English sentence. A failure from `IsValidEmail` will print something like "expected 'invalid' to match: is a valid email address", which is far more useful than a raw boolean comparison.
 
 ---
 
 ## Notes
 
-- Catch2 v3 is **not** header-only — it's a compiled library. Use CMake FetchContent.
-- `SECTION()` is Catch2's killer feature: replaces fixtures with nested, composable setup
-- Each `SECTION` re-executes all code above it — like a separate test with shared arrange
-- `GENERATE()` replaces parameterized tests — cleaner, inline, no separate `INSTANTIATE_`
-- Use `[tags]` to organize and filter tests: `--tag [math]` runs only math tests
-- For mocking with Catch2, use **trompeloeil** (C++ mock framework compatible with Catch2)
-- `catch_discover_tests()` in CMake is analogous to `gtest_discover_tests()`
-- `REQUIRE_THAT(value, matcher)` gives much better error messages than plain `REQUIRE(value == x)`
+- Catch2 v3 is not header-only - it's a compiled library. Use CMake FetchContent.
+- `SECTION()` is Catch2's killer feature: replaces fixtures with nested, composable setup.
+- Each `SECTION` re-executes all code above it - like a separate test with shared arrange.
+- `GENERATE()` replaces parameterized tests - cleaner, inline, no separate `INSTANTIATE_`.
+- Use `[tags]` to organize and filter tests: `--tag [math]` runs only math tests.
+- For mocking with Catch2, use **trompeloeil** (C++ mock framework compatible with Catch2).
+- `catch_discover_tests()` in CMake is analogous to `gtest_discover_tests()`.
+- `REQUIRE_THAT(value, matcher)` gives much better error messages than plain `REQUIRE(value == x)`.

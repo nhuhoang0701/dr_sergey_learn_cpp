@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**QEMU user-mode emulation** lets you run ARM (or other architecture) binaries on an x86 host. Combined with cross-compilation, this enables running embedded test binaries in CI without physical hardware. QEMU system emulation can even emulate full boards with peripherals.
+**QEMU user-mode emulation** lets you run ARM (or other architecture) binaries directly on an x86 host machine, without any physical ARM hardware. Combined with cross-compilation, this means you can build your firmware test suite for ARM and run it in CI on standard Linux runners - catching architecture-specific bugs like endianness issues, alignment faults, and integer size assumptions before you ever touch real hardware.
+
+The thing to understand up front is that there are two very different QEMU modes, and they serve different purposes. User-mode QEMU (`qemu-arm`) just translates ARM instructions to x86 and proxies Linux syscalls - it's fast and transparent for test executables. System-mode QEMU (`qemu-system-arm`) emulates a full board including memory-mapped peripherals, which is much slower and more complex to configure. For running unit tests, user-mode is almost always what you want.
 
 ### QEMU Modes
 
@@ -24,8 +26,9 @@
 
 **Answer:**
 
-```bash
+First, install the cross-compilation toolchain and QEMU user-mode emulator. On Ubuntu these are standard packages:
 
+```bash
 # === Install cross-compilation toolchain + QEMU ===
 # Ubuntu/Debian:
 sudo apt-get install -y \
@@ -44,11 +47,11 @@ sudo apt-get install -y \
 # Verify
 arm-linux-gnueabihf-g++ --version
 qemu-arm --version
-
 ```
 
-```cmake
+The CMake toolchain file is where the magic happens. The key line is `CMAKE_CROSSCOMPILING_EMULATOR` - when this is set, CTest automatically prepends the emulator command to every test invocation. Your `ctest` commands look exactly the same whether you're running natively or via QEMU; CMake handles the wrapping transparently.
 
+```cmake
 # === arm-toolchain.cmake ===
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -67,11 +70,13 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 # Tell CTest to run tests via QEMU
 set(CMAKE_CROSSCOMPILING_EMULATOR
     "qemu-arm;-L;/usr/arm-linux-gnueabihf")
-
 ```
 
-```cmake
+The `-L /usr/arm-linux-gnueabihf` argument tells QEMU where to find the ARM shared libraries (glibc etc.) when running a dynamically linked executable. Without it, QEMU would try to load the host's x86 libraries into an ARM binary, which fails immediately.
 
+The main `CMakeLists.txt` is completely standard - it doesn't need to know anything about QEMU:
+
+```cmake
 # === CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.20)
 project(embedded_tests)
@@ -95,11 +100,11 @@ add_executable(firmware_tests
 target_link_libraries(firmware_tests firmware_logic GTest::gtest_main)
 add_test(NAME firmware_tests COMMAND firmware_tests)
 # CMAKE_CROSSCOMPILING_EMULATOR automatically prepends qemu-arm
-
 ```
 
-```bash
+Building and running looks like this - the `file` command is useful to confirm you actually produced an ARM binary and not an x86 one by accident:
 
+```bash
 # === Build and test ===
 # Cross-compile for ARM
 cmake -B build-arm --toolchain arm-toolchain.cmake
@@ -114,15 +119,15 @@ ctest --test-dir build-arm --output-on-failure
 
 # Or run manually
 qemu-arm -L /usr/arm-linux-gnueabihf ./build-arm/firmware_tests
-
 ```
 
 ### Q2: Build Google Test for ARM cross-compilation
 
 **Answer:**
 
-```cmake
+When using `FetchContent` with a cross-compilation toolchain, googletest automatically gets cross-compiled as part of your project build - you don't need to cross-compile it separately. CMake propagates the toolchain settings to all `FetchContent` dependencies.
 
+```cmake
 # === Cross-compile GTest as part of the project ===
 include(FetchContent)
 FetchContent_Declare(
@@ -138,11 +143,11 @@ FetchContent_MakeAvailable(googletest)
 add_executable(arm_tests tests/test_all.cpp)
 target_link_libraries(arm_tests gtest_main gmock)
 add_test(NAME arm_tests COMMAND arm_tests)
-
 ```
 
-```bash
+Here's the equivalent toolchain file for 64-bit ARM (AArch64), which covers Raspberry Pi 4, Apple M1/M2 Macs (under Linux), and modern server ARM chips:
 
+```bash
 # === aarch64-toolchain.cmake (64-bit ARM) ===
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
@@ -159,15 +164,15 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
 set(CMAKE_CROSSCOMPILING_EMULATOR
     "qemu-aarch64;-L;/usr/aarch64-linux-gnu")
-
 ```
 
 ### Q3: CI pipeline with QEMU cross-compilation testing
 
 **Answer:**
 
-```yaml
+The GitHub Actions workflow below tests both 32-bit ARM and AArch64 in parallel using a matrix. It also shows the Docker multiarch approach as an alternative - useful when you want to test in an environment that more closely resembles a real ARM Linux system (with the full distribution's package set) rather than just running a cross-compiled binary through QEMU.
 
+```yaml
 # === .github/workflows/cross-test.yml ===
 name: Cross-Platform Tests
 
@@ -243,18 +248,19 @@ jobs:
               cmake --build build && \
               ctest --test-dir build --output-on-failure
             "
-
 ```
+
+The Docker multiarch approach (`docker/setup-qemu-action`) is simpler to configure because you don't need to manage a sysroot - the container already has everything the ARM binary needs. The trade-off is that it's slower and less flexible than direct cross-compilation with QEMU user-mode.
 
 ---
 
 ## Notes
 
-- **`CMAKE_CROSSCOMPILING_EMULATOR`** is the key — CTest automatically prepends QEMU to all test commands
-- Use `-L /path/to/sysroot` with QEMU to resolve dynamic libraries for cross-compiled binaries
-- User-mode QEMU handles CPU emulation well but does **not** emulate peripherals (timers, GPIO, DMA)
-- For peripheral-dependent code, use QEMU system mode with a machine definition (much more complex)
-- Static linking (`-static`) avoids sysroot issues: `set(CMAKE_EXE_LINKER_FLAGS "-static")`
-- QEMU user-mode runs at ~10-50x slowdown vs native — fast enough for test suites
-- Docker multiarch with `setup-qemu-action` is simpler but slower than direct cross-compilation
-- Test both 32-bit ARM and AArch64 if your firmware targets both
+- `CMAKE_CROSSCOMPILING_EMULATOR` is the key - CTest automatically prepends QEMU to all test commands.
+- Use `-L /path/to/sysroot` with QEMU to resolve dynamic libraries for cross-compiled binaries.
+- User-mode QEMU handles CPU emulation well but does not emulate peripherals (timers, GPIO, DMA).
+- For peripheral-dependent code, use QEMU system mode with a machine definition (much more complex).
+- Static linking (`-static`) avoids sysroot issues: `set(CMAKE_EXE_LINKER_FLAGS "-static")`.
+- QEMU user-mode runs at roughly 10-50x slowdown vs native - fast enough for test suites.
+- Docker multiarch with `setup-qemu-action` is simpler but slower than direct cross-compilation.
+- Test both 32-bit ARM and AArch64 if your firmware targets both.

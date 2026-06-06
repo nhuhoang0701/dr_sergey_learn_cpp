@@ -6,9 +6,13 @@
 
 ## Topic Overview
 
-Writing testable C++ code begins at **design time**, not after implementation. The core principle: separate **what** your code does from **how** it interacts with external systems. This means coding against abstract interfaces and injecting concrete implementations, allowing test doubles to replace real I/O, network, database, and hardware.
+Writing testable C++ code begins at **design time**, not after implementation. The core principle is to separate *what* your code does from *how* it interacts with external systems. This means coding against abstract interfaces and injecting concrete implementations, which allows test doubles to replace real I/O, network, database, and hardware in your unit tests.
+
+The reason this matters is simple: code that creates its own dependencies internally cannot be tested in isolation. If your `ReportGenerator` calls `std::time()` directly and opens a real file, your test has to control the clock and the filesystem - both of which are painful to arrange and slow to run. If instead you inject an `IClock` and an `IFileWriter`, your test can hand in lightweight fakes and run in microseconds.
 
 ### Testability Smells vs Fixes
+
+If you spot any of these patterns in existing code, they are a sign that the code will be hard to test:
 
 | Untestable Pattern | Testable Alternative |
 | --- | --- |
@@ -21,18 +25,18 @@ Writing testable C++ code begins at **design time**, not after implementation. T
 
 ### Layers of Testable Architecture
 
+The architecture that makes this all work has three layers. Business logic sits in the middle and depends only on abstract interfaces - it never touches infrastructure directly. Infrastructure adapters (the real implementations) live at the bottom and are tested with integration tests. The composition root at the top is the only place where everything is wired together.
+
 ```cpp
-
 ┌────────────────────────────────────────┐
-│            Application / main()        │  ← Composition root: wires deps
+│            Application / main()        │  <- Composition root: wires deps
 ├────────────────────────────────────────┤
-│         Business Logic Layer           │  ← Pure logic, no I/O
-│   (depends on abstract interfaces)     │  ← Easy to unit test
+│         Business Logic Layer           │  <- Pure logic, no I/O
+│   (depends on abstract interfaces)     │  <- Easy to unit test
 ├────────────────────────────────────────┤
-│     Infrastructure Adapters            │  ← Real implementations
-│  (SqlRepo, HttpClient, FileSystem)     │  ← Integration tested
+│     Infrastructure Adapters            │  <- Real implementations
+│  (SqlRepo, HttpClient, FileSystem)     │  <- Integration tested
 └────────────────────────────────────────┘
-
 ```
 
 ---
@@ -43,8 +47,9 @@ Writing testable C++ code begins at **design time**, not after implementation. T
 
 **Answer:**
 
-```cpp
+The before/after below shows the transformation in concrete terms. The "before" version is completely impossible to test without a real database and a real clock. The "after" version accepts all three dependencies through its constructor, making each one replaceable.
 
+```cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include <string>
@@ -54,7 +59,7 @@ Writing testable C++ code begins at **design time**, not after implementation. T
 using ::testing::Return;
 using ::testing::_;
 
-// === BEFORE: Untestable — hard-coded dependencies ===
+// === BEFORE: Untestable - hard-coded dependencies ===
 /*
 class ReportGenerator {
 public:
@@ -69,7 +74,7 @@ public:
 };
 */
 
-// === AFTER: Testable — all dependencies injected ===
+// === AFTER: Testable - all dependencies injected ===
 
 // Interface for time
 class IClock {
@@ -164,15 +169,17 @@ TEST(ReportGeneratorTest, ThrowsOnWriteFailure) {
     ReportGenerator gen(clock, data, writer);
     EXPECT_THROW(gen.generate(), std::runtime_error);
 }
-
 ```
+
+These tests run with zero file I/O and a deterministic clock. The `ThrowsOnWriteFailure` test is especially hard to write without DI - how would you make a real file write fail on demand? With the injected `IFileWriter`, it is a one-liner.
 
 ### Q2: Compare testing with virtual interfaces vs template-based injection
 
 **Answer:**
 
-```cpp
+Virtual interfaces are not the only way to inject dependencies. Template-based injection uses compile-time polymorphism instead: the type of the dependency is a template parameter, and the test just passes a struct with the right methods - no vtable needed.
 
+```cpp
 // === Template-based DI: zero-cost, compile-time polymorphism ===
 
 template<typename Clock, typename DataSource, typename FileWriter>
@@ -227,8 +234,9 @@ TEST(TemplateDI, WritesCorrectContent) {
     EXPECT_EQ(writer.last_path, "/reports/2024-01-15.csv");
     EXPECT_EQ(writer.last_content, "a,1\nb,2\n");
 }
-
 ```
+
+The trade-off between the two approaches comes down to what you value more. Here is a quick comparison to help decide:
 
 | Approach | Overhead | Mockability | ABI Stable | Readability |
 | --- | --- | --- | --- | --- |
@@ -236,12 +244,15 @@ TEST(TemplateDI, WritesCorrectContent) {
 | Template injection | Zero (inlined) | Manual fakes | No (header-only) | More verbose |
 | `std::function` | Possible alloc | Lambda/functor | Yes | Best for single ops |
 
+For most production code, virtual interfaces are fine - the vtable overhead is negligible compared to any real I/O. Template injection is worth considering for hot loops or when you want the fakes to be simple structs that live right next to the test code.
+
 ### Q3: Design a complete composition root with production and test wiring
 
 **Answer:**
 
-```cpp
+Here is the full picture: production implementations, the composition root that wires them together, and a reminder of how the same business logic class is used in tests with mocks.
 
+```cpp
 #include <memory>
 #include <iostream>
 
@@ -291,20 +302,21 @@ int main() {
     std::cout << "Report generated: " << path << "\n";
 }
 
-// Test composition (in test file) — already shown above:
-// MockClock, MockDataSource, MockFileWriter → ReportGenerator
+// Test composition (in test file) - already shown above:
+// MockClock, MockDataSource, MockFileWriter -> ReportGenerator
 // Fast, deterministic, no external dependencies
-
 ```
+
+Notice that `main()` is the only place where `#include "sql_data_source.h"` or `#include "disk_file_writer.h"` ever appears. Test files only ever include the interfaces - they know nothing about the real implementations. That is the boundary that makes the architecture work.
 
 ---
 
 ## Notes
 
-- The **Composition Root** is the single place where all dependencies are wired — typically `main()`
-- Never `#include` production implementations in test files — only interfaces
-- Store injected dependencies as **references** (caller owns) or **`unique_ptr`** (class owns)
-- For legacy code: start by wrapping the hardest-to-test dependency first (usually I/O)
-- The [**Dependency Inversion Principle**](../29_OOP_Design/Apply_the_Dependency_Inversion_Principle_with_abstract_interfaces_and_dependency.md) is the theoretical foundation for DI
-- Cost of virtual dispatch is negligible outside hot loops — don't prematurely optimize away interfaces
-- Consider C++20 concepts as an alternative to interfaces for zero-cost DI with better error messages
+- The **Composition Root** is the single place where all dependencies are wired together - this is typically `main()` for applications or a factory/service locator for libraries.
+- Never `#include` production implementations in test files - only interfaces. Test files should be completely unaware of which concrete class they are indirectly testing.
+- Store injected dependencies as references (caller owns the lifetime) or `unique_ptr` (the class owns the lifetime). Avoid raw pointers.
+- For legacy code, the best entry point is wrapping the hardest-to-test dependency first - that is usually the I/O or external service call.
+- The [**Dependency Inversion Principle**](../29_OOP_Design/Apply_the_Dependency_Inversion_Principle_with_abstract_interfaces_and_dependency.md) is the theoretical foundation behind DI.
+- The cost of virtual dispatch is negligible outside hot loops - do not prematurely optimize away interfaces because of perceived vtable overhead.
+- Consider C++20 concepts as an alternative to virtual interfaces for zero-cost DI with better error messages at compile time.

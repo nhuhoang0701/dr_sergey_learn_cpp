@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-Testing template code is challenging because templates are only instantiated when used. Untested template specializations may contain bugs that only appear when instantiated with specific types. Strategies include **explicit instantiation** (force compilation), **type-parameterized tests** (test across many types), and **concept checks** (compile-time validation).
+Testing template code is genuinely harder than testing regular code, and the reason is subtle: templates are only compiled when they're instantiated. If your test file only ever uses `RingBuffer<int>`, the compiler never looks at what happens with `RingBuffer<std::string>` - and that version might have a completely different bug waiting in production. You need deliberate strategies to ensure your templates are actually compiled and tested across the types that matter.
+
+There are three main tools here: **explicit instantiation** forces the compiler to compile every method of a template for a specific type even if your tests don't call every method directly; **type-parameterized tests** run the same test suite across a list of types in one declaration; and **concept checks** verify at compile time that the right types satisfy the template's requirements.
 
 ### Testing Challenges for Templates
 
@@ -24,10 +26,9 @@ Testing template code is challenging because templates are only instantiated whe
 
 ### Q1: Use type-parameterized tests to verify template code across multiple types
 
-**Answer:**
+The `TYPED_TEST_SUITE` mechanism in Google Test is exactly what you need when you have a template class and want to run the same battery of tests for every type in a list. You write the test once as a `TYPED_TEST`, list the types you care about, and gtest generates one instantiation per type. If `RingBuffer<std::string>` behaves differently than `RingBuffer<int>` for any of these tests, you'll know exactly which type failed.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -121,15 +122,15 @@ TYPED_TEST(RingBufferTest, OverwritesOldestWhenFull) {
 TYPED_TEST(RingBufferTest, PopFromEmptyThrows) {
     EXPECT_THROW(this->buffer.pop(), std::underflow_error);
 }
-
 ```
+
+The `make_value` helper using `if constexpr` is worth studying. It generates a type-appropriate test value: an integer for arithmetic types, a string for `std::string`, and a default-constructed object for anything else. This lets you write a single `PushPopReturnsCorrectValue` test that works meaningfully across all six types in the list.
 
 ### Q2: Use explicit instantiation to force template compilation
 
-**Answer:**
+Even with `TYPED_TEST_SUITE`, there's a gap: you only compile the methods your tests actually call. A method that nobody calls is never instantiated and never compiled, so it could have a syntax error that nobody notices. Explicit instantiation closes this gap by forcing the compiler to emit code for every method of the template for a specific type.
 
 ```cpp
-
 // === Force instantiation of all template methods ===
 // Even if tests don't call every method, explicit instantiation
 // ensures the code compiles for those types.
@@ -191,15 +192,15 @@ TEST(SerializerTest, DoubleSerialization) {
 TEST(SerializerTest, StringSpecialization) {
     EXPECT_EQ(Serializer<std::string>::serialize("hello"), "\"hello\"");
 }
-
 ```
+
+The `static_assert` lines are zero-cost compile-time tests. They run at build time and catch type constraint violations before any test binary is even launched. Use them to document which types are and aren't supported by your template, and to ensure that assumption never silently changes.
 
 ### Q3: Test SFINAE expressions and concept-constrained templates
 
-**Answer:**
+SFINAE and concepts are two different mechanisms for restricting which types a template accepts. The tricky thing is that a SFINAE failure is silent by design - the template just doesn't exist for that type, and there's no error message unless you ask for one. Your tests need to verify both that the template works for enabled types, and that it correctly doesn't compile (or correctly rejects) disabled types.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <type_traits>
 #include <concepts>
@@ -266,17 +267,18 @@ TEST(ConceptTest, PrintableTypesWork) {
     EXPECT_EQ(to_debug_string(42), "42");
     EXPECT_EQ(to_debug_string(std::string("hello")), "hello");
 }
-
 ```
+
+The `FloatingDivisionByZeroProducesInfinity` test is worth calling out. Floating-point division by zero is defined behavior in IEEE 754 - it produces positive or negative infinity, not undefined behavior. The integer version throws an exception because integer division by zero is undefined behavior. The `if constexpr` inside `safe_divide` handles both cases, and each needs its own test to confirm the right behavior is selected.
 
 ---
 
 ## Notes
 
-- **Explicit instantiation** is the simplest way to catch template compilation errors for untested types
-- Use `TYPED_TEST_SUITE` for testing the same logic across a type list (gtest) or `GENERATE` (Catch2)
-- `static_assert` tests concepts and type traits at compile time — zero runtime cost
-- Test **each specialization** separately; partial specializations can have unique bugs
-- For SFINAE, test both the "enabled" case (works) and "disabled" case (doesn't compile / concept fails)
-- Template error messages improve dramatically with C++20 concepts — use them
-- Consider a dedicated `instantiation_test.cpp` that explicitly instantiates all template combinations
+- Explicit instantiation is the simplest way to catch template compilation errors for types your tests don't happen to call every method with. Dedicate a `instantiation_test.cpp` to this.
+- Use `TYPED_TEST_SUITE` to run the same test logic across a type list - this is much better than copy-pasting tests for each type.
+- `static_assert` tests concepts and type traits at compile time with zero runtime cost - use them to document and enforce which types are and aren't supported.
+- Test each template specialization separately; partial specializations have their own independent implementations and their own independent bugs.
+- For SFINAE, test both the enabled case (it compiles and works) and the disabled case (it doesn't compile, verified via `is_invocable` or concept negation).
+- Template error messages improve dramatically with C++20 concepts compared to raw SFINAE - concepts tell you which requirement failed, SFINAE just says the substitution failed.
+- Consider a dedicated `instantiation_test.cpp` that explicitly instantiates every template combination you care about. If it compiles, all the methods compile.

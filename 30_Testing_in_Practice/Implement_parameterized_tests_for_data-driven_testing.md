@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Parameterized tests** run the same test logic with different data inputs. This eliminates copy-paste test code and ensures all edge cases are covered systematically. Google Test provides `TEST_P` with `INSTANTIATE_TEST_SUITE_P`, while Catch2 uses `GENERATE()`.
+**Parameterized tests** run the same test logic with different data inputs. The idea is to avoid the copy-paste problem where you write essentially the same test five times with slightly different inputs and expected outputs. With parameterized tests, you write the logic once and supply a table of cases. Adding a new case is a one-liner, and every case gets the same rigorous test code automatically.
+
+Google Test provides `TEST_P` with `INSTANTIATE_TEST_SUITE_P` for value-parameterized tests and `TYPED_TEST` for type-parameterized tests. Catch2 offers `GENERATE()` as a simpler but less flexible alternative.
 
 ### When to Use Parameterized Tests
 
@@ -26,8 +28,9 @@
 
 **Answer:**
 
-```cpp
+The pattern has three parts: a fixture class that inherits from `TestWithParam<T>`, a `TEST_P` body that calls `GetParam()` to retrieve the current case, and an `INSTANTIATE_TEST_SUITE_P` macro that supplies the actual data. Google Test generates one named test case for each entry.
 
+```cpp
 #include <gtest/gtest.h>
 #include <string>
 #include <tuple>
@@ -126,15 +129,17 @@ INSTANTIATE_TEST_SUITE_P(
         return info.param.name;
     }
 );
-
 ```
+
+Notice the custom name generator at the end of `INSTANTIATE_TEST_SUITE_P`. Without it, Google Test names the cases `SqrtCases/SqrtTest.ComputesCorrectly/0`, `...1`, and so on, which is useless in a failure report. With it, you get `SqrtCases/SqrtTest.ComputesCorrectly/zero` - immediately obvious what failed.
 
 ### Q2: Use type-parameterized tests to test across container types
 
 **Answer:**
 
-```cpp
+Type-parameterized tests are different from value-parameterized tests: instead of varying the *data*, you vary the *type* the test operates on. This is the right tool for testing generic algorithms or verifying that multiple container types all meet the same behavioral contract.
 
+```cpp
 #include <gtest/gtest.h>
 #include <vector>
 #include <deque>
@@ -197,7 +202,7 @@ TYPED_TEST(ContainerTest, SortProducesSameResult) {
 
 
 // === Combine value AND type parameterization ===
-// Use when testing N types × M values
+// Use when testing N types x M values
 
 template<typename T>
 class NumericBoundaryTest : public ::testing::Test {};
@@ -207,18 +212,20 @@ TYPED_TEST_SUITE(NumericBoundaryTest, NumericTypes);
 
 TYPED_TEST(NumericBoundaryTest, MaxValueDoesNotOverflowOnIncrement) {
     TypeParam max_val = std::numeric_limits<TypeParam>::max();
-    // This would overflow — verify the raw max value is correct
+    // This would overflow - verify the raw max value is correct
     EXPECT_GT(max_val, 0);
 }
-
 ```
+
+Inside a `TYPED_TEST`, `TypeParam` is the concrete type for the current instantiation. The `if constexpr` handles the case where different types need slightly different treatment. That is a feature, not a limitation - it lets you keep one test suite for a family of types even when they diverge slightly in their API.
 
 ### Q3: Show advanced patterns: Combine, ValuesIn, and custom generators
 
 **Answer:**
 
-```cpp
+`Combine` generates the cross-product of multiple parameter sets. `ValuesIn` loads test data from a container computed at runtime (a file, a database, a generation function). Both are useful when you need systematic coverage without manually listing every combination.
 
+```cpp
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -234,7 +241,7 @@ class ConnectionTest : public ::testing::TestWithParam<
 
 TEST_P(ConnectionTest, CanEstablishConnection) {
     auto [protocol, auth, port] = GetParam();
-    // Test all combinations of protocol × auth × port
+    // Test all combinations of protocol x auth x port
     EXPECT_TRUE(port > 0 && port < 65536);
     // ... actual connection test
 }
@@ -246,7 +253,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(AuthMethod::None, AuthMethod::Basic, AuthMethod::Token),
         ::testing::Values(80, 443, 8080)
     )
-    // This generates 3 × 3 × 3 = 27 test cases!
+    // This generates 3 x 3 x 3 = 27 test cases!
 );
 
 // === ValuesIn: parameters from runtime data ===
@@ -297,18 +304,19 @@ INSTANTIATE_TEST_SUITE_P(
         return "status_" + std::to_string(info.param.status_code);
     }
 );
-
 ```
+
+The `Combine` pattern is powerful but watch the combinatorial explosion. Three values times three values times three values already gives 27 test cases. Four dimensions with four values each would be 256. Make sure you actually need all those combinations before reaching for `Combine`.
 
 ---
 
 ## Notes
 
-- Prefer **structs** over `std::tuple` for test parameters — named fields are self-documenting
-- Always provide a **custom name generator** — default names are numeric and unhelpful
-- `Combine()` generates cross-product — watch for combinatorial explosion
-- `ValuesIn()` enables loading test data from files or runtime sources
-- Type-parameterized tests use `TYPED_TEST` — great for testing generic code against multiple types
-- For very large parameter sets, consider generating them in a separate file and using `ValuesIn()`
-- Don't parameterize if each case needs different assertions — use separate `TEST` instead
-- Catch2 alternative: `GENERATE(values...)` is simpler but less flexible than gtest's suite paradigm
+- Prefer structs over `std::tuple` for test parameters - named fields are self-documenting and failures are much easier to read.
+- Always provide a custom name generator - default numeric names like `/0`, `/1`, `/2` are useless when a test fails.
+- `Combine()` generates the full cross-product of its arguments - watch for combinatorial explosion with more than two or three dimensions.
+- `ValuesIn()` enables loading test data from files or other runtime sources, which is great for regression test suites built from real-world bug reports.
+- Type-parameterized tests with `TYPED_TEST` are the right tool for testing generic algorithms or container-like classes against multiple concrete types.
+- For very large parameter sets, consider generating them in a separate helper file and using `ValuesIn()` to keep the test file readable.
+- Do not parameterize if each case genuinely needs different assertions - use separate `TEST` functions for those. Parameterization only pays off when the test logic is truly identical across cases.
+- The Catch2 alternative `GENERATE(values...)` is simpler to write but less flexible than gtest's suite paradigm for large test matrices.

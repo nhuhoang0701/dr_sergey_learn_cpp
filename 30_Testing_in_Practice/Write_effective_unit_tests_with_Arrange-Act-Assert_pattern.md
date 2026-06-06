@@ -8,21 +8,23 @@
 
 **Arrange-Act-Assert (AAA)** is the fundamental unit test structure: set up preconditions, execute the behavior under test, then verify outcomes. Clear AAA structure makes tests readable, maintainable, and debuggable. Each test should test one logical behavior.
 
+The reason AAA matters beyond just organization is that it enforces a discipline: if you cannot clearly identify one "Act" step, your test is probably doing too much. When a test fails, the three-section structure tells you immediately whether the problem is in your test setup, in the code under test, or in your expectation.
+
 ### AAA Structure
 
-```cpp
+Here is the template. Notice the three labeled regions - keeping them visually distinct in your code makes the test much easier to understand months later.
 
+```cpp
 TEST(Suite, TestName) {
-    // Arrange — set up the world
+    // Arrange - set up the world
     //   Create objects, configure mocks, prepare inputs
 
-    // Act — do the one thing being tested
+    // Act - do the one thing being tested
     //   Call the function/method under test
 
-    // Assert — verify the outcome
+    // Assert - verify the outcome
     //   Check return values, state changes, mock interactions
 }
-
 ```
 
 ### Test Quality Checklist
@@ -43,8 +45,9 @@ TEST(Suite, TestName) {
 
 **Answer:**
 
-```cpp
+The `ShoppingCart` below is the production code. Read through the tests after it and notice how each one has a single, clear action and assertions that only verify what that action should produce. The `ASSERT_TRUE` on line where we check `found.has_value()` is important - if the item is not in the cart, there is nothing meaningful to check about its quantity, so we abort the test with `ASSERT_` rather than continuing with `EXPECT_`.
 
+```cpp
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -128,7 +131,7 @@ TEST(ShoppingCartTest, AddDuplicateItemIncreasesQuantity) {
     // Act
     cart.add("Widget", 9.99, 3);
 
-    // Assert — still one item type, but quantity is 5
+    // Assert - still one item type, but quantity is 5
     EXPECT_EQ(cart.item_count(), 1);
     auto found = cart.find("Widget");
     ASSERT_TRUE(found.has_value());   // ASSERT: abort if null (can't continue)
@@ -205,17 +208,19 @@ TEST(ShoppingCartTest, ZeroQuantityThrows) {
     // Act & Assert
     EXPECT_THROW(cart.add("Bad", 5.0, 0), std::invalid_argument);
 }
-
 ```
+
+Notice `EXPECT_TRUE(cart.empty())` after the throw test. This is verifying that the exception left the cart in a clean state - testing error paths is not just about the exception type, it is also about checking that your code did not half-modify state before throwing.
 
 ### Q2: What makes a good vs bad unit test? Show anti-patterns
 
 **Answer:**
 
-```cpp
+The anti-patterns below are all real mistakes that appear in production test suites. Each one makes tests harder to maintain and debug without providing any extra coverage.
 
+```cpp
 // === ANTI-PATTERN 1: Multiple acts in one test ===
-// BAD — if add() breaks, the remove() assertion confusingly fails too
+// BAD - if add() breaks, the remove() assertion confusingly fails too
 TEST(Bad, TestEverything) {
     ShoppingCart cart;
     cart.add("A", 10.0);
@@ -229,7 +234,7 @@ TEST(Bad, TestEverything) {
 
 
 // === ANTI-PATTERN 2: Testing implementation, not behavior ===
-// BAD — coupled to internal data structure (vector)
+// BAD - coupled to internal data structure (vector)
 TEST(Bad, InternalState) {
     ShoppingCart cart;
     cart.add("A", 10.0);
@@ -259,33 +264,35 @@ TEST(ShoppingCart, RemoveLastItem_CartBecomesEmpty) { /* ... */ }
 static ShoppingCart shared_cart;  // Tests depend on execution order!
 TEST(Bad, First) { shared_cart.add("A", 10.0); }
 TEST(Bad, Second) {
-    // Depends on First running beforehand — fragile!
+    // Depends on First running beforehand - fragile!
     EXPECT_EQ(shared_cart.item_count(), 1);
 }
 // GOOD: Each test creates its own instance (fixtures help with DRY)
 
 
 // === ANTI-PATTERN 5: Overly precise assertions ===
-// BAD — breaks if formatting changes:
+// BAD - breaks if formatting changes:
 // EXPECT_EQ(cart.summary(), "Cart: 1 items, total $9.99");
-// GOOD — test semantics, not formatting:
+// GOOD - test semantics, not formatting:
 // EXPECT_THAT(cart.summary(), HasSubstr("9.99"));
 // EXPECT_EQ(cart.total(), 9.99);
-
 ```
+
+The reason anti-pattern 3 (bad test names) matters more than it looks: when a test fails in CI at 2am, the test name is the first thing anyone reads. A name like `Test1` tells you nothing. A name like `AddDuplicateItem_IncreasesQuantity_NotItemCount` tells you immediately what broke and what the expected behavior is.
 
 **Test naming conventions (pick one, be consistent):**
 
-- `MethodName_Scenario_ExpectedResult` — `Add_DuplicateItem_IncreasesQuantity`
-- `Should_ExpectedBehavior_When_Condition` — `Should_IncreaseQuantity_When_DuplicateAdded`
-- Google Test style: `SuiteName.TestName` — `ShoppingCartTest.AddDuplicateIncreasesQuantity`
+- `MethodName_Scenario_ExpectedResult` - `Add_DuplicateItem_IncreasesQuantity`
+- `Should_ExpectedBehavior_When_Condition` - `Should_IncreaseQuantity_When_DuplicateAdded`
+- Google Test style: `SuiteName.TestName` - `ShoppingCartTest.AddDuplicateIncreasesQuantity`
 
 ### Q3: Show test fixtures and parameterized tests for DRY test code
 
 **Answer:**
 
-```cpp
+The fixture below eliminates the repetitive `cart.add(...)` setup from every single test. The parameterized test section shows how to drive the same assertion logic with a table of input/expected pairs - one parameterized test does the work of five or six hand-written tests.
 
+```cpp
 #include <gtest/gtest.h>
 #include <tuple>
 
@@ -294,7 +301,7 @@ TEST(Bad, Second) {
 class ShoppingCartTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Runs before EACH test — fresh cart every time
+        // Runs before EACH test - fresh cart every time
         cart.add("Laptop", 999.99);
         cart.add("Mouse", 29.99);
         cart.add("Keyboard", 79.99);
@@ -353,16 +360,17 @@ INSTANTIATE_TEST_SUITE_P(
         DiscountTestCase{0.0, 50.0, 0.0, "discount on zero"}
     )
 );
-
 ```
+
+The `<< "Failed for: " << desc` at the end of the assertion is worth noting - when a parameterized test fails, you want to know which parameter set triggered it. Adding context to your assertion messages makes CI failures much faster to diagnose.
 
 ---
 
 ## Notes
 
-- **One logical assertion per test** — multiple `EXPECT_*` calls are fine if they verify the same behavior
-- Use `EXPECT_*` (non-fatal) by default; `ASSERT_*` (fatal) only when continuing is meaningless
-- `EXPECT_DOUBLE_EQ` checks within 4 ULP; `EXPECT_NEAR(a, b, epsilon)` for custom tolerance
-- Test names should read as specifications — if you removed the code, the test names should describe behavior
-- Each `TEST` and `TEST_F` creates a new test fixture instance — tests are always isolated
-- Aim for test pyramid: many unit tests (fast), fewer integration tests, few end-to-end tests
+- **One logical assertion per test** - multiple `EXPECT_*` calls are fine if they verify the same behavior.
+- Use `EXPECT_*` (non-fatal) by default; `ASSERT_*` (fatal) only when continuing is meaningless.
+- `EXPECT_DOUBLE_EQ` checks within 4 ULP; `EXPECT_NEAR(a, b, epsilon)` for custom tolerance.
+- Test names should read as specifications - if you removed the code, the test names should describe behavior.
+- Each `TEST` and `TEST_F` creates a new test fixture instance - tests are always isolated.
+- Aim for test pyramid: many unit tests (fast), fewer integration tests, few end-to-end tests.

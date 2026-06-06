@@ -41,13 +41,13 @@ Practical testing strategies for real C++ projects: unit testing, integration te
 
 ## Notes
 
-- Write tests before or alongside code — testing after the fact often misses edge cases
-- Test behavior, not implementation — tests should survive refactoring
-- Use fixtures (SetUp/TearDown) to share expensive setup between related tests
-- Parameterized tests (TEST_P) reduce duplication when testing the same logic with different inputs
-- Test names should describe the scenario and expected outcome — ThrowsOnNullInput, not Test1
-- Arrange-Act-Assert (AAA) pattern structures each test clearly
-- Test error paths as thoroughly as success paths — most bugs hide in edge cases
-- Keep unit tests fast (<1ms each) — slow tests discourage running them frequently
-- Death tests (EXPECT_DEATH) verify that code correctly terminates on invalid input
-- Use CI to run tests on every commit — broken tests should block merging
+- Write tests before or alongside code - testing after the fact often misses edge cases.
+- Test behavior, not implementation - tests should survive refactoring.
+- Use fixtures (SetUp/TearDown) to share expensive setup between related tests.
+- Parameterized tests (TEST_P) reduce duplication when testing the same logic with different inputs.
+- Test names should describe the scenario and expected outcome - ThrowsOnNullInput, not Test1.
+- Arrange-Act-Assert (AAA) pattern structures each test clearly.
+- Test error paths as thoroughly as success paths - most bugs hide in edge cases.
+- Keep unit tests fast (under 1ms each) - slow tests discourage running them frequently.
+- Death tests (EXPECT_DEATH) verify that code correctly terminates on invalid input.
+- Use CI to run tests on every commit - broken tests should block merging.
