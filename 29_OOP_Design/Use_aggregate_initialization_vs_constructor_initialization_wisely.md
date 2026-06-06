@@ -16,8 +16,9 @@
 
 ### When to Use Each
 
-```cpp
+The choice boils down to whether your type needs to protect any invariants. If the answer is yes - if there is such a thing as an invalid state - use a constructor. If the type is just a bag of named fields with no rules between them, an aggregate is simpler and clearer.
 
+```cpp
 Aggregate init:     Simple data carriers, configs, POD-like structs
                     No invariants to protect
 
@@ -26,7 +27,6 @@ Constructor init:   Classes with invariants, validation, resource management
 
 Designated init:    Named parameters for aggregates (C++20)
                     Many optional fields with defaults
-
 ```
 
 ---
@@ -35,10 +35,9 @@ Designated init:    Named parameters for aggregates (C++20)
 
 ### Q1: Show the different initialization styles and their trade-offs
 
-**Answer:**
+Here are the three approaches side by side. `Endpoint` is a pure data carrier with no rules between its fields, so aggregate init is perfect. `PortRange` has a real invariant (`min <= max`) that must be checked, so it needs a constructor. `NetworkConfig` is a hybrid: it is an aggregate at heart, but a static factory method adds the validation layer without giving up the aggregate's flexibility.
 
 ```cpp
-
 #include <string>
 #include <stdexcept>
 #include <iostream>
@@ -99,15 +98,13 @@ int main() {
     std::cout << cfg.host << ":" << cfg.port << "\n";
     return 0;
 }
-
 ```
 
 ### Q2: Show narrowing and initialization gotchas
 
-**Answer:**
+Brace initialization is generally safer than parenthesis initialization, but it comes with a few surprises of its own. The most important ones are listed here. The `vector{5, 1}` vs `vector(5, 1)` difference trips up nearly everyone at least once.
 
 ```cpp
-
 #include <vector>
 #include <string>
 #include <iostream>
@@ -149,15 +146,13 @@ int main() {
     demo_gotchas();
     return 0;
 }
-
 ```
 
 ### Q3: Design a config system using designated initializers
 
-**Answer:**
+Designated initializers are one of the most practically useful C++20 features for API design. They give you named parameters - something C++ has historically lacked. Notice how the `start_app` call at the bottom reads almost like a configuration file: you see exactly which fields you are setting, the rest silently pick up their defaults, and the compiler will reject you if you try to set a field that does not exist.
 
 ```cpp
-
 #include <string>
 #include <optional>
 #include <chrono>
@@ -223,16 +218,15 @@ int main() {
     });
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Use **aggregates** for data carriers with no invariants (config structs, DTOs)
-- Use **constructors** when the class has invariants that must be validated
-- C++20 **designated initializers** are the best alternative to named parameters — use them
-- Brace init `{}` catches narrowing conversions; parenthesis `()` does not
-- Watch for `initializer_list` hijacking constructors (the `vector{5, 1}` trap)
-- The aggregate rules changed in C++20: `= default` constructors now disqualify a type from being aggregate
+- Use **aggregates** for data carriers with no invariants (config structs, DTOs).
+- Use **constructors** when the class has invariants that must be validated.
+- C++20 **designated initializers** are the best alternative to named parameters - use them.
+- Brace init `{}` catches narrowing conversions; parenthesis `()` does not.
+- Watch for `initializer_list` hijacking constructors (the `vector{5, 1}` trap).
+- The aggregate rules changed in C++20: `= default` constructors now disqualify a type from being aggregate.

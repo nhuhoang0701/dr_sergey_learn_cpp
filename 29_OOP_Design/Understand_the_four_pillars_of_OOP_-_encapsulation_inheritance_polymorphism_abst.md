@@ -6,10 +6,9 @@
 
 ## Topic Overview
 
-The four pillars of OOP in C++ are not merely academic concepts — they are design tools with specific trade-offs. Senior engineers must know when each pillar *hurts* as much as when it helps.
+The four pillars of OOP in C++ are not merely academic concepts - they are design tools with specific trade-offs. Senior engineers must know when each pillar *hurts* as much as when it helps.
 
 ```cpp
-
 ┌──────────────────────────────────────────────────┐
 │                 OOP Pillars                       │
 ├──────────────┬──────────────┬──────────────┬──────┤
@@ -22,7 +21,6 @@ The four pillars of OOP in C++ are not merely academic concepts — they are des
 │ invariants   │ behavior     │ at runtime   │seams │
 │              │              │ or compile   │      │
 └──────────────┴──────────────┴──────────────┴──────┘
-
 ```
 
 ### When Each Pillar Applies (and When It Doesn't)
@@ -40,10 +38,9 @@ The four pillars of OOP in C++ are not merely academic concepts — they are des
 
 ### Q1: Design a class hierarchy that demonstrates all four pillars working together
 
-**Answer:**
+Here is a sensor system where each pillar does its job. Notice how abstraction defines the interface, encapsulation hides the calibration internals, inheritance specializes the behavior, and polymorphism lets `SensorArray` treat every sensor the same way regardless of its concrete type.
 
 ```cpp
-
 #include <memory>
 #include <vector>
 #include <string>
@@ -51,7 +48,7 @@ The four pillars of OOP in C++ are not merely academic concepts — they are des
 #include <algorithm>
 #include <numeric>
 
-// ═══════════ ABSTRACTION: Define the interface, hide implementation ═══════════
+// ABSTRACTION: Define the interface, hide implementation
 class Sensor {
 public:
     virtual ~Sensor() = default;
@@ -59,7 +56,7 @@ public:
     virtual std::string name() const = 0;
     virtual bool calibrate(double reference) = 0;
 
-    // Non-virtual interface — common filtering logic
+    // Non-virtual interface - common filtering logic
     double read_filtered(int samples) const {
         std::vector<double> readings(samples);
         for (auto& r : readings) r = read();
@@ -72,7 +69,7 @@ public:
     }
 };
 
-// ═══════════ ENCAPSULATION: Hide calibration state, enforce invariants ═══════════
+// ENCAPSULATION: Hide calibration state, enforce invariants
 class TemperatureSensor : public Sensor {
     double offset_ = 0.0;      // private: calibration offset
     double gain_ = 1.0;        // private: calibration gain
@@ -97,7 +94,7 @@ public:
     }
 };
 
-// ═══════════ INHERITANCE: Extend with specialized behavior ═══════════
+// INHERITANCE: Extend with specialized behavior
 class PressureSensor : public Sensor {
     double zero_point_;
     double scale_;
@@ -118,7 +115,7 @@ public:
     }
 };
 
-// ═══════════ POLYMORPHISM: Uniform processing of different sensor types ═══════════
+// POLYMORPHISM: Uniform processing of different sensor types
 class SensorArray {
     std::vector<std::unique_ptr<Sensor>> sensors_;
 
@@ -149,17 +146,17 @@ int main() {
     array.read_all();
     return 0;
 }
-
 ```
 
 ### Q2: Explain the key trade-offs and common violations of each pillar
 
-**Answer:**
+Each pillar has a characteristic way that developers misuse it. Here are the most common violations - and what to do instead.
 
 **Encapsulation violations:**
 
-```cpp
+The classic encapsulation mistake is writing a getter and a setter for every private field. That is not encapsulation - it is just private storage with a public interface that lets anyone do anything. Real encapsulation means exposing *operations*, not raw state.
 
+```cpp
 // BAD: getters/setters for everything = no encapsulation
 class BadAccount {
     double balance_;
@@ -186,13 +183,13 @@ public:
         return true;
     }
 };
-
 ```
 
 **Inheritance misuse:**
 
-```cpp
+The most famous inheritance misuse is the Square/Rectangle problem, which illustrates a violation of the Liskov Substitution Principle. The reason this trips people up: geometrically, a square *is* a rectangle. But in code, a `Square` cannot honor the behavioral contract of `Rectangle`, because setting width and height independently is a core part of that contract. When your derived class has to break the base class's invariants to make sense, inheritance is the wrong tool.
 
+```cpp
 // BAD: Square IS-NOT-A Rectangle (LSP violation)
 class Rectangle {
 public:
@@ -212,13 +209,13 @@ class Square : public Rectangle {  // BROKEN: violates LSP
 // GOOD: Separate types or use composition
 struct Rect { int w, h; int area() const { return w * h; } };
 struct Square { int side; int area() const { return side * side; } };
-
 ```
 
 **Abstraction overhead:**
 
-```cpp
+Not every class needs an interface. If there is only one implementation now and no realistic prospect of a second one, the extra layer of indirection is pure cost: more files, more cognitive overhead, more virtual dispatch. Extract the interface *when you actually need it*, not speculatively.
 
+```cpp
 // BAD: Abstraction for one implementation = pointless indirection
 class ILogger { public: virtual void log(std::string_view) = 0; virtual ~ILogger() = default; };
 class ConsoleLogger : public ILogger { /* only impl that will ever exist */ };
@@ -229,21 +226,19 @@ public:
     void log(std::string_view msg) { std::cout << msg << "\n"; }
 };
 // Extract interface LATER when you need FileLogger, NetworkLogger, etc.
-
 ```
 
 ### Q3: Show how modern C++ often replaces classical OOP with lighter alternatives
 
-**Answer:**
+Virtual dispatch and heap allocation are not the only tools for polymorphism. Modern C++ frequently uses `std::variant` for closed type sets, which gives you value semantics, stack allocation, and compile-time exhaustiveness checking. Here is the same shape problem done both ways so you can see the contrast.
 
 ```cpp
-
 #include <variant>
 #include <vector>
 #include <iostream>
 #include <cmath>
 
-// ═══════════ Classical OOP (virtual dispatch) ═══════════
+// Classical OOP (virtual dispatch)
 class Shape {
 public:
     virtual ~Shape() = default;
@@ -258,7 +253,7 @@ public:
     void draw() const override { std::cout << "Circle(r=" << r_ << ")\n"; }
 };
 
-// ═══════════ Modern C++: std::variant (no virtual, no heap) ═══════════
+// Modern C++: std::variant (no virtual, no heap)
 struct CircleV  { double r; };
 struct RectV    { double w, h; };
 struct TriangleV { double base, height; };
@@ -277,7 +272,7 @@ double area(const ShapeV& s) {
     }, s);
 }
 
-// ═══════════ When to use which ═══════════
+// When to use which:
 // Virtual: open set of types (plugins, user-defined shapes)
 // Variant: closed set, better cache locality, no heap alloc, exhaustive matching
 // CRTP:    compile-time polymorphism, zero overhead, no late binding
@@ -291,15 +286,14 @@ int main() {
     // Area: 24
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- **Encapsulation ≠ getters/setters.** It means protecting invariants through a meaningful API
-- **Inheritance is the tightest coupling.** Prefer composition; extract interface only when >1 implementation exists
-- **Polymorphism has 3 flavors in C++:** runtime (virtual), compile-time (CRTP/templates), value-based (variant). Choose by use case
-- **"Program to an interface"** means depend on abstractions — in C++ that's an ABC or a concept, not just `class I*`
-- Most C++ experts agree: **prefer value semantics by default**, use reference semantics (virtual + heap) only when necessary
+- **Encapsulation is not getters/setters.** It means protecting invariants through a meaningful API.
+- **Inheritance is the tightest coupling.** Prefer composition; extract an interface only when more than one implementation exists.
+- **Polymorphism has three flavors in C++:** runtime (virtual), compile-time (CRTP/templates), value-based (variant). Choose by use case.
+- **"Program to an interface"** means depend on abstractions - in C++ that is an abstract base class or a concept, not just `class I*`.
+- Most C++ experts agree: **prefer value semantics by default**, use reference semantics (virtual + heap) only when necessary.

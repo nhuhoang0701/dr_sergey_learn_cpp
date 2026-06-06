@@ -1,6 +1,6 @@
 # OOP Design
 
-Object-oriented design principles, class hierarchy best practices, design patterns, and proven idioms for building maintainable C++ class architectures. Targeting mid-to-senior developers.
+Object-oriented design principles, class hierarchy best practices, design patterns, and proven idioms for building maintainable C++ class architectures. Targeting mid-to-senior developers. The topics here are not about syntax - they are about making decisions: when to use inheritance versus composition, how to keep interfaces focused, and which patterns give you extensibility without sacrificing clarity or performance.
 
 **Topics:** 43
 
@@ -52,13 +52,13 @@ Object-oriented design principles, class hierarchy best practices, design patter
 
 ## Notes
 
-- SOLID principles remain relevant in C++ — but template-based designs often replace interface hierarchies
-- Liskov Substitution Principle: derived types must be fully substitutable for their base types
-- Interface Segregation: prefer small, focused abstract interfaces over large monolithic ones
-- Open/Closed Principle: extend behavior through composition and templates, not modification
-- Dependency Inversion: depend on abstractions (concepts, interfaces), not concrete implementations
-- Virtual functions have a cost (~indirect call + cache miss) — consider CRTP or type erasure for hot paths
-- Abstract base classes should have virtual destructors — otherwise polymorphic deletion is UB
-- Multiple inheritance creates diamond problems — use virtual inheritance or composition instead
-- Prefer value semantics when possible — copyable, regular types are easier to reason about
-- Design classes as either leaf (final) or base (virtual destructor) — avoid ambiguous middle ground
+- SOLID principles remain relevant in C++ - but template-based designs often replace interface hierarchies.
+- Liskov Substitution Principle: derived types must be fully substitutable for their base types.
+- Interface Segregation: prefer small, focused abstract interfaces over large monolithic ones.
+- Open/Closed Principle: extend behavior through composition and templates, not modification.
+- Dependency Inversion: depend on abstractions (concepts, interfaces), not concrete implementations.
+- Virtual functions have a cost (indirect call plus cache miss) - consider CRTP or type erasure for hot paths.
+- Abstract base classes should have virtual destructors - otherwise polymorphic deletion is UB.
+- Multiple inheritance creates diamond problems - use virtual inheritance or composition instead.
+- Prefer value semantics when possible - copyable, regular types are easier to reason about.
+- Design classes as either leaf (final) or base (virtual destructor) - avoid ambiguous middle ground.

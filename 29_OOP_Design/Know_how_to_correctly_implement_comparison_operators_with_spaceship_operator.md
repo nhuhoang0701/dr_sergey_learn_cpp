@@ -6,7 +6,7 @@
 
 ## Topic Overview
 
-C++20's **spaceship operator** (`<=>`) generates all six comparison operators from a single definition:
+C++20's **spaceship operator** (`<=>`) generates all six comparison operators from a single definition. Before C++20, you had to write `operator==`, `operator!=`, `operator<`, `operator>`, `operator<=`, and `operator>=` separately - six functions, each of which could independently contain a bug. The spaceship operator collapses that to one, and for simple types it can be defaulted so the compiler writes it for you.
 
 | Category | Operators | `<=>` return type |
 | --- | --- | --- |
@@ -17,15 +17,16 @@ C++20's **spaceship operator** (`<=>`) generates all six comparison operators fr
 
 ### What the compiler generates
 
+When you write a defaulted spaceship operator, the compiler does the work for you:
+
 ```cpp
-
 auto operator<=>(const T&) const = default;
-  ↓ generates ↓
-==  !=  <  >  <=  >=   (all six)
-
-Member-wise comparison in declaration order.
-
+// generates ->
+// ==  !=  <  >  <=  >=   (all six)
+// Member-wise comparison in declaration order.
 ```
+
+The rewrite rule is what makes all the other operators work: `a < b` is rewritten as `(a <=> b) < 0`, so you only need the one definition. The categories (`strong_ordering`, `weak_ordering`, `partial_ordering`) exist because not all types have the same notion of equality - integers have a strict total order, floats have NaN which is unordered with everything, and case-insensitive strings have values that are "equivalent for ordering" but not "identical."
 
 ---
 
@@ -33,10 +34,11 @@ Member-wise comparison in declaration order.
 
 ### Q1: Use defaulted and custom spaceship operators
 
+Here are two contrasting cases: a `Point` where the defaulted version is exactly right, and a `CIString` (case-insensitive string) where you need a custom implementation. Pay attention to how the defaulted version handles the simple case with zero boilerplate, while the custom version gives you full control over what "less than" means.
+
 **Answer:**
 
 ```cpp
-
 #include <compare>
 #include <string>
 #include <iostream>
@@ -79,7 +81,7 @@ public:
 };
 
 int main() {
-    // Point uses default <=> — all operators work
+    // Point uses default <=> - all operators work
     Point a{1, 2, 3}, b{1, 2, 4};
     std::cout << std::boolalpha;
     std::cout << (a < b) << "\n";   // true
@@ -92,15 +94,17 @@ int main() {
     std::cout << names.size() << "\n";  // 1
     return 0;
 }
-
 ```
 
+The `CIString` uses `std::weak_ordering` rather than `std::strong_ordering` because "Alice" and "alice" are considered equivalent for ordering purposes but are not the same value - you could distinguish them if you wanted to. That's exactly what `weak_ordering` means: elements can be equivalent without being identical.
+
 ### Q2: Handle mixed-type comparisons and ordering categories
+
+Sometimes you need to compare two objects of different types (like meters and feet), or handle values that have no defined order relative to each other (like floating-point NaN). This example covers both cases. The key insight is that you need to pick the right ordering category to accurately model your type's semantics.
 
 **Answer:**
 
 ```cpp
-
 #include <compare>
 #include <cmath>
 #include <iostream>
@@ -149,15 +153,17 @@ int main() {
     std::cout << ((m <=> f) == std::partial_ordering::equivalent) << "\n"; // ~true
     return 0;
 }
-
 ```
 
+The `SafeFloat` class is a good illustration of why `partial_ordering` exists: IEEE 754 floating-point specifies that NaN is unordered with everything, including itself. Regular `double` comparisons just return false for NaN, which is often not what you want. Making the ordering category explicit in the type forces callers to handle the unordered case.
+
 ### Q3: Implement spaceship for a class with member ordering priority
+
+Here's a realistic scenario: a `Version` struct where ordering should look at major, minor, and patch numbers in sequence, but equality should also consider the label field. This is a case where you need custom `<=>` *and* custom `==`, because you want them to have slightly different semantics. The reason you must define both is that the compiler won't generate `==` from a custom `<=>` - it only does that for defaulted ones.
 
 **Answer:**
 
 ```cpp
-
 #include <compare>
 #include <string>
 #include <iostream>
@@ -193,16 +199,17 @@ int main() {
     std::cout << ((v1 <=> v2) == 0) << "\n";  // true (ordering ignores label)
     return 0;
 }
-
 ```
+
+Notice the deliberate asymmetry: `v1 < v2` is false (because `<=>` ignores the label and they have the same numbers), but `v1 == v2` is also false (because `==` includes the label). This might look contradictory, but it's a valid and useful design - you can sort versions by number while still distinguishing alpha from beta for purposes of exact equality.
 
 ---
 
 ## Notes
 
-- **Default `<=>` is almost always enough** — compares all members in declaration order
-- If you define custom `<=>`, you **must** also define `==` separately for optimization
-- `strong_ordering`: equal values are identical (integers, strings)
-- `weak_ordering`: equivalent but distinguishable (case-insensitive strings)
-- `partial_ordering`: some values are unordered (floating-point NaN)
-- Rewrite rule: `a < b` is rewritten as `(a <=> b) < 0` — no need to write individual operators
+- Default `<=>` is almost always enough - it compares all members in declaration order, and the compiler generates all six operators.
+- If you define custom `<=>`, you **must** also define `==` separately for optimization - the compiler won't auto-generate it from a user-provided spaceship.
+- `strong_ordering`: equal values are identical (integers, strings).
+- `weak_ordering`: equivalent but distinguishable (case-insensitive strings).
+- `partial_ordering`: some values are unordered (floating-point NaN).
+- Rewrite rule: `a < b` is rewritten as `(a <=> b) < 0` - you never need to write the individual relational operators when you have `<=>`.

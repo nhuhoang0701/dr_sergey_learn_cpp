@@ -6,25 +6,25 @@
 
 ## Topic Overview
 
-A **hidden friend** is a `friend` function defined *inside* a class body. It's only found via **ADL** (Argument-Dependent Lookup), not by normal unqualified lookup:
+A **hidden friend** is a `friend` function defined *inside* a class body. It's only found via **ADL** (Argument-Dependent Lookup), not by normal unqualified lookup. The name "hidden" is accurate: the function exists and is callable, but only when one of the arguments is of the class type - it's invisible to everything else.
 
 ```cpp
-
 class MyType {
     friend bool operator==(const MyType& a, const MyType& b) { // Hidden friend
         return a.val_ == b.val_;
     }
     int val_;
 };
-
 ```
 
 | Property | Member operator | Free function | Hidden friend |
 | --- | :---: | :---: | :---: |
-| Symmetric operands | No (`a==b` ≠ `b==a` for conversions) | **Yes** | **Yes** |
-| Found by ADL only | N/A | No (found everywhere) | **Yes** |
-| Reduces overload set | N/A | No | **Yes** (faster compile) |
-| Access to private | Yes | Needs friend decl | **Yes** |
+| Symmetric operands | No (`a==b` != `b==a` for conversions) | Yes | Yes |
+| Found by ADL only | N/A | No (found everywhere) | Yes |
+| Reduces overload set | N/A | No | Yes (faster compile) |
+| Access to private | Yes | Needs friend decl | Yes |
+
+The key insight is that hiding friends in the class body is strictly better than putting operators as free functions in the namespace, in almost every case. You get private access, symmetric operand treatment, and a smaller overload set - with no downside.
 
 ---
 
@@ -32,10 +32,11 @@ class MyType {
 
 ### Q1: Implement operators as hidden friends
 
+The pattern is simple: declare the operator with `friend` inside the class body, define it right there too, and don't add any separate namespace-scope declaration. Every operator that should feel "attached" to the type is a good candidate. Notice how all the `Temperature` operators below live inside the class - the class body is both the declaration and the definition.
+
 **Answer:**
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <compare>
@@ -61,7 +62,7 @@ public:
         return os << t.kelvin_ << "K";
     }
 
-    // Hidden friend swap — found by ADL, no std:: needed
+    // Hidden friend swap - found by ADL, no std:: needed
     friend void swap(Temperature& a, Temperature& b) noexcept {
         using std::swap;
         swap(a.kelvin_, b.kelvin_);
@@ -75,15 +76,15 @@ int main() {
     std::cout << t1 << "\n";           // 273.15K
     return 0;
 }
-
 ```
 
 ### Q2: Show why hidden friends reduce compilation time and prevent surprises
 
+This is the "why bother" explanation. When you put an operator as a free function in the namespace, the compiler considers it as a candidate for *any* overload resolution in code that's seen the namespace - even for completely unrelated types. Hidden friends are invisible to that search. In large codebases with many types, this adds up to a measurable difference in compile times, and it prevents the occasional bewildering "where did this candidate come from?" error.
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <iostream>
 
@@ -104,7 +105,7 @@ namespace lib {
     public:
         explicit BetterWidget(int id) : id_(id) {}
 
-        // GOOD: Hidden friend — only found via ADL
+        // GOOD: Hidden friend - only found via ADL
         friend bool operator==(const BetterWidget& a, const BetterWidget& b) {
             return a.id_ == b.id_;
         }
@@ -124,15 +125,15 @@ int main() {
     //            // (unlike a namespace-scope operator)
     return 0;
 }
-
 ```
 
 ### Q3: Implement a full type with hidden friends for all common operations
 
+Here's what a well-designed type looks like when you apply the hidden friends idiom consistently. The `Identifier` class gets comparison, ordering, streaming, hashing, and swapping - all as hidden friends. Notice that even the `std::hash` specialization can be given access through a `friend` declaration, so the implementation stays private.
+
 **Answer:**
 
 ```cpp
-
 #include <iostream>
 #include <functional>
 #include <string>
@@ -197,16 +198,17 @@ int main() {
     hashed.emplace("USR", 1);
     return 0;
 }
-
 ```
+
+The `Identifier` type now works cleanly with `std::set` (needs ordering), `std::unordered_set` (needs hashing), streams, and swap - all thanks to hidden friends. Everything is self-contained in the class definition, and none of these operators will accidentally show up in overload resolution for unrelated types.
 
 ---
 
 ## Notes
 
-- **Default to hidden friends for all operators** — it's the modern C++ best practice (endorsed by P1601)
-- Hidden friends reduce overload set size → faster compilation in large codebases
-- They provide **symmetric** operator behavior (both operands equal for implicit conversions)
-- `swap`, `operator<<`, `operator>>`, and comparison operators are prime candidates
-- The technique is especially important in library code where namespace pollution affects clients
-- `friend` defined inside the class = hidden friend; `friend` declared inside + defined outside = NOT hidden
+- Default to hidden friends for all operators - it's the modern C++ best practice (endorsed by P1601).
+- Hidden friends reduce overload set size, which means faster compilation in large codebases.
+- They provide **symmetric** operator behavior - both operands are treated equally for implicit conversions, unlike member operators.
+- `swap`, `operator<<`, `operator>>`, and comparison operators are prime candidates for the hidden friends idiom.
+- The technique is especially important in library code where namespace pollution affects clients.
+- `friend` defined inside the class = hidden friend; `friend` declared inside but defined outside = not hidden. The definition must be inside the class body.

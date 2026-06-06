@@ -8,8 +8,9 @@
 
 The **Non-Virtual Interface (NVI)** pattern makes all public methods non-virtual, and provides private or protected virtual methods as customization points. The base class controls the algorithm (pre/post conditions, logging, locking), while derived classes only customize specific steps.
 
-```cpp
+The key idea is that when a method is public and virtual, derived classes can override the *entire* behavior including the scaffolding the base class wants to enforce. With NVI, the public method is a non-virtual wrapper that always runs - derived classes get to fill in only the specific step that varies. This is why NVI pairs naturally with the Template Method design pattern.
 
+```cpp
 Traditional:                        NVI:
 class Base {                        class Base {
 public:                             public:
@@ -21,7 +22,6 @@ public:                             public:
                                     private:
                                       virtual void do_process() = 0;  // virtual private
                                     };
-
 ```
 
 ### Benefits of NVI
@@ -30,7 +30,7 @@ public:                             public:
 | --- | --- |
 | Enforce preconditions | Non-virtual wrapper checks before calling virtual |
 | Enforce postconditions | Wrapper checks/logs after virtual returns |
-| Add instrumentation | Logging, metrics in wrapper — all derived classes get it |
+| Add instrumentation | Logging, metrics in wrapper - all derived classes get it |
 | Thread safety | Wrapper acquires lock, virtual runs under lock |
 | Maintain invariants | Wrapper validates state before/after customization |
 
@@ -40,10 +40,11 @@ public:                             public:
 
 ### Q1: Implement the NVI pattern for a document processor
 
+Here the public interface is just `process()` - a single non-virtual entry point that the base class fully controls. The pre/post conditions, timing, and logging all happen in the wrapper, automatically, for every derived class. Derived classes only implement the specific virtual steps (`validate` and `transform`) and never touch the surrounding machinery:
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <iostream>
 #include <chrono>
@@ -51,7 +52,7 @@ public:                             public:
 
 class DocumentProcessor {
 public:
-    // PUBLIC NON-VIRTUAL interface — controls the workflow
+    // PUBLIC NON-VIRTUAL interface - controls the workflow
     std::string process(const std::string& input) {
         // Pre-condition: input must not be empty
         if (input.empty())
@@ -73,7 +74,6 @@ public:
         auto elapsed = std::chrono::steady_clock::now() - start;
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
         log("Processing complete in " + std::to_string(ms) + "ms, output size: "
-
             + std::to_string(result.size()));
 
         return result;
@@ -118,7 +118,7 @@ class CsvToJson : public DocumentProcessor {
     }
 
     void log(const std::string& msg) override {
-        std::cerr << "[CSV→JSON] " << msg << "\n";  // Custom logging
+        std::cerr << "[CSV->JSON] " << msg << "\n";  // Custom logging
     }
 };
 
@@ -131,20 +131,22 @@ int main() {
     auto json = csv.process("name,age\nAlice,30");
     return 0;
 }
-
 ```
 
+Notice that `CsvToJson` overrides `log` to redirect to `std::cerr` - it can customize that step too, because `log` is virtual. But it cannot skip the pre/post checks or the timing code, because those live in the non-virtual `process` wrapper. Every processor, regardless of how it is implemented, gets consistent instrumentation for free.
+
 ### Q2: Show NVI with thread safety and state machine control
+
+NVI is especially powerful when the base class needs to enforce things that every derived class must get right but that derived classes really should not have to reimplement themselves - thread safety and state machine transitions are perfect examples. Here, the public methods handle all the locking and state checking, and the private virtual `do_*` methods contain only the protocol-specific work:
 
 **Answer:**
 
 ```cpp
-
 #include <mutex>
 #include <string>
 #include <stdexcept>
 
-// ═══════════ NVI with thread-safe state machine ═══════════
+// NVI with thread-safe state machine
 class Connection {
 public:
     enum class State { Disconnected, Connecting, Connected, Error };
@@ -195,7 +197,7 @@ public:
     virtual ~Connection() = default;
 
 private:
-    // Customization points — derived classes focus on protocol
+    // Customization points - derived classes focus on protocol
     virtual void do_connect(const std::string& addr) = 0;
     virtual void do_send(const std::string& data) = 0;
     virtual std::string do_receive() = 0;
@@ -233,15 +235,18 @@ class SerialConnection : public Connection {
     void do_disconnect() override { /* close() */ }
 };
 
-// Both TcpConnection and SerialConnection:
-// ✓ Thread-safe (mutex in base)
-// ✓ State-machine enforced (can't send before connect)
-// ✓ Exception-safe (error state on failure)
+// Both TcpConnection and SerialConnection get:
+// Thread-safe (mutex in base)
+// State-machine enforced (can't send before connect)
+// Exception-safe (error state on failure)
 // WITHOUT duplicating any of that logic
-
 ```
 
+Both `TcpConnection` and `SerialConnection` get thread safety, state validation, and exception safety completely for free - they didn't write a single line of mutex or state-checking code. That is the power of NVI when there is genuine cross-cutting logic that every subclass needs to have applied consistently.
+
 ### Q3: Compare NVI with traditional virtual and explain when to use each
+
+Not every method needs to go through NVI. Sometimes a plain public virtual is perfectly fine. The table and example below show the thought process for choosing between approaches:
 
 **Answer:**
 
@@ -253,15 +258,14 @@ class SerialConnection : public Connection {
 | **CRTP** | Compile-time, zero overhead | No runtime polymorphism |
 
 ```cpp
-
-// When NVI is overkill — simple case, public virtual is fine:
+// When NVI is overkill - simple case, public virtual is fine:
 class Drawable {
 public:
     virtual ~Drawable() = default;
     virtual void draw(Canvas& c) const = 0;  // No pre/post needed
 };
 
-// When NVI shines — complex lifecycle:
+// When NVI shines - complex lifecycle:
 class Transaction {
 public:
     // Non-virtual: enforces ACID properties
@@ -281,15 +285,16 @@ private:
     void commit() { /* ... */ }
     void rollback() { /* ... */ }
 };
-
 ```
+
+The `Transaction` example is the clearest illustration of when NVI is the right call. The begin/commit/rollback sequence is non-negotiable - if you let derived classes override `execute` directly, nothing stops them from accidentally skipping `rollback` on an exception. NVI makes that omission structurally impossible.
 
 ---
 
 ## Notes
 
-- NVI is Herb Sutter's recommendation from GotW #18 — "make virtual functions private"
-- `private virtual` is legal in C++ — the base class can call it but derived classes can override it
-- Use `protected virtual` when derived classes need to call the base implementation (`Base::do_thing()`)
-- NVI pairs perfectly with the **Template Method** design pattern
-- In embedded: NVI is excellent for hardware abstraction — base controls timing/safety, derived controls registers
+- NVI is Herb Sutter's recommendation from GotW #18 - "make virtual functions private".
+- `private virtual` is legal in C++ - the base class can call it but derived classes can override it.
+- Use `protected virtual` when derived classes need to call the base implementation (`Base::do_thing()`).
+- NVI pairs perfectly with the **Template Method** design pattern.
+- In embedded: NVI is excellent for hardware abstraction - base controls timing/safety, derived controls registers.

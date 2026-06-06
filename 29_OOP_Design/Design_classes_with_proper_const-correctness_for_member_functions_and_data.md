@@ -6,6 +6,8 @@
 
 ## Topic Overview
 
+Const-correctness is about making a promise to your callers - and letting the compiler enforce it. When you mark a method `const`, you're saying "calling this won't change the observable state of the object." When you return a `const T&`, you're saying "you can read this, but you can't modify it through me." These aren't just style choices; they're compile-time-checked contracts.
+
 | Rule | Meaning |
 | --- | --- |
 | `const` member function | Promises not to modify observable state |
@@ -16,14 +18,14 @@
 ### Const Correctness Principle
 
 ```cpp
-
 "const" is a contract with callers:
 
   - If a method is const, calling it won't change object state
   - If a reference is const, the object won't be modified through it
   - The compiler ENFORCES this contract
-
 ```
+
+The practical payoff is significant. Functions that take a `const T&` parameter can accept both const and non-const objects. Generic code that calls only `const` methods works with const objects. And the compiler catches the entire class of bugs where you accidentally mutate state in a method that wasn't supposed to.
 
 ---
 
@@ -31,10 +33,11 @@
 
 ### Q1: Design a class with proper const member function overloads
 
+When you need both readable and modifiable access to the same element, the right approach is to provide two overloads of the accessor - one `const` returning a `const` reference, and one non-const returning a mutable reference. Scott Meyers' trick (calling the `const` version from the non-const one) avoids duplicating the range-check logic.
+
 **Answer:**
 
 ```cpp
-
 #include <vector>
 #include <string>
 #include <stdexcept>
@@ -85,15 +88,17 @@ int main() {
     print_doc(doc);        // Uses const overloads
     return 0;
 }
-
 ```
 
+The `const_cast` inside the non-const overload is safe here because the non-const version can only be called on a non-const object - so stripping the `const` to reuse the implementation is valid. You're not casting away constness that's genuinely there; you're just avoiding code duplication.
+
 ### Q2: Show proper use of mutable for caches and synchronization
+
+Sometimes a method is logically const - it doesn't change anything the caller cares about - but internally it does need to update something, like a cached computed value or a mutex. That's exactly what `mutable` is for. The key rule is: `mutable` is only appropriate when the mutation is invisible to the caller and doesn't affect observable behavior.
 
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <numeric>
@@ -105,7 +110,7 @@ public:
     explicit Statistics(std::vector<double> data)
         : data_(std::move(data)) {}
 
-    // Logically const — but caches result
+    // Logically const - but caches result
     double mean() const {
         std::lock_guard lock(mtx_);  // mutable mutex
         if (!cached_mean_) {
@@ -131,15 +136,17 @@ private:
     mutable std::optional<double> cached_mean_;
 };
 // mutable is ONLY for members that don't affect observable state
-
 ```
 
+Notice that the `mtx_` mutex is `mutable` even though locking it doesn't change the data - you need this because `lock_guard` takes a non-const reference to the mutex, and you can't bind a non-const reference to a const member. The `cached_mean_` is `mutable` because the cache is an implementation detail invisible to callers: whether the value is freshly computed or returned from cache, the answer is the same.
+
 ### Q3: Demonstrate const propagation with smart pointers and containers
+
+Here's a subtle trap: `const unique_ptr<T>` means the pointer itself is const, not the `T` it points to. You can still call `cfg_->set(99)` from a `const` method if `cfg_` is a `shared_ptr<Config>`. The `PropagateConst` wrapper fixes this by making the constness of the wrapper propagate through to the pointed-to object.
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <vector>
 #include <iostream>
@@ -200,16 +207,17 @@ int main() {
     std::cout << svc.read() << "\n";
     return 0;
 }
-
 ```
+
+The reason `bad_const_method` compiles without `PropagateConst` is that `const` on a member means you can't rebind the pointer, not that you can't call non-const methods through it. The pointer-to-Config is logically separate from the Config itself, and `const` only freezes the former. `PropagateConst` bridges that gap by making the `const` overload of `operator->` return a pointer-to-const, which then prevents non-const method calls on the target.
 
 ---
 
 ## Notes
 
-- **Mark every method that doesn't modify state as `const`** — this is not optional
-- `mutable` is acceptable for: mutexes, caches, debug counters — NOT for real state
-- `const` on smart pointers doesn't propagate: `const unique_ptr<T>` → pointer is const, `T` is not
-- Use `propagate_const` wrapper for Pimpl and owned-pointer members
-- Returning `const T&` prevents callers from modifying internals; returning `T` gives them a copy
-- The compiler can optimize through `const` — wrong use of `const_cast` is undefined behavior
+- **Mark every method that doesn't modify state as `const`** - this is not optional.
+- `mutable` is acceptable for: mutexes, caches, debug counters - not for real state.
+- `const` on smart pointers doesn't propagate: `const unique_ptr<T>` means the pointer is const, `T` is not.
+- Use `propagate_const` wrapper for Pimpl and owned-pointer members.
+- Returning `const T&` prevents callers from modifying internals; returning `T` gives them a copy.
+- The compiler can optimize through `const` - wrong use of `const_cast` is undefined behavior.

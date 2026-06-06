@@ -6,27 +6,27 @@
 
 ## Topic Overview
 
-These rules govern when and how to write special member functions (constructor, destructor, copy/move operations).
+These rules tell you when and how to write the "special member functions" - the constructor, destructor, copy, and move operations. The reason they matter is that C++ gives you implicit implementations of all five, but those implicit implementations only do the right thing if your class is written a certain way. The rules help you decide whether to trust the compiler or take control yourself.
+
+The short version: if your class manages a raw resource directly, you must define all five special members yourself. If it does not, define none of them and let the compiler do its job.
 
 ### Decision Flowchart
 
 ```cpp
-
 Does your class directly manage a resource (raw pointer, fd, handle)?
   │
-  ├─ NO  → RULE OF ZERO: Don't declare ANY special members.
+  ├─ NO  -> RULE OF ZERO: Don't declare ANY special members.
   │        Let compiler generate them. Use smart pointers, std::string,
-  │        std::vector as members — they handle everything.
+  │        std::vector as members - they handle everything.
   │
-  └─ YES → Do you need copying?
+  └─ YES -> Do you need copying?
             │
-            ├─ YES → RULE OF FIVE: Define ALL five:
+            ├─ YES -> RULE OF FIVE: Define ALL five:
             │        destructor, copy ctor, copy assign, move ctor, move assign
             │
-            └─ NO  → RULE OF FIVE (delete copy):
+            └─ NO  -> RULE OF FIVE (delete copy):
                      Define destructor + move ctor + move assign.
                      Delete copy ctor + copy assign.
-
 ```
 
 ### The Five Special Members
@@ -45,15 +45,14 @@ Does your class directly manage a resource (raw pointer, fd, handle)?
 
 ### Q1: Demonstrate Rule of Zero with proper member types
 
-**Answer:**
+The Rule of Zero is the goal you should be aiming for in nearly every class you write. The idea is that if your members are all "well-behaved" types - `std::string`, `std::vector`, `std::unique_ptr`, `std::shared_ptr` - then the compiler can generate correct copy, move, and destruction semantics automatically. You declare nothing and everything works.
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <memory>
 
-// ═══════════ RULE OF ZERO: No special members needed ═══════════
+// RULE OF ZERO: No special members needed
 // ALL members have correct copy/move/destroy semantics built in
 class UserProfile {
     std::string name_;
@@ -70,7 +69,7 @@ public:
     void add_tag(std::string tag) { tags_.push_back(std::move(tag)); }
 };
 
-// Even with unique ownership — Rule of Zero still works:
+// Even with unique ownership - Rule of Zero still works:
 class Document {
     std::string title_;
     std::unique_ptr<std::string> content_;  // Unique ownership
@@ -87,21 +86,21 @@ public:
 };
 
 // Rule of Zero is the DEFAULT. 90%+ of classes should use it.
-
 ```
+
+Notice the `Document` class: because `unique_ptr` is non-copyable, the compiler automatically deletes copy operations for `Document` too. You get the right behavior for free - and if someone tries to copy a `Document`, they get a clear compile error rather than a silent shallow copy.
 
 ### Q2: Implement Rule of Five for a class managing a raw resource
 
-**Answer:**
+The Rule of Five kicks in when you are managing a raw resource directly - a raw pointer you `new` and `delete`, a file descriptor, a socket handle. The reason you must define all five is that they are deeply interdependent: if your destructor does `delete[] data_`, then your copy constructor must allocate a fresh copy, your move constructor must null out the source's pointer, and so on. Leaving any one of them to the compiler will give you disaster.
 
 ```cpp
-
 #include <cstring>
 #include <utility>
 #include <iostream>
 #include <algorithm>
 
-// ═══════════ RULE OF FIVE: Manual resource management ═══════════
+// RULE OF FIVE: Manual resource management
 class DynamicBuffer {
     char* data_;
     size_t size_;
@@ -126,7 +125,7 @@ public:
         std::memcpy(data_, other.data_, size_);
     }
 
-    // 3. COPY ASSIGNMENT (copy-and-swap idiom — exception safe!)
+    // 3. COPY ASSIGNMENT (copy-and-swap idiom - exception safe!)
     DynamicBuffer& operator=(const DynamicBuffer& other) {
         if (this != &other) {
             DynamicBuffer tmp(other);     // Copy construct temp
@@ -184,7 +183,7 @@ public:
     size_t size() const { return size_; }
 };
 
-// ═══════════ BETTER: Convert to Rule of Zero ═══════════
+// BETTER: Convert to Rule of Zero
 #include <vector>
 
 class BetterBuffer {
@@ -194,21 +193,23 @@ public:
         data_.insert(data_.end(), str, str + len);
     }
     size_t size() const { return data_.size(); }
-    // NO special members needed — Rule of Zero!
+    // NO special members needed - Rule of Zero!
 };
-
 ```
+
+The `BetterBuffer` at the end is the real lesson: every time you find yourself writing a Rule of Five class, ask whether you could wrap the resource in a smart pointer or standard container and then rely on the Rule of Zero instead. The answer is yes more often than you think.
 
 ### Q3: Show the "Rule of Four and a Half" (copy-and-swap idiom)
 
-**Answer:**
+The copy-and-swap idiom is a clever trick that lets you write a single assignment operator that handles *both* copy and move assignment correctly. The "four and a half" refers to: destructor + copy ctor + move ctor + one unified `operator=` (the four) + the `swap` helper (the half).
+
+The key insight is that the assignment operator takes its parameter by *value*, not by reference. That one change means the compiler will call the copy constructor or move constructor on the argument before the function body even runs - depending on whether the caller passed an lvalue or an rvalue. You just swap and return.
 
 ```cpp
-
 #include <utility>
 #include <algorithm>
 
-// ═══════════ Rule of 4.5: Unified assignment with swap ═══════════
+// Rule of 4.5: Unified assignment with swap
 class Image {
     int* pixels_;
     int width_, height_;
@@ -258,19 +259,18 @@ int main() {
     Image a(100, 100);
     Image b = a;              // Copy ctor
     Image c = std::move(a);   // Move ctor
-    b = c;                    // operator=(Image other) — copy ctor invoked for `other`
-    b = std::move(c);         // operator=(Image other) — move ctor invoked for `other`
+    b = c;                    // operator=(Image other) - copy ctor invoked for `other`
+    b = std::move(c);         // operator=(Image other) - move ctor invoked for `other`
     return 0;
 }
-
 ```
 
-**Which rule to use — decision table:**
+**Which rule to use - decision table:**
 
 | Your class has... | Rule | Action |
 | --- | --- | --- |
 | Only std::string, vector, unique_ptr members | **Zero** | Declare nothing |
-| A raw pointer you `new`/`delete` | **Five** | Or wrap in unique_ptr → Rule of Zero |
+| A raw pointer you `new`/`delete` | **Five** | Or wrap in unique_ptr -> Rule of Zero |
 | A file descriptor / OS handle | **Five** (delete copy) | Move-only entity |
 | Virtual destructor for base class | Declare `virtual ~Base() = default;` | Still Rule of Zero if no resources |
 
@@ -278,8 +278,8 @@ int main() {
 
 ## Notes
 
-- **Rule of Zero is the goal.** If you find yourself writing Rule of Five, ask: "Can I wrap this in a smart pointer instead?"
-- Always mark move operations `noexcept` — containers (e.g., `std::vector::push_back`) won't move without it
-- The copy-and-swap idiom provides **strong exception safety** at the cost of one extra allocation
-- If you declare ANY of the five, declare ALL five (even if `= default` or `= delete`)
-- Modern C++ guideline: **wrap every resource in an RAII class**, then compose those RAII classes with Rule of Zero
+- Rule of Zero is the goal. If you find yourself writing Rule of Five, ask: "Can I wrap this in a smart pointer instead?"
+- Always mark move operations `noexcept` - containers like `std::vector` won't use your move constructor without it, falling back to copying instead.
+- The copy-and-swap idiom provides strong exception safety at the cost of one extra allocation.
+- If you declare ANY of the five, declare ALL five (even if `= default` or `= delete`) - this documents intent and avoids surprising compiler-generated behavior.
+- Modern C++ guideline: wrap every resource in an RAII class, then compose those RAII classes with Rule of Zero.

@@ -6,6 +6,8 @@
 
 ## Topic Overview
 
+The central tension in concurrent design is simple: coarse-grained locking is easy to get right but kills throughput, while fine-grained locking is fast but hard to reason about. The table below maps out the strategies - notice how complexity climbs as throughput rises:
+
 | Strategy | Granularity | Throughput | Complexity |
 | --- | :---: | :---: | :---: |
 | Single mutex (coarse) | Whole object | Low | **Simple** |
@@ -16,14 +18,14 @@
 
 ### Design Principles
 
-```cpp
+These five rules will get you out of most threading trouble. The most commonly violated one is number two - calling a user callback while holding a lock is a classic deadlock recipe.
 
+```cpp
 1. Hold locks for the shortest possible time
 2. Never call unknown code (callbacks, virtual functions) while holding a lock
 3. Lock ordering: always acquire locks in a consistent order to prevent deadlocks
 4. Prefer shared_mutex for read-heavy workloads
 5. Copy data out under lock, process outside
-
 ```
 
 ---
@@ -32,10 +34,9 @@
 
 ### Q1: Compare coarse vs fine-grained locking
 
-**Answer:**
+The three classes below represent three points on the granularity spectrum. `CoarseUserStore` uses one mutex for everything - simple, but every read blocks every write. `FineUserStore` upgrades to `shared_mutex` so reads can run in parallel. `StripedMap` goes further and shards the data across 16 independent buckets, so even writes to different keys don't contend.
 
 ```cpp
-
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -103,15 +104,13 @@ public:
     }
     // Different stripes accessed concurrently!
 };
-
 ```
 
 ### Q2: Show the "copy out, process outside" pattern
 
-**Answer:**
+The key danger with callbacks and virtual functions is that the caller can't predict what they do - and if they try to acquire your lock, you have a deadlock. The solution is to release the lock before calling anything you don't control. Copy the data you need under the lock, drop the lock, then process freely.
 
 ```cpp
-
 #include <mutex>
 #include <vector>
 #include <functional>
@@ -150,15 +149,13 @@ public:
         }
     }
 };
-
 ```
 
 ### Q3: Implement a lock-free concurrent counter and compare with mutex
 
-**Answer:**
+Lock-free atomics sound like the obvious win, but it's not that simple. Atomic operations avoid mutex overhead, but on highly contended data all threads are still hammering the same cache line - and the hardware coherency traffic can be just as slow. The `ShardedCounter` solves this by giving each thread its own cache-line-aligned shard so writes never conflict.
 
 ```cpp
-
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -239,16 +236,17 @@ int main() {
     bench<ShardedCounter>("Sharded", T, N);
     return 0;
 }
-
 ```
+
+The `alignas(64)` on `Shard` is critical here - without it, two shards could share a cache line and writes to one would invalidate the other's cache entry (false sharing). Always measure before concluding that lock-free is faster; the answer depends heavily on contention level and hardware.
 
 ---
 
 ## Notes
 
-- **Rule of thumb:** start with `shared_mutex`, optimize to finer granularity only when profiling shows contention
-- Never hold a lock while calling user callbacks or virtual functions — deadlock risk
-- `alignas(64)` prevents false sharing between cache lines in sharded data structures
-- Copy snapshots out under lock, process outside — minimizes lock hold time
-- Lock-free code is **not always faster** — cache coherency traffic can dominate
-- Use ThreadSanitizer (`-fsanitize=thread`) to detect data races during testing
+- **Rule of thumb:** start with `shared_mutex`, optimize to finer granularity only when profiling shows contention.
+- Never hold a lock while calling user callbacks or virtual functions - deadlock risk.
+- `alignas(64)` prevents false sharing between cache lines in sharded data structures.
+- Copy snapshots out under lock, process outside - minimizes lock hold time.
+- Lock-free code is **not always faster** - cache coherency traffic can dominate.
+- Use ThreadSanitizer (`-fsanitize=thread`) to detect data races during testing.

@@ -6,21 +6,25 @@
 
 ## Topic Overview
 
+When you need to create objects but don't want the caller to worry about which concrete type gets constructed - or you want to swap implementations later without changing call sites - factory patterns are your go-to tool. There are three main flavors, each solving a slightly different problem:
+
 | Pattern | Purpose | Returns | Extensibility |
 | --- | --- | --- | --- |
 | **Factory method** | Create one product | `unique_ptr<Base>` | Override in derived class |
 | **Static factory** | Named constructors | Value or `unique_ptr` | Single class |
 | **Abstract factory** | Create family of related products | Multiple `unique_ptr<Base>` | New families via new factory |
 
+The key intuition is this: a constructor can only do one thing - initialize the object. A factory function can make a decision first, then create the right object. That decision-making power is what makes factories useful. You move the "which type should I build?" logic out of the constructor and into a dedicated place that is easy to change, test, and extend.
+
 ### When to Use
 
-```cpp
+Here's a quick guide for picking the right flavor:
 
+```cpp
 Factory method:      Type determined by subclass or parameter
 Static factory:      Multiple construction modes for one type
 Abstract factory:    Families of related objects that must match
                      (e.g., UI widgets for different platforms)
-
 ```
 
 ---
@@ -29,10 +33,11 @@ Abstract factory:    Families of related objects that must match
 
 ### Q1: Implement static factory methods and a parameterized factory
 
+Static factory methods are just named constructors - instead of a single `Shape(args)` constructor that tries to do everything, you give callers descriptive entry points like `Circle::from_area()` or `Rect::square()`. The parameterized factory goes a step further: it takes a string or enum key and dispatches to the right concrete type at runtime. Here is what that looks like in practice:
+
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <cmath>
@@ -82,15 +87,17 @@ int main() {
     std::cout << shape->name() << ": " << shape->area() << "\n";
     return 0;
 }
-
 ```
 
+Notice how `from_area` makes the intent crystal clear at the call site - you'd never guess from `Circle(5.64)` that the radius was computed from an area, but `Circle::from_area(100.0)` tells you exactly what's happening. The `create_shape` function shows the next level: given a runtime string, it picks the right concrete type and hands you back a `unique_ptr<Shape>`. The caller doesn't know and doesn't care which subclass it got.
+
 ### Q2: Implement an Abstract Factory for cross-platform UI
+
+The abstract factory pattern solves a trickier problem: not just "create one thing," but "create a consistent *family* of things." If you mix a Windows button with a Linux text box, your UI looks wrong and behaves inconsistently. The abstract factory prevents that mismatch by packaging related creators together - one factory object is responsible for every widget in a platform's family. Take a look:
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <iostream>
@@ -171,15 +178,17 @@ int main() {
     build_ui(lf);  // Consistent Linux UI
     return 0;
 }
-
 ```
 
+The beauty here is that `build_ui` doesn't know or care which platform it's running on. You pass in a `WinFactory` and everything it creates is guaranteed to be Windows-style. Add a `MacFactory` later and `build_ui` works with it immediately - no changes required. The abstract factory is the glue that keeps the family consistent.
+
 ### Q3: Show a self-registering factory using a map of creators
+
+The previous examples have a central switch or a hardcoded set of factory classes. Self-registering factories eliminate that central list entirely: each plugin type announces itself at static initialization time. This is especially useful in plugin architectures where new types are added without touching existing code. The trick is using a static registry map and a helper template that registers the type before `main` runs:
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -248,16 +257,17 @@ int main() {
     p->execute();  // "Compressing..."
     return 0;
 }
-
 ```
+
+The static `reg_` member in each class triggers registration before `main` even starts. You can drop a new plugin `.cpp` file into the build and it just works - no modification to the factory or any other file needed. That is the whole point: new types are added by addition, not by modification.
 
 ---
 
 ## Notes
 
-- **Static factory methods** are the simplest — use for named constructors (`from_string()`, `default_config()`)
-- Parameterized factories use a string/enum key — extensible with a registration map
-- Abstract factories enforce **consistency** across product families
-- Self-registering factories avoid a central switch statement — new types add themselves
-- Always return `unique_ptr` from factories — caller controls ownership
-- Prefer free factory functions or static methods over the GoF virtual factory method pattern in modern C++
+- **Static factory methods** are the simplest - use them for named constructors (`from_string()`, `default_config()`) when a plain constructor would leave the intent unclear.
+- Parameterized factories use a string or enum key and are easily made extensible by plugging into a registration map.
+- Abstract factories enforce **consistency** across product families - you can't accidentally mix products from different families.
+- Self-registering factories eliminate the central switch statement, so new types add themselves without touching existing code.
+- Always return `unique_ptr` from factories - the caller gets clear ownership and you avoid raw pointer confusion.
+- Prefer free factory functions or static methods over the GoF virtual factory method pattern in modern C++ - the virtual approach is rarely needed.

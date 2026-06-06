@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-C++ offers three distinct polymorphism mechanisms, each with radically different trade-offs:
+C++ is unusual among mainstream languages in offering *three* distinct polymorphism mechanisms with radically different trade-offs. Most languages give you one. C++ gives you all three, each suited to a different situation. Understanding the differences is what separates decent C++ from excellent C++.
+
+Here is the comparison at a glance:
 
 | Aspect | Virtual Functions | std::variant | CRTP |
 | --- | :---: | :---: | :---: |
@@ -20,14 +22,14 @@ C++ offers three distinct polymorphism mechanisms, each with radically different
 
 ### Decision Flowchart
 
+Work through this when you don't know which to reach for:
+
 ```cpp
-
 Is the set of types known at compile time?
-├─ YES → Do you need a container of mixed types?
-│        ├─ YES → std::variant + std::visit
-│        └─ NO  → CRTP or simple templates
-└─ NO  → Virtual functions (open set)
-
+├─ YES -> Do you need a container of mixed types?
+│        ├─ YES -> std::variant + std::visit
+│        └─ NO  -> CRTP or simple templates
+└─ NO  -> Virtual functions (open set)
 ```
 
 ---
@@ -36,17 +38,16 @@ Is the set of types known at compile time?
 
 ### Q1: Implement the same problem with all three approaches
 
-**Answer:**
+The best way to internalize the differences is to solve the same problem three ways and then look at what you ended up with. Here is the classic "compute the area of a shape" problem done with each mechanism. Pay attention to what you can and cannot do with each.
 
 ```cpp
-
 #include <variant>
 #include <vector>
 #include <memory>
 #include <iostream>
 #include <cmath>
 
-// ──── APPROACH 1: Virtual functions ────
+// ---- APPROACH 1: Virtual functions ----
 namespace virt {
     class Shape {
     public:
@@ -72,7 +73,7 @@ namespace virt {
     }
 }
 
-// ──── APPROACH 2: std::variant ────
+// ---- APPROACH 2: std::variant ----
 namespace var {
     struct Circle { double r; };
     struct Rect { double w, h; };
@@ -94,7 +95,7 @@ namespace var {
     }
 }
 
-// ──── APPROACH 3: CRTP ────
+// ---- APPROACH 3: CRTP ----
 namespace crtp {
     template<typename Derived>
     class Shape {
@@ -133,22 +134,22 @@ int main() {
     std::cout << "CRTP: " << crtp::process(c) << "\n";
     return 0;
 }
-
 ```
+
+The CRTP version calls `area()` with no indirection at all - the compiler sees the exact type at compile time and inlines everything. The trade-off is that you cannot put a `Circle` and a `Rect` into the same vector.
 
 ### Q2: Show where each approach is the clear winner
 
-**Answer:**
+Rather than memorizing the trade-off table, it helps to anchor each approach to a real-world scenario where it is obviously the right choice.
 
 ```cpp
-
 // VIRTUAL wins: Plugin system (open set, loaded at runtime)
 class AudioPlugin {
 public:
     virtual ~AudioPlugin() = default;
     virtual void process(float* buf, size_t n) = 0;
 };
-// New plugins via dlopen() — set is OPEN
+// New plugins via dlopen() - set is OPEN
 
 // VARIANT wins: Compiler AST (closed set, many operations)
 using Expr = std::variant<IntLit, FloatLit, BinOp, UnaryOp, Ident>;
@@ -164,16 +165,16 @@ public:
         return s.x()*o.x() + s.y()*o.y() + s.z()*o.z();  // Inlined!
     }
 };
-// Millions of calls per frame — no vtable indirection
-
+// Millions of calls per frame - no vtable indirection
 ```
+
+The reason variant is so good for an AST is the **exhaustiveness check**. If you add a new `Expr` alternative and forget to handle it in `evaluate`, the compiler tells you. With virtual functions, forgetting to override a method silently falls back to the base class - which is the worst kind of bug because it compiles fine and does the wrong thing.
 
 ### Q3: Show a hybrid variant + virtual approach
 
-**Answer:**
+Sometimes you have a mostly-closed set of types but need an escape hatch for external extensibility. The hybrid approach handles the common cases with fast variant dispatch and falls back to virtual for the rest.
 
 ```cpp
-
 #include <variant>
 #include <memory>
 #include <vector>
@@ -204,15 +205,16 @@ double area(const Shape& s) {
     }, s);
 }
 // Best of both: fast for known types, extensible for custom
-
 ```
+
+The nice part about this hybrid is that `Circle` and `Rect` still get value semantics and cache-friendly storage, while a third-party `CustomShape` can still plug into the system through the virtual interface.
 
 ---
 
 ## Notes
 
-- **Default choice for most code: virtual functions.** They're well-understood and flexible
-- Use **variant** for closed sets (AST, message types, state machines) with value semantics
-- Use **CRTP** only for measurably hot paths where vtable overhead matters
-- Variant visitors get compile-time exhaustiveness checking — forgetting a case is a compile error
-- The **Expression Problem**: virtual = easy to add types, hard to add operations; variant = opposite
+- Default choice for most code: virtual functions. They are well-understood and flexible.
+- Use variant for closed sets (AST, message types, state machines) with value semantics.
+- Use CRTP only for measurably hot paths where vtable overhead matters - and even then, profile first.
+- Variant visitors get compile-time exhaustiveness checking - forgetting a case is a compile error, not a silent bug.
+- The **Expression Problem**: virtual = easy to add types, hard to add operations; variant = the opposite. Knowing this makes the choice obvious for your use case.

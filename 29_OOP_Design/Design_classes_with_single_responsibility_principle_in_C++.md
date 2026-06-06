@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Single Responsibility Principle (SRP)** states: *A class should have only one reason to change.* In practice, this means each class should own one coherent piece of domain logic. SRP violations produce "god classes" — large, fragile, untestable monsters.
+The **Single Responsibility Principle (SRP)** states: *A class should have only one reason to change.* In practice, this means each class should own one coherent piece of domain logic. SRP violations produce "god classes" - large, fragile, untestable monsters that are painful to modify and nearly impossible to test in isolation.
+
+The reason SRP matters so much is coupling. When a class mixes multiple concerns - say, parsing, validation, and database access - then a change to your email library touches the same class as a change to your SQL schema. Those concerns have nothing to do with each other, but now they're locked together. The fix is to separate them so each class has exactly one "axis of change."
 
 ### SRP Smell Detector
 
@@ -24,11 +26,12 @@ The **Single Responsibility Principle (SRP)** states: *A class should have only 
 
 ### Q1: Refactor a god class into SRP-compliant components
 
+The `UserManager` below is a classic god class: it parses JSON, validates emails, writes to a database, formats HTML, and sends email - all in one type. Any of those five things can change independently, which means this class has five reasons to change. The refactored version gives each concern its own class.
+
 **Answer:**
 
 ```cpp
-
-// ═══════════ BEFORE: God class — handles parsing, validation, storage, formatting ═══════════
+// BEFORE: God class - handles parsing, validation, storage, formatting
 class UserManager {
     std::vector<User> users_;
     std::ofstream log_file_;
@@ -44,7 +47,7 @@ public:
     // 20 more methods...
 };
 
-// ═══════════ AFTER: Each class has ONE reason to change ═══════════
+// AFTER: Each class has ONE reason to change
 #include <string>
 #include <vector>
 #include <memory>
@@ -110,7 +113,7 @@ public:
     virtual void send_welcome(const User& u) = 0;
 };
 
-// ═══════════ Coordinator: Orchestrates but doesn't DO the work ═══════════
+// Coordinator: Orchestrates but doesn't DO the work
 class UserService {
     UserParser parser_;
     UserValidator validator_;
@@ -138,29 +141,29 @@ public:
     }
 };
 // Each class can now be tested independently with mocks
-
 ```
+
+`UserService` is the coordinator - it knows the workflow, but it doesn't do any of the actual work. Its one reason to change is "the registration workflow changes." The validator's one reason to change is "the validation rules change." If you add a new validation rule, you touch exactly one class. That's the payoff.
 
 ### Q2: Explain how to identify SRP violations in existing code
 
+You don't always see a god class immediately. Here are five concrete detection techniques to apply to any unfamiliar codebase.
+
 **Answer:**
 
-**5 concrete detection techniques:**
-
 ```cpp
-
-// TECHNIQUE 1: Count the #includes — more than 8-10 suggests too many concerns
+// TECHNIQUE 1: Count the #includes - more than 8-10 suggests too many concerns
 #include <string>      // Data
 #include <vector>      // Data
-#include <fstream>     // File I/O  ← different concern
-#include <sqlite3.h>   // Database  ← different concern
-#include <curl/curl.h> // Network   ← different concern
-#include <openssl/evp.h> // Crypto  ← different concern
-// → This class does too many things
+#include <fstream>     // File I/O  <- different concern
+#include <sqlite3.h>   // Database  <- different concern
+#include <curl/curl.h> // Network   <- different concern
+#include <openssl/evp.h> // Crypto  <- different concern
+// -> This class does too many things
 
 // TECHNIQUE 2: "Describe this class in one sentence without 'and'"
 // BAD: "It parses AND validates AND stores AND formats users"
-// GOOD: "It validates user data" — single concern
+// GOOD: "It validates user data" - single concern
 
 // TECHNIQUE 3: Group methods by what data they primarily touch
 class Report {
@@ -176,28 +179,30 @@ class Report {
     void emailReport();          // Uses smtp_
     void uploadToS3();           // Uses aws_client_
 
-    // → Three groups = THREE classes: ReportFetcher, ReportFormatter, ReportDelivery
+    // -> Three groups = THREE classes: ReportFetcher, ReportFormatter, ReportDelivery
 };
 
 // TECHNIQUE 4: If mocking requires mocking unrelated things, SRP is violated
-// "To test email sending, I had to set up a database mock" → SRP violation
+// "To test email sending, I had to set up a database mock" -> SRP violation
 
 // TECHNIQUE 5: Change impact analysis
-// "Changing the PDF library breaks the database tests" → coupled concerns
-
+// "Changing the PDF library breaks the database tests" -> coupled concerns
 ```
 
+Technique 3 is especially useful in practice: if you can divide a class's methods into natural groups that each touch a different subset of the member variables, those groups are your new classes. The methods that use `db_` have nothing to say about the methods that use `smtp_` - they should be separate types.
+
 ### Q3: Show SRP applied to an embedded system with hardware abstraction
+
+SRP isn't just for enterprise software. In embedded systems it has a concrete extra benefit: by isolating the control logic from the hardware, you can test the logic on your development machine without any hardware attached at all.
 
 **Answer:**
 
 ```cpp
-
 #include <cstdint>
 #include <functional>
 #include <array>
 
-// ═══════════ Embedded example: Thermostat system ═══════════
+// Embedded example: Thermostat system
 
 // SRP class 1: Reads temperature hardware
 class TemperatureReader {
@@ -271,7 +276,7 @@ public:
     }
 };
 
-// ═══════════ Test the controller WITHOUT hardware ═══════════
+// Test the controller WITHOUT hardware
 void test_controller() {
     ThermostatController ctrl(22.0, 0.5);
     assert(ctrl.should_heat(20.0) == true);   // Below setpoint-hysteresis
@@ -281,15 +286,16 @@ void test_controller() {
     assert(ctrl.should_heat(21.0) == false);  // Still in band
     assert(ctrl.should_heat(20.0) == true);   // Dropped below again
 }
-
 ```
+
+The `test_controller` function at the bottom runs entirely on the host, with no ADC or GPIO register in sight. Because `ThermostatController` has no hardware dependencies at all - its one job is implementing the hysteresis logic - it's completely testable in isolation. That's SRP paying off in the most tangible way possible.
 
 ---
 
 ## Notes
 
-- SRP doesn't mean "one function per class" — it means one *reason to change*
-- A `UserService` that orchestrates parser+validator+repo is fine — its reason to change is "the workflow changes"
-- In embedded: SRP enables testing control logic on host without hardware
-- Use dependency injection to wire SRP-compliant classes together
-- Cross-cutting concerns (logging, metrics) can use the Decorator or Observer pattern instead of polluting every class
+- SRP doesn't mean "one function per class" - it means one *reason to change*.
+- A `UserService` that orchestrates parser+validator+repo is fine - its reason to change is "the workflow changes."
+- In embedded: SRP enables testing control logic on host without hardware.
+- Use dependency injection to wire SRP-compliant classes together.
+- Cross-cutting concerns (logging, metrics) can use the Decorator or Observer pattern instead of polluting every class.

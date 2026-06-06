@@ -6,13 +6,13 @@
 
 ## Topic Overview
 
-**Dependency Injection (DI)** means supplying a class's collaborators from the outside rather than having the class create or locate them internally. This is the single most impactful design decision for testability in C++ because it lets you substitute mocks, fakes, or stubs during testing without modifying production code.
+**Dependency Injection (DI)** means supplying a class's collaborators from the outside rather than having the class create or locate them internally. This is the single most impactful design decision for testability in C++ because it lets you substitute mocks, fakes, or stubs during testing without modifying production code. The rule of thumb is simple: if a class creates its own database connection, HTTP client, or logger, you can't test it without those real services running. If those things are injected, you can hand in a fake and test the business logic in complete isolation.
 
 ### DI Injection Styles
 
 | Style | Mechanism | When to Use | Testability |
 | --- | --- | --- | --- |
-| **Constructor injection** | Pass dependency via ctor | Always preferred — makes deps explicit | Excellent |
+| **Constructor injection** | Pass dependency via ctor | Always preferred - makes deps explicit | Excellent |
 | **Method injection** | Pass dependency per call | When dep varies per invocation | Good |
 | **Template injection** | Type parameter for dep | When virtual dispatch cost is unacceptable | Excellent (compile-time) |
 | **Setter injection** | Set dep after construction | Legacy code; two-phase init | Moderate |
@@ -21,27 +21,25 @@
 ### Design for Testability Principles
 
 ```cpp
-
-                    ┌─────────────────┐
-                    │  IRepository     │  ← Abstract interface
-                    └────────┬────────┘
-                             │
-              ┌──────────────┼──────────────┐
-              │              │              │
-    ┌─────────▼──┐  ┌───────▼──────┐  ┌───▼──────────┐
-    │ SqlRepo     │  │ InMemoryRepo │  │ MockRepo     │
-    │ (production)│  │ (integration)│  │ (unit test)  │
-    └────────────┘  └──────────────┘  └──────────────┘
-
+                    +-----------------+
+                    |  IRepository     |  <- Abstract interface
+                    +--------+--------+
+                             |
+              +--------------+--------------+
+              |              |              |
+    +---------+--+  +--------+-----+  +----+---------+
+    | SqlRepo     |  | InMemoryRepo |  | MockRepo     |
+    | (production)|  | (integration)|  | (unit test)  |
+    +------------+  +--------------+  +--------------+
 ```
 
 **Key rules:**
 
-1. Depend on **abstractions** (interfaces), not concretions
-2. **No `new` inside business logic** — receive ready-made objects
-3. **No globals or singletons** as implicit dependencies
-4. **Thin constructors** — don't do work in the constructor
-5. **Single Responsibility** — each class does one thing, testable in isolation
+1. Depend on **abstractions** (interfaces), not concretions.
+2. **No `new` inside business logic** - receive ready-made objects.
+3. **No globals or singletons** as implicit dependencies.
+4. **Thin constructors** - don't do work in the constructor.
+5. **Single Responsibility** - each class does one thing, testable in isolation.
 
 ---
 
@@ -49,20 +47,21 @@
 
 ### Q1: Refactor a tightly-coupled class to be testable via constructor injection
 
+The "before" version below is a pattern you'll recognize from legacy codebases: the class creates its own database connection internally. This means every test that exercises `OrderProcessor` requires a real database to be running, configured, and populated with the right test data. That's slow, brittle, and couples your unit tests to your infrastructure. The "after" version receives the database as an interface reference - now you can hand in a mock and test all the business logic instantly.
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <memory>
 #include <cassert>
 #include <iostream>
 
-// === BEFORE: Untestable — hard-coded dependency ===
+// === BEFORE: Untestable - hard-coded dependency ===
 /*
 class OrderProcessor {
-    SqlDatabase db_;  // Created internally — can't mock!
+    SqlDatabase db_;  // Created internally - can't mock!
 public:
     OrderProcessor() : db_("prod_connection_string") {}
     bool process(int orderId) {
@@ -76,7 +75,7 @@ public:
 // requires setup/teardown of test data.
 */
 
-// === AFTER: Testable — dependency injected ===
+// === AFTER: Testable - dependency injected ===
 
 // Step 1: Define abstract interface for the dependency
 class IOrderRepository {
@@ -97,7 +96,7 @@ public:
 // Step 2: Business logic depends only on the interface
 class OrderProcessor {
 public:
-    // Constructor injection — dependency is explicit and required
+    // Constructor injection - dependency is explicit and required
     explicit OrderProcessor(IOrderRepository& repo) : repo_(repo) {}
 
     bool process(int orderId) {
@@ -126,7 +125,7 @@ public:
     }
 };
 
-// Step 4: Test mock — no framework needed for simple cases
+// Step 4: Test mock - no framework needed for simple cases
 class MockOrderRepository : public IOrderRepository {
 public:
     std::optional<Order> find_result;
@@ -141,7 +140,7 @@ public:
     }
 };
 
-// Step 5: Unit test — fast, deterministic, no I/O
+// Step 5: Unit test - fast, deterministic, no I/O
 void test_process_valid_order() {
     MockOrderRepository mock;
     mock.find_result = IOrderRepository::Order{1, "Widget", 42.0, "pending"};
@@ -176,10 +175,11 @@ int main() {
     test_process_zero_amount_order();
     std::cout << "All tests passed\n";
 }
-
 ```
 
-### Q2: Compare DI approaches — constructor, template, and type-erased — for testability
+### Q2: Compare DI approaches - constructor, template, and type-erased - for testability
+
+There's more than one way to inject a dependency. The virtual interface approach is the most familiar but has a small runtime cost from vtable dispatch. The template approach has zero overhead but requires the dependency type to be known at compile time. The `std::function` approach is the most lightweight for single-operation dependencies. Here's how they look side by side.
 
 **Answer:**
 
@@ -192,7 +192,6 @@ int main() {
 | **Readability** | Familiar OOP style | Can be verbose | Natural for simple callbacks |
 
 ```cpp
-
 // === Template-based DI (zero-cost, compile-time) ===
 template<typename Repository>
 class OrderProcessorT {
@@ -213,7 +212,7 @@ public:
 // SqlOrderRepository sql_repo(conn_string);
 // OrderProcessorT processor(sql_repo);
 
-// In tests — no virtual, no overhead:
+// In tests - no virtual, no overhead:
 struct FakeRepo {
     struct Order { int id; std::string product; double amount; std::string status; };
     std::optional<Order> find_result;
@@ -244,21 +243,21 @@ private:
 // In test:
 // bool captured = false;
 // NotificationService svc([&](auto&, auto&) { captured = true; return true; });
-
 ```
 
 **Guidelines:**
 
-- Default to **virtual interface DI** — simplest, most readable
-- Use **template DI** in hot paths where vtable cost matters (measured, not assumed)
-- Use **`std::function`** when the dependency is a single operation, not a role
+- Default to **virtual interface DI** - simplest, most readable.
+- Use **template DI** in hot paths where vtable cost matters (measured, not assumed).
+- Use **`std::function`** when the dependency is a single operation, not a role.
 
 ### Q3: Design a complete testable subsystem with multiple injected dependencies
+
+This is a realistic example of what dependency injection looks like at scale. The `CheckoutService` has three dependencies - payment, inventory, and notification - all injected through the constructor. The mock objects record what was called so you can assert on behavior, not just output. This is the pattern you'd use in a real project.
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <vector>
@@ -437,18 +436,19 @@ int main() {
     test_inventory_failure_partial_rollback();
     std::cout << "All checkout tests passed\n";
 }
-
 ```
+
+Each test function sets up exactly the scenario it needs - failure, success, partial failure - and the mock objects record every call so you can assert on what happened. No database, no network, no configuration files required. This is the payoff for the DI discipline: tests that run in microseconds and give you pinpoint information about what went wrong.
 
 ---
 
 ## Notes
 
-- **Constructor injection** is the gold standard — all dependencies are visible in the constructor signature
-- Store injected dependencies as **references** (non-owning) or **`unique_ptr`** (owning) depending on lifetime
-- Use `unique_ptr<IInterface>` when the class owns the dependency and needs polymorphic deletion
-- Use references when the caller manages the dependency's lifetime
-- Avoid setter injection — it creates a two-phase initialization window where the object is in an invalid state
-- For C++ without virtual overhead: use template parameters (policy-based DI) or concepts (C++20)
-- Popular C++ DI frameworks: Boost.DI, fruit — but manual DI is often sufficient
-- The **Composition Root** pattern: wire all dependencies at the top level (main), pass them down
+- **Constructor injection** is the gold standard - all dependencies are visible in the constructor signature.
+- Store injected dependencies as **references** (non-owning) or **`unique_ptr`** (owning) depending on lifetime.
+- Use `unique_ptr<IInterface>` when the class owns the dependency and needs polymorphic deletion.
+- Use references when the caller manages the dependency's lifetime.
+- Avoid setter injection - it creates a two-phase initialization window where the object is in an invalid state.
+- For C++ without virtual overhead: use template parameters (policy-based DI) or concepts (C++20).
+- Popular C++ DI frameworks: Boost.DI, fruit - but manual DI is often sufficient.
+- The **Composition Root** pattern: wire all dependencies at the top level (main), pass them down.

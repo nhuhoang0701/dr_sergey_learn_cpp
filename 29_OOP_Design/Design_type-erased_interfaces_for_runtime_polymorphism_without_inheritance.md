@@ -6,22 +6,23 @@
 
 ## Topic Overview
 
-**Type erasure** provides runtime polymorphism (like virtual functions) WITHOUT requiring types to inherit from a common base class. The classic example is `std::function<void()>` — it can hold a lambda, function pointer, or functor without any of them inheriting from anything.
+**Type erasure** provides runtime polymorphism (like virtual functions) WITHOUT requiring types to inherit from a common base class. The classic example is `std::function<void()>` - it can hold a lambda, function pointer, or functor without any of them inheriting from anything.
+
+The pattern is worth knowing because it breaks the coupling between "can be stored polymorphically" and "must derive from a base class". If you can't add a base class to a type (because it comes from a third-party library, for example), type erasure still lets you put it in a heterogeneous container.
 
 ```cpp
-
 Virtual polymorphism:         Type erasure:
   IDrawable* p;                 Drawable d;
   p = new Circle();             d = Circle{5};     // No inheritance needed
   p = new Rect();               d = Rect{3, 4};    // Circle/Rect are independent
   p->draw();                    d.draw();           // Same runtime dispatch
-
 ```
 
 ### Type Erasure Pattern
 
-```cpp
+The internal structure of a type-erased wrapper always follows the same shape: an abstract `Concept` interface that defines the operations, a templated `Model<T>` that wraps the concrete type and delegates to it, and a value-type outer class that owns a `Concept*`.
 
+```cpp
 ┌─────────────────────────────────────────────┐
 │ Drawable (value type, owns concept*)        │
 │ ┌─────────────────────────────────────────┐ │
@@ -35,7 +36,6 @@ Virtual polymorphism:         Type erasure:
 │ │   clone() { return new model(obj_); }   │ │
 │ └─────────────────────────────────────────┘ │
 └─────────────────────────────────────────────┘
-
 ```
 
 ---
@@ -44,16 +44,15 @@ Virtual polymorphism:         Type erasure:
 
 ### Q1: Implement a type-erased Drawable using the concept/model pattern
 
-**Answer:**
+The outer `Drawable` class is what users see and interact with - it's a regular value type with copy and move. All the virtual dispatch happens privately through the `Concept` pointer. The template constructor `Drawable(T obj)` is the magic: it creates a `Model<T>` from whatever you pass in, as long as that type has `draw()` and `area()` methods. No inheritance required from the concrete types at all.
 
 ```cpp
-
 #include <memory>
 #include <vector>
 #include <iostream>
 #include <cmath>
 
-// ═══════════ Type-erased Drawable ═══════════
+// Type-erased Drawable
 class Drawable {
     // INTERNAL: abstract concept
     struct Concept {
@@ -78,7 +77,7 @@ class Drawable {
     std::unique_ptr<Concept> pimpl_;
 
 public:
-    // Accept ANY type that has draw() and area() — no inheritance required
+    // Accept ANY type that has draw() and area() - no inheritance required
     template<typename T>
     Drawable(T obj) : pimpl_(std::make_unique<Model<T>>(std::move(obj))) {}
 
@@ -96,7 +95,7 @@ public:
     double area() const { return pimpl_->area(); }
 };
 
-// ═══════════ Concrete types — NO base class, NO virtual ═══════════
+// Concrete types - NO base class, NO virtual
 struct Circle {
     double radius;
     void draw(std::ostream& os) const {
@@ -122,7 +121,7 @@ struct Triangle {
 };
 
 int main() {
-    // Heterogeneous container — no inheritance needed!
+    // Heterogeneous container - no inheritance needed!
     std::vector<Drawable> shapes;
     shapes.push_back(Circle{5.0});
     shapes.push_back(Square{3.0});
@@ -138,26 +137,28 @@ int main() {
     Drawable b = a;  // Deep copy
     return 0;
 }
-
 ```
+
+Notice that `Circle`, `Square`, and `Triangle` know nothing about `Drawable`. They're plain structs with no base classes. The `clone()` virtual function in the model is what enables value-semantic copying of the type-erased wrapper - it creates a new heap-allocated copy of whatever concrete type is stored.
 
 ### Q2: Compare type erasure with virtual inheritance and std::variant
 
-**Answer:**
+Each of these three approaches has a different sweet spot. Choose based on whether your set of types is open or closed, whether you need value semantics, and how performance-critical the code is.
 
 | Feature | Virtual Inheritance | Type Erasure | std::variant |
 | --- | :---: | :---: | :---: |
-| Open set (add new types) | **Yes** | **Yes** | No (closed set) |
-| Heap allocation | Yes (polymorphic) | Yes (small buffer opt. possible) | **No** |
-| Value semantics | No (slicing problem) | **Yes** (copyable) | **Yes** |
-| Compile-time checked | No | No | **Yes** (exhaustive visit) |
-| Types must inherit base | **Yes** | **No** | **No** |
+| Open set (add new types) | Yes | Yes | No (closed set) |
+| Heap allocation | Yes (polymorphic) | Yes (small buffer opt. possible) | No |
+| Value semantics | No (slicing problem) | Yes (copyable) | Yes |
+| Compile-time checked | No | No | Yes (exhaustive visit) |
+| Types must inherit base | Yes | No | No |
 | Container storage | `vector<unique_ptr<Base>>` | `vector<Drawable>` | `vector<variant<A,B,C>>` |
-| Adding new operations | Requires base change | Requires wrapper change | **Easy** (new visitor) |
-| Cache locality | Poor (pointer chasing) | Better (SBO possible) | **Best** (inline) |
+| Adding new operations | Requires base change | Requires wrapper change | Easy (new visitor) |
+| Cache locality | Poor (pointer chasing) | Better (SBO possible) | Best (inline) |
+
+Here's how each looks at the call site:
 
 ```cpp
-
 // Virtual: types must inherit, stored via pointer
 std::vector<std::unique_ptr<IShape>> v1;
 v1.push_back(std::make_unique<Circle>(5));
@@ -170,22 +171,20 @@ v2.push_back(Circle{5});           // No make_unique, value semantics
 using Shape = std::variant<Circle, Square, Triangle>;
 std::vector<Shape> v3;
 v3.push_back(Circle{5});           // Inline storage, no heap
-
 ```
 
 ### Q3: Implement type erasure with Small Buffer Optimization (SBO)
 
-**Answer:**
+One downside of type-erased wrappers is that every stored object needs a heap allocation. The Small Buffer Optimization avoids this for small objects by embedding a fixed-size `char` buffer directly in the wrapper. If the concrete type fits in that buffer and has a `noexcept` move constructor, it lives there instead of on the heap. This is exactly how `std::function` is implemented in most standard libraries.
 
 ```cpp
-
 #include <cstddef>
 #include <new>
 #include <type_traits>
 #include <utility>
 #include <iostream>
 
-// ═══════════ Type-erased callable with SBO (like std::function) ═══════════
+// Type-erased callable with SBO (like std::function)
 template<typename Signature>
 class Function;
 
@@ -280,16 +279,17 @@ int main() {
     std::cout << mul(5) << "\n";     // 50
     return 0;
 }
-
 ```
+
+The `noexcept` move requirement for SBO is important: if the move constructor could throw, you can't safely move the object into the inline buffer during wrapper copies, so you'd have to fall back to the heap anyway. That's why the SBO check includes `std::is_nothrow_move_constructible_v`.
 
 ---
 
 ## Notes
 
-- `std::function`, `std::any`, `std::move_only_function` are all type-erased types in the standard
-- Type erasure = virtual dispatch hidden inside a value-type wrapper
-- SBO avoids heap allocation for small objects (typically 16-64 bytes inline buffer)
-- Use type erasure when: types are independent (can't add base class), but you need heterogeneous collections
-- Type erasure has the same overhead as virtual dispatch (indirection) — it's NOT faster, just more flexible
-- Sean Parent's "Runtime Polymorphism" talk is the canonical reference for this pattern
+- `std::function`, `std::any`, `std::move_only_function` are all type-erased types in the standard.
+- Type erasure = virtual dispatch hidden inside a value-type wrapper.
+- SBO avoids heap allocation for small objects (typically 16-64 bytes inline buffer).
+- Use type erasure when: types are independent (can't add base class), but you need heterogeneous collections.
+- Type erasure has the same overhead as virtual dispatch (indirection) - it's NOT faster, just more flexible.
+- Sean Parent's "Runtime Polymorphism" talk is the canonical reference for this pattern.

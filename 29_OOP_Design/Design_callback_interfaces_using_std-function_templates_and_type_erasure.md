@@ -6,24 +6,26 @@
 
 ## Topic Overview
 
+There are several ways to accept a callable in C++, and the right choice depends on whether you need to store it, how important performance is, and whether the caller's type needs to be known at compile time. Here's the quick summary:
+
 | Approach | Overhead | Flexibility | Inline-able? |
 | --- | --- | --- | --- |
-| Function pointer | Zero | C-style, no state | **Yes** |
-| Template param | **Zero** | Compile-time binding | **Yes** |
+| Function pointer | Zero | C-style, no state | Yes |
+| Template param | Zero | Compile-time binding | Yes |
 | `std::function` | Heap alloc possible | Any callable | No |
 | Type-erased (custom) | Configurable (SBO) | Any callable | Possible |
 
 ### Decision Guide
 
+When you're not sure which to reach for, walk through this decision tree:
+
 ```cpp
-
-Do you need to store the callback?     No  → Template parameter
-                                        Yes →
-Is the callback type known at compile?  Yes → Template member
-                                        No  → std::function or type erasure
-Is performance critical?                Yes → Custom type erasure with SBO
-                                        No  → std::function
-
+Do you need to store the callback?     No  -> Template parameter
+                                        Yes ->
+Is the callback type known at compile?  Yes -> Template member
+                                        No  -> std::function or type erasure
+Is performance critical?                Yes -> Custom type erasure with SBO
+                                        No  -> std::function
 ```
 
 ---
@@ -32,10 +34,11 @@ Is performance critical?                Yes → Custom type erasure with SBO
 
 ### Q1: Compare all callback approaches with working examples
 
+Let's look at all three main approaches side by side. Notice how the template version with a lambda gets inlined completely, while `std::function` trades that inlinability for the ability to store callbacks of different types in the same container.
+
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <iostream>
 #include <vector>
@@ -70,7 +73,7 @@ public:
 int main() {
     // Function pointer
     int arr[] = {3, 1, 2};
-    sort_c_style(arr, 3, [](int a, int b) { return a < b; });  // Stateless lambda → fn ptr
+    sort_c_style(arr, 3, [](int a, int b) { return a < b; });  // Stateless lambda -> fn ptr
 
     // Template: zero-overhead
     std::vector<int> v{1, 2, 3};
@@ -85,15 +88,17 @@ int main() {
     emitter.emit(42);
     return 0;
 }
-
 ```
 
+The function pointer approach only works for stateless lambdas - the moment your lambda captures a variable, the compiler can't reduce it to a plain function pointer. The template approach handles both stateless and capturing lambdas with zero cost, but it requires the type to be known at compile time. `std::function` is the most general but may allocate on the heap if the callable is larger than its internal small-buffer optimization threshold.
+
 ### Q2: Build a type-erased callback with SBO (no heap allocation)
+
+`std::function` is convenient but its allocation behavior is implementation-defined. If you're on a hot path and your callable is small, you can write a type-erased function wrapper that guarantees no heap allocation by storing the callable directly in an aligned internal buffer. This is called Small Buffer Optimization (SBO).
 
 **Answer:**
 
 ```cpp
-
 #include <cstddef>
 #include <new>
 #include <utility>
@@ -151,15 +156,17 @@ int main() {
     // No heap allocation! All fits in 32-byte buffer
     return 0;
 }
-
 ```
 
+The key trick is placement new: `new (buffer_) F(std::move(f))` constructs the callable directly into the fixed-size character array inside the object. The `invoke_` function pointer holds a lambda that knows the concrete type `F` and casts the `void*` buffer back. The `static_assert` on `sizeof(F) <= BufSize` gives you a clean compile-time error if someone tries to store a callable that doesn't fit.
+
 ### Q3: Show a real-world async callback pattern with cancellation
+
+A common need in async code is the ability to cancel a pending callback - for example, if the UI that registered the callback has been destroyed. A shared cancellation token lets the caller signal "don't bother" without having to reach into the callback mechanism directly.
 
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <memory>
 #include <iostream>
@@ -223,16 +230,17 @@ int main() {
     f.resolve(99);       // Silently dropped
     return 0;
 }
-
 ```
+
+The `CancelToken` uses a `shared_ptr<bool>` so both the token holder and the `Future` share the same cancelled flag. When `cancel()` is called on any copy of the token, the next `resolve()` or `reject()` sees the flag and exits early. This is a lightweight substitute for more elaborate cancellation frameworks.
 
 ---
 
 ## Notes
 
-- **Template callbacks** for hot paths: zero overhead, inlined by compiler
-- **`std::function`** for stored callbacks: flexible but may heap-allocate (SBO for small callables)
-- Custom type erasure gives control over allocation strategy (SBO size, move-only, etc.)
-- Always accept callbacks by template or `std::function`, never by virtual interface unless needed
-- `std::move_only_function` (C++23) is better than `std::function` for move-only callables
-- Watch for dangling: if callback captures references, ensure the referenced objects outlive the callback
+- **Template callbacks** for hot paths: zero overhead, inlined by the compiler.
+- **`std::function`** for stored callbacks: flexible but may heap-allocate (has SBO for small callables in most implementations).
+- Custom type erasure gives you control over the allocation strategy, SBO size, and move-only semantics.
+- Always accept callbacks by template or `std::function`; avoid a virtual interface unless polymorphism is genuinely needed.
+- `std::move_only_function` (C++23) is a better fit than `std::function` for move-only callables.
+- Watch for dangling captures: if a callback captures references, make sure the referenced objects outlive the callback.

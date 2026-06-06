@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Builder pattern** separates construction of a complex object from its representation. Essential when:
+The **Builder pattern** separates the construction of a complex object from its final representation. The idea is simple: instead of one enormous constructor call that passes twelve arguments in the right order and hopes for the best, you build the object step by step using a dedicated Builder object that collects the pieces, validates them, and hands you back a finished product. The result is code at the call site that reads almost like a configuration file.
+
+Here's when you should reach for a Builder:
 
 | Use Builder When | Example |
 | --- | --- |
@@ -17,13 +19,15 @@ The **Builder pattern** separates construction of a complex object from its repr
 
 ### Builder vs Aggregate Init vs Constructor
 
+To put Builder in perspective, here are the three main options for constructing complex objects:
+
 ```cpp
-
-Constructor:      Widget(a, b, c, d, e)       ← Easy to swap args
-Aggregate init:   Widget{.x=1, .y=2}          ← C++20, limited validation
-Builder:          Widget::Builder().x(1).y(2).build()  ← Validation + readability
-
+Constructor:      Widget(a, b, c, d, e)       // Easy to swap args
+Aggregate init:   Widget{.x=1, .y=2}          // C++20, limited validation
+Builder:          Widget::Builder().x(1).y(2).build()  // Validation + readability
 ```
+
+The constructor collapses all information into a single dense call - easy to get arguments in the wrong order, and impossible to add validation without making it messy. Aggregate initialization with named members (C++20 designated initializers) is very readable but doesn't let you run validation logic before the object is created. The Builder gives you both readability and the chance to reject bad combinations before the object is born.
 
 ---
 
@@ -31,10 +35,11 @@ Builder:          Widget::Builder().x(1).y(2).build()  ← Validation + readabil
 
 ### Q1: Implement a fluent Builder for an HTTP request
 
+A fluent builder returns `*this` from every setter, so you can chain calls in a natural left-to-right reading order. Validation happens at `build()` time, not scattered across constructors. Notice that `HttpRequest`'s constructor is `private` - the only way to get one is through the Builder, which means malformed `HttpRequest` objects literally cannot be constructed.
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <map>
 #include <optional>
@@ -104,15 +109,17 @@ int main() {
     std::cout << req.method() << " " << req.url() << "\n";
     return 0;
 }
-
 ```
 
+The `[[nodiscard]]` on `build()` means the compiler will warn you if you call `build()` and throw away the result - a common accident when you forget to assign it. The `std::move(req_)` at the end transfers ownership out of the builder efficiently, so you pay no unnecessary copy cost for the finished object.
+
 ### Q2: Show a step builder that enforces construction order at compile time
+
+The fluent builder in Q1 is flexible, but nothing stops you from calling `.build()` before you've set required fields. A step builder solves this by making each step return a *different type* - and each type only exposes the methods that are valid at that stage. If you skip a step, the next step's type simply won't be in scope. The reason this works is that the type system itself is doing the enforcement - there's no runtime check, no exception, just a type that doesn't have the method you tried to call.
 
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <iostream>
 
@@ -126,7 +133,7 @@ public:
 };
 
 // Step Builder: each step returns a different type
-// Enforces: host → port → credentials → build
+// Enforces: host -> port -> credentials -> build
 class ConnFinal {
     Connection c_;
 public:
@@ -166,7 +173,7 @@ public:
 };
 
 int main() {
-    // Must follow exact order: host → port → credentials → build
+    // Must follow exact order: host -> port -> credentials -> build
     auto conn = ConnBuilder::host("db.example.com")
         .port(5432)
         .credentials("admin", "secret")
@@ -176,15 +183,17 @@ int main() {
     std::cout << conn.host << ":" << conn.port << "\n";
     return 0;
 }
-
 ```
 
+The reason `ConnBuilder::host("x").build()` won't compile is that `host()` returns a `ConnPort`, and `ConnPort` has no `build()` method - only `port()`. The type system itself enforces the construction protocol. You literally cannot misuse the API because the wrong call won't type-check. The trade-off is more boilerplate: you need a separate class for each stage, which adds up quickly for complex protocols.
+
 ### Q3: Implement a type-safe SQL query builder
+
+A SQL builder is a classic Builder use case: you want to accumulate clauses in a natural order, validate that the required parts (like `FROM`) are present, and produce a finished query string at the end. Each method name mirrors the SQL keyword it contributes, which makes call sites read almost exactly like SQL itself.
 
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <sstream>
@@ -253,16 +262,17 @@ int main() {
     // SELECT id, name, email FROM users WHERE active = true AND role = 'admin' ORDER BY name ASC LIMIT 10
     return 0;
 }
-
 ```
+
+Each call to `where()` appends another condition, and `build()` joins them with `AND`. The builder doesn't care whether you call `where()` once or five times - it just accumulates. This is much cleaner than trying to handle optional conditions in a constructor, and the resulting call site is readable even to someone who doesn't know C++ particularly well.
 
 ---
 
 ## Notes
 
-- Use Builder when you have **5+ parameters** or complex validation rules
-- The fluent style (`builder.x(1).y(2).build()`) maximizes readability
-- Step builders enforce parameter ordering at **compile time** — impossible to misuse
-- Make the target class constructor private, with Builder as a friend
-- C++20 designated initializers (`{.x=1, .y=2}`) can replace builders for simple aggregate types
-- Always return `*this` by reference for chaining, mark `build()` as `[[nodiscard]]`
+- Reach for Builder when you have five or more constructor parameters, or when some combinations of parameters are invalid and need to be caught before construction completes.
+- The fluent style (`builder.x(1).y(2).build()`) maximizes readability - the call site reads almost like a configuration file.
+- Step builders enforce parameter ordering at compile time, making it impossible to misuse the API - but they come with more boilerplate to write.
+- Make the target class's constructor `private` and declare Builder as a `friend` so the only valid construction path is through the Builder.
+- C++20 designated initializers (`{.x=1, .y=2}`) can replace builders for simple aggregate types where no validation is needed.
+- Always return `*this` by reference for chaining, and mark `build()` as `[[nodiscard]]` so the compiler warns if the result is accidentally discarded.

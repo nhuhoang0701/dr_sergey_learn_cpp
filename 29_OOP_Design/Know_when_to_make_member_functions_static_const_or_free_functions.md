@@ -6,27 +6,33 @@
 
 ## Topic Overview
 
+One of the most common design decisions you face when writing a class is where to put a function. Should it be a member? Should it be `const`? Should it be `static`, or not attached to the class at all? Getting this right keeps your API clean and your encapsulation intact.
+
+Here is the quick reference. Don't worry if the distinctions feel blurry - the decision tree below the table will walk you through the reasoning step by step.
+
 | Function Type | Access `this`? | Access private? | ADL-found? | Use When |
 | --- | :---: | :---: | :---: | --- |
 | Non-const member | Yes (mutable) | Yes | N/A | Modifies object state |
 | `const` member | Yes (read-only) | Yes | N/A | Reads object state |
-| `static` member | **No** | Yes (class-level) | N/A | Utility, factory, no instance needed |
-| Free function | **No** | No (unless `friend`) | **Yes** | Operators, generic algorithms |
-| Hidden friend | **No** | **Yes** | **Yes (ADL)** | Operators, `swap`, stream I/O |
+| `static` member | No | Yes (class-level) | N/A | Utility, factory, no instance needed |
+| Free function | No | No (unless `friend`) | Yes | Operators, generic algorithms |
+| Hidden friend | No | Yes | Yes (ADL) | Operators, `swap`, stream I/O |
 
 ### Decision Tree
 
+Work through these questions top to bottom whenever you are deciding where a function lives:
+
 ```cpp
-
 Does it need private access?
-├─ No  → Free function (better encapsulation)
-└─ Yes → Does it need 'this' (instance state)?
-         ├─ No  → Static member function
-         └─ Yes → Does it modify state?
-                  ├─ No  → const member function
-                  └─ Yes → Non-const member function
-
+├─ No  -> Free function (better encapsulation)
+└─ Yes -> Does it need 'this' (instance state)?
+         ├─ No  -> Static member function
+         └─ Yes -> Does it modify state?
+                  ├─ No  -> const member function
+                  └─ Yes -> Non-const member function
 ```
+
+If you remember only one rule from this whole topic, make it this: **free functions are often the better default**, because they reduce the number of things that can touch the class internals.
 
 ---
 
@@ -34,10 +40,9 @@ Does it need private access?
 
 ### Q1: Show when each function type is appropriate
 
-**Answer:**
+Notice how `UserAccount` below neatly separates the four function types. Pay attention to *why* each function belongs where it is - especially `transfer` and `print_rich_users`, which live outside the class entirely.
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -95,15 +100,15 @@ int main() {
     std::cout << "Accounts: " << UserAccount::total_accounts() << "\n";
     return 0;
 }
-
 ```
+
+`transfer` does not need private access, so it stays outside the class and works through the public API. That means one less function touching internals - a smaller attack surface for bugs.
 
 ### Q2: Show the "prefer non-member non-friend" principle (Scott Meyers)
 
-**Answer:**
+Scott Meyers argued that the best way to *increase* encapsulation is to move functions out of the class whenever they don't need private access. This feels counterintuitive - surely putting something inside the class makes it more "part of the class"? - but the real measure of encapsulation is how many functions can reach the private data. Fewer is better.
 
 ```cpp
-
 #include <string>
 #include <iostream>
 
@@ -147,15 +152,15 @@ int main() {
     std::cout << w2.value() << "\n";  // 84
     return 0;
 }
-
 ```
+
+Notice that `process` is a template that works with *any* type exposing `is_positive`. That kind of generic reuse only happens naturally when your helper functions live outside the class.
 
 ### Q3: Show static members for factory, configuration, and registry patterns
 
-**Answer:**
+Static members are the right tool when you need something that belongs to the *class as a whole* rather than to any specific instance. The classic use cases are factory methods (named constructors), shared configuration, counters, and registries.
 
 ```cpp
-
 #include <unordered_map>
 #include <string>
 #include <memory>
@@ -199,16 +204,17 @@ int main() {
     std::cout << log.message_count() << "\n";         // Const: reads
     return 0;
 }
-
 ```
+
+The static factory `for_module` is a named constructor - it gives the creation operation a meaningful name and can enforce invariants before constructing the object. That is much cleaner than a constructor overload soup.
 
 ---
 
 ## Notes
 
-- **Default to `const`** for member functions — mark non-const only when mutation is needed
-- Scott Meyers' rule: prefer non-member non-friend functions to increase encapsulation
-- Static members for: factories, global config, registries, counters, utility functions
-- Free functions enable **ADL**, which is essential for generic code and operator overloading
-- If a function needs private access but not `this`, make it a static member
-- Adding `const` to a method is a contract: callers can trust it won't modify state
+- Default to `const` for member functions - mark non-const only when mutation is needed.
+- Scott Meyers' rule: prefer non-member non-friend functions to increase encapsulation.
+- Static members are the right fit for: factories, global config, registries, counters, and utility functions.
+- Free functions enable ADL, which is essential for generic code and operator overloading.
+- If a function needs private access but not `this`, make it a static member.
+- Adding `const` to a method is a contract: callers can trust it won't modify state.

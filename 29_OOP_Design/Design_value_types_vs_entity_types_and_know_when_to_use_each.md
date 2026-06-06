@@ -6,11 +6,11 @@
 
 ## Topic Overview
 
-C++ types fall into two fundamental design categories:
+C++ types fall into two fundamental design categories. The distinction sounds philosophical but has very concrete consequences for copy semantics, comparison operators, how you store things in containers, and how you pass them to functions.
 
 | Aspect | Value Types | Entity Types |
 | --- | --- | --- |
-| Identity | Defined by **content** (two Points(3,4) are equal) | Defined by **identity** (two Users with same name ≠ same user) |
+| Identity | Defined by **content** (two Points(3,4) are equal) | Defined by **identity** (two Users with same name are not the same user) |
 | Copying | Deep copy (each copy is independent) | Non-copyable (unique identity) |
 | Comparison | `==` compares content | `==` compares identity (pointer/ID) |
 | Passing | By value or const& | By unique_ptr or reference |
@@ -19,12 +19,12 @@ C++ types fall into two fundamental design categories:
 
 ### Rule of Thumb
 
+When you're not sure which category a type belongs to, ask this question:
+
 ```cpp
-
 Value type:  "Is this thing interchangeable with another identical thing?"
-             YES → value type (e.g., $10 bill is same as any other $10 bill)
-             NO  → entity type (e.g., your bank account is unique)
-
+             YES -> value type (e.g., $10 bill is same as any other $10 bill)
+             NO  -> entity type (e.g., your bank account is unique)
 ```
 
 ---
@@ -33,17 +33,16 @@ Value type:  "Is this thing interchangeable with another identical thing?"
 
 ### Q1: Design a value type with proper semantics
 
-**Answer:**
+A value type's defining characteristic is that two instances with the same content are interchangeable - like two $10 bills. That means equality should compare content, copies should be independent and meaningful, and arithmetic operators should return new values rather than modifying in place. The `Money` class below uses integer cents internally to avoid floating-point rounding, which is a common and important choice for financial values.
 
 ```cpp
-
 #include <compare>
 #include <cmath>
 #include <iostream>
 #include <string>
 #include <format>
 
-// ═══════════ Value type: Money ═══════════
+// Value type: Money
 // - Compared by content (amount + currency)
 // - Copied freely
 // - Immutable or value-semantic mutations
@@ -105,26 +104,24 @@ int main() {
     Money c = a + b;                  // New value
     std::cout << c << "\n";           // USD 13.75
 
-    Money d = a;                      // Copy is fine — value type
+    Money d = a;                      // Copy is fine - value type
     assert(a == d);                   // Equal by content
     assert(a + b > a);                // Comparable
     return 0;
 }
-
 ```
 
 ### Q2: Design an entity type with proper move-only semantics
 
-**Answer:**
+An entity type represents something with a unique existence in the world - a database connection, a file handle, a window. Two `DatabaseConnection` objects that connect to the same host are still two different connections. You can't copy a TCP connection (there's no protocol for it), so the copy constructor is deleted. You can transfer ownership with a move, though - that just means one object hands its socket file descriptor to another.
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <iostream>
 #include <cstdint>
 
-// ═══════════ Entity type: DatabaseConnection ═══════════
+// Entity type: DatabaseConnection
 // - Unique identity (each connection is different)
 // - Non-copyable (can't duplicate a TCP connection)
 // - Movable (transfer ownership)
@@ -147,7 +144,7 @@ public:
     DatabaseConnection(const DatabaseConnection&) = delete;
     DatabaseConnection& operator=(const DatabaseConnection&) = delete;
 
-    // Movable — transfer ownership
+    // Movable - transfer ownership
     DatabaseConnection(DatabaseConnection&& other) noexcept
         : id_(other.id_), host_(std::move(other.host_)),
           fd_(other.fd_), connected_(other.connected_) {
@@ -187,7 +184,7 @@ public:
         }
     }
 
-    // Identity comparison — by ID, not by content
+    // Identity comparison - by ID, not by content
     bool operator==(const DatabaseConnection& other) const { return id_ == other.id_; }
     uint64_t id() const { return id_; }
 };
@@ -203,28 +200,26 @@ public:
         return *pool_.back();
     }
 };
-
 ```
 
 ### Q3: Show hybrid types and when the distinction matters for design decisions
 
-**Answer:**
+Real-world types often blend both characteristics. A `User` has a unique identity (their user ID) but also carries data fields (name, email) that are value-like. The right answer is to compare by identity but allow copying for use as data transfer objects (DTOs) or snapshots. The decision framework below, expressed as inline comments, is the useful artifact here.
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <memory>
 #include <variant>
 
-// ═══════════ Decision framework ═══════════
+// Decision framework
 // Ask these questions:
-// 1. "Are two instances with same data interchangeable?" → Value
-// 2. "Does it own a unique external resource?" → Entity
-// 3. "Should copying be meaningful?" → Value
-// 4. "Does it have lifecycle events (open/close)?" → Entity
+// 1. "Are two instances with same data interchangeable?" -> Value
+// 2. "Does it own a unique external resource?" -> Entity
+// 3. "Should copying be meaningful?" -> Value
+// 4. "Does it have lifecycle events (open/close)?" -> Entity
 
-// ═══════════ Hybrid: Value-like entity ═══════════
+// Hybrid: Value-like entity
 // User: has identity (user_id) but also value-like data
 struct UserId { uint64_t value; auto operator<=>(const UserId&) const = default; };
 
@@ -247,7 +242,7 @@ public:
     void rename(std::string new_name) { name_ = std::move(new_name); }
 };
 
-// ═══════════ Impact on container choice ═══════════
+// Impact on container choice:
 // Value types: store directly
 std::vector<Money> prices;              // Copy-friendly, stack-allocated
 
@@ -255,10 +250,10 @@ std::vector<Money> prices;              // Copy-friendly, stack-allocated
 std::vector<std::unique_ptr<DatabaseConnection>> connections;
 
 // Hybrid: depends on usage
-std::vector<User> user_list;            // Snapshot/DTO — copy is fine
+std::vector<User> user_list;            // Snapshot/DTO - copy is fine
 std::map<UserId, std::unique_ptr<User>> user_registry;  // Canonical store
 
-// ═══════════ Impact on function signatures ═══════════
+// Impact on function signatures:
 // Value: pass by value or const&
 double total(std::span<const Money> prices);      // Read values
 
@@ -267,16 +262,17 @@ void execute(DatabaseConnection& conn, std::string_view sql);  // Use resource
 
 // Transfer entity ownership:
 void register_connection(std::unique_ptr<DatabaseConnection> conn);
-
 ```
+
+The container choice section is where this distinction pays off most visibly. Value types live directly in `std::vector`, entity types live behind `unique_ptr`. Getting this right from the start avoids a lot of painful refactoring later.
 
 ---
 
 ## Notes
 
-- **Default to value types** — they're simpler, thread-safe (when immutable), and cache-friendly
-- Entity types almost always need Rule of Five (or Rule of Zero with unique_ptr members)
-- Value types should use `auto operator<=>(const T&) const = default;` (C++20)
-- In domain-driven design: **Value Objects** (Money, Address) vs **Entities** (User, Order) map directly
-- The `=delete` on copy constructor is the clearest signal that a type is an entity
-- Use `std::unique_ptr<Entity>` for ownership, raw pointer/reference for non-owning access
+- **Default to value types** - they're simpler, thread-safe (when immutable), and cache-friendly.
+- Entity types almost always need Rule of Five (or Rule of Zero with unique_ptr members).
+- Value types should use `auto operator<=>(const T&) const = default;` (C++20).
+- In domain-driven design: **Value Objects** (Money, Address) vs **Entities** (User, Order) map directly.
+- The `=delete` on copy constructor is the clearest signal that a type is an entity.
+- Use `std::unique_ptr<Entity>` for ownership, raw pointer/reference for non-owning access.

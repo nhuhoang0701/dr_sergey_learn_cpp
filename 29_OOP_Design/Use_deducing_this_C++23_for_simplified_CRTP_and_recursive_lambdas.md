@@ -6,13 +6,11 @@
 
 ## Topic Overview
 
-C++23's **deducing this** (`this auto&& self`) allows a member function to deduce its own type, eliminating the need for CRTP:
+C++23's **deducing this** (`this auto&& self`) allows a member function to deduce its own type, eliminating the need for CRTP in many common patterns. The traditional CRTP setup requires a template parameter on the base class, a `static_cast` to get at the derived type, and separate `const` and non-const overloads for anything that returns `*this`. Deducing this collapses all of that into a single, much cleaner spelling.
 
 ```cpp
-
 Before (CRTP):   template<typename D> class Base { auto& self() { return static_cast<D&>(*this); } };
 After (C++23):   class Base { void foo(this auto&& self) { self.bar(); } };
-
 ```
 
 | Feature | CRTP | Deducing this |
@@ -29,10 +27,9 @@ After (C++23):   class Base { void foo(this auto&& self) { self.bar(); } };
 
 ### Q1: Replace CRTP with deducing this
 
-**Answer:**
+CRTP's boilerplate is notoriously verbose. Every method that needs to call into the derived class requires a `static_cast<const Derived&>(*this)`, and the template parameter on the base class creates coupling that can cascade through your code. Deducing this removes both problems: `self` is already the concrete derived type, with no cast required.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 
@@ -73,15 +70,13 @@ struct Point : Comparable {
     bool operator<(const Point& o) const { return x < o.x || (x == o.x && y < o.y); }
 };
 // No template parameters on Comparable! No static_cast!
-
 ```
 
 ### Q2: Eliminate const/non-const overload duplication
 
-**Answer:**
+One of the most annoying things about writing container-like classes is that every accessor needs two overloads - one `const` and one non-const - that differ only in their return type and the constness of `this`. Deducing this lets you write one function that deduces both the constness and the value category of `self` at the call site, and `std::forward_like` propagates those qualifiers to the return value automatically.
 
 ```cpp
-
 #include <vector>
 #include <string>
 #include <iostream>
@@ -119,15 +114,13 @@ int main() {
     std::cout << cdoc[0] << "\n";       // const: const string&
     return 0;
 }
-
 ```
 
 ### Q3: Show recursive lambdas and the builder pattern with deducing this
 
-**Answer:**
+Before C++23, writing a recursive lambda required either naming the lambda outside its own body (impossible with `auto`) or using the Y-combinator idiom, which is clever but deeply unreadable. With deducing this, a lambda can simply refer to itself through its `self` parameter. The builder pattern example shows a second benefit: when base class methods return `*this`, they used to return `Base&` even when called on a derived object - which broke method chaining across the hierarchy. Deducing this fixes that because `self` already has the concrete derived type.
 
 ```cpp
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -201,16 +194,15 @@ int main() {
         .build();
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- **Deducing this eliminates CRTP** for most use cases — simpler, no template parameter
-- Reduces const/non-const overload pairs to a single function template
-- Recursive lambdas become trivial: `[](this auto&& self, auto... args) { self(args...); }`
-- `std::forward_like<decltype(self)>()` (C++23) propagates the const/rvalue qualifier correctly
-- Compiler support: GCC 14+, Clang 18+, MSVC 19.36+ (all recent)
-- Not yet widely adopted in production — but the direction C++ is heading
+- **Deducing this eliminates CRTP** for most use cases - simpler, no template parameter.
+- Reduces const/non-const overload pairs to a single function template.
+- Recursive lambdas become trivial: `[](this auto&& self, auto... args) { self(args...); }`.
+- `std::forward_like<decltype(self)>()` (C++23) propagates the const/rvalue qualifier correctly.
+- Compiler support: GCC 14+, Clang 18+, MSVC 19.36+ (all recent).
+- Not yet widely adopted in production - but the direction C++ is heading.

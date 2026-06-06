@@ -6,13 +6,11 @@
 
 ## Topic Overview
 
-Move semantics transfer ownership of resources from one object to another **without copying**:
+Move semantics transfer ownership of resources from one object to another **without copying**. The key insight is that sometimes you know the source object won't be used again, so instead of making an expensive duplicate, you can just steal the resource directly.
 
 ```cpp
-
 Copy:  old object KEEPS resource, new object gets a DUPLICATE
 Move:  old object LOSES resource, new object TAKES it (cheap!)
-
 ```
 
 | Operation | What Happens | Cost | Source After |
@@ -28,10 +26,9 @@ Move:  old object LOSES resource, new object TAKES it (cheap!)
 
 ### Q1: Implement a resource-owning class with correct move semantics
 
-**Answer:**
+The three things to get right here are: the move constructor must be `noexcept`, it must leave the source in a valid-but-empty state (so the source's destructor doesn't double-free), and the unified assignment operator using copy-and-swap handles both copy and move assignment in one function. Notice how `std::exchange` does the "take the pointer, null out the source" in a single readable expression.
 
 ```cpp
-
 #include <cstring>
 #include <utility>
 #include <algorithm>
@@ -91,15 +88,13 @@ int main() {
               << " b[0]=" << b[0] << "\n";  // 3.14
     return 0;
 }
-
 ```
 
 ### Q2: Handle classes with multiple resources correctly
 
-**Answer:**
+When a class holds multiple resources, the cleanest approach is to wrap each raw resource in its own RAII type, then let the compiler generate the move operations for you (the Rule of Zero). The `Connection` class below shows what you have to do when you can't avoid a raw handle, and then `BetterConnection` shows how wrapping it in `SocketHandle` lets everything fall back to compiler-generated moves.
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <vector>
@@ -166,15 +161,13 @@ class BetterConnection {
     SocketHandle socket_;  // RAII handle
     // Rule of Zero: ALL members are self-managing!
 };
-
 ```
 
 ### Q3: Show moves in containers and the importance of noexcept
 
-**Answer:**
+Here's the one that surprises people: `std::vector` will only use your move constructor during reallocation if it's marked `noexcept`. If it isn't, the vector falls back to copying - even if you wrote a perfectly good move constructor. The reason is that vector's reallocation must provide the strong exception guarantee, so it can only use a move if the move can't throw halfway through.
 
 ```cpp
-
 #include <vector>
 #include <string>
 #include <iostream>
@@ -233,16 +226,15 @@ int main() {
     // Without noexcept:  "Moves: 0, Copies: N" (vector falls back to copy!)
     return 0;
 }
-
 ```
 
 ---
 
 ## Notes
 
-- **Always mark move operations `noexcept`** — `std::vector` only uses move if it's guaranteed not to throw
-- Use `std::exchange(member, sentinel)` in move constructors for clean, exception-safe transfer
-- Moved-from objects must be in a "valid but unspecified" state — at minimum, destructible and assignable
-- Prefer the **copy-and-swap** idiom for unified copy+move assignment
-- Wrap raw resources in RAII types, then the containing class follows the Rule of Zero
-- `static_assert(std::is_nothrow_move_constructible_v<T>)` catches missing `noexcept` at compile time
+- **Always mark move operations `noexcept`** - `std::vector` only uses move if it's guaranteed not to throw.
+- Use `std::exchange(member, sentinel)` in move constructors for clean, exception-safe transfer.
+- Moved-from objects must be in a "valid but unspecified" state - at minimum, destructible and assignable.
+- Prefer the **copy-and-swap** idiom for unified copy+move assignment.
+- Wrap raw resources in RAII types, then the containing class follows the Rule of Zero.
+- `static_assert(std::is_nothrow_move_constructible_v<T>)` catches missing `noexcept` at compile time.

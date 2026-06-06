@@ -6,10 +6,11 @@
 
 ## Topic Overview
 
-**Dependency Inversion Principle (DIP):** High-level modules should not depend on low-level modules. Both should depend on abstractions. In C++, this means injecting dependencies through constructor parameters (interfaces/concepts) rather than hard-coding concrete classes.
+The **Dependency Inversion Principle (DIP)** says: high-level modules should not depend on low-level modules. Both should depend on abstractions. In plain English, your business logic should not reach out and grab a concrete `SqlDatabase` or `SmtpMailer` directly. Instead, it should talk to an interface, and whoever builds the application decides which concrete class plugs in.
+
+This is the difference between wiring your components together at construction time (flexible, testable) versus baking the concrete dependencies into your class body (rigid, untestable).
 
 ```cpp
-
 WITHOUT DIP:                           WITH DIP:
 ┌──────────┐                          ┌──────────┐
 │ Business  │──────► SqlDatabase       │ Business  │──────► IDatabase (abstract)
@@ -20,17 +21,22 @@ concrete implementations               │        ┌─────────
                                         │        │                      │
                                         │   SqlDatabase            MockDatabase
                                         │   SmtpMailer             MockMailer
-
 ```
+
+The diagram makes the core idea vivid: with DIP, the arrow from your business logic points at an abstraction (an interface), not at a concrete class. That means you can swap the concrete class without touching the business logic at all.
 
 ### Injection Styles in C++
 
+There are several ways to hand a dependency to a class. The right choice depends on whether you need runtime flexibility, zero overhead, or just simplicity.
+
 | Style | Syntax | When to use |
 | --- | --- | --- |
-| Constructor injection | `Service(std::unique_ptr<IDep>)` | Default choice — explicit deps |
+| Constructor injection | `Service(std::unique_ptr<IDep>)` | Default choice - explicit deps |
 | Template injection | `template<typename Dep> class Service` | Zero-overhead, compile-time |
 | `std::function` injection | `Service(std::function<int()>)` | Simple callbacks |
 | Setter injection | `void set_logger(ILogger*)` | Optional/late-bound deps |
+
+Constructor injection is the default because every dependency is visible at the call site - there's no mystery about what a class needs to function.
 
 ---
 
@@ -38,16 +44,17 @@ concrete implementations               │        ┌─────────
 
 ### Q1: Implement constructor-based dependency injection with interfaces
 
+The pattern here is: define pure virtual interfaces for each dependency, then pass `unique_ptr` to those interfaces into the constructor. The high-level service never touches a concrete type.
+
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 #include <vector>
 #include <iostream>
 
-// ═══════════ Abstract interfaces (the "abstractions") ═══════════
+// Abstract interfaces (the "abstractions")
 class ILogger {
 public:
     virtual ~ILogger() = default;
@@ -68,7 +75,7 @@ public:
                       const std::string& body) = 0;
 };
 
-// ═══════════ High-level module: depends ONLY on abstractions ═══════════
+// High-level module: depends ONLY on abstractions
 class UserRegistrationService {
     std::unique_ptr<IUserRepository> repo_;
     std::unique_ptr<IEmailService> email_;
@@ -99,7 +106,7 @@ public:
     }
 };
 
-// ═══════════ Production implementations ═══════════
+// Production implementations
 class ConsoleLogger : public ILogger {
 public:
     void log(std::string_view msg) override {
@@ -124,7 +131,7 @@ public:
     }
 };
 
-// ═══════════ Test mocks ═══════════
+// Test mocks
 class MockLogger : public ILogger {
 public:
     std::vector<std::string> messages;
@@ -152,7 +159,7 @@ public:
     }
 };
 
-// ═══════════ Composition root (wiring) ═══════════
+// Composition root (wiring)
 void production_main() {
     auto service = UserRegistrationService(
         std::make_unique<SqlUserRepository>(),
@@ -177,20 +184,22 @@ void test_registration() {
     assert(repo_ptr->saved.size() == 1);
     assert(email_ptr->send_count == 1);
 }
-
 ```
 
+Notice that `UserRegistrationService` has no `#include <SqlUserRepository>` anywhere in it. It simply calls `repo_->save(...)` and trusts the interface. In tests, you swap in `MockRepo` and verify it was called correctly without touching the service code at all. That is exactly what DIP buys you.
+
 ### Q2: Show template-based dependency injection for zero-overhead DIP
+
+When the concrete dependency type is known at compile time and you want zero vtable cost, you can inject via template parameters. C++20 concepts let you express the interface contract cleanly.
 
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <vector>
 #include <iostream>
 
-// ═══════════ Template DIP: compile-time injection, zero vtable overhead ═══════════
+// Template DIP: compile-time injection, zero vtable overhead
 
 // "Concepts" define the interface contract (C++20)
 template<typename T>
@@ -259,30 +268,32 @@ int main() {
     assert(test_svc.all_orders().size() == 1);
     return 0;
 }
-
 ```
+
+The reason to reach for templates instead of virtuals is performance: the compiler sees the exact concrete type, inlines the calls, and eliminates the vtable dispatch entirely. The tradeoff is that you lose the ability to swap implementations at runtime and binary size grows from monomorphization. The table below helps you pick:
 
 **Virtual vs Template DIP:**
 
 | Aspect | Virtual (runtime) | Template (compile-time) |
 | --- | :---: | :---: |
-| Overhead | vtable + indirection | **Zero** |
+| Overhead | vtable + indirection | Zero |
 | Binary size | Smaller | Larger (monomorphization) |
-| Swap at runtime | **Yes** | No |
-| Plugin loading | **Yes** | No |
+| Swap at runtime | Yes | No |
+| Plugin loading | Yes | No |
 | Compile times | Faster | Slower |
 | Error messages | Clear | Can be complex (use concepts!) |
 
 ### Q3: Show a composition root that wires an entire application
 
+The **composition root** is the single place in the codebase that knows about concrete types and builds the full object graph. Everything else talks only to interfaces. Keeping all that wiring in one spot makes substituting implementations trivial - you change one factory method, not a dozen scattered files.
+
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <string>
 
-// ═══════════ Composition Root pattern — wire deps in ONE place ═══════════
+// Composition Root pattern - wire deps in ONE place
 
 // Forward declare interfaces
 class IConfig;
@@ -316,7 +327,7 @@ public:
         app.db_ = make_postgres_db(app.config_.get(), app.logger_.get());
         app.cache_ = make_redis_cache(app.config_.get());
 
-        // Services — injected with their dependencies
+        // Services - injected with their dependencies
         app.auth_ = make_auth_service(app.db_.get(), app.cache_.get());
         app.orders_ = make_order_service(app.db_.get(), app.logger_.get());
         app.payments_ = make_stripe_gateway(app.config_.get(), app.logger_.get());
@@ -352,17 +363,18 @@ int main(int argc, char* argv[]) {
 // RULES:
 // 1. ONLY the composition root knows concrete types
 // 2. Business logic NEVER creates its own dependencies
-// 3. Dependencies flow DOWN (high-level ← receives ← low-level)
+// 3. Dependencies flow DOWN (high-level <- receives <- low-level)
 // 4. All classes receive deps through constructors
-
 ```
+
+Notice how `create_test()` and `create_production()` share the exact same shape - they differ only in which concrete implementations they plug in. All business-logic classes are completely untouched by this choice.
 
 ---
 
 ## Notes
 
-- **Composition root** should be as close to `main()` as possible — it's the only place that knows concrete types
-- Constructor injection is the default; use setter injection only for optional dependencies
-- In embedded: DIP via templates gives zero overhead while keeping testability
-- Avoid "service locators" — they hide dependencies and make code harder to reason about
-- DIP is **the enabler** of testability. Without it, you can't mock/stub dependencies
+- The **composition root** should be as close to `main()` as possible - it's the only place that knows concrete types.
+- Constructor injection is the default; use setter injection only for optional dependencies.
+- In embedded systems, DIP via templates gives zero overhead while keeping testability.
+- Avoid "service locators" - they hide dependencies and make code harder to reason about.
+- DIP is **the enabler** of testability. Without it, you can't mock or stub dependencies.

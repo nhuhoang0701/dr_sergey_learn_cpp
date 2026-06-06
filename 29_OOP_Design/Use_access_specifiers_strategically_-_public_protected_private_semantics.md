@@ -6,15 +6,15 @@
 
 ## Topic Overview
 
-Access specifiers (`public`, `protected`, `private`) are the primary mechanism for **encapsulation** in C++. Strategic use goes far beyond "make everything private" — it communicates design intent, defines extension points, and controls the coupling surface between classes.
+Access specifiers (`public`, `protected`, `private`) are the primary mechanism for **encapsulation** in C++. Strategic use goes far beyond "make everything private" - it communicates design intent, defines extension points, and controls the coupling surface between classes.
 
 ### Access Level Semantics
 
 | Specifier | Who Can Access | Design Intent |
 | --- | --- | --- |
-| **`public`** | Anyone | Stable API contract — hard to change without breaking clients |
-| **`protected`** | Class + derived classes | Extension point for subclasses — semi-stable interface |
-| **`private`** | Class only (+ friends) | Implementation detail — free to change |
+| **`public`** | Anyone | Stable API contract - hard to change without breaking clients |
+| **`protected`** | Class + derived classes | Extension point for subclasses - semi-stable interface |
+| **`private`** | Class only (+ friends) | Implementation detail - free to change |
 
 ### Inheritance Access
 
@@ -26,24 +26,24 @@ Access specifiers (`public`, `protected`, `private`) are the primary mechanism f
 
 ### Decision Framework
 
+Work through this top to bottom when you are not sure which specifier to use:
+
 ```cpp
-
 Should this member be part of the public API?
-├─ Yes → public
+├─ Yes -> public
 └─ No
-   ├─ Should derived classes customize it? → protected (NVI pattern)
-   └─ No → private
-         ├─ Does a specific non-member function need access? → friend
-         └─ No → stay private
-
+   ├─ Should derived classes customize it? -> protected (NVI pattern)
+   └─ No -> private
+         ├─ Does a specific non-member function need access? -> friend
+         └─ No -> stay private
 ```
 
 ### Common Mistakes
 
-- Making data members `protected` — exposes representation to all subclasses
-- Using `public` inheritance to reuse implementation (should be `private` or composition)
-- Over-using `friend` — it breaks encapsulation as much as `public`
-- Making everything `public` "for convenience" during development
+- Making data members `protected` - this exposes your representation to all subclasses, which is just as bad as making it public.
+- Using `public` inheritance to reuse implementation (should be `private` or composition).
+- Over-using `friend` - it breaks encapsulation as much as making something `public`.
+- Making everything `public` "for convenience" during development - this almost never gets cleaned up later.
 
 ---
 
@@ -51,16 +51,15 @@ Should this member be part of the public API?
 
 ### Q1: Demonstrate strategic access specifier usage in a class hierarchy using the NVI pattern
 
-**Answer:**
+The Non-Virtual Interface (NVI) pattern is the cleanest way to structure a polymorphic hierarchy. The base class exposes a `public` non-virtual function that controls the overall workflow, and defers the actual work to a `protected` or `private` virtual function that subclasses override. This means the base class always gets to run pre-conditions and post-conditions, and subclasses can only touch the part they are supposed to touch.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <vector>
 #include <memory>
 
-// === NVI: public non-virtual + private/protected virtual ===
+// NVI: public non-virtual + private/protected virtual
 
 class Document {
 public:
@@ -147,34 +146,32 @@ int main() {
     html.set_content("Quarterly results");
     std::cout << html.render();
 }
-
 ```
 
 **Access specifier rationale:**
 
-- `public`: `render()`, `set_title()` — the client API, stable contract
-- `protected`: `do_render_body()` — customization hook for subclasses
-- `private`: `render_header()`, `render_footer()`, `title_` — implementation details
+- `public`: `render()`, `set_title()` - the client API, stable contract.
+- `protected`: `do_render_body()` - customization hook for subclasses.
+- `private`: `render_header()`, `render_footer()`, `title_` - implementation details.
 
 ### Q2: Explain private inheritance vs composition, and when to use `protected` inheritance
 
-**Answer:**
+Private inheritance is often described as "implemented-in-terms-of" - it gives you the base class machinery without exposing the base class as part of the type. The table below shows how it compares to composition. The practical advice is simple: reach for composition first and only consider private inheritance when you genuinely need to override virtual functions of the base class, or when you need the Empty Base Optimization (EBO) to save memory.
 
 | Aspect | Private Inheritance | Composition |
 | --- | --- | --- |
 | Relationship | "is-implemented-in-terms-of" | "has-a" |
 | Base public members | Become private | Accessed via member |
 | Virtual overrides | Can override base virtuals | Cannot |
-| EBO (Empty Base Opt.) | Yes | No (member has size ≥ 1) |
+| EBO (Empty Base Opt.) | Yes | No (member has size >= 1) |
 | Coupling | Tight (access to protected) | Loose |
 | Clarity | Confusing to readers | Clear and obvious |
 
 ```cpp
-
 #include <iostream>
 #include <mutex>
 
-// === Private inheritance: is-implemented-in-terms-of ===
+// Private inheritance: is-implemented-in-terms-of
 // Use when you need to override virtual functions of the base
 // or leverage Empty Base Optimization.
 
@@ -207,7 +204,7 @@ protected:
 // w.begin_animation();  // OK: public Widget interface
 
 
-// === Protected inheritance: rare but useful ===
+// Protected inheritance: rare but useful
 // Derived classes of Widget can also use Timer's protected interface
 
 class AnimatedWidget : private Timer {
@@ -225,7 +222,7 @@ public:
 };
 
 
-// === Empty Base Optimization (EBO) ===
+// Empty Base Optimization (EBO)
 
 struct EmptyAllocator {};  // sizeof == 1 as member, 0 as base
 
@@ -254,26 +251,24 @@ int main() {
     std::cout << "WithBase: " << sizeof(WithBase) << '\n';      // 4
     std::cout << "Modern: " << sizeof(Modern) << '\n';          // 4
 }
-
 ```
 
 **When to use each:**
 
 - **Composition** (default): 95% of cases. Clearest, loosest coupling.
-- **Private inheritance**: Need to override virtual functions of the "base" or need EBO
-- **Protected inheritance**: Need private inheritance + want derived classes to access the base
+- **Private inheritance**: Need to override virtual functions of the "base" or need EBO.
+- **Protected inheritance**: Need private inheritance but also want derived classes to access the base.
 
 ### Q3: Show `friend` usage patterns and when friendship is appropriate design
 
-**Answer:**
+`friend` is sometimes treated as a dirty word in C++ design discussions, but it is actually the right answer in a handful of well-defined situations. The key is knowing which situations those are. The pattern table at the end of this example spells it out.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <sstream>
 
-// === Pattern 1: Hidden friends for operators (ADL-safe) ===
+// Pattern 1: Hidden friends for operators (ADL-safe)
 
 class Temperature {
 public:
@@ -289,14 +284,14 @@ public:
     }
 
     friend std::ostream& operator<<(std::ostream& os, Temperature t) {
-        return os << t.celsius_ << "°C";
+        return os << t.celsius_ << "C";
     }
 
 private:
     double celsius_;
 };
 
-// === Pattern 2: Factory friend (named constructor idiom) ===
+// Pattern 2: Factory friend (named constructor idiom)
 
 class SecureConnection {
 public:
@@ -308,7 +303,7 @@ public:
     friend class ConnectionFactory;
 
 private:
-    // Constructor is private — only factory can create
+    // Constructor is private - only factory can create
     SecureConnection(int fd, std::string cert)
         : fd_(fd), cert_(std::move(cert)) {}
 
@@ -325,7 +320,7 @@ public:
     }
 };
 
-// === Pattern 3: Attorney-Client (limited friendship) ===
+// Pattern 3: Attorney-Client (limited friendship)
 // Problem: friend gives access to EVERYTHING. Attorney limits it.
 
 class Engine {
@@ -359,16 +354,16 @@ public:
     }
 };
 
-// === When friendship is appropriate ===
+// When friendship is appropriate:
 // 1. operator<< and operator>> (must be non-member)
 // 2. Factory functions that need private constructor access
 // 3. Tightly-coupled class pairs (e.g., iterator + container)
 // 4. Attorney-Client for controlled access
 
-// === When friendship is a code smell ===
-// 1. Friend class in a different module → tight cross-module coupling
-// 2. Many friends → the class interface is too restrictive
-// 3. Using friend to "hack around" access → redesign instead
+// When friendship is a code smell:
+// 1. Friend class in a different module -> tight cross-module coupling
+// 2. Many friends -> the class interface is too restrictive
+// 3. Using friend to "hack around" access -> redesign instead
 
 int main() {
     // Hidden friends
@@ -383,17 +378,16 @@ int main() {
     Car car;
     car.accelerate(50);
 }
-
 ```
 
 ---
 
 ## Notes
 
-- Default access: `class` = `private`, `struct` = `public`; use `struct` for aggregates/PODs, `class` for encapsulated types
-- `friend` declarations are not transitive and not inherited
-- Prefer **hidden friends** for operators — they prevent unwanted implicit conversions via ADL
-- `protected` data members are almost always a mistake; use protected *functions* instead
-- Private inheritance is equivalent to composition + friendship to the base
-- C++20 `[[no_unique_address]]` often eliminates the need for private inheritance for EBO
-- Guideline: start everything `private`, promote to `protected`/`public` only when needed
+- Default access: `class` = `private`, `struct` = `public`; use `struct` for aggregates/PODs, `class` for encapsulated types.
+- `friend` declarations are not transitive and not inherited.
+- Prefer **hidden friends** for operators - they prevent unwanted implicit conversions via ADL.
+- `protected` data members are almost always a mistake; use protected *functions* instead.
+- Private inheritance is equivalent to composition + friendship to the base.
+- C++20 `[[no_unique_address]]` often eliminates the need for private inheritance for EBO.
+- Guideline: start everything `private`, promote to `protected`/`public` only when needed.

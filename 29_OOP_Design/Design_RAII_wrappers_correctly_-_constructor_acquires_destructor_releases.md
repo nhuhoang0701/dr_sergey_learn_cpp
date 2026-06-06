@@ -6,15 +6,15 @@
 
 ## Topic Overview
 
-**RAII** (Resource Acquisition Is Initialization) is C++'s fundamental resource management idiom:
+**RAII** (Resource Acquisition Is Initialization) is C++'s fundamental resource management idiom. The idea is beautifully simple: tie a resource's lifetime to an object's lifetime. When the object is constructed, it acquires the resource. When the object is destroyed - whether by normal scope exit, early return, or exception - the destructor releases the resource automatically. You never forget to clean up because there is nothing to forget.
 
 ```cpp
-
-Construct  →  Resource acquired (file, socket, lock, memory)
-Scope exit →  Destructor called → Resource released
+Construct  ->  Resource acquired (file, socket, lock, memory)
+Scope exit ->  Destructor called -> Resource released
                   (even on exception!)
-
 ```
+
+The standard library is full of RAII wrappers. You use them every day:
 
 | RAII Wrapper | Resource | Standard Library |
 | --- | --- | --- |
@@ -24,16 +24,19 @@ Scope exit →  Destructor called → Resource released
 | `fstream` | File handle | `<fstream>` |
 | `jthread` | Thread join | `<thread>` (C++20) |
 
+The reason RAII matters so much is exceptions. Without it, every function that might throw needs careful cleanup on every error path. With RAII, destructors run automatically during stack unwinding - you get correct cleanup for free.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Write RAII wrappers for a file descriptor and a C library handle
 
+The classic situation: you're calling a C API that returns a raw handle you must close manually. The solution is to wrap it in a class whose destructor calls the close function. Notice the move constructor uses `std::exchange` to transfer ownership cleanly - the moved-from object gets the sentinel value `-1`, which the destructor safely ignores.
+
 **Answer:**
 
 ```cpp
-
 #include <unistd.h>  // POSIX (or use _close on Windows)
 #include <fcntl.h>
 #include <stdexcept>
@@ -91,15 +94,17 @@ UniqueFile open_file(const char* path, const char* mode) {
     if (!f) throw std::runtime_error("fopen failed");
     return f;
 }
-
 ```
 
+The `UniqueFile` alias at the bottom is worth appreciating: you get all of `unique_ptr`'s move semantics and automatic cleanup for free, just by providing a custom deleter. This pattern handles the vast majority of C API resources with minimal boilerplate.
+
 ### Q2: Show a scoped guard for arbitrary cleanup actions
+
+Sometimes you don't own a type that can be wrapped neatly. You just need "run this lambda when we leave this scope." That's what `ScopeGuard` does. The `dismiss()` method is the escape hatch - call it when the operation succeeded and you don't want the cleanup to run.
 
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <iostream>
 
@@ -158,15 +163,17 @@ template<typename F>
 ScopeGuardT<F> make_scope_guard(F fn) {
     return ScopeGuardT<F>(std::move(fn));
 }
-
 ```
 
+The `ScopeGuardT` template version at the bottom avoids the heap allocation that `std::function` might incur for captured lambdas. If this appears in a hot path, prefer `ScopeGuardT` via `make_scope_guard`.
+
 ### Q3: Show RAII for a complex multi-resource acquisition
+
+When you need to acquire two resources in sequence - and the second one can fail - you must ensure the first is still released. The trick is to store each resource as a member RAII wrapper. If the second acquisition throws inside the constructor body, C++ will destroy all fully-constructed members in reverse order. So the database connection cleans itself up even if `tx_begin` throws, because `db_` was fully constructed before the throw happened.
 
 **Answer:**
 
 ```cpp
-
 #include <memory>
 #include <stdexcept>
 #include <iostream>
@@ -213,22 +220,23 @@ int main() {
         DatabaseSession session("host=localhost");
         // Do queries...
         session.commit();
-        // If exception before commit → auto-rollback!
+        // If exception before commit -> auto-rollback!
     } catch (const std::exception& e) {
         std::cerr << e.what() << "\n";
     }
     return 0;
 }
-
 ```
+
+The commit-or-rollback pattern is very common: you want the transaction to roll back automatically unless you explicitly call `commit()`. Here `tx_.release()` transfers ownership out of the `unique_ptr` on success, so the destructor's `if (tx_)` check is false and no rollback happens.
 
 ---
 
 ## Notes
 
-- **Rule 1:** Every resource ownership must be wrapped in an RAII type
-- **Rule 2:** Destructors must be `noexcept` — never throw from a destructor
-- Use `std::exchange(o.member_, sentinel)` in move constructors for clean transfer
-- `unique_ptr` with custom deleter handles most C API wrappers
-- Multi-resource: order members so earlier members are cleaned up if later ones throw in constructor
-- For two-phase commit (acquire/commit), use a guard that rolls back unless `dismiss()` is called
+- **Rule 1:** Every resource ownership must be wrapped in an RAII type.
+- **Rule 2:** Destructors must be `noexcept` - never throw from a destructor.
+- Use `std::exchange(o.member_, sentinel)` in move constructors for clean ownership transfer.
+- `unique_ptr` with a custom deleter handles most C API wrappers with minimal boilerplate.
+- With multiple resources, order members so earlier members are cleaned up if later ones throw in the constructor.
+- For two-phase commit (acquire/commit), use a guard that rolls back unless `dismiss()` is called.

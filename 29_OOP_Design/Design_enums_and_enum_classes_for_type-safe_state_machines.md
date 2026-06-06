@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-**Enum classes** (scoped enumerations, C++11) are the foundation for type-safe state machines in modern C++. Unlike unscoped `enum`, they don't implicitly convert to integers, don't leak names into the enclosing scope, and can have an explicit underlying type. Combined with `std::variant`, `switch` exhaustiveness, and template metaprogramming, they create robust finite state machines (FSMs).
+**Enum classes** (scoped enumerations, introduced in C++11) are the foundation for type-safe state machines in modern C++. The reason you want them over the old-style `enum` is that they fix three real annoyances: they don't implicitly convert to integers (which causes subtle bugs), they don't leak their names into the enclosing scope (so `Red` doesn't accidentally collide with some other `Red`), and they let you specify an explicit underlying type for storage control. Combined with `std::variant`, exhaustive `switch` handling, and a compile-time transition table, they let you build finite state machines (FSMs) that the compiler can actually help you get right.
 
 ### Unscoped vs Scoped Enums
+
+If the table feels like a lot, the key rows to remember are implicit int conversion (dangerous in unscoped enums, prohibited in scoped ones) and scope (scoped enums require `Color::Red`, which is more typing but eliminates name collisions).
 
 | Feature | `enum Color { Red }` | `enum class Color { Red }` |
 | --- | --- | --- |
@@ -21,8 +23,9 @@
 
 ### State Machine Patterns
 
-```cpp
+Here is the state diagram for the connection FSM used in Q1 below. Mentally walking through the arrows before reading the code will make the transition table much easier to follow.
 
+```cpp
   ┌────────┐     connect()     ┌────────────┐    auth()     ┌───────────────┐
   │  Idle  │ ──────────► │ Connecting  │ ────────► │ Authenticated │
   └────────┘                 └──────┬─────┘                └───────┬───────┘
@@ -30,7 +33,6 @@
        │                ┌────▼────┐                         │
        └────────────────┤  Error  │◄─────────────────────────┘
         retry()         └─────────┘
-
 ```
 
 ---
@@ -39,10 +41,9 @@
 
 ### Q1: Build a type-safe state machine using enum class with proper transition validation
 
-**Answer:**
+The key idea here is separating the transition table from the FSM class itself. The table is a compile-time array of `{from, event, to}` triples, and a constexpr function does the lookup. This means the FSM class `handle()` method is just "look up the next state, apply it, return success/failure" - the policy lives in the table, not scattered through a big switch.
 
 ```cpp
-
 #include <iostream>
 #include <string>
 #include <stdexcept>
@@ -160,15 +161,15 @@ int main() {
     // Invalid transition:
     fsm.handle(Event::Authenticate);  // Idle + Authenticate = invalid
 }
-
 ```
+
+Notice how adding a new event or state only requires touching the `transitions` array and the `to_string` helpers - the FSM class itself needs no changes. That's exactly the kind of separation you want in maintainable code.
 
 ### Q2: Explain how to add flags/bitmask support to enum classes safely
 
-**Answer:**
+This is the trade-off you accept with `enum class`: no implicit bitwise operators, so you have to provide them yourself. The approach below uses a concept (`BitmaskEnum`) gated by an explicit opt-in trait (`EnableBitmask`), which means you don't accidentally give every enum bitwise operators - only the ones you declare as bitmasks.
 
 ```cpp
-
 #include <type_traits>
 #include <iostream>
 
@@ -238,26 +239,26 @@ int main() {
     // Output: Can read\nCan write
 
     // This does NOT compile (type-safe!):
-    // int x = user_perms;         // Error: no implicit conversion
-    // user_perms = 3;             // Error: no implicit conversion
-    // if (user_perms)             // Error: no implicit bool conversion
-    // user_perms | 0x10;          // Error: no mixed int/enum
+    // int x = user_perms;         // ERROR: no implicit conversion
+    // user_perms = 3;             // ERROR: no implicit conversion
+    // if (user_perms)             // ERROR: no implicit bool conversion
+    // user_perms | 0x10;          // ERROR: no mixed int/enum
 }
-
 ```
+
+The boilerplate is a one-time cost per project. Once you have `EnableBitmask` and the operator templates in a header, opting any new enum into bitmask behavior is a single specialization.
 
 **Key trade-offs:**
 
-- Bitmask enums require boilerplate operators (one-time cost per project)
-- Alternative: use `std::bitset<N>` for large flag sets (but loses named semantics)
-- C++23 `std::to_underlying()` replaces `static_cast<underlying_type_t<E>>` verbosity
+- Bitmask enums require boilerplate operators (one-time cost per project).
+- Alternative: use `std::bitset<N>` for large flag sets (but loses named semantics).
+- C++23 `std::to_underlying()` replaces `static_cast<underlying_type_t<E>>` verbosity.
 
 ### Q3: Implement a variant-based state machine with per-state data
 
-**Answer:**
+The limitation of the enum-based FSM above is that every state shares the same flat data. What if `Connecting` needs to remember the host and port, but `Authenticated` needs a token? With an enum you end up with a struct that has fields for every state, most of which are garbage in any given state. `std::variant` solves this by making each state its own type that carries exactly the data it needs.
 
 ```cpp
-
 #include <variant>
 #include <string>
 #include <iostream>
@@ -376,23 +377,24 @@ int main() {
     state = on_event(state, ConnectedEvent{42});
     print_state(state);
 }
-
 ```
+
+When you add a new state to the variant, every `std::visit` call that doesn't handle it becomes a compile error. That's the compiler telling you exactly where you forgot to update your logic - far better than a runtime `default:` case silently doing nothing.
 
 **Advantages of variant-based FSM over enum-based:**
 
-- Each state carries its own data — no unused fields
-- Compiler enforces exhaustive handling of all states
-- Adding a new state causes compile errors everywhere it's unhandled
-- No invalid state+data combinations possible
+- Each state carries its own data - no unused fields.
+- Compiler enforces exhaustive handling of all states.
+- Adding a new state causes compile errors everywhere it's unhandled.
+- No invalid state+data combinations possible.
 
 ---
 
 ## Notes
 
-- Always prefer `enum class` over `enum` — the scoping and type safety are worth the verbosity
-- Use `static_assert(std::is_same_v<std::underlying_type_t<E>, uint8_t>)` to enforce size
-- C++23's `std::to_underlying()` cleans up casts: `std::to_underlying(Permission::Read)` → `1`
-- For complex FSMs, consider libraries like Boost.SML (State Machine Language) or Boost.Statechart
-- Variant-based FSMs excel when states have different data; enum-based FSMs excel for simple flag-like states
-- `-Wswitch-enum` (GCC/Clang) warns on missing cases — enable it for FSM enums
+- Always prefer `enum class` over `enum` - the scoping and type safety are worth the verbosity.
+- Use `static_assert(std::is_same_v<std::underlying_type_t<E>, uint8_t>)` to enforce size.
+- C++23's `std::to_underlying()` cleans up casts: `std::to_underlying(Permission::Read)` -> `1`.
+- For complex FSMs, consider libraries like Boost.SML (State Machine Language) or Boost.Statechart.
+- Variant-based FSMs excel when states have different data; enum-based FSMs excel for simple flag-like states.
+- `-Wswitch-enum` (GCC/Clang) warns on missing cases - enable it for FSM enums.

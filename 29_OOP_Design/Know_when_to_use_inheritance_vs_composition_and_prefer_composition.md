@@ -6,25 +6,30 @@
 
 ## Topic Overview
 
-**"Prefer composition over inheritance"** is the single most important OOP design guideline. Inheritance creates tight coupling (derived class depends on ALL protected/public members), while composition creates loose coupling through well-defined interfaces.
+**"Prefer composition over inheritance"** is the single most important OOP design guideline, and the reason is coupling. When you inherit from a class, your derived class depends on every `protected` and `public` member of the base - including implementation details you may not even know exist. Composition, on the other hand, ties you only to a well-defined interface. The base class can change its internals and you never notice.
+
+The rule of thumb is simple: use inheritance when you truly have an "is-a" relationship and need runtime polymorphism. Use composition for everything else.
 
 ### Decision Matrix
 
+If the table feels like a lot, the key insight is this: inheritance is for *open* polymorphic hierarchies; composition is for *reuse and flexibility*.
+
 | Criterion | Use Inheritance | Use Composition |
 | --- | :---: | :---: |
-| True **is-a** relationship | ✓ | |
-| Need virtual dispatch | ✓ | |
-| Open set of types (plugins) | ✓ | |
-| Code reuse only | | ✓ |
-| **has-a** relationship | | ✓ |
-| Need to change behavior at runtime | | ✓ |
-| Want independent testing | | ✓ |
-| Multiple "inheritance" of behavior | | ✓ (multiple members) |
+| True **is-a** relationship | Yes | |
+| Need virtual dispatch | Yes | |
+| Open set of types (plugins) | Yes | |
+| Code reuse only | | Yes |
+| **has-a** relationship | | Yes |
+| Need to change behavior at runtime | | Yes |
+| Want independent testing | | Yes |
+| Multiple "inheritance" of behavior | | Yes (multiple members) |
 
 ### The Coupling Problem
 
-```cpp
+This diagram captures why inheritance creates so much coupling compared to composition. When a base class changes its protected members, every single derived class must be reviewed and possibly updated. With composition, only the class that owns the component cares.
 
+```cpp
 Inheritance:                        Composition:
   Base class changes break ALL         Interface changes break ONLY
   derived classes.                     classes that USE that interface.
@@ -35,7 +40,6 @@ Inheritance:                        Composition:
     // - implementation details        public:
     // - virtual dispatch table        void run() { engine_.start(); }
   };                                   };
-
 ```
 
 ---
@@ -44,15 +48,14 @@ Inheritance:                        Composition:
 
 ### Q1: Refactor an inheritance hierarchy to use composition
 
-**Answer:**
+This example shows the classic problem with inheritance: a `Duck` that flies *and* swims breaks the single-parent hierarchy. The composition approach solves this by building animals from interchangeable behavior components.
 
 ```cpp
-
 #include <memory>
 #include <iostream>
 #include <string>
 
-// ═══════════ BAD: Deep inheritance for code reuse ═══════════
+// BAD: Deep inheritance for code reuse
 class Animal {
 protected:
     std::string name_;
@@ -81,10 +84,10 @@ public:
     virtual void swim() { depth_ += 10; energy_ -= 5; }
 };
 
-// PROBLEM: Duck flies AND swims — diamond inheritance!
+// PROBLEM: Duck flies AND swims - diamond inheritance!
 // class Duck : public FlyingAnimal, public SwimmingAnimal { ... };  // Messy!
 
-// ═══════════ GOOD: Composition with behavior components ═══════════
+// GOOD: Composition with behavior components
 
 // Behavior interfaces
 class IMovement {
@@ -125,7 +128,7 @@ public:
     }
 };
 
-// Composed animal — any combination of behaviors
+// Composed animal - any combination of behaviors
 class Animal2 {
     std::string name_;
     int energy_ = 100;
@@ -166,22 +169,20 @@ int main() {
     penguin.perform_all();
     return 0;
 }
-
 ```
 
-### Q2: Explain the trade-offs — when inheritance IS the right choice
+With composition, a `Penguin` is just a duck without the `Flying` component. You never have to touch the class hierarchy again - you just choose which behavior objects to plug in.
 
-**Answer:**
+### Q2: Explain the trade-offs - when inheritance IS the right choice
 
-**Use inheritance when ALL THREE conditions hold:**
+Inheritance is not always wrong. The key is that all three conditions below should hold. If even one is missing, reach for composition instead.
 
 ```cpp
-
 // Condition 1: True is-a relationship (Liskov Substitution holds)
 // Condition 2: You need virtual dispatch (runtime polymorphism)
 // Condition 3: The set of types is OPEN (others will add derived classes)
 
-// ═══════════ GOOD use of inheritance: widget toolkit ═══════════
+// GOOD use of inheritance: widget toolkit
 class Widget {
 public:
     virtual ~Widget() = default;
@@ -204,9 +205,9 @@ class Button : public Widget { /* ... */ };
 class Slider : public Widget { /* ... */ };
 class CustomPlot : public Widget { /* user-defined */ };
 
-// ═══════════ BAD use of inheritance: just for code reuse ═══════════
+// BAD use of inheritance: just for code reuse
 class BadStack : public std::vector<int> {  // WRONG
-    // Inherits push_back, insert, erase, operator[] — all violate stack semantics!
+    // Inherits push_back, insert, erase, operator[] - all violate stack semantics!
 };
 
 // GOOD: Composition
@@ -216,10 +217,11 @@ public:
     void push(int v) { data_.push_back(v); }
     int pop() { int v = data_.back(); data_.pop_back(); return v; }
     bool empty() const { return data_.empty(); }
-    // Only stack operations exposed — invariants preserved
+    // Only stack operations exposed - invariants preserved
 };
-
 ```
+
+The `BadStack` example is a classic mistake. Inheriting from `std::vector` just to get its storage means your "stack" suddenly has `push_back`, `insert`, `erase`, and all the other vector operations exposed to callers - none of which belong on a stack. Composition fixes this cleanly.
 
 **Inheritance vs Composition trade-off summary:**
 
@@ -234,15 +236,14 @@ public:
 
 ### Q3: Show the Strategy pattern as the composition-based alternative to inheritance
 
-**Answer:**
+The reason this trips people up is the *hierarchy explosion* problem. If you try to model all the combinations of compression and encryption as inherited classes, you end up with `ZlibAesFile`, `ZlibChaChaFile`, `LzmaAesFile`, and so on - the number of classes grows as N times M. Composition lets you write N + M classes and mix them freely.
 
 ```cpp
-
 #include <memory>
 #include <iostream>
 #include <functional>
 
-// ═══════════ Strategy via composition — replace inheritance hierarchies ═══════════
+// Strategy via composition - replace inheritance hierarchies
 
 // Instead of: CompressedFile, EncryptedFile, CompressedEncryptedFile (hierarchy explosion)
 // Use: File + CompressionStrategy + EncryptionStrategy
@@ -316,15 +317,16 @@ public:
 // File, CompressedFile, EncryptedFile, CompressedEncryptedFile,
 // ZlibFile, LzmaFile, AesFile, ChaChaFile, ZlibAesFile... (exponential!)
 // With composition: File + N compressors + M encryptors = N + M classes
-
 ```
+
+Notice `set_compression` - you can swap the strategy at runtime, something a class hierarchy could never do without reconstructing the entire object.
 
 ---
 
 ## Notes
 
-- **Litmus test:** "Can I replace the base class pointer with a derived class pointer in ALL scenarios?" If no → don't inherit
-- **std::string, std::vector — don't inherit from STL containers.** They lack virtual destructors. Use composition
-- Composition enables **runtime flexibility** — swap strategies/components without recompiling
-- In embedded: composition with interfaces enables hardware abstraction layers (HAL) that can be mocked
-- Use **private inheritance** only as an implementation detail (rarely), and always prefer composition first
+- Litmus test: "Can I replace the base class pointer with a derived class pointer in ALL scenarios?" If no, don't inherit.
+- `std::string`, `std::vector` - don't inherit from STL containers. They lack virtual destructors. Use composition.
+- Composition enables runtime flexibility - swap strategies and components without recompiling.
+- In embedded systems, composition with interfaces enables hardware abstraction layers (HAL) that can be mocked for testing.
+- Use private inheritance only as an implementation detail (rarely), and always prefer composition first.

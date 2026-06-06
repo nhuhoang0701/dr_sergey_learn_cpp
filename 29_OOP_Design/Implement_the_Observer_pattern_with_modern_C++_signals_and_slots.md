@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Observer pattern** decouples event sources (subjects) from event handlers (observers). Modern C++ replaces the classic GoF approach with:
+The **Observer pattern** is the fundamental tool for decoupling event sources (things that emit events) from event handlers (things that react to them). If you've used Qt or Boost.Signals2, you've already used it. The question in modern C++ isn't whether to use the pattern, but which mechanism to use to wire the two sides together.
+
+Here's how the main approaches compare:
 
 | Approach | Pros | Cons |
 | --- | --- | --- |
@@ -15,16 +17,19 @@ The **Observer pattern** decouples event sources (subjects) from event handlers 
 | Signal/slot library | Auto-disconnect, thread-safe | External dependency |
 | `std::weak_ptr` observers | Auto-cleanup on destroy | Shared ownership required |
 
+The biggest practical headache with observer systems is lifetime management: what happens when an observer is destroyed but is still registered? A dangling callback pointer is a crash waiting to happen. The modern C++ solutions below deal with that problem directly, using reference counting and weak pointers to make stale callbacks fail silently rather than catastrophically.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Implement a modern signal/slot system with auto-disconnect
 
+The trick here is giving each subscription a `Connection` object - a lightweight handle that contains a `shared_ptr<bool>` flag. When the slot is fired, it checks whether the corresponding `Connection` is still alive via a `weak_ptr`. If the connection was disconnected (or the `Connection` object was destroyed), the slot is silently skipped and cleaned up. This way you never have to manually remember to unregister - just let the `Connection` go out of scope.
+
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <vector>
 #include <algorithm>
@@ -100,15 +105,17 @@ int main() {
     btn.click(30, 40);   // Only logger fires
     return 0;
 }
-
 ```
 
+Notice that `emit()` does two things in one pass: it erases expired slots (those whose `Connection` object was destroyed or explicitly disconnected) and then fires the survivors. This keeps the slot list from growing without bound if connections are frequently created and dropped, and it means you never need a separate "garbage collection" pass.
+
 ### Q2: Show an observer that auto-unregisters when destroyed
+
+The pattern here is different from Q1: instead of an explicit `Connection` handle, the observer passes a `shared_ptr` to itself as a "lifetime token." The `Event` stores a `weak_ptr` to that token. When the observer object is destroyed (its `shared_ptr` goes to zero), the `weak_ptr` expires, and the next notification call silently removes the dead observer. This is particularly useful when the observer's lifetime is already managed by a `shared_ptr` and you just want the event subscription to track that lifetime automatically.
 
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <vector>
 #include <memory>
@@ -172,19 +179,21 @@ int main() {
         widget->bind(model);
         model.set("temperature", 42);  // Widget notified
     }
-    // widget destroyed — auto-unregistered
+    // widget destroyed - auto-unregistered
     model.set("temperature", 50);  // No crash, no notification
     return 0;
 }
-
 ```
 
+The reason `DashboardWidget` inherits from `enable_shared_from_this` is so it can call `shared_from_this()` inside `bind()`. That call returns a `shared_ptr` to the same control block as the outer `make_shared`, so the lifetime token genuinely tracks the widget's lifetime. If you called `shared_ptr<DashboardWidget>(this)` instead, you'd create a separate control block and the lifetime tracking would be broken - the weak pointer would expire immediately. That's a common mistake when people first encounter this pattern.
+
 ### Q3: Build a thread-safe observable property
+
+When multiple threads read and write the same observable value, you need to protect both the value and the handler list with a mutex. The classic mistake is calling observer callbacks while holding the lock - if a callback tries to set the property again (re-entry), you deadlock. The solution is to copy the handlers under the lock, release the lock, then notify. It's a subtle but critical point: the lock scope and the notification scope must be separate.
 
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <vector>
 #include <mutex>
@@ -243,16 +252,17 @@ int main() {
     counter.set(5);   // No output (same value)
     return 0;
 }
-
 ```
+
+The `std::shared_mutex` allows multiple concurrent readers via `shared_lock` but gives exclusive access for writes via `unique_lock`. The crucial detail is that `handlers_copy = handlers_` happens inside the locked section, but the actual callback calls happen after the lock is released. This makes re-entrant callbacks safe - a handler that calls `set()` again will acquire the lock normally instead of deadlocking. It's slightly more expensive than calling handlers inside the lock, but the correctness guarantee is worth it.
 
 ---
 
 ## Notes
 
-- Use `std::weak_ptr` for automatic observer cleanup — no manual unregister needed
-- **Always notify outside the lock** to prevent deadlocks (observer callbacks may re-enter)
-- `Connection` objects give callers explicit control over their subscription lifetime
-- For production: consider libraries like Boost.Signals2 (thread-safe, connection management)
-- Prefer signals/slots over virtual observer interfaces — more flexible, less coupling
-- Be careful with lambda captures: if the observer is destroyed, captured `this` dangles
+- Use `std::weak_ptr` for automatic observer cleanup - no manual unregister call needed, which removes an entire class of use-after-free bugs.
+- Always notify outside the lock to prevent deadlocks - an observer callback might itself call into the subject, and if the lock is still held you'll deadlock.
+- `Connection` objects give callers explicit control over subscription lifetime - useful when the observer and the subject have independent lifetimes not managed by `shared_ptr`.
+- For production use, consider Boost.Signals2, which is thread-safe and handles connection management robustly.
+- Prefer signals/slots over virtual observer interfaces - they're more flexible (any callable works, not just objects that inherit from a specific base) and less coupling.
+- Be careful with lambda captures: if you capture `this` in a handler and the owning object is destroyed while still subscribed, you have a dangling pointer. The `weak_ptr` lifetime-token pattern in Q2 is the safeguard.
