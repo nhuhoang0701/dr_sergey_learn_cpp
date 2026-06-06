@@ -8,38 +8,38 @@
 
 ## Topic Overview
 
-A **test double** is any object that stands in for a real dependency during testing. The four main kinds differ in complexity and what they verify:
+A **test double** is any object that stands in for a real dependency during testing. The reason you need them is simple: real dependencies (databases, network clients, email servers, file systems) are slow, unreliable, or impossible to control in a test. A test double replaces the dependency with something predictable.
+
+The four main kinds differ in complexity and what they let you verify. The reason this trips people up is that "mock" is often used informally to mean any test double, but technically a mock is a specific kind with strict expectation checking. Using the right double for the job keeps your tests simple and avoids brittleness.
 
 ```cpp
-
-                    ┌─────────────────────────────────────────────┐
-                    │           Test Doubles Spectrum              │
-                    ├─────────┬──────────┬──────────┬─────────────┤
-                    │  Dummy  │  Stub    │  Spy     │  Mock       │
-                    │ (unused)│ (canned) │ (records)│ (expects)   │
-                    │         │          │          │             │
-Complexity:         │  lowest │   low    │  medium  │  highest    │
-Behavior verified:  │  none   │  state   │  state   │  interaction│
-                    └─────────┴──────────┴──────────┴─────────────┘
-                                    │
-                               ┌────┘
-                               ▼
-                    ┌──────────────────────┐
-                    │  Fake                │
-                    │ (working impl)       │
-                    │  medium complexity   │
-                    │  state verification  │
-                    └──────────────────────┘
-
+                    +---------------------------------------------+
+                    |           Test Doubles Spectrum              |
+                    +---------+----------+----------+-------------+
+                    |  Dummy  |  Stub    |  Spy     |  Mock       |
+                    | (unused)| (canned) | (records)| (expects)   |
+                    |         |          |          |             |
+Complexity:         |  lowest |   low    |  medium  |  highest    |
+Behavior verified:  |  none   |  state   |  state   |  interaction|
+                    +---------+----------+----------+-------------+
+                                    |
+                               +----+
+                               |
+                    +----------------------+
+                    |  Fake                |
+                    | (working impl)       |
+                    |  medium complexity   |
+                    |  state verification  |
+                    +----------------------+
 ```
 
 | Double | Has Logic? | Records Calls? | Asserts Expectations? | Example |
 | --- | :---: | :---: | :---: | --- |
 | **Dummy** | No | No | No | Null object passed to satisfy API |
 | **Stub** | No (canned) | No | No | Always returns `{"ok": true}` |
-| **Spy** | Maybe | **Yes** | No (you check after) | Records every method call |
-| **Mock** | Maybe | Yes | **Yes** (auto-fails) | `EXPECT_CALL(...).Times(1)` |
-| **Fake** | **Yes** (simplified) | No | No | In-memory database |
+| **Spy** | Maybe | Yes | No (you check after) | Records every method call |
+| **Mock** | Maybe | Yes | Yes (auto-fails) | `EXPECT_CALL(...).Times(1)` |
+| **Fake** | Yes (simplified) | No | No | In-memory database |
 
 ---
 
@@ -49,8 +49,11 @@ Behavior verified:  │  none   │  state   │  state   │  interaction│
 
 **Answer:**
 
-```cpp
+A fake has real logic - it just uses a simplified backing store. The classic example is an in-memory database that behaves like the real thing (insert, find, remove all work correctly) but uses a `std::unordered_map` instead of disk. This lets you write tests that exercise realistic sequences of operations without touching a real database.
 
+The key design point: the fake implements the same interface as the real dependency, so you can swap it in via dependency injection without changing the production code at all.
+
+```cpp
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -59,7 +62,7 @@ Behavior verified:  │  none   │  state   │  state   │  interaction│
 #include <cassert>
 #include <iostream>
 
-// ═══════════ Interface: what production code depends on ═══════════
+// Interface: what production code depends on
 class IUserRepository {
 public:
     virtual ~IUserRepository() = default;
@@ -69,7 +72,7 @@ public:
     virtual std::vector<std::string> all_ids() const = 0;
 };
 
-// ═══════════ FAKE: working in-memory implementation ═══════════
+// FAKE: working in-memory implementation
 class FakeUserRepository : public IUserRepository {
     std::unordered_map<std::string, std::string> store_;
 public:
@@ -94,11 +97,11 @@ public:
         return ids;
     }
 
-    // Test helper — not in interface
+    // Test helper - not in interface
     size_t size() const { return store_.size(); }
 };
 
-// ═══════════ Production code under test ═══════════
+// Production code under test
 class UserService {
     IUserRepository& repo_;
 public:
@@ -117,7 +120,7 @@ public:
     }
 };
 
-// ═══════════ Tests using the Fake ═══════════
+// Tests using the Fake
 int main() {
     FakeUserRepository fake_repo;
     UserService service(fake_repo);
@@ -140,27 +143,31 @@ int main() {
         assert(false);
     } catch (const std::runtime_error&) {}
 
-    // Fake has full behavior — we can inspect state
+    // Fake has full behavior - we can inspect state
     assert(fake_repo.size() == 1);
     assert(fake_repo.all_ids().size() == 1);
 
     std::cout << "All Fake tests passed!\n";
 }
-
 ```
+
+Notice the `size()` helper method at the bottom of `FakeUserRepository`. It's not on the `IUserRepository` interface, but it's fine to add test-helper methods to the fake itself. Since the tests have the concrete `FakeUserRepository` type, they can call methods the interface doesn't expose.
 
 ### Q2: Implement a Stub (returns canned values) for a network client in unit tests
 
 **Answer:**
 
-```cpp
+A stub is simpler than a fake - it doesn't have real logic, it just returns pre-configured responses. The stub below lets you configure what the GET and POST responses will be before the test runs, and then the production code under test exercises its own logic against those fixed responses. The stub itself doesn't care what URL you pass; it always returns the same thing.
 
+This is the right tool when you only care about how the production code reacts to different responses, not about the HTTP logic itself.
+
+```cpp
 #include <string>
 #include <vector>
 #include <cassert>
 #include <iostream>
 
-// ═══════════ Interface ═══════════
+// Interface
 struct HttpResponse {
     int status_code;
     std::string body;
@@ -173,7 +180,7 @@ public:
     virtual HttpResponse post(const std::string& url, const std::string& body) = 0;
 };
 
-// ═══════════ STUB: returns pre-configured responses ═══════════
+// STUB: returns pre-configured responses
 class StubHttpClient : public IHttpClient {
     HttpResponse get_response_{200, R"({"status":"ok"})"};
     HttpResponse post_response_{201, R"({"id":42})"};
@@ -195,7 +202,7 @@ public:
     }
 };
 
-// ═══════════ Production code ═══════════
+// Production code
 class ApiClient {
     IHttpClient& http_;
 public:
@@ -215,7 +222,7 @@ public:
     }
 };
 
-// ═══════════ Tests ═══════════
+// Tests
 int main() {
     StubHttpClient stub;
     ApiClient client(stub);
@@ -240,29 +247,35 @@ int main() {
 
     std::cout << "All Stub tests passed!\n";
 }
-
 ```
+
+The stub approach makes it easy to test error handling paths that would be hard to trigger with a real HTTP client. "What happens when the server returns 503?" is a one-liner with a stub: `stub.set_get_response(503, ...)`.
 
 ### Q3: Distinguish a Spy (records calls) from a Mock (also verifies expectations)
 
 **Answer:**
 
-```cpp
+The spy vs mock distinction is the one that confuses people most. Both record what happened, but they differ in *when* you assert and *who* decides what counts as a failure.
 
+A **spy** is passive: it records every call, and you inspect the recording after the test with your own `assert` statements. You decide what matters.
+
+A **mock** is active: you declare expectations *before* the test runs, and the mock automatically fails if those expectations aren't met. The mock enforces the contract; you don't need to write the assertions yourself.
+
+```cpp
 #include <string>
 #include <vector>
 #include <cassert>
 #include <iostream>
 #include <functional>
 
-// ═══════════ Interface ═══════════
+// Interface
 class ILogger {
 public:
     virtual ~ILogger() = default;
     virtual void log(const std::string& level, const std::string& msg) = 0;
 };
 
-// ═══════════ SPY: records all calls for later inspection ═══════════
+// SPY: records all calls for later inspection
 class SpyLogger : public ILogger {
 public:
     struct Call {
@@ -272,7 +285,7 @@ public:
     std::vector<Call> calls;
 
     void log(const std::string& level, const std::string& msg) override {
-        calls.push_back({level, msg});  // Just record — no assertions
+        calls.push_back({level, msg});  // Just record - no assertions
     }
 
     // Inspection helpers
@@ -284,7 +297,7 @@ public:
     }
 };
 
-// ═══════════ MOCK: sets expectations and auto-fails ═══════════
+// MOCK: sets expectations and auto-fails
 class MockLogger : public ILogger {
     struct Expectation {
         std::string level;
@@ -311,11 +324,11 @@ public:
                 return;
             }
         }
-        // Unexpected call — mock would fail here
+        // Unexpected call - mock would fail here
         throw std::runtime_error("Unexpected log call: " + level + ": " + msg);
     }
 
-    // Call at end of test — verifies all expectations met
+    // Call at end of test - verifies all expectations met
     void verify() {
         for (auto& exp : expectations_) {
             if (exp.actual_times != exp.expected_times) {
@@ -334,7 +347,7 @@ public:
     }
 };
 
-// ═══════════ Code under test ═══════════
+// Code under test
 class PaymentProcessor {
     ILogger& logger_;
 public:
@@ -352,7 +365,7 @@ public:
 };
 
 int main() {
-    // ═══════════ SPY usage: inspect AFTER the test ═══════════
+    // SPY usage: inspect AFTER the test
     {
         SpyLogger spy;
         PaymentProcessor proc(spy);
@@ -362,10 +375,10 @@ int main() {
         assert(spy.call_count() == 2);
         assert(spy.was_called_with("INFO"));
         assert(!spy.was_called_with("ERROR"));
-        // Spy is passive — it never fails on its own
+        // Spy is passive - it never fails on its own
     }
 
-    // ═══════════ MOCK usage: set expectations BEFORE ═══════════
+    // MOCK usage: set expectations BEFORE
     {
         MockLogger mock;
         // Expectations set up front
@@ -378,7 +391,7 @@ int main() {
         mock.verify();  // Fails if expectations not met
     }
 
-    // ═══════════ MOCK catches unexpected calls ═══════════
+    // MOCK catches unexpected calls
     {
         MockLogger mock;
         mock.expect_call("INFO", "Processing payment", 1);
@@ -394,12 +407,13 @@ int main() {
 }
 
 // Summary:
-// Spy:  Record calls → inspect later → YOU write assert()s
-// Mock: Set expectations → run code → verify() auto-checks
+// Spy:  Record calls -> inspect later -> YOU write assert()s
+// Mock: Set expectations -> run code -> verify() auto-checks
 // Use Spy when you want flexible, after-the-fact assertions.
 // Use Mock when you want strict interaction verification.
-
 ```
+
+The practical guidance: use spies more often than mocks. Mocks are powerful but they encode interaction details into the test, which makes refactoring harder. If you rename a method or reorder two calls that don't affect behavior, a spy-based test still passes - a mock-based test may not. Reach for mocks when you specifically need to verify that a dependency was called a precise number of times, or when an unexpected call should be a hard failure.
 
 ---
 
@@ -407,6 +421,6 @@ int main() {
 
 - In real projects, use **Google Mock** or **trompeloeil** instead of hand-rolling mocks
 - **Fakes** are best for integration-like tests where you need realistic behavior (in-memory DB, fake filesystem)
-- **Stubs** are the simplest — use them when you just need a dependency to "not crash"
+- **Stubs** are the simplest - use them when you just need a dependency to "not crash"
 - **Mocks** can make tests brittle if they over-specify (testing implementation, not behavior)
 - Rule of thumb: prefer **state verification** (stubs/fakes + assert result) over **interaction verification** (mocks + verify calls)

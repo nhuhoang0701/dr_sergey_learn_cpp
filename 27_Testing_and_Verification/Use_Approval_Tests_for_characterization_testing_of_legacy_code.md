@@ -10,20 +10,24 @@
 
 **Approval Tests** (aka snapshot tests) capture the actual output of code and compare it against a previously "approved" baseline. They're ideal for **characterization testing**: documenting what legacy code *actually does* before refactoring, without needing to understand the logic first.
 
+The reason this workflow is so useful for legacy code is that it inverts the usual challenge. Normally you need to know the expected output to write a test. With approval tests, you let the code tell you what the expected output is - you run it, inspect the result, and if it looks correct you approve it. From that point on, any change to the output becomes a visible diff, which is exactly what you want when refactoring.
+
 ### Workflow
 
-```cpp
+The key insight is that the first run is always a failure - there's nothing to compare against yet. That's intentional. You inspect the received output, decide it's correct, and approve it. All subsequent runs then guard against any deviation.
 
-1. Run test → capture output to "received" file
-2. First run: no "approved" file → test FAILS
-3. Inspect "received" → approve it (rename/copy)
+```cpp
+1. Run test -> capture output to "received" file
+2. First run: no "approved" file -> test FAILS
+3. Inspect "received" -> approve it (rename/copy)
 4. Next runs: compare "received" vs "approved"
 
-   → Match = PASS, Differ = FAIL (shows diff)
-
+   -> Match = PASS, Differ = FAIL (shows diff)
 ```
 
 ### Approval Tests vs Assertion-Based Tests
+
+Both approaches have their place. The table below captures when each one wins. The big advantage of approval tests is for complex output - once you've approved a 50-line report, any line that changes shows up in the diff immediately.
 
 | Aspect | Assertion Tests | Approval Tests |
 | --- | :---: | :---: |
@@ -42,9 +46,12 @@
 
 **Answer:**
 
-```cpp
+The example wraps a `SalesReport` generator - a realistic piece of legacy code that produces multi-line formatted output. The first time you run the test, it fails because there's no approved file yet. You look at the received file, confirm the numbers are correct, and approve it. After that, the test protects the exact formatting, values, and structure indefinitely.
 
-// ═══════════ Approval Tests with Catch2 integration ═══════════
+The combination approval at the end is worth noting: instead of writing one test per tax rate (five separate tests), you write one test that covers all five rates and produces a single approved file. That's a much better ratio of test-maintenance effort to coverage.
+
+```cpp
+// Approval Tests with Catch2 integration
 // Requires: ApprovalTests.cpp library + Catch2
 
 #include "ApprovalTests.hpp"
@@ -55,7 +62,7 @@
 #include <map>
 #include <iomanip>
 
-// ═══════════ Legacy code (untested, undocumented) ═══════════
+// Legacy code (untested, undocumented)
 struct SalesReport {
     struct LineItem {
         std::string product;
@@ -88,7 +95,7 @@ struct SalesReport {
     }
 };
 
-// ═══════════ Characterization test — captures ACTUAL output ═══════════
+// Characterization test - captures ACTUAL output
 TEST_CASE("SalesReport generates correct output") {
     std::vector<SalesReport::LineItem> items = {
         {"Widget A", 3, 9.99},
@@ -99,7 +106,7 @@ TEST_CASE("SalesReport generates correct output") {
     std::string report = SalesReport::generate(items, 0.08);
 
     // First run: creates .received.txt, test FAILS
-    // You inspect the output, approve it → .approved.txt
+    // You inspect the output, approve it -> .approved.txt
     // All subsequent runs compare against approved
     ApprovalTests::Approvals::verify(report);
 }
@@ -114,7 +121,7 @@ TEST_CASE("SalesReport generates correct output") {
 // Tax (8.00%): $5.36
 // Total: $72.33
 
-// ═══════════ Combination approvals — test many inputs at once ═══════════
+// Combination approvals - test many inputs at once
 TEST_CASE("SalesReport tax rates") {
     SalesReport::LineItem item{"Test Item", 1, 100.00};
 
@@ -128,16 +135,20 @@ TEST_CASE("SalesReport tax rates") {
     );
     // Creates ONE approved file with all combinations
 }
-
 ```
+
+The approved file name is derived from the test name automatically, so you can tell at a glance which test each file belongs to. The approved files live in your repository alongside the source - they are the specification.
 
 ### Q2: Run the approval tests after a refactoring and verify behavior is unchanged
 
 **Answer:**
 
-```cpp
+This is approval testing's main purpose: providing a safety net during refactoring. The workflow is simple - approve the output of the legacy code first, then change the implementation, then run the tests. If the output matches, you're done. If it differs, the diff tool shows you exactly what changed.
 
-// ═══════════ Refactoring with Approval Tests as safety net ═══════════
+The example refactors a table formatter from manual string padding to `std::setw`. This looks like it should produce identical output, but small differences in how trailing spaces are handled can slip through. The approval test catches those differences immediately.
+
+```cpp
+// Refactoring with Approval Tests as safety net
 
 #include "ApprovalTests.hpp"
 #include <catch2/catch.hpp>
@@ -146,7 +157,7 @@ TEST_CASE("SalesReport tax rates") {
 #include <vector>
 #include <iomanip>
 
-// ── BEFORE refactoring: messy legacy formatting ──
+// BEFORE refactoring: messy legacy formatting
 namespace legacy {
 std::string format_table(const std::vector<std::vector<std::string>>& rows) {
     std::ostringstream out;
@@ -165,7 +176,7 @@ std::string format_table(const std::vector<std::vector<std::string>>& rows) {
 }
 } // namespace legacy
 
-// ── AFTER refactoring: cleaner implementation ──
+// AFTER refactoring: cleaner implementation
 namespace refactored {
 std::string format_table(const std::vector<std::vector<std::string>>& rows) {
     constexpr size_t col_width = 15;
@@ -181,7 +192,7 @@ std::string format_table(const std::vector<std::vector<std::string>>& rows) {
 }
 } // namespace refactored
 
-// ═══════════ The approval test catches behavioral differences ═══════════
+// The approval test catches behavioral differences
 TEST_CASE("format_table output matches approved baseline") {
     std::vector<std::vector<std::string>> data = {
         {"Name", "Age", "City"},
@@ -190,9 +201,9 @@ TEST_CASE("format_table output matches approved baseline") {
         {"Charlie", "35", "Tokyo"},
     };
 
-    // Step 1: Run with legacy:: → approve the output
-    // Step 2: Switch to refactored:: → if output differs, test FAILS
-    // Step 3: Inspect diff → decide if change is intentional
+    // Step 1: Run with legacy:: -> approve the output
+    // Step 2: Switch to refactored:: -> if output differs, test FAILS
+    // Step 3: Inspect diff -> decide if change is intentional
 
     std::string output = refactored::format_table(data);
     ApprovalTests::Approvals::verify(output);
@@ -201,34 +212,36 @@ TEST_CASE("format_table output matches approved baseline") {
     // the diff tool shows EXACTLY which lines changed
 }
 
-// ═══════════ Workflow for safe refactoring ═══════════
+// Workflow for safe refactoring
 /*
 Step 1: Write approval tests BEFORE touching legacy code
-        → Run tests → approve baseline outputs
+        -> Run tests -> approve baseline outputs
 
 Step 2: Refactor the implementation
-        → Change internal structure
-        → DO NOT change behavior
+        -> Change internal structure
+        -> DO NOT change behavior
 
 Step 3: Run approval tests
-        → PASS = behavior unchanged ✓
-        → FAIL = diff shows what changed
-            → If intentional: re-approve
-            → If accidental: fix the bug
+        -> PASS = behavior unchanged
+        -> FAIL = diff shows what changed
+            -> If intentional: re-approve
+            -> If accidental: fix the bug
 
 Step 4: Once all approval tests pass, optionally convert
         some to assertion-based tests for clarity
 */
-
 ```
+
+The re-approve step in the workflow is worth spelling out: if you refactored intentionally and the output *should* change (say, you fixed a formatting bug), you simply approve the new output. The approved file becomes the new specification. If the change was accidental, you fix the code until the test passes again.
 
 ### Q3: Explain how approval tests differ from assertion-based tests for complex output structures
 
 **Answer:**
 
-```cpp
+The contrast here is clearest with structured output like JSON. An assertion-based test for a JSON response typically checks a handful of fields with individual `REQUIRE` calls, which means the test can pass even if unexpected fields are present, the structure is wrong, or the formatting changed. An approval test captures the entire output in one shot - nothing can change without the test noticing.
 
-// ═══════════ Comparison: assertion vs approval for JSON output ═══════════
+```cpp
+// Comparison: assertion vs approval for JSON output
 
 #include "ApprovalTests.hpp"
 #include <catch2/catch.hpp>
@@ -249,11 +262,11 @@ std::string generate_user_json(const std::string& name, int age) {
 })";
 }
 
-// ═══════════ Assertion-based: tedious for complex structures ═══════════
+// Assertion-based: tedious for complex structures
 TEST_CASE("User JSON (assertion-based)") {
     std::string json = generate_user_json("Alice", 30);
 
-    // Must manually check every field — error prone!
+    // Must manually check every field - error prone!
     REQUIRE(json.find("\"name\": \"Alice\"") != std::string::npos);
     REQUIRE(json.find("\"age\": 30") != std::string::npos);
     REQUIRE(json.find("\"read\"") != std::string::npos);
@@ -263,7 +276,7 @@ TEST_CASE("User JSON (assertion-based)") {
     // What if there's an extra field we didn't check?
 }
 
-// ═══════════ Approval-based: capture the ENTIRE output ═══════════
+// Approval-based: capture the ENTIRE output
 TEST_CASE("User JSON (approval-based)") {
     std::string json = generate_user_json("Alice", 30);
     ApprovalTests::Approvals::verify(json);
@@ -272,18 +285,18 @@ TEST_CASE("User JSON (approval-based)") {
     // - If ANYTHING changes, test fails and shows a diff
 }
 
-// ═══════════ When each approach wins ═══════════
+// When each approach wins
 /*
 Use ASSERTION-BASED when:
-  ✓ Output is simple (a number, a bool, a short string)
-  ✓ You care about specific properties, not full output
-  ✓ Output format changes often but semantics stay
+  - Output is simple (a number, a bool, a short string)
+  - You care about specific properties, not full output
+  - Output format changes often but semantics stay
 
 Use APPROVAL-BASED when:
-  ✓ Output is complex (reports, HTML, JSON, binary formats)
-  ✓ You're characterizing legacy code (don't know expected values)
-  ✓ You want to protect against ANY behavioral change during refactoring
-  ✓ Output is hard to construct manually (multi-line, structured)
+  - Output is complex (reports, HTML, JSON, binary formats)
+  - You're characterizing legacy code (don't know expected values)
+  - You want to protect against ANY behavioral change during refactoring
+  - Output is hard to construct manually (multi-line, structured)
 
 Best practice: COMBINE both:
 
@@ -291,8 +304,9 @@ Best practice: COMBINE both:
   - Assertion tests for key semantic invariants
 
 */
-
 ```
+
+The "combine both" recommendation at the end is worth following in practice. Use an approval test to lock down the full output of a complex function, and then add a targeted assertion test for the one invariant that really matters semantically. The approval test catches accidental regressions; the assertion test documents intent.
 
 ---
 
@@ -300,6 +314,6 @@ Best practice: COMBINE both:
 
 - ApprovalTests.cpp: header-only, integrates with Catch2, doctest, Google Test, and CppUnit
 - Install: single-header `ApprovalTests.hpp` or via vcpkg/Conan
-- `.approved.txt` files **must be committed to version control** — they ARE the specification
+- `.approved.txt` files **must be committed to version control** - they ARE the specification
 - Configure diff tool: `ApprovalTests::DiffReporter::setFrontLoadedReporter(ApprovalTests::DiffReporter::BeyondCompare)`
-- Combination approvals reduce test explosion: one test × N inputs = one approved file
+- Combination approvals reduce test explosion: one test times N inputs = one approved file

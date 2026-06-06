@@ -8,15 +8,17 @@
 
 ## Topic Overview
 
-**Trompeloeil** is a header-only C++14 mocking framework that integrates seamlessly with Catch2 and doctest. Unlike gMock (which requires Google Test), trompeloeil works with any testing framework via adaptors.
+**Trompeloeil** is a header-only C++14 mocking framework that integrates seamlessly with Catch2 and doctest. Unlike gMock (which requires Google Test), trompeloeil works with any testing framework via adaptors - you just include a different header and everything wires up automatically.
 
 ### Why Trompeloeil with Catch2/doctest
 
+If you are already using Catch2 or doctest and need mocking, trompeloeil is the natural choice. The table below compares the two ecosystems; the headline differences are that trompeloeil is header-only and framework-agnostic, while gMock is tightly coupled to Google Test:
+
 | Feature | trompeloeil + Catch2 | gMock + GTest |
 | --- | :---: | :---: |
-| Header-only | ✓ | ✗ (requires building gtest) |
-| Works with Catch2/doctest | ✓ native | ✗ |
-| C++14 expression templates | ✓ | GTest macros |
+| Header-only | Yes | No (requires building gtest) |
+| Works with Catch2/doctest | Yes (native) | No |
+| C++14 expression templates | Yes | GTest macros |
 | Compile time (100 mocks) | Fast | Slower |
 | Expectation syntax | `REQUIRE_CALL` | `EXPECT_CALL` |
 | Sequence enforcement | `trompeloeil::sequence` | `InSequence` |
@@ -24,14 +26,14 @@
 
 ### Setup
 
-```cpp
+Setup is as simple as it gets. There is no library to build or link - just two includes:
 
-// Just two includes — no library to build
+```cpp
+// Just two includes - no library to build
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/trompeloeil.hpp>
 // OR for doctest:
 // #include <doctest/trompeloeil.hpp>
-
 ```
 
 ---
@@ -42,14 +44,15 @@
 
 **Answer:**
 
-```cpp
+The pattern is always: define an interface, create a mock class with `MAKE_MOCK*` macros, write the system under test against the interface, then set expectations in the test. The `MAKE_MOCK2` macro takes a method name, the full function signature, and optionally `override`. The number in the macro name is just the parameter count:
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/trompeloeil.hpp>
 #include <string>
 #include <memory>
 
-// ═══════════ Interface ═══════════
+// Interface
 class ILogger {
 public:
     virtual ~ILogger() = default;
@@ -57,7 +60,7 @@ public:
     virtual bool is_enabled(int level) const = 0;
 };
 
-// ═══════════ Mock — MAKE_MOCK<N> where N = param count ═══════════
+// Mock - MAKE_MOCK<N> where N = param count
 class MockLogger : public ILogger {
 public:
     MAKE_MOCK2(log, void(int, const std::string&), override);
@@ -66,7 +69,7 @@ public:
     // MAKE_CONST_MOCK1: const method with 1 parameter
 };
 
-// ═══════════ System under test ═══════════
+// System under test
 class OrderProcessor {
     ILogger& logger_;
 public:
@@ -80,7 +83,7 @@ public:
     }
 };
 
-// ═══════════ Test with REQUIRE_CALL ═══════════
+// Test with REQUIRE_CALL
 TEST_CASE("OrderProcessor logs start and end") {
     MockLogger mock;
 
@@ -110,20 +113,22 @@ TEST_CASE("OrderProcessor checks log level") {
     OrderProcessor proc(mock);
     proc.process(99);
 }
-
 ```
+
+Notice that expectations are verified automatically when the `REQUIRE_CALL` object goes out of scope - you do not need to call any explicit "verify" method at the end of the test.
 
 ### Q2: Use trompeloeil::eq, ne, lt matchers to constrain call arguments
 
 **Answer:**
 
-```cpp
+Matchers let you express exactly what argument values are acceptable. `trompeloeil::_` is the wildcard (any value). For anything more precise, use the named matchers or `.WITH()` for custom predicates. Here is the full catalog in action on a metrics interface:
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/trompeloeil.hpp>
 #include <string>
 
-// ═══════════ Interface ═══════════
+// Interface
 class IMetrics {
 public:
     virtual ~IMetrics() = default;
@@ -137,7 +142,7 @@ public:
     MAKE_MOCK2(increment, void(const std::string&, int), override);
 };
 
-// ═══════════ System under test ═══════════
+// System under test
 class RequestHandler {
     IMetrics& metrics_;
 public:
@@ -157,7 +162,7 @@ public:
 TEST_CASE("Matchers constrain arguments") {
     MockMetrics mock;
 
-    SECTION("trompeloeil::eq — exact match") {
+    SECTION("trompeloeil::eq - exact match") {
         REQUIRE_CALL(mock, record(trompeloeil::eq("latency"s), trompeloeil::_));
         // Only matches if first arg is exactly "latency"
 
@@ -167,7 +172,7 @@ TEST_CASE("Matchers constrain arguments") {
         handler.handle(200, 50.0);
     }
 
-    SECTION("trompeloeil::ne — not equal") {
+    SECTION("trompeloeil::ne - not equal") {
         REQUIRE_CALL(mock, record(trompeloeil::ne(""s), trompeloeil::_));
         // Matches any non-empty string
 
@@ -177,7 +182,7 @@ TEST_CASE("Matchers constrain arguments") {
         handler.handle(200, 50.0);
     }
 
-    SECTION("trompeloeil::gt, lt, ge, le — comparisons") {
+    SECTION("trompeloeil::gt, lt, ge, le - comparisons") {
         REQUIRE_CALL(mock, record(trompeloeil::_, trompeloeil::gt(0.0)));
         // latency must be > 0.0
 
@@ -188,7 +193,7 @@ TEST_CASE("Matchers constrain arguments") {
         handler.handle(500, 50.0);
     }
 
-    SECTION("trompeloeil::re — regex matcher") {
+    SECTION("trompeloeil::re - regex matcher") {
         REQUIRE_CALL(mock, record(trompeloeil::re("^lat.*"), trompeloeil::_));
         // Name must match regex "^lat.*"
 
@@ -211,39 +216,39 @@ TEST_CASE("Matchers constrain arguments") {
     }
 }
 
-// ═══════════ Matcher quick reference ═══════════
-// trompeloeil::eq(x)   — == x
-// trompeloeil::ne(x)   — != x
-// trompeloeil::gt(x)   — > x
-// trompeloeil::ge(x)   — >= x
-// trompeloeil::lt(x)   — < x
-// trompeloeil::le(x)   — <= x
-// trompeloeil::re(pat) — regex match
-// trompeloeil::_       — any value (wildcard)
-// .WITH(predicate)     — custom lambda using _1, _2, etc.
-
+// Matcher quick reference:
+// trompeloeil::eq(x)   - == x
+// trompeloeil::ne(x)   - != x
+// trompeloeil::gt(x)   - > x
+// trompeloeil::ge(x)   - >= x
+// trompeloeil::lt(x)   - < x
+// trompeloeil::le(x)   - <= x
+// trompeloeil::re(pat) - regex match
+// trompeloeil::_       - any value (wildcard)
+// .WITH(predicate)     - custom lambda using _1, _2, etc.
 ```
+
+The `.WITH()` clause is the escape hatch for anything the named matchers cannot express. The `_1`, `_2` placeholders refer to the first and second arguments respectively.
 
 ### Q3: Explain how trompeloeil integrates with Catch2 CHECK macros for non-fatal expectation failures
 
 **Answer:**
 
-Trompeloeil reports violations through the test framework's **failure reporting** mechanism. With Catch2, this means:
+Trompeloeil reports violations through the test framework's **failure reporting** mechanism. With Catch2, this means mock failures look exactly like normal assertion failures in the test output - same format, same source location reporting.
 
 **Fatal vs Non-Fatal:**
 
 | trompeloeil Macro | Catch2 Equivalent | Behavior on Failure |
 | --- | --- | --- |
-| `REQUIRE_CALL` | Like `REQUIRE` | **Fatal** — test stops immediately if unmet at scope exit |
-| `ALLOW_CALL` | — | Non-fatal — 0 calls is fine |
-| `FORBID_CALL` | — | **Fatal** — any call is an error |
+| `REQUIRE_CALL` | Like `REQUIRE` | **Fatal** - test stops immediately if unmet at scope exit |
+| `ALLOW_CALL` | - | Non-fatal - 0 calls is fine |
+| `FORBID_CALL` | - | **Fatal** - any call is an error |
 
-**How integration works:**
+The wiring happens through the adaptor header. When you include `<catch2/trompeloeil.hpp>`, it registers a reporter that maps trompeloeil's violation callbacks to Catch2's failure mechanism. You do not have to do anything special - it just works:
 
 ```cpp
-
 #include <catch2/catch_test_macros.hpp>
-#include <catch2/trompeloeil.hpp>  // ← This adaptor header does the magic
+#include <catch2/trompeloeil.hpp>  // <- This adaptor header does the magic
 
 // The adaptor (#include <catch2/trompeloeil.hpp>) defines:
 // - trompeloeil::reporter that maps to Catch2's FAIL() / CHECK()
@@ -289,28 +294,27 @@ TEST_CASE("Unsatisfied REQUIRE_CALL reported at scope exit") {
     //     test.cpp:50: Expected notify("hello") to be called 1 time, was called 0 times
 }
 
-// ═══════════ doctest works identically ═══════════
+// doctest works identically
 // Just change the include:
 // #include <doctest/trompeloeil.hpp>
 // Same macros, same behavior, different reporting backend
-
 ```
 
 **Key integration details:**
 
-1. The adaptor header registers a `trompeloeil::reporter` during static init
-2. Unmet expectations use Catch2's `FAIL()` — reported as test failures
-3. Source location points to the `REQUIRE_CALL` line, not the mock definition
-4. Multiple violations in one test are all reported (Catch2 section isolation)
+1. The adaptor header registers a `trompeloeil::reporter` during static init.
+2. Unmet expectations use Catch2's `FAIL()` - reported as test failures in the normal output.
+3. Source location points to the `REQUIRE_CALL` line, not the mock definition.
+4. Multiple violations in one test are all reported (Catch2 section isolation handles this cleanly).
 
 ---
 
 ## Notes
 
-- **Header-only**: just `#include <trompeloeil.hpp>` — no library to link
-- `MAKE_MOCK0` through `MAKE_MOCK15` for 0-15 parameters
-- `MAKE_CONST_MOCK*` for const member functions
-- Expectations are checked in **LIFO** order (last defined = first matched)
-- Use `NAMED_REQUIRE_CALL` to store expectation in a variable for later `.RETURN()` changes
-- `TIMES(n)` for exact count, `TIMES(AT_LEAST(1))`, `TIMES(AT_MOST(3))`
-- Compile with `-std=c++14` minimum; C++17 recommended for CTAD support
+- **Header-only**: just `#include <trompeloeil.hpp>` - no library to link or build step required.
+- `MAKE_MOCK0` through `MAKE_MOCK15` cover methods with 0 to 15 parameters.
+- `MAKE_CONST_MOCK*` is for const member functions - do not forget this or you will get a confusing compile error.
+- Expectations are checked in **LIFO** order (last defined = first matched), which matters when you have multiple expectations for the same method.
+- Use `NAMED_REQUIRE_CALL` to store an expectation in a variable so you can add `.RETURN()` changes after the fact.
+- `TIMES(n)` for exact count; `TIMES(AT_LEAST(1))` and `TIMES(AT_MOST(3))` for ranges.
+- Compile with `-std=c++14` minimum; C++17 is recommended for CTAD support.

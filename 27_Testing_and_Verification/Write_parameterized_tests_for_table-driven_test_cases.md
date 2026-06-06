@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-**Parameterized tests** (a.k.a. table-driven tests) run the same test logic against multiple input/output pairs. Instead of writing N separate `TEST()` functions, you define one test body and a table of data.
+**Parameterized tests** (also called table-driven tests) run the same test logic against multiple input/output pairs. Instead of writing N separate `TEST()` functions that all say the same thing, you define one test body and a table of data. This is one of those techniques that feels like a minor convenience until you have 30 test cases - then it becomes indispensable.
 
 ### Comparison: Manual vs Parameterized
 
-```cpp
+Here is the same test written both ways. The manual version repeats the `EXPECT_EQ(fizz(...), ...)` pattern six times. The parameterized version writes it once and feeds it data:
 
+```cpp
 Manual (6 tests, lots of duplication):          Parameterized (1 test, 6 rows):
 TEST(Fizz, 3)  { EXPECT_EQ(fizz(3),  "Fizz"); }   TEST_P(FizzTest, Output) {
 TEST(Fizz, 5)  { EXPECT_EQ(fizz(5),  "Buzz"); }       auto [in, out] = GetParam();
@@ -21,10 +22,11 @@ TEST(Fizz, 15) { EXPECT_EQ(fizz(15), "FizzBuzz"); }    EXPECT_EQ(fizz(in), out);
 TEST(Fizz, 1)  { EXPECT_EQ(fizz(1),  "1"); }       }
 TEST(Fizz, 0)  { EXPECT_EQ(fizz(0),  "0"); }       INSTANTIATE with 6 rows...
 TEST(Fizz, -3) { EXPECT_EQ(fizz(-3), "Fizz"); }
-
 ```
 
 ### Framework Support
+
+Most C++ testing frameworks have first-class support for parameterized tests. The syntax varies but the idea is the same:
 
 | Framework | Mechanism | Syntax |
 | --- | --- | --- |
@@ -41,13 +43,14 @@ TEST(Fizz, -3) { EXPECT_EQ(fizz(-3), "Fizz"); }
 
 **Answer:**
 
-```cpp
+The Google Test approach has three moving parts: a fixture class that names the parameter type, a `TEST_P` body that unpacks it, and an `INSTANTIATE_TEST_SUITE_P` call that provides the data. Each data row becomes a separate test with its own pass/fail result:
 
+```cpp
 #include <gtest/gtest.h>
 #include <string>
 #include <tuple>
 
-// ═══════════ Function under test ═══════════
+// Function under test
 std::string classify_bmi(double bmi) {
     if (bmi < 18.5) return "Underweight";
     if (bmi < 25.0) return "Normal";
@@ -55,16 +58,16 @@ std::string classify_bmi(double bmi) {
     return "Obese";
 }
 
-// ═══════════ Step 1: Define the test fixture ═══════════
+// Step 1: Define the test fixture
 class BmiTest : public ::testing::TestWithParam<std::tuple<double, std::string>> {};
 
-// ═══════════ Step 2: Write the parameterized test ═══════════
+// Step 2: Write the parameterized test
 TEST_P(BmiTest, ClassifiesCorrectly) {
     auto [bmi, expected] = GetParam();
     EXPECT_EQ(classify_bmi(bmi), expected);
 }
 
-// ═══════════ Step 3: Instantiate with the data table ═══════════
+// Step 3: Instantiate with the data table
 INSTANTIATE_TEST_SUITE_P(
     BmiClassification,         // Prefix for test names
     BmiTest,                   // Test fixture class
@@ -92,7 +95,7 @@ INSTANTIATE_TEST_SUITE_P(
 // BmiClassification/BmiTest.ClassifiesCorrectly/BMI_185
 // ...
 
-// ═══════════ Multiple parameters ═══════════
+// Multiple parameters
 struct ConversionCase {
     double celsius;
     double expected_fahrenheit;
@@ -118,22 +121,24 @@ INSTANTIATE_TEST_SUITE_P(
     ),
     [](const auto& info) { return info.param.name; }
 );
-
 ```
+
+The custom name generator at the end of `INSTANTIATE_TEST_SUITE_P` is worth the extra line. Without it, test names come out as `/0`, `/1`, `/2` - unhelpful when one of them fails. With it, you get `BMI_185` or `Freezing`, which tells you immediately what went wrong.
 
 ### Q2: Use GENERATE in Catch2 to parameterize a TEST_CASE over multiple values
 
 **Answer:**
 
-```cpp
+Catch2's `GENERATE` is more concise than Google Test's approach - there is no fixture class to define. You just call `GENERATE` inside the test body and the framework re-runs the test for each value. The `table<>` variant lets you pair inputs with expected outputs directly:
 
+```cpp
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_adapters.hpp>
 #include <string>
 #include <algorithm>
 
-// ═══════════ Function under test ═══════════
+// Function under test
 bool is_palindrome(const std::string& s) {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
@@ -142,9 +147,9 @@ bool is_palindrome(const std::string& s) {
     return lower == rev;
 }
 
-// ═══════════ GENERATE: inline parameterization ═══════════
+// GENERATE: inline parameterization
 TEST_CASE("Palindrome detection") {
-    // GENERATE creates a parameter — test runs once per value
+    // GENERATE creates a parameter - test runs once per value
     auto [input, expected] = GENERATE(table<std::string, bool>({
         {"racecar",     true},
         {"Madam",       true},
@@ -159,17 +164,17 @@ TEST_CASE("Palindrome detection") {
     REQUIRE(is_palindrome(input) == expected);
 }
 
-// ═══════════ GENERATE with ranges and combinations ═══════════
+// GENERATE with ranges and combinations
 TEST_CASE("Multiplication table boundaries") {
     auto a = GENERATE(range(1, 11));   // 1 through 10
     auto b = GENERATE(range(1, 11));   // 1 through 10 (cartesian product!)
 
     REQUIRE(a * b == b * a);           // Commutativity
-    REQUIRE(a * b > 0);                // Both positive → product positive
+    REQUIRE(a * b > 0);                // Both positive -> product positive
 }
-// Runs 100 times (10 × 10)
+// Runs 100 times (10 x 10)
 
-// ═══════════ GENERATE with filter ═══════════
+// GENERATE with filter
 TEST_CASE("Division by non-zero") {
     auto divisor = GENERATE(filter(
         [](int x) { return x != 0; },  // Skip zero
@@ -179,7 +184,7 @@ TEST_CASE("Division by non-zero") {
     REQUIRE(100 / divisor != 0);  // No division by zero
 }
 
-// ═══════════ GENERATE with map ═══════════
+// GENERATE with map
 TEST_CASE("String length categories") {
     auto input = GENERATE(as<std::string>{},
         "", "a", "ab", "abc", "abcde", "abcdefghij"
@@ -192,16 +197,18 @@ TEST_CASE("String length categories") {
         REQUIRE(input[0] != '\0');
     }
 }
-
 ```
+
+Notice that two `GENERATE` calls in the same test create a cartesian product - every combination of `a` and `b` is tested. This is particularly handy for testing commutativity, symmetry, or any property that should hold for all pairs from two sets.
 
 ### Q3: Show how parameterized tests reduce boilerplate vs writing one test per case
 
 **Answer:**
 
-```cpp
+Here is a before-and-after for HTTP status text lookup. The "before" version works but has a serious maintenance problem: every new status code requires copy-pasting a line, and if the `EXPECT_EQ` pattern ever needs to change, you have to update it everywhere:
 
-// ═══════════ BEFORE: One test per case (75 lines) ═══════════
+```cpp
+// BEFORE: One test per case (75 lines)
 TEST(HttpStatus, Ok)           { EXPECT_EQ(status_text(200), "OK"); }
 TEST(HttpStatus, Created)      { EXPECT_EQ(status_text(201), "Created"); }
 TEST(HttpStatus, BadRequest)   { EXPECT_EQ(status_text(400), "Bad Request"); }
@@ -216,7 +223,7 @@ TEST(HttpStatus, Unavailable)  { EXPECT_EQ(status_text(503), "Service Unavailabl
 //   - Logic is duplicated 9 times
 //   - Can't easily loop over all cases for exhaustive check
 
-// ═══════════ AFTER: Parameterized (25 lines) ═══════════
+// AFTER: Parameterized (25 lines)
 struct StatusCase {
     int code;
     std::string text;
@@ -242,12 +249,12 @@ INSTANTIATE_TEST_SUITE_P(AllStatuses, HttpStatusTest, ::testing::Values(
 ));
 
 // Benefits:
-// ✓ Add new case = add one line to the table
-// ✓ Test logic written ONCE
-// ✓ Each row runs as a separate test (individual pass/fail)
-// ✓ Easy to generate from external data
+// Add new case = add one line to the table
+// Test logic written ONCE
+// Each row runs as a separate test (individual pass/fail)
+// Easy to generate from external data
 
-// ═══════════ Even better: combine with typed tests ═══════════
+// Even better: combine with typed tests
 // Google Test TYPED_TEST for testing same interface across implementations:
 
 template <typename T>
@@ -265,17 +272,18 @@ TYPED_TEST(ContainerTest, PushBackIncreasesSize) {
     container.push_back(99);
     EXPECT_EQ(container.size(), 2u);
 }
-// Runs for vector, deque, AND list — zero duplication
-
+// Runs for vector, deque, AND list - zero duplication
 ```
+
+The `TYPED_TEST` at the end is a different but related tool: instead of varying the data, you vary the *type*. This is how you test that multiple container implementations all satisfy the same contract. Combined with value-parameterized tests, you can build a thorough test matrix with very little code.
 
 ---
 
 ## Notes
 
-- Google Test: `TEST_P` for value params, `TYPED_TEST` for type params — can combine both
-- Catch2 `GENERATE()` is lazier — no fixture class needed, more concise
-- Custom name generators prevent cryptic test names like `/0`, `/1`, `/2`
-- Table-driven tests excel for pure functions; for stateful tests, use fixtures
-- Parameterized tests make it trivial to add edge cases — just add a row to the table
-- `::testing::Combine(Values(...), Values(...))` creates cartesian products in Google Test
+- Google Test: `TEST_P` for value params, `TYPED_TEST` for type params - you can combine both for a matrix of type x value combinations.
+- Catch2 `GENERATE()` is more concise - no fixture class needed, which makes it easier to read for simple cases.
+- Always use custom name generators in Google Test to get readable names like `BMI_185/Normal` instead of `/2`.
+- Table-driven tests excel for pure functions; for stateful tests that need setup/teardown, use fixtures.
+- Adding edge cases to a parameterized test is trivial - just add a row to the table. This lowers the cost of being thorough.
+- `::testing::Combine(Values(...), Values(...))` creates cartesian products in Google Test, just like nested `GENERATE` calls do in Catch2.

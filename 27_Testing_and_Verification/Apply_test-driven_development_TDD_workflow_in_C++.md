@@ -10,31 +10,37 @@
 
 **Test-Driven Development (TDD)** is a workflow where you write a **failing test first**, then write the **minimal code** to make it pass, then **refactor**. This "Red-Green-Refactor" cycle produces code that is testable by design, with complete test coverage from the start.
 
+The reason TDD works is subtle but important: it changes the order in which you think. Instead of implementing something and then figuring out how to test it, you start by asking "how do I want to use this?" That question shapes the design. Code written test-first tends to have smaller functions, cleaner interfaces, and fewer hidden dependencies - not because of discipline, but because those properties naturally make code easier to test.
+
 ### The Red-Green-Refactor Cycle
 
+The diagram below captures the rhythm of TDD. Each lap around the loop adds one new behavior. The key discipline is staying in the green phase as much as possible: never write more production code than what's needed to make the current failing test pass.
+
 ```cpp
-
-    ┌──── RED ─────┐
-    │ Write a test  │
-    │ that FAILS    │
-    └──────┬────────┘
-           ▼
-    ┌──── GREEN ───┐
-    │ Write MINIMAL│
-    │ code to pass │
-    └──────┬───────┘
-           ▼
-    ┌── REFACTOR ──┐
-    │ Clean up code│
-    │ tests still  │
-    │ pass         │
-    └──────┬───────┘
-           │
-           └──→ repeat
-
+    +---- RED -----+
+    | Write a test  |
+    | that FAILS    |
+    +------+--------+
+           |
+           v
+    +---- GREEN ---+
+    | Write MINIMAL|
+    | code to pass |
+    +------+-------+
+           |
+           v
+    +-- REFACTOR --+
+    | Clean up code|
+    | tests still  |
+    | pass         |
+    +------+-------+
+           |
+           +---> repeat
 ```
 
 ### Catch2 Quick Reference
+
+Catch2 uses a slightly different style than Google Test - tests are free functions with string names rather than macro-generated classes. The macros below are all you need for most situations. `REQUIRE` stops the test on failure; `CHECK` lets it continue so you see all failures at once.
 
 | Macro                         | Purpose                                 |
 | --- | --- |
@@ -52,13 +58,14 @@
 
 **Answer:**
 
-```cpp
+Here's the simplest possible TDD example: a single function with a forward declaration so the file compiles, but no definition yet. The compile error itself is the "RED" state - the test cannot even run because the function doesn't exist.
 
-// ═══════════ Step 1: RED — Write the test FIRST ═══════════
+```cpp
+// Step 1: RED - Write the test FIRST
 // File: test_calculator.cpp
 #include <catch2/catch_test_macros.hpp>
 
-// Forward declaration — function doesn't exist yet!
+// Forward declaration - function doesn't exist yet!
 int add(int a, int b);
 
 TEST_CASE("add() computes the sum of two integers") {
@@ -68,30 +75,32 @@ TEST_CASE("add() computes the sum of two integers") {
     REQUIRE(add(-5, -3) == -8);
     REQUIRE(add(INT_MAX, 0) == INT_MAX);
 }
-// COMPILE ERROR: add() is not defined → this is the "RED" state
+// COMPILE ERROR: add() is not defined - this is the "RED" state
 
-// ═══════════ Step 2: GREEN — Minimal implementation ═══════════
+// Step 2: GREEN - Minimal implementation
 // File: calculator.hpp
 int add(int a, int b) {
     return a + b;  // Simplest code that makes all tests pass
 }
-// TESTS PASS → this is the "GREEN" state
+// TESTS PASS - this is the "GREEN" state
 
-// ═══════════ Step 3: No refactor needed (already clean) ═══════════
+// Step 3: No refactor needed (already clean)
 // In more complex cases, you'd clean up duplicated code here while
 // ensuring tests still pass.
-
 ```
+
+The "minimal implementation" rule is not about writing bad code on purpose - it's about not getting ahead of yourself. You implement exactly what the current test demands, nothing more. The next test will demand more, and you'll grow the implementation naturally.
 
 ### Q2: Follow the red-green-refactor cycle: failing test, minimal implementation, clean refactor
 
 **Answer:**
 
-```cpp
+This example builds a `Stack<T>` incrementally across three iterations. Each iteration follows the same pattern: write a failing test, add the minimum code to make it pass, then look for cleanup opportunities. The refactor at the end is the payoff: duplicated guard logic gets extracted into a helper, and the tests tell you instantly whether the cleanup was safe.
 
+```cpp
 // Full TDD cycle for a Stack<T> class
 
-// ═══════════ Iteration 1: push and size ═══════════
+// Iteration 1: push and size
 
 // RED: Write failing test
 #include <catch2/catch_test_macros.hpp>
@@ -109,7 +118,7 @@ TEST_CASE("Stack push and size") {
     REQUIRE(s.size() == 1);
     REQUIRE(!s.empty());
 }
-// → FAILS: Stack doesn't exist
+// -> FAILS: Stack doesn't exist
 
 // GREEN: Minimal implementation
 #include <vector>
@@ -122,9 +131,9 @@ public:
     size_t size() const { return data_.size(); }
     bool empty() const { return data_.empty(); }
 };
-// → PASSES
+// -> PASSES
 
-// ═══════════ Iteration 2: pop and top ═══════════
+// Iteration 2: pop and top
 
 // RED: Add new tests (existing tests still run)
 TEST_CASE("Stack pop and top") {
@@ -144,7 +153,7 @@ TEST_CASE("Stack pop on empty throws") {
     REQUIRE_THROWS_AS(s.pop(), std::underflow_error);
     REQUIRE_THROWS_AS(s.top(), std::underflow_error);
 }
-// → FAILS: top() and pop() don't exist
+// -> FAILS: top() and pop() don't exist
 
 // GREEN: Add methods
 // (add to Stack class):
@@ -156,32 +165,34 @@ TEST_CASE("Stack pop on empty throws") {
 //       if (empty()) throw std::underflow_error("pop on empty stack");
 //       data_.pop_back();
 //   }
-// → PASSES
+// -> PASSES
 
-// ═══════════ Iteration 3: REFACTOR ═══════════
+// Iteration 3: REFACTOR
 // Notice: the emptiness check is duplicated in top() and pop().
 // Extract a helper:
 //   void check_not_empty() const {
 //       if (empty()) throw std::underflow_error("stack is empty");
 //   }
 // Then top() and pop() call check_not_empty().
-// Run tests → still PASS → refactor is safe.
-
+// Run tests -> still PASS -> refactor is safe.
 ```
+
+Notice that the existing tests kept running during iteration 2. That's intentional - you never want to break the green state for existing behavior while adding new behavior. The tests become a safety net that grows with the code.
 
 ### Q3: Show how TDD drives better API design: the test forces a clean, testable interface
 
 **Answer:**
 
-```cpp
+This is the most important lesson from TDD. When you write tests first, untestable designs reveal themselves immediately because the tests become painful to write. The contrast below is striking: `BadUserService` has hard-wired dependencies that make it nearly impossible to test without spinning up a real database and email server. `UserService`, designed test-first, has clean interfaces and injected dependencies - and every behavior can be verified in milliseconds with fakes.
 
-// ═══════════ Without TDD: untestable design ═══════════
+```cpp
+// Without TDD: untestable design
 // Developer writes implementation first, tests as afterthought
 
 class BadUserService {
 public:
     bool register_user(const std::string& name) {
-        // Directly connects to database — untestable without real DB!
+        // Directly connects to database - untestable without real DB!
         auto conn = DatabasePool::get_connection();  // Hard dependency
         conn.execute("INSERT INTO users ...");
         EmailService::send_welcome(name);            // Hard dependency
@@ -190,12 +201,12 @@ public:
     }
 };
 // Testing this requires: running DB, email server, log infrastructure
-// → Slow, flaky, rarely tested
+// -> Slow, flaky, rarely tested
 
-// ═══════════ With TDD: testable design emerges naturally ═══════════
+// With TDD: testable design emerges naturally
 // Writing the TEST FIRST forces you to design injectable interfaces
 
-// Step 1: Write the test — you're "designing the API from the consumer side"
+// Step 1: Write the test - you're "designing the API from the consumer side"
 #include <catch2/catch_test_macros.hpp>
 #include <string>
 #include <vector>
@@ -225,7 +236,7 @@ public:
     }
 };
 
-// Step 2: Test with fakes — no real DB or email needed
+// Step 2: Test with fakes - no real DB or email needed
 struct FakeRepo : UserRepository {
     std::vector<std::string> saved;
     bool should_fail = false;
@@ -278,9 +289,10 @@ TEST_CASE("UserService handles DB failure") {
 // 2. Use dependency injection (constructor params)
 // 3. Separate concerns (save vs notify vs validation)
 // 4. Handle edge cases (empty name, DB failure)
-// → The TEST drove the DESIGN
-
+// -> The TEST drove the DESIGN
 ```
+
+The "DB failure" test case is worth pointing out specifically. When you write the test first and ask "what should happen if saving fails?" you naturally discover that the notifier should not be called. That's a behavioral requirement that might never have been written down otherwise - TDD surfaced it because the test demanded an answer.
 
 ---
 
@@ -289,5 +301,5 @@ TEST_CASE("UserService handles DB failure") {
 - Build system: `find_package(Catch2 3 REQUIRED)` + `target_link_libraries(tests Catch2::Catch2WithMain)`
 - Run single tests: `./tests "Stack push and size"` (Catch2 supports name-based filtering)
 - TDD works best for **pure logic** (calculations, data transformations, state machines)
-- For I/O-bound code, TDD naturally pushes toward dependency injection — this is a feature, not overhead
+- For I/O-bound code, TDD naturally pushes toward dependency injection - this is a feature, not overhead
 - Combine with sanitizers: `cmake -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined"` catches memory bugs TDD alone misses

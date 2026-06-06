@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Unit tests verify logic, but many critical bugs — buffer overflows, data races, undefined behavior — can hide behind **"passing"** tests. Sanitizers instrument your compiled code to detect these invisible bugs at runtime.
+Unit tests verify logic, but many critical bugs - buffer overflows, data races, undefined behavior - can hide behind **"passing"** tests. Sanitizers instrument your compiled code to detect these invisible bugs at runtime.
+
+The reason tests alone miss these bugs is subtle. A heap buffer overflow might read a few bytes of padding that happen to be zero, and your test assertion passes. A use-after-free might access memory that has not been reclaimed yet, so the old value is still there. A data race might only manifest when thread scheduling happens to interleave in a particular way. None of these are detectable by checking return values - you need instrumentation built into the binary itself.
 
 ### Bugs Tests Alone Miss
 
@@ -24,8 +26,9 @@ Unit tests verify logic, but many critical bugs — buffer overflows, data races
 
 ### CI Strategy: Separate Jobs per Sanitizer
 
-```bash
+The key constraint is that ASAN and TSAN cannot be combined in the same binary - they instrument memory at a low level and conflict with each other. ASAN and UBSAN are compatible and can share a job. MSAN is the most expensive to set up because it requires a specially instrumented libc++.
 
+```bash
                 git push
                    │
         ┌──────────┼──────────┬──────────┐
@@ -36,8 +39,7 @@ Unit tests verify logic, but many critical bugs — buffer overflows, data races
     │          │             │          │
     ctest      ctest         ctest      ctest
     │          │             │          │
-    ✓ ship     ✗ = block     ✗ = block  ✗ = block
-
+    ship     block         block      block
 ```
 
 ---
@@ -46,12 +48,11 @@ Unit tests verify logic, but many critical bugs — buffer overflows, data races
 
 ### Q1: Run the full test suite with ASAN, UBSAN, and TSAN in separate CI jobs
 
-**Answer:**
+The GitHub Actions matrix strategy below runs each sanitizer as its own independent job. The `fail-fast: false` setting is important: if ASAN finds something, you still want to see what TSAN finds, so you do not cancel the other jobs early.
 
 **GitHub Actions matrix strategy:**
 
 ```yaml
-
 # .github/workflows/sanitizers.yml
 name: Sanitizer Matrix
 
@@ -64,64 +65,46 @@ jobs:
       fail-fast: false  # Run ALL sanitizer jobs even if one fails
       matrix:
         include:
-
           - name: ASAN+UBSAN
-
             cxx_flags: "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all -g -O1"
             link_flags: "-fsanitize=address,undefined"
             env_opts: "ASAN_OPTIONS=abort_on_error=1:detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
-
           - name: TSAN
-
             cxx_flags: "-fsanitize=thread -g -O1"
             link_flags: "-fsanitize=thread"
             env_opts: "TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1"
 
     name: ${{ matrix.name }}
     steps:
-
       - uses: actions/checkout@v4
-
       - name: Configure
-
         run: |
           cmake -B build \
             -DCMAKE_CXX_COMPILER=clang++-17 \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.link_flags }}"
-
       - name: Build
-
         run: cmake --build build -j$(nproc)
-
       - name: Test
-
         env:
           ASAN_OPTIONS: "abort_on_error=1:detect_leaks=1"
           UBSAN_OPTIONS: "halt_on_error=1:print_stacktrace=1"
           TSAN_OPTIONS: "halt_on_error=1"
         run: cd build && ctest --output-on-failure --timeout 300
-
 ```
 
-**Key points:**
-
-- `fail-fast: false` — one sanitizer failing doesn't cancel others
-- ASAN and TSAN are **incompatible** — must be separate jobs
-- ASAN + UBSAN can share one job (compatible)
-- `-fno-sanitize-recover=all` makes errors fatal (CI fails instead of just printing)
+The `-fno-sanitize-recover=all` flag is worth explaining: by default, UBSAN prints an error message and continues running. That means CI would not fail even when UB is detected. This flag makes every UBSAN finding abort the process immediately, so the test runner sees a crash and marks the job as failed.
 
 ### Q2: Show a test that passes without sanitizers but catches a bug with ASAN enabled
 
-**Answer:**
+Each of these three bugs represents a class of error that passes a logic-based test but would be caught by ASAN. The comments explain both what the test sees without instrumentation and what ASAN reports when it runs the same code.
 
 ```cpp
-
 #include <gtest/gtest.h>
 #include <vector>
 #include <cstring>
 
-// ═══════════ Bug 1: Heap buffer overflow ═══════════
+// Bug 1: Heap buffer overflow
 std::string get_initials(const std::string& name) {
     std::string result;
     const char* p = name.c_str();
@@ -141,7 +124,7 @@ TEST(Initials, BasicName) {
     //   #0 get_initials(std::string const&) main.cpp:8
 }
 
-// ═══════════ Bug 2: Use-after-free ═══════════
+// Bug 2: Use-after-free
 class EventQueue {
     std::vector<std::string> events_;
 public:
@@ -159,14 +142,14 @@ TEST(EventQueue, ProcessAndLast) {
     EventQueue q;
     q.add("click");
     const std::string& ref = q.last();
-    q.process();  // Clears the vector — 'ref' is dangling!
+    q.process();  // Clears the vector - 'ref' is dangling!
 
     // WITHOUT sanitizer: might print "click" (memory not yet reused)
     // WITH ASAN: ERROR: heap-use-after-free
     EXPECT_FALSE(ref.empty());  // UB! Accessing freed memory
 }
 
-// ═══════════ Bug 3: Stack buffer overflow ═══════════
+// Bug 3: Stack buffer overflow
 void copy_name(char* dest, const char* src) {
     strcpy(dest, src);  // No bounds check!
 }
@@ -179,17 +162,15 @@ TEST(CopyName, LongInput) {
     // WITH ASAN: ERROR: stack-buffer-overflow
     EXPECT_STREQ(buffer, "Alexander");
 }
-
 ```
 
 ### Q3: Configure CMake presets for sanitizer builds and add them to the CI matrix
 
-**Answer:**
+Using CMake presets rather than custom CMake variables has a real practical benefit: any developer can reproduce exactly what CI runs with a single command. The preset handles all the flags, so there is no chance of getting them slightly wrong.
 
 **CMakePresets.json:**
 
 ```json
-
 {
     "version": 6,
     "configurePresets": [
@@ -245,39 +226,29 @@ TEST(CopyName, LongInput) {
         { "name": "msan",    "configurePreset": "msan",    "output": {"outputOnFailure": true} }
     ]
 }
-
 ```
 
 **Using presets in CI:**
 
 ```yaml
-
 jobs:
   sanitizer-matrix:
     strategy:
       matrix:
         preset: [asan, tsan]
     steps:
-
       - uses: actions/checkout@v4
       - name: Configure
-
         run: cmake --preset ${{ matrix.preset }}
-
       - name: Build
-
         run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
-
       - name: Test
-
         run: ctest --preset ${{ matrix.preset }}
-
 ```
 
 **Local developer workflow:**
 
 ```bash
-
 # Quick sanitizer check before pushing
 cmake --preset asan
 cmake --build --preset asan -j$(nproc)
@@ -289,16 +260,15 @@ ctest --preset asan
 #     #0 0x4a3b2c in my_function src/parser.cpp:42
 #     #1 0x4a3b2c in TEST_Parser_Basic_Test::TestBody() tests/parser_test.cpp:17
 # =================================================================
-
 ```
 
 ---
 
 ## Notes
 
-- Sanitizer findings are **deterministic** — same binary + same input = same report (unlike Valgrind)
+- Sanitizer findings are **deterministic** - same binary + same input = same report (unlike Valgrind)
 - MSAN is the hardest to set up: requires libc++ built with MSAN instrumentation
 - Add `detect_container_overflow=1` to ASAN_OPTIONS for catching std::vector OOB
 - Use `symbolize=1` and ensure `llvm-symbolizer` is on PATH for readable stack traces
-- Sanitizer runtime overhead makes them unsuitable for production — CI/dev builds only
+- Sanitizer runtime overhead makes them unsuitable for production - CI/dev builds only
 - When a sanitizer finds a bug, add a **regression test** for that specific input

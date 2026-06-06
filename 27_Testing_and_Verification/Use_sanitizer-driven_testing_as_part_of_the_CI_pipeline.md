@@ -9,37 +9,39 @@
 
 ## Topic Overview
 
-Sanitizers are **compiler instrumentation** tools that detect bugs at runtime that normal tests miss: memory errors, undefined behavior, data races, and leaks. Integrating them into CI ensures every commit is automatically checked.
+Sanitizers are **compiler instrumentation** tools that detect bugs at runtime that normal tests miss: memory errors, undefined behavior, data races, and leaks. The key insight is that a test suite can pass 100% of its assertions while silently exercising undefined behavior or reading out-of-bounds memory - sanitizers catch exactly those cases. Integrating them into CI ensures every commit is automatically checked.
 
 ### Sanitizer Summary
 
+Each sanitizer targets a different class of bugs and comes with a different performance cost. You will not run all of them in the same build - see Q2 for why. Here is what each one does:
+
 | Sanitizer | Flag | Detects | Overhead |
 | --- | --- | --- | --- |
-| **AddressSanitizer (ASAN)** | `-fsanitize=address` | Buffer overflow, use-after-free, double-free, stack overflow | ~2× slower, 2-3× memory |
-| **UndefinedBehaviorSanitizer (UBSAN)** | `-fsanitize=undefined` | Signed overflow, null deref, alignment, shift errors | ~1.2× slower |
-| **ThreadSanitizer (TSAN)** | `-fsanitize=thread` | Data races, lock-order inversion | ~5-15× slower, 5-10× memory |
-| **MemorySanitizer (MSAN)** | `-fsanitize=memory` | Reads of uninitialized memory | ~3× slower |
+| **AddressSanitizer (ASAN)** | `-fsanitize=address` | Buffer overflow, use-after-free, double-free, stack overflow | ~2x slower, 2-3x memory |
+| **UndefinedBehaviorSanitizer (UBSAN)** | `-fsanitize=undefined` | Signed overflow, null deref, alignment, shift errors | ~1.2x slower |
+| **ThreadSanitizer (TSAN)** | `-fsanitize=thread` | Data races, lock-order inversion | ~5-15x slower, 5-10x memory |
+| **MemorySanitizer (MSAN)** | `-fsanitize=memory` | Reads of uninitialized memory | ~3x slower |
 | **LeakSanitizer (LSAN)** | `-fsanitize=leak` | Memory leaks (included in ASAN) | Minimal at exit |
 
 ### Architecture: Sanitizers in CI
 
+The typical CI setup runs three separate jobs. The release job is fast and ships. The sanitizer jobs are slower but act as a safety net - if either fails, the PR is blocked:
+
 ```cpp
-
-┌──────────────────────────────────────────────────┐
-│                    CI Pipeline                      │
-├─────────────┬───────────────┬────────────────────┤
-│  Job 1      │  Job 2        │  Job 3              │
-│  Release    │  ASAN+UBSAN   │  TSAN               │
-│  -O2        │  -O1 -g       │  -O1 -g             │
-│  No sanitize│  -fsanitize=  │  -fsanitize=thread  │
-│             │  address,     │                      │
-│             │  undefined    │                      │
-├─────────────┼───────────────┼────────────────────┤
-│ ctest       │ ctest         │ ctest                │
-│ (fast)      │ (2× slower)   │ (15× slower)         │
-│ PASS → ship │ FAIL → block  │ FAIL → block         │
-└─────────────┴───────────────┴────────────────────┘
-
+.................................................
+|                    CI Pipeline                 |
+|.................|.............|.................|
+|  Job 1          |  Job 2      |  Job 3          |
+|  Release        |  ASAN+UBSAN |  TSAN           |
+|  -O2            |  -O1 -g     |  -O1 -g         |
+|  No sanitize    |  -fsanitize=|  -fsanitize=    |
+|                 |  address,   |  thread         |
+|                 |  undefined  |                 |
+|.................|.............|.................|
+| ctest           | ctest       | ctest           |
+| (fast)          | (2x slower) | (15x slower)    |
+| PASS -> ship    | FAIL->block | FAIL->block     |
+.................................................
 ```
 
 ---
@@ -50,10 +52,11 @@ Sanitizers are **compiler instrumentation** tools that detect bugs at runtime th
 
 **Answer:**
 
+There are two standard ways to enable sanitizers in a CMake project. The CMake preset approach is clean for developer use; the `option()` approach is easier to toggle from CI:
+
 **CMake preset for sanitizers:**
 
 ```cmake
-
 # CMakePresets.json (or CMakeLists.txt)
 # Option 1: CMake preset
 {
@@ -65,11 +68,9 @@ Sanitizers are **compiler instrumentation** tools that detect bugs at runtime th
         }
     }]
 }
-
 ```
 
 ```cmake
-
 # Option 2: CMakeLists.txt with option
 option(ENABLE_SANITIZERS "Enable ASAN+UBSAN" OFF)
 
@@ -82,13 +83,13 @@ if(ENABLE_SANITIZERS)
     )
     add_link_options(-fsanitize=address,undefined)
 endif()
-
 ```
+
+The `-fno-sanitize-recover=all` flag is important: without it, UBSAN may just print a warning and continue, which means your test will still pass even though undefined behavior occurred. That flag makes every sanitizer error fatal.
 
 **GitHub Actions workflow:**
 
 ```yaml
-
 # .github/workflows/sanitizers.yml
 name: Sanitizer CI
 
@@ -142,10 +143,9 @@ jobs:
       - name: Build & Test
 
         run: cmake --build build -j$(nproc) && cd build && ctest --output-on-failure
-
 ```
 
-**Key environment variables:**
+The environment variables are the other half of the configuration. Here is what each one does:
 
 | Variable | Effect |
 | --- | --- |
@@ -159,23 +159,22 @@ jobs:
 
 **Answer:**
 
-Sanitizer builds must be **separate** CI jobs for these reasons:
+Sanitizer builds must be **separate** CI jobs for these reasons. The most critical constraint is that ASAN and TSAN use incompatible shadow memory layouts and cannot coexist in the same binary at all.
 
 | Reason | Details |
 | --- | --- |
-| **Performance** | ASAN: 2× slower, TSAN: 5-15× slower. Release build stays fast. |
+| **Performance** | ASAN: 2x slower, TSAN: 5-15x slower. Release build stays fast. |
 | **Binary compatibility** | Sanitizer-instrumented code can't link with non-instrumented libs safely |
-| **Incompatibility** | ASAN and TSAN **cannot** be combined — they use conflicting shadow memory |
+| **Incompatibility** | ASAN and TSAN **cannot** be combined - they use conflicting shadow memory |
 | **Optimization level** | Sanitizers work best at `-O1` or `-O0`. Release uses `-O2`/`-O3`. |
-| **Memory overhead** | ASAN uses 2-3× memory, TSAN 5-10×. May exceed CI runner limits if combined. |
+| **Memory overhead** | ASAN uses 2-3x memory, TSAN 5-10x. May exceed CI runner limits if combined. |
 | **False positives at -O2** | Aggressive optimization can cause UBSAN false positives (reordering, inlining) |
-| **Debug info needed** | Sanitizers need `-g` for useful stack traces — not wanted in release |
+| **Debug info needed** | Sanitizers need `-g` for useful stack traces - not wanted in release |
 | **Different failure modes** | Release tests check correctness. Sanitizer tests check safety. Separate signals. |
 
-**Recommended CI matrix:**
+Here is the recommended CI matrix that keeps all three concerns separate:
 
 ```yaml
-
 strategy:
   matrix:
     include:
@@ -196,30 +195,28 @@ strategy:
       - name: "MSAN"
 
         cmake_flags: "-fsanitize=memory -fno-omit-frame-pointer -g -O1"
-
 ```
 
 ### Q3: Use sanitizer suppressions to silence known false positives in third-party libraries
 
 **Answer:**
 
+Suppressions exist for situations where you cannot or should not fix the underlying issue - typically third-party code. The workflow is: use suppression files for code you do not own, and use `__attribute__((no_sanitize(...)))` for code you do own where the behaviour is intentional and documented.
+
 **ASAN suppression file:**
 
 ```cpp
-
 # asan_suppressions.txt
 # Suppress known leak in vendored library
 leak:third_party/legacy_lib/init.cpp
 
 # Suppress use-after-scope in Boost.Asio (known false positive in v1.78)
 interceptor_via_fun:boost::asio::detail::*
-
 ```
 
 **LSAN suppression file:**
 
 ```cpp
-
 # lsan_suppressions.txt
 # Known leak in third-party logging library (they cache singletons)
 leak:spdlog::details::registry::instance
@@ -227,56 +224,48 @@ leak:spdlog::details::registry::instance
 # OpenSSL allocates memory that's freed at exit
 leak:CRYPTO_malloc
 leak:SSL_library_init
-
 ```
 
 **UBSAN suppression file:**
 
 ```cpp
-
 # ubsan_suppressions.txt
 # Third-party JSON library does intentional unsigned overflow
 unsigned-integer-overflow:nlohmann/json.hpp
 
 # Proto-buf generated code triggers alignment warning
 alignment:google/protobuf/*
-
 ```
 
 **TSAN suppression file (most common):**
 
 ```cpp
-
 # tsan_suppressions.txt
 # Known benign race in lock-free counter (intentional relaxed ordering)
 race:metrics::counter::increment
 
 # False positive in glib event loop
 race:g_main_context_*
-
 ```
 
 **Using suppressions in CI:**
 
 ```yaml
-
 env:
   ASAN_OPTIONS: "suppressions=sanitizer/asan_suppressions.txt:abort_on_error=1"
   LSAN_OPTIONS: "suppressions=sanitizer/lsan_suppressions.txt"
   UBSAN_OPTIONS: "suppressions=sanitizer/ubsan_suppressions.txt:halt_on_error=1"
   TSAN_OPTIONS: "suppressions=sanitizer/tsan_suppressions.txt:halt_on_error=1"
-
 ```
 
-**Best practices for suppressions:**
+For code you own, the source-level attribute is cleaner than a suppression file because the suppression lives right next to the code that needs it, with an explanation:
 
 ```cpp
-
-// ═══════════ Source-level suppression (preferred for own code) ═══════════
+// Source-level suppression (preferred for own code)
 // Attribute to disable a specific sanitizer for one function
 __attribute__((no_sanitize("address")))
 void legacy_buffer_hack(char* buf, size_t n) {
-    // Known to read 1 byte past buffer — legacy protocol requirement
+    // Known to read 1 byte past buffer - legacy protocol requirement
     char sentinel = buf[n];  // Would trigger ASAN without suppression
     // ...
 }
@@ -286,8 +275,9 @@ __attribute__((no_sanitize("undefined")))
 uint32_t hash_combine(uint32_t a, uint32_t b) {
     return a * 2654435761u + b;  // Intentional unsigned overflow
 }
-
 ```
+
+Here is a quick guide to choosing the right suppression method:
 
 | Suppression Method | Scope | When to Use |
 | --- | --- | --- |
@@ -300,9 +290,9 @@ uint32_t hash_combine(uint32_t a, uint32_t b) {
 
 ## Notes
 
-- **ASAN + UBSAN** can coexist in one build; **TSAN** must be a separate build
-- Always use `-fno-sanitize-recover=all` in CI to make errors fatal
-- Use `-fno-omit-frame-pointer` for complete stack traces
-- MSAN requires ALL linked libraries (including libc++) to be built with MSAN — hardest to set up
-- Add `symbolizer_path` to ASAN_OPTIONS if stack traces show `??` instead of function names
-- Sanitizers find ~90% of memory bugs that crash in production — the most cost-effective safety net
+- **ASAN + UBSAN** can coexist in one build; **TSAN** must always be a separate build - they are architecturally incompatible.
+- Always use `-fno-sanitize-recover=all` in CI to make errors fatal rather than just printed.
+- Use `-fno-omit-frame-pointer` for complete stack traces - without it, stack frames may be missing.
+- MSAN requires ALL linked libraries (including libc++) to be built with MSAN - it is the hardest sanitizer to set up correctly.
+- Add `symbolizer_path` to ASAN_OPTIONS if stack traces show `??` instead of function names.
+- Sanitizers find roughly 90% of memory bugs that crash in production - they are the most cost-effective safety net available.

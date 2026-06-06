@@ -8,9 +8,13 @@
 
 ## Topic Overview
 
-This file focuses on **trompeloeil** — a header-only C++14 mocking framework that integrates natively with Catch2 and doctest. (See files #584 and #681 for Google Mock's MOCK_METHOD, EXPECT_CALL, ON_CALL patterns.)
+This file focuses on **trompeloeil** - a header-only C++14 mocking framework that integrates natively with Catch2 and doctest. (See files #584 and #681 for Google Mock's MOCK_METHOD, EXPECT_CALL, ON_CALL patterns.)
+
+If you are using Catch2 or doctest rather than Google Test, trompeloeil is probably the most natural choice for mocking. It is a single header with no build dependency on Google Test, and its expectation syntax integrates directly into your test framework's failure reporting so failures read as part of the test, not as mysterious assertion errors from a different library.
 
 ### gMock vs trompeloeil
+
+The table below covers the practical differences. Both frameworks cover the same use cases; the choice mostly comes down to which test framework you are already using.
 
 | Feature | Google Mock | trompeloeil |
 | --- | :---: | :---: |
@@ -28,11 +32,10 @@ This file focuses on **trompeloeil** — a header-only C++14 mocking framework t
 
 ### Q1: Write a mock for an interface using MOCK_METHOD and verify a method is called exactly once
 
-**Answer:**
+This example uses gMock. `ConfigWriter` wraps a filesystem interface, and the test verifies that exactly one `write` call happens with the correct path and value. The mock's destructor takes care of the verification - you never have to call `verify` yourself.
 
 ```cpp
-
-// ═══════════ gMock: MOCK_METHOD + Times(1) ═══════════
+// gMock: MOCK_METHOD + Times(1)
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
@@ -73,17 +76,15 @@ TEST(ConfigWriter, SaveWritesExactlyOnce) {
 
     ConfigWriter writer(mock_fs);
     EXPECT_TRUE(writer.save("theme", "dark"));
-    // Destructor of mock_fs verifies: exactly 1 call ✓
+    // Destructor of mock_fs verifies: exactly 1 call confirmed
 }
-
 ```
 
 ### Q2: Use EXPECT_CALL with argument matchers to verify the correct arguments are passed
 
-**Answer:**
+Matchers let you be precise about individual arguments while being flexible about others. In this test, the latency must be positive (we use `Gt(0.0)`) but we do not care about its exact value, while the path must start with `/api`. Mixing precise and loose matchers in the same call is entirely normal.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
@@ -148,16 +149,16 @@ TEST(RequestHandler, ServerErrorTagsError) {
     RequestHandler handler(mock);
     handler.handle("/crash", 500, 999.0);
 }
-
 ```
 
 ### Q3: Show how trompeloeil integrates with Catch2 for expectation failure reporting
 
-**Answer:**
+trompeloeil uses a different vocabulary from gMock, but the concepts map across cleanly. `REQUIRE_CALL` is the equivalent of `EXPECT_CALL` - the call must happen or the test fails. `ALLOW_CALL` is the equivalent of `ON_CALL` - the call may or may not happen. `FORBID_CALL` maps to `EXPECT_CALL(...).Times(0)`. Sequence enforcement uses a `trompeloeil::sequence` object and the `.IN_SEQUENCE(seq)` modifier.
+
+One particularly nice feature shown here is `trompeloeil::re("pattern")` - a built-in regex matcher that lets you match strings without writing a lambda.
 
 ```cpp
-
-// ═══════════ trompeloeil with Catch2 ═══════════
+// trompeloeil with Catch2
 // Single header: #include <trompeloeil.hpp>
 // Catch2 adapter: #include <catch2/trompeloeil.hpp>
 
@@ -166,7 +167,7 @@ TEST(RequestHandler, ServerErrorTagsError) {
 #include <catch2/trompeloeil.hpp>  // Adapter for Catch2 reporting
 #include <string>
 
-// ═══════════ Interface ═══════════
+// Interface
 class IDatabase {
 public:
     virtual ~IDatabase() = default;
@@ -175,7 +176,7 @@ public:
     virtual void disconnect() = 0;
 };
 
-// ═══════════ trompeloeil mock ═══════════
+// trompeloeil mock
 class MockDatabase : public IDatabase {
 public:
     MAKE_MOCK1(connect, void(const std::string&), override);
@@ -183,7 +184,7 @@ public:
     MAKE_MOCK0(disconnect, void(), override);
 };
 
-// ═══════════ Code under test ═══════════
+// Code under test
 class ReportGenerator {
     IDatabase& db_;
 public:
@@ -197,7 +198,7 @@ public:
     }
 };
 
-// ═══════════ Tests with trompeloeil ═══════════
+// Tests with trompeloeil
 TEST_CASE("ReportGenerator queries database in order") {
     MockDatabase mock_db;
     ReportGenerator gen(mock_db);
@@ -252,16 +253,17 @@ TEST_CASE("trompeloeil TIMES for call count") {
 //   Unfulfilled expectation:
 //   Expected disconnect() to be called 1 time, but it was called 0 times
 //   Set up at test.cpp:38
-
 ```
+
+Notice that when trompeloeil fails, the failure message includes both where the expectation was set and what went wrong - which makes diagnosing test failures much faster than a raw assertion failure with no context.
 
 ---
 
 ## Notes
 
-- trompeloeil: `#include <trompeloeil.hpp>` — single header, no build step
+- trompeloeil: `#include <trompeloeil.hpp>` - single header, no build step
 - `MAKE_MOCKn` (n = arg count): `MAKE_MOCK2(foo, int(double, int), override)`
-- `REQUIRE_CALL` = must be called (test fails if not) — like `EXPECT_CALL` in gMock
-- `ALLOW_CALL` = may or may not be called — like `ON_CALL` in gMock
-- `FORBID_CALL` = must NOT be called — like `EXPECT_CALL(...).Times(0)` in gMock
+- `REQUIRE_CALL` = must be called (test fails if not) - like `EXPECT_CALL` in gMock
+- `ALLOW_CALL` = may or may not be called - like `ON_CALL` in gMock
+- `FORBID_CALL` = must NOT be called - like `EXPECT_CALL(...).Times(0)` in gMock
 - trompeloeil matchers: `trompeloeil::_` (any), `trompeloeil::re("pattern")` (regex), `trompeloeil::gt(n)` (greater than)

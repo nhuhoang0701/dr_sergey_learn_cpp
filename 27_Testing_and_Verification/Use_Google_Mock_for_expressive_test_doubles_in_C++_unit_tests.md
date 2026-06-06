@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-**Google Mock** (gMock) provides macros to create mock objects from interfaces, set expectations on method calls, and define return behaviors — all integrated with Google Test.
+**Google Mock** (gMock) gives you a set of macros for creating mock objects from interfaces, wiring up expectations on method calls, and controlling what those methods return - all tightly integrated with Google Test. If you have ever written a manual stub class that returns hard-coded values and had to update it every time the interface changed, gMock is what you have been missing.
 
 ### Key Macros
+
+The table below is your go-to reference while writing tests. The most important distinction to keep in mind is `EXPECT_CALL` versus `ON_CALL` - the first is a strict expectation that fails your test if not satisfied, while the second is a default behavior that won't cause failures on its own.
 
 | Macro | Purpose |
 | --- | --- |
@@ -26,16 +28,18 @@
 
 ### MOCK_METHOD Syntax (C++17+)
 
-```cpp
+The old numbered macros (`MOCK_METHOD1`, `MOCK_METHOD2`, ...) are deprecated. The new four-argument form handles everything cleanly. Here is the before and after so you can recognize both in existing code:
 
+```cpp
 // Old style (deprecated):
 MOCK_METHOD1(foo, int(double));
 
 // New style:
 MOCK_METHOD(int, foo, (double), (override));
 // MOCK_METHOD(return_type, name, (arg_types...), (qualifiers...))
-
 ```
+
+The qualifiers slot is where you put `override`, `const`, or both - for example `(const, override)` for a const method.
 
 ---
 
@@ -43,16 +47,15 @@ MOCK_METHOD(int, foo, (double), (override));
 
 ### Q1: Write a mock Logger with MOCK_METHOD and set expectations using EXPECT_CALL
 
-**Answer:**
+The idea here is to take an interface (`ILogger`), create a mock implementation using `MOCK_METHOD`, then inject that mock into `OrderProcessor` and use `EXPECT_CALL` to assert that the processor sends exactly the right log messages in each scenario. Notice how each test focuses on one specific behavior of the system.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
 #include <memory>
 
-// ═══════════ Interface ═══════════
+// Interface
 class ILogger {
 public:
     virtual ~ILogger() = default;
@@ -61,7 +64,7 @@ public:
     virtual int pending_count() const = 0;
 };
 
-// ═══════════ Mock ═══════════
+// Mock
 class MockLogger : public ILogger {
 public:
     MOCK_METHOD(void, log, (const std::string&, const std::string&), (override));
@@ -69,7 +72,7 @@ public:
     MOCK_METHOD(int, pending_count, (), (const, override));
 };
 
-// ═══════════ Code under test ═══════════
+// Code under test
 class OrderProcessor {
     ILogger& logger_;
 public:
@@ -93,7 +96,7 @@ public:
     }
 };
 
-// ═══════════ Tests ═══════════
+// Tests
 using ::testing::_;
 using ::testing::HasSubstr;
 
@@ -134,20 +137,20 @@ TEST(OrderProcessor, LargeOrderLogsWarning) {
     OrderProcessor proc(mock);
     EXPECT_TRUE(proc.process(99, 50000.0));
 }
-
 ```
+
+One thing to notice: the `MockLogger` destructor automatically verifies that all `EXPECT_CALL` expectations were actually fulfilled. You do not need to call any explicit `verify()` method - the test fails the moment `mock` goes out of scope if something was not called as expected.
 
 ### Q2: Use ON_CALL to provide default behaviour for a mock without failing on unexpected calls
 
-**Answer:**
+Sometimes a test cares deeply about one method and needs other methods to just work without getting in the way. `ON_CALL` is how you set up that permissive default. The key difference from `EXPECT_CALL` is that `ON_CALL` sets a return value but will not fail if the method is never called, called zero times, or called many times.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
 
-// ═══════════ Interface ═══════════
+// Interface
 class ICache {
 public:
     virtual ~ICache() = default;
@@ -165,7 +168,7 @@ public:
     MOCK_METHOD(size_t, size, (), (const, override));
 };
 
-// ═══════════ Code under test ═══════════
+// Code under test
 class DataService {
     ICache& cache_;
 public:
@@ -187,7 +190,7 @@ using ::testing::_;
 TEST(DataService, FetchFromCacheWhenPresent) {
     MockCache mock;
 
-    // ON_CALL: default behaviors — won't FAIL on unexpected calls
+    // ON_CALL: default behaviors - won't FAIL on unexpected calls
     ON_CALL(mock, has(_)).WillByDefault(Return(true));
     ON_CALL(mock, get(_)).WillByDefault(Return("cached_value"));
     ON_CALL(mock, size()).WillByDefault(Return(5u));
@@ -195,7 +198,7 @@ TEST(DataService, FetchFromCacheWhenPresent) {
     // Only EXPECT what we specifically care about:
     EXPECT_CALL(mock, has("user:42")).WillOnce(Return(true));
     EXPECT_CALL(mock, get("user:42")).WillOnce(Return("Alice"));
-    // put() is NOT expected — but won't fail if called thanks to ON_CALL defaults
+    // put() is NOT expected - but won't fail if called thanks to ON_CALL defaults
 
     DataService service(mock);
     EXPECT_EQ(service.fetch("user:42"), "Alice");
@@ -217,32 +220,32 @@ TEST(DataService, FetchFromDbWhenMissing) {
 }
 
 // Key difference:
-// EXPECT_CALL → test FAILS if not called (or called wrong)
-// ON_CALL     → sets default, no failure if not called
+// EXPECT_CALL -> test FAILS if not called (or called wrong)
+// ON_CALL     -> sets default, no failure if not called
 // Use ON_CALL for "I don't care" methods to avoid brittle tests
-
 ```
+
+The last comment in the code really is the mental model to keep. Use `EXPECT_CALL` to assert behavior your test owns. Use `ON_CALL` to keep the other methods from getting in the way.
 
 ### Q3: Distinguish mocks, stubs, fakes, and spies and show a C++ example of each
 
-**Answer:**
+This is one of the most commonly confused areas in testing. All four are "test doubles" - stand-ins for real dependencies - but they serve different purposes. Here is a concrete example of each, all sharing the same `INotifier` interface so you can compare them side by side:
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
 #include <unordered_map>
 
-// ═══════════ Shared interface ═══════════
+// Shared interface
 class INotifier {
 public:
     virtual ~INotifier() = default;
     virtual bool send(const std::string& to, const std::string& msg) = 0;
 };
 
-// ═══════════ 1. STUB: Returns canned values, no logic ═══════════
+// 1. STUB: Returns canned values, no logic
 class StubNotifier : public INotifier {
     bool return_value_ = true;
 public:
@@ -252,7 +255,7 @@ public:
     }
 };
 
-// ═══════════ 2. FAKE: Working simplified implementation ═══════════
+// 2. FAKE: Working simplified implementation
 class FakeNotifier : public INotifier {
 public:
     struct Message { std::string to; std::string body; };
@@ -265,7 +268,7 @@ public:
     }
 };
 
-// ═══════════ 3. SPY: Records calls for later inspection ═══════════
+// 3. SPY: Records calls for later inspection
 class SpyNotifier : public INotifier {
 public:
     struct Call { std::string to; std::string msg; };
@@ -277,13 +280,13 @@ public:
     }
 };
 
-// ═══════════ 4. MOCK: Sets expectations, auto-verifies ═══════════
+// 4. MOCK: Sets expectations, auto-verifies
 class MockNotifier : public INotifier {
 public:
     MOCK_METHOD(bool, send, (const std::string&, const std::string&), (override));
 };
 
-// ═══════════ Tests showing each ═══════════
+// Tests showing each
 using ::testing::Return;
 
 TEST(TestDoubles, StubExample) {
@@ -320,8 +323,9 @@ TEST(TestDoubles, MockExample) {
     // If send() is NOT called with these args, test FAILS
     EXPECT_TRUE(mock.send("dave", "urgent"));
 }
-
 ```
+
+The key mental distinction is about *when* and *how* you verify behavior. A stub just returns values - you never assert anything about it. A fake is a simplified but real implementation - you test the outputs. A spy lets you record calls and check them after the fact. A mock sets up assertions *before* the code runs and verifies them automatically when it goes out of scope.
 
 ---
 

@@ -8,16 +8,19 @@
 
 ## Topic Overview
 
-This file focuses on the **dependency injection pattern** with gMock — designing classes so mock objects can replace real dependencies, and verifying that the system interacts correctly with them. (See file #584 for MOCK_METHOD syntax, ON_CALL basics, and test double taxonomy.)
+This file focuses on the **dependency injection pattern** with gMock - designing classes so mock objects can replace real dependencies, and verifying that the system interacts correctly with them. (See file #584 for MOCK_METHOD syntax, ON_CALL basics, and test double taxonomy.)
+
+The whole point of dependency injection in testable code is that your class should not decide which implementation of a dependency to use. It should receive the dependency from the outside. When it receives an interface rather than a concrete type, you can hand it a mock in tests and a real implementation in production - the class never knows the difference.
 
 ### Dependency Injection Pattern
 
-```cpp
+Here is a side-by-side comparison. The left side is what most codebases start with: a hard-coded dependency that you cannot replace in tests. The right side shows the same class redesigned to accept the dependency through its constructor.
 
+```cpp
 Without DI (untestable):            With DI (testable):
 ┌──────────────┐                    ┌──────────────┐
 │ OrderService │                    │ OrderService │
-│  Database db │ ← hard-coded      │  IDatabase&  │ ← injected interface
+│  Database db │ <- hard-coded      │  IDatabase&  │ <- injected interface
 │  Emailer em  │                    │  IEmailer&   │
 └──────────────┘                    └──────┬───────┘
                                            │
@@ -26,10 +29,11 @@ Without DI (untestable):            With DI (testable):
                    │ RealDatabase          │ MockDatabase     │
                    │ SmtpEmailer           │ MockEmailer      │
                    └───────────────────────┴──────────────────┘
-
 ```
 
 ### EXPECT_CALL Matchers Quick Reference
+
+Matchers are how you tell gMock exactly what argument values you care about. You can be as specific or as loose as the test requires - use `_` when you genuinely do not care, and use a precise matcher when the exact value matters to the behavior you are verifying.
 
 | Matcher | Matches |
 | --- | --- |
@@ -49,17 +53,16 @@ Without DI (untestable):            With DI (testable):
 
 ### Q1: Create a mock class for an interface using MOCK_METHOD and inject it in the system under test
 
-**Answer:**
+This example is a checkout flow that touches three separate dependencies: a payment gateway, an inventory system, and an email service. All three are injected through the constructor, which means in a test you can hand in mocks for all three and verify exactly what the `CheckoutService` does when everything works correctly.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
 #include <memory>
 #include <vector>
 
-// ═══════════ Interfaces (abstractions for DI) ═══════════
+// Interfaces (abstractions for DI)
 class IPaymentGateway {
 public:
     virtual ~IPaymentGateway() = default;
@@ -82,7 +85,7 @@ public:
                       const std::string& body) = 0;
 };
 
-// ═══════════ Mock implementations ═══════════
+// Mock implementations
 class MockPaymentGateway : public IPaymentGateway {
 public:
     MOCK_METHOD(bool, charge, (const std::string&, double), (override));
@@ -102,7 +105,7 @@ public:
                               const std::string&), (override));
 };
 
-// ═══════════ System under test — accepts interfaces via DI ═══════════
+// System under test - accepts interfaces via DI
 class CheckoutService {
     IPaymentGateway& payment_;
     IInventory& inventory_;
@@ -137,7 +140,7 @@ public:
     }
 };
 
-// ═══════════ Test: inject mocks ═══════════
+// Test: inject mocks
 using ::testing::Return;
 using ::testing::_;
 
@@ -157,15 +160,15 @@ TEST(CheckoutService, SuccessfulOrder) {
     auto result = service.checkout("user@test.com", "SKU-001", 2, "tok_abc");
     EXPECT_TRUE(result.success);
 }
-
 ```
+
+Notice the split between `ON_CALL` and `EXPECT_CALL`. Stock checking is handled permissively with `ON_CALL` because the test cares about what happens after a stock check passes, not about how many times it is called. The `reserve`, `charge`, and `send` calls are strict expectations because those are the side effects this test is actually asserting.
 
 ### Q2: Set expectations with EXPECT_CALL and verify call counts and argument values
 
-**Answer:**
+Now let's look at the failure path. When payment fails, the service must release inventory - this is a critical correctness requirement. We use precise matchers and call counts to assert that the right things happen and that email is never sent.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -226,15 +229,15 @@ TEST(CheckoutService, OrderSequenceIsCorrect) {
 
     service.checkout("a@b.com", "X", 1, "tok");
 }
-
 ```
+
+The `InSequence` block in the second test is worth highlighting. Without it, gMock verifies that each call happens, but does not care about order. With `InSequence`, the test will fail if `payment.charge` is called before `inventory.reserve`, for example. Use this when the order of interactions is part of the contract you are enforcing.
 
 ### Q3: Use ON_CALL to define default behaviors for stubs that don't need strict verification
 
-**Answer:**
+The second test in this section shows a more advanced technique: using `Invoke` to make a mock stateful. Instead of returning a fixed value, you wire the mock to a lambda that updates a local map. This is a middle ground between a strict mock and a full fake - you get realistic behavior without writing an entire `IInventory` implementation.
 
 ```cpp
-
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <string>
@@ -244,7 +247,7 @@ using ::testing::Return;
 using ::testing::_;
 using ::testing::Invoke;
 
-// ═══════════ When focused testing needs permissive stubs ═══════════
+// When focused testing needs permissive stubs
 
 class MockInventory;  // Defined above
 
@@ -255,7 +258,7 @@ TEST(CheckoutService, FocusOnEmailContent) {
     MockEmailService email;
     CheckoutService service(payment, inventory, email);
 
-    // Set defaults — these won't cause test failure
+    // Set defaults - these won't cause test failure
     ON_CALL(inventory, stock(_)).WillByDefault(Return(999));
     ON_CALL(payment, charge(_, _)).WillByDefault(Return(true));
 
@@ -270,7 +273,7 @@ TEST(CheckoutService, FocusOnEmailContent) {
     // inventory and payment calls happen but don't fail
 }
 
-// ═══════════ ON_CALL with Invoke for stateful stubs ═══════════
+// ON_CALL with Invoke for stateful stubs
 TEST(CheckoutService, InventoryDecreasesAfterReserve) {
     MockPaymentGateway payment;
     MockInventory inventory;
@@ -297,7 +300,6 @@ TEST(CheckoutService, InventoryDecreasesAfterReserve) {
     service.checkout("x@y.com", "A", 2, "tok");
     EXPECT_EQ(fake_stock["A"], 3);  // 5 - 2 = 3
 }
-
 ```
 
 ---
@@ -306,6 +308,6 @@ TEST(CheckoutService, InventoryDecreasesAfterReserve) {
 
 - Constructor injection (pass `Interface&`) is the simplest DI pattern in C++
 - For classes that can't take references, use `std::unique_ptr<Interface>` or `std::function`
-- `NiceMock<MockFoo>` suppresses warnings for methods without `EXPECT_CALL` — use with `ON_CALL` defaults
-- `StrictMock<MockFoo>` fails on ANY unmatched call — use sparingly
-- Mock objects auto-verify in their destructor — no explicit `verify()` call needed
+- `NiceMock<MockFoo>` suppresses warnings for methods without `EXPECT_CALL` - use with `ON_CALL` defaults
+- `StrictMock<MockFoo>` fails on ANY unmatched call - use sparingly
+- Mock objects auto-verify in their destructor - no explicit `verify()` call needed

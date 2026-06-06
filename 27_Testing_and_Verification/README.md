@@ -39,9 +39,9 @@ Unit testing, property-based testing, fuzzing, code coverage, and verification t
 - Property-based testing (RapidCheck) generates random inputs to find edge cases
 - Fuzz testing (libFuzzer, AFL++) discovers crashes and undefined behavior through random mutation
 - Mock objects (gmock, trompeloeil) isolate units under test from dependencies
-- Code coverage (gcov, llvm-cov) measures which lines are exercised — aim for meaningful coverage, not 100%
+- Code coverage (gcov, llvm-cov) measures which lines are exercised - aim for meaningful coverage, not 100%
 - Sanitizers (ASan, TSan, UBSan) should run alongside tests in CI for maximum bug detection
-- Static analysis complements testing — analyzers catch bugs that may never trigger at runtime
+- Static analysis complements testing - analyzers catch bugs that may never trigger at runtime
 - Contract testing (pre/post-conditions) validates assumptions at API boundaries
 - Benchmark tests (Google Benchmark) prevent performance regressions between releases
-- Integration tests verify component interactions — don't rely solely on unit tests
+- Integration tests verify component interactions - don't rely solely on unit tests

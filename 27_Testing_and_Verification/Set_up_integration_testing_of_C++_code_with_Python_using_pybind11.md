@@ -10,38 +10,40 @@
 
 This file focuses on **embedding Python inside a C++ test harness** and deciding **when Python integration tests complement C++ unit tests**. (See also file #767 for writing pybind11 bindings and testing from the pytest side.)
 
+The key thing to understand upfront is that there are two directions you can go. You can call C++ from Python (build an extension module, import it in pytest), or you can call Python from C++ (embed the Python interpreter inside your C++ test executable). Each direction has different use cases, and knowing which one fits your situation saves a lot of confusion.
+
 ### Testing Architecture: Two Directions
 
 ```cpp
+Direction A: C++ -> Python (embedded interpreter)
++----------------------+
+|  C++ test main()     |
+|  py::scoped_interp.  |---> Runs Python test scripts
+|  py::exec("...")     |     from inside C++ executable
++----------------------+
 
-Direction A: C++ → Python (embedded interpreter)
-┌──────────────────────┐
-│  C++ test main()     │
-│  py::scoped_interp.  │──▶ Runs Python test scripts
-│  py::exec("...")     │    from inside C++ executable
-└──────────────────────┘
-
-Direction B: Python → C++ (extension module)
-┌──────────────────────┐
-│  pytest               │
-│  import my_module    │──▶ Calls compiled C++ code
-│  assert ...          │    through pybind11 bindings
-└──────────────────────┘
-
+Direction B: Python -> C++ (extension module)
++----------------------+
+|  pytest               |
+|  import my_module    |---> Calls compiled C++ code
+|  assert ...          |     through pybind11 bindings
++----------------------+
 ```
 
 ### When to Use Each Test Strategy
 
+If you're not sure which direction to pick for a given scenario, this table should help. The general principle is: use C++ tests for things that need the C++ toolchain (memory safety, template behavior, RAII), and use Python tests for things that benefit from Python's ecosystem (data pipelines, NumPy interop, expressive test tables).
+
 | Scenario                                | C++ Unit Tests | Python Integration Tests |
 | --- | :---: | :---: |
-| Algorithm correctness                   | ✅ | |
-| Memory safety / UB detection            | ✅ | |
-| End-to-end workflow validation          | | ✅ |
-| Data pipeline with NumPy/Pandas        | | ✅ |
-| Cross-language serialization            | | ✅ |
-| Performance-critical hot path           | ✅ | |
-| Rapid prototyping of test scenarios     | | ✅ |
-| CI smoke test of Python bindings        | | ✅ |
+| Algorithm correctness                   | Yes | |
+| Memory safety / UB detection            | Yes | |
+| End-to-end workflow validation          | | Yes |
+| Data pipeline with NumPy/Pandas        | | Yes |
+| Cross-language serialization            | | Yes |
+| Performance-critical hot path           | Yes | |
+| Rapid prototyping of test scenarios     | | Yes |
+| CI smoke test of Python bindings        | | Yes |
 
 ---
 
@@ -51,9 +53,10 @@ Direction B: Python → C++ (extension module)
 
 **Answer:**
 
-```cpp
+This example walks through all three files needed to test a C++ class from Python: the class definition, the pybind11 bindings, and the pytest test. The binding layer uses lambda wrappers for `get` and `set` because those methods need to adapt the C++ reference-return style to a value-based Python interface.
 
-// ═══════════ matrix.hpp ═══════════
+```cpp
+// matrix.hpp
 #pragma once
 #include <vector>
 #include <stdexcept>
@@ -98,12 +101,10 @@ public:
         return os.str();
     }
 };
-
 ```
 
 ```cpp
-
-// ═══════════ bindings.cpp ═══════════
+// bindings.cpp
 #include <pybind11/pybind11.h>
 #include "matrix.hpp"
 
@@ -124,12 +125,10 @@ PYBIND11_MODULE(matrix_ext, m) {
         .def("multiply", &Matrix::multiply)
         .def("__repr__", &Matrix::repr);
 }
-
 ```
 
 ```python
-
-# ═══════════ test_matrix.py — pytest tests ═══════════
+# test_matrix.py - pytest tests
 import matrix_ext
 import pytest
 
@@ -150,11 +149,11 @@ class TestMatrix:
 
     def test_out_of_range(self):
         m = matrix_ext.Matrix(2, 2)
-        with pytest.raises(IndexError):  # out_of_range → IndexError
+        with pytest.raises(IndexError):  # out_of_range -> IndexError
             m.get(5, 0)
 
     def test_multiply_identity(self):
-        # 2x2 identity × any 2x2 = same matrix
+        # 2x2 identity * any 2x2 = same matrix
         eye = matrix_ext.Matrix(2, 2)
         eye.set(0, 0, 1.0); eye.set(1, 1, 1.0)
 
@@ -168,23 +167,27 @@ class TestMatrix:
 
     def test_dimension_mismatch(self):
         a = matrix_ext.Matrix(2, 3)
-        b = matrix_ext.Matrix(2, 3)  # 3 cols × 2 rows: mismatch
+        b = matrix_ext.Matrix(2, 3)  # 3 cols * 2 rows: mismatch
         with pytest.raises(ValueError):
             a.multiply(b)
 
     def test_repr(self):
         m = matrix_ext.Matrix(3, 5)
         assert repr(m) == "Matrix(3x5)"
-
 ```
+
+The `__repr__` binding makes the class work naturally with Python's `repr()` - a small touch that makes debugging much easier when a test fails and you need to see what the object contains.
 
 ### Q2: Use pybind11's embedded interpreter to run Python test scripts from a C++ test main
 
 **Answer:**
 
-```cpp
+This is Direction A from the overview: the C++ executable itself starts a Python interpreter and runs test code inside it. This is useful when you want to keep everything in a single binary - for example, when you can't easily install a Python package but need to test the Python-facing behavior.
 
-// ═══════════ embedded_test_runner.cpp ═══════════
+The `PYBIND11_EMBEDDED_MODULE` macro defines a module that exists only inside the C++ binary - no `.so` file on disk. Python code running inside the embedded interpreter can import it with a regular `import calculator`.
+
+```cpp
+// embedded_test_runner.cpp
 // Runs Python test scripts FROM WITHIN a C++ executable
 // Useful when you can't easily pip-install the extension
 
@@ -196,7 +199,7 @@ class TestMatrix:
 
 namespace py = pybind11;
 
-// ── Embed a module directly (no separate .so needed) ──
+// Embed a module directly (no separate .so needed)
 PYBIND11_EMBEDDED_MODULE(calculator, m) {
     m.def("add", [](int a, int b) { return a + b; });
     m.def("divide", [](double a, double b) -> double {
@@ -219,18 +222,18 @@ int main() {
     py::scoped_interpreter guard{};  // Start the Python interpreter
 
     try {
-        // ── Method 1: Inline Python test ──
+        // Method 1: Inline Python test
         py::exec(R"(
 import calculator
 
 # Test addition
 assert calculator.add(2, 3) == 5
 assert calculator.add(-1, 1) == 0
-print("✓ add tests passed")
+print("add tests passed")
 
 # Test division
 assert abs(calculator.divide(10, 3) - 3.3333) < 0.001
-print("✓ divide tests passed")
+print("divide tests passed")
 
 # Test division by zero
 try:
@@ -238,16 +241,16 @@ try:
     assert False, "should have raised"
 except ValueError as e:
     assert "division by zero" in str(e)
-print("✓ exception propagation test passed")
+print("exception propagation test passed")
 
 # Test fibonacci
 assert calculator.fibonacci(0) == []
 assert calculator.fibonacci(1) == [0]
 assert calculator.fibonacci(7) == [0, 1, 1, 2, 3, 5, 8]
-print("✓ fibonacci tests passed")
+print("fibonacci tests passed")
         )");
 
-        // ── Method 2: Run an external pytest file ──
+        // Method 2: Run an external pytest file
         py::module_ pytest = py::module_::import("pytest");
         int exit_code = pytest.attr("main")(
             py::make_tuple("-v", "--tb=short", "tests/")
@@ -266,12 +269,10 @@ print("✓ fibonacci tests passed")
         return 1;
     }
 }
-
 ```
 
 ```cmake
-
-# ═══════════ CMakeLists.txt ═══════════
+# CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
 project(embedded_test_runner)
 
@@ -279,20 +280,20 @@ find_package(pybind11 REQUIRED)
 
 add_executable(run_tests embedded_test_runner.cpp)
 target_link_libraries(run_tests PRIVATE pybind11::embed)
-
 ```
+
+Method 2 (importing pytest and calling `pytest.attr("main")`) is particularly powerful: you can write your test files as ordinary pytest scripts but run them from your C++ test harness. This means you get pytest's full output formatting and `--tb=short` tracebacks even when launching from C++.
 
 ### Q3: Explain when Python-based integration tests complement unit tests in C++ projects
 
 **Answer:**
 
-Python integration tests excel in scenarios where C++ unit tests are insufficient:
+Python integration tests are most valuable when C++ unit tests would require too much infrastructure to set up, or when you want to validate behavior against a trusted reference implementation. Here are the four main scenarios.
 
 **1. End-to-end workflow validation:**
 
 ```python
-
-# Test the entire pipeline: load → process → export
+# Test the entire pipeline: load -> process -> export
 def test_full_pipeline():
     import data_processor as dp
 
@@ -304,13 +305,11 @@ def test_full_pipeline():
     parsed = json.loads(result)
     assert len(parsed["rows"]) > 0
     assert all(abs(r["z_score"]) < 3.0 for r in parsed["rows"])
-
 ```
 
 **2. Testing interop with Python ecosystems (NumPy, Pandas):**
 
 ```python
-
 import numpy as np
 
 def test_numpy_interop():
@@ -322,13 +321,11 @@ def test_numpy_interop():
 
     expected = a @ b  # NumPy reference
     np.testing.assert_allclose(result, expected)
-
 ```
 
 **3. Rapid test-case prototyping:**
 
 ```python
-
 # Python makes it trivial to generate edge cases
 import itertools
 
@@ -337,19 +334,18 @@ import itertools
     repeat=2
 ))
 def test_add_boundary(args):
-    # Quick exploration — would be verbose in C++
+    # Quick exploration - would be verbose in C++
     a, b = args
     result = calculator.add(a, b)
     assert result == a + b
-
 ```
 
 **4. When to stay with C++ unit tests:**
 
-- **Performance-sensitive paths** — Python overhead masks real timings
-- **Memory safety** — Python can't detect UB; use ASan/MSan in C++
-- **Template instantiation testing** — must be in C++ to test compile-time behavior
-- **Destructor/RAII correctness** — Python GC hides lifetime bugs
+- **Performance-sensitive paths** - Python overhead masks real timings
+- **Memory safety** - Python can't detect UB; use ASan/MSan in C++
+- **Template instantiation testing** - must be in C++ to test compile-time behavior
+- **Destructor/RAII correctness** - Python GC hides lifetime bugs
 
 **Decision rule:** Use C++ tests for *correctness of individual components*. Use Python tests for *integration across boundaries*, *data-driven exploration*, and *validation against reference implementations (NumPy, SciPy, etc.)*.
 
@@ -357,8 +353,8 @@ def test_add_boundary(args):
 
 ## Notes
 
-- `pybind11::embed` links the Python interpreter into your C++ executable — no separate `.so` needed
+- `pybind11::embed` links the Python interpreter into your C++ executable - no separate `.so` needed
 - `PYBIND11_EMBEDDED_MODULE` defines an importable module within the same binary
-- Embedded interpreter cost: ~50ms startup on modern hardware — acceptable for test suites
+- Embedded interpreter cost: ~50ms startup on modern hardware - acceptable for test suites
 - Combine both directions: C++ unit tests (GTest) + Python integration tests (pytest) in the same CI pipeline
 - Watch for GIL: multi-threaded C++ code tested from Python needs `py::gil_scoped_release`
