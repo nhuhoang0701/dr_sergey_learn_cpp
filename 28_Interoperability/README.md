@@ -34,13 +34,13 @@ C/C++ interop, FFI, ABI stability, and interfacing with other languages and syst
 
 ## Notes
 
-- extern "C" disables name mangling — required for C++ functions callable from C
-- C++ can call C libraries directly via extern "C" headers — no wrapper needed
-- Python integration (pybind11, nanobind) wraps C++ classes and functions for Python consumption
-- FFI (Foreign Function Interface) requires C-compatible types — no classes, templates, or exceptions across boundaries
-- SWIG generates bindings for multiple languages from annotated C++ headers
-- JNI (Java Native Interface) connects C++ with Java — manage JNI references carefully to avoid leaks
-- std::span and raw pointers are the typical boundary types for interop
-- ABI compatibility matters — mixing compiler versions or standard libraries can cause subtle bugs
-- gRPC and Protocol Buffers provide language-agnostic RPC — good for microservice boundaries
-- WebAssembly (Emscripten) compiles C++ to run in browsers — a growing interop target
+- `extern "C"` disables name mangling - required for C++ functions callable from C or other languages.
+- C++ can call C libraries directly via `extern "C"` headers - no wrapper needed.
+- Python integration (pybind11, nanobind) wraps C++ classes and functions for Python consumption.
+- FFI (Foreign Function Interface) requires C-compatible types - no classes, templates, or exceptions across boundaries.
+- SWIG generates bindings for multiple languages from annotated C++ headers.
+- JNI (Java Native Interface) connects C++ with Java - manage JNI references carefully to avoid leaks.
+- `std::span` and raw pointers are the typical boundary types for interop.
+- ABI compatibility matters - mixing compiler versions or standard libraries can cause subtle bugs.
+- gRPC and Protocol Buffers provide language-agnostic RPC - good for microservice boundaries.
+- WebAssembly (Emscripten) compiles C++ to run in browsers - a growing interop target.

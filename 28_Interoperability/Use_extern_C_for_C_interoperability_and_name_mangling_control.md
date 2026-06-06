@@ -10,10 +10,13 @@
 
 This topic focuses on the **practical patterns** surrounding `extern "C"`: designing dual-language headers, controlling symbol visibility, and understanding how the linker resolves symbols across C and C++ translation units.
 
+The fundamental problem `extern "C"` solves is name mangling. In C++, the compiler encodes a function's full signature (parameter types, namespace, class membership) into its symbol name. This is what enables overloading - two functions named `process` with different parameter types get different symbol names. In C, there is no overloading, so the symbol name is just the function name, unchanged. When you try to link C code against a C++ library, the linker can't match the C object file's `process` against the C++ object file's `_Z7processi`. `extern "C"` tells the C++ compiler: "emit a plain, unmangled symbol for this function."
+
 ### Symbol Resolution Pipeline
 
-```cpp
+The diagram below shows exactly what goes wrong without `extern "C"` and what goes right with it.
 
+```cpp
 C++ Translation Unit               C Translation Unit
 ┌─────────────────────┐           ┌─────────────────────┐
 │ extern "C"          │           │                     │
@@ -27,13 +30,14 @@ C++ Translation Unit               C Translation Unit
          └──────────┬──────────────────────┘
                     │ Linker
                     ▼
-              Symbol match: "process" ✓  → linked successfully
-
+              Symbol match: "process" - linked successfully
 ```
 
-Without `extern "C"`, the C++ side would emit `_Z7processi` instead of `process` → **linker error**.
+Without `extern "C"`, the C++ side would emit `_Z7processi` instead of `process`, and the linker would report an undefined reference error.
 
 ### extern "C" Rules Summary
+
+Here is what you can and cannot put behind an `extern "C"` declaration. The restrictions are driven by the fact that C doesn't have overloading, templates, namespaces, or exceptions - so features that depend on those concepts can't be given C linkage.
 
 | What you CAN do | What you CANNOT do |
 | --- | --- |
@@ -51,8 +55,9 @@ Without `extern "C"`, the C++ side would emit `_Z7processi` instead of `process`
 
 **Answer:**
 
-```cpp
+The example below is a real-world-style audio processing library. The header uses the `#ifdef __cplusplus` guard pattern so it can be included by both C and C++ consumers without modification - this is the standard idiom for dual-language headers.
 
+```cpp
 // ═══════════ audio.h — dual C/C++ header ═══════════
 #ifndef AUDIO_H
 #define AUDIO_H
@@ -81,11 +86,11 @@ float audio_peak_amplitude(const AudioBuffer* buf);
 #endif
 
 #endif
-
 ```
 
-```cpp
+The C++ implementation uses `std::` functions internally - `extern "C"` doesn't restrict what you do inside the function body, only the name the linker sees.
 
+```cpp
 // ═══════════ audio.cpp — C++ implementation ═══════════
 #include "audio.h"
 #include <cmath>
@@ -135,11 +140,11 @@ float audio_peak_amplitude(const AudioBuffer* buf) {
 }
 
 }  // extern "C"
-
 ```
 
-```bash
+After compiling, `nm` lets you verify directly that the symbols are unmangled. The ` T ` flag means the symbol lives in the text (code) section - all five functions appear with their plain names.
 
+```bash
 # Compile and verify symbols:
 g++ -c audio.cpp -o audio.o
 nm audio.o | grep " T "
@@ -155,17 +160,15 @@ nm audio.o | grep " T "
 # _Z16audio_apply_gainP11AudioBufferf
 # _Z12audio_createii
 # etc
-
 ```
 
 ### Q2: Explain C++ name mangling and why it prevents direct linking with C object files
 
 **Answer:**
 
-Name mangling encodes function signature information into the symbol name. This is **required** for C++ features that C doesn't have:
+Name mangling encodes function signature information into the symbol name. This is **required** for C++ features that C doesn't have. The table below shows exactly how each feature contributes to the mangled symbol, using GCC's Itanium ABI format.
 
 ```cpp
-
 Feature that needs mangling        Mangled symbol (GCC Itanium ABI)
 ──────────────────────────         ────────────────────────────────
 Overloading:
@@ -185,13 +188,11 @@ Templates:
 const/volatile:
   void f(const int&)               _Z1fRKi
   void f(int&)                     _Z1fRi
-
 ```
 
-**Why this breaks C linking:**
+Here is what actually goes wrong when you try to link C and C++ object files without `extern "C"`. The error message from the linker says "undefined reference to `process`" - which is confusing because you know you defined it. The real cause is that the linker is looking for the plain name `process` (from the C side) and finding only `_Z7processi` (from the C++ side).
 
 ```cpp
-
 C translation unit (compiled with gcc):
   Declares: int process(int x);
   Expects symbol: process
@@ -201,22 +202,22 @@ C++ translation unit (compiled with g++):
   Emits symbol: _Z7processi
 
 Linker: C object needs "process", C++ object has "_Z7processi"
-→ UNDEFINED REFERENCE ERROR
+-> UNDEFINED REFERENCE ERROR
 
 Fix: extern "C" int process(int x) { return x * 2; }
   Emits symbol: process
-→ Linker matches successfully
-
+-> Linker matches successfully
 ```
 
-**MSVC uses different mangling** (`?process@@YAHH@Z`), so mangled symbols are NOT portable between compilers. `extern "C"` is the **only** way to guarantee cross-compiler symbol compatibility.
+The reason MSVC mangling is different is that there is no standard for name mangling - every compiler vendor chose their own scheme. **MSVC uses different mangling** (`?process@@YAHH@Z`), so mangled symbols are not portable between compilers. `extern "C"` is the **only** way to guarantee cross-compiler symbol compatibility.
 
 ### Q3: Create a C-compatible header with #ifdef __cplusplus guards for dual C/C++ use
 
 **Answer:**
 
-```cpp
+This example shows the full pattern for wrapping a C++ data structure (an `unordered_map`) behind a C-compatible API. The key design decisions are: use an opaque handle so C code never sees the C++ internals, use `void` in empty parameter lists (required for C89/C90 compatibility), and use `<stddef.h>` rather than `<cstddef>` so the header works in both languages.
 
+```cpp
 // ═══════════ hashmap.h — C API for a C++ unordered_map ═══════════
 #ifndef HASHMAP_H
 #define HASHMAP_H
@@ -251,11 +252,11 @@ void hashmap_for_each(const HashMap* map, hashmap_visitor fn, void* user_data);
 #endif
 
 #endif // HASHMAP_H
-
 ```
 
-```cpp
+The implementation is where the C++ lives. Notice that the `HashMap` struct is redefined in the `.cpp` file with its real internals - this is valid because the C header's `typedef struct HashMap HashMap` just forward-declares it as an opaque type. C code can hold `HashMap*` pointers and pass them around without ever needing to know what's inside.
 
+```cpp
 // ═══════════ hashmap.cpp — C++ implementation ═══════════
 #include "hashmap.h"
 #include <unordered_map>
@@ -308,11 +309,11 @@ void hashmap_for_each(const HashMap* map, hashmap_visitor fn, void* user_data) {
 }
 
 }  // extern "C"
-
 ```
 
-```c
+From the C consumer's perspective, this looks and feels exactly like a C library. The `void* user_data` parameter in the visitor callback is the C equivalent of a closure - it lets the caller thread state through to the callback without global variables.
 
+```c
 // ═══════════ main.c — Pure C consumer ═══════════
 #include "hashmap.h"
 #include <stdio.h>
@@ -348,16 +349,15 @@ int main(void) {
      banana = 5
      apple = 3
 */
-
 ```
 
 ---
 
 ## Notes
 
-- Use `void` in empty parameter lists for C compatibility: `create(void)` not `create()`
-- Use `<stddef.h>` not `<cstddef>`, `<stdbool.h>` not `<stdbool>` — C headers work in both languages
-- Opaque handle + `extern "C"` functions = the standard pattern for wrapping C++ in C
-- Callback-based iteration (with `void* user_data`) is the C equivalent of lambdas
-- On Windows, add `__declspec(dllexport)` for DLL export; on Linux use `__attribute__((visibility("default")))`
-- `extern "C"` applies to linkage only — you can still use C++ features inside the function body
+- Use `void` in empty parameter lists for C compatibility: `create(void)` not `create()` - in C, `create()` means "takes unspecified arguments," while `create(void)` means "takes no arguments."
+- Use `<stddef.h>` not `<cstddef>`, and `<stdbool.h>` not `<stdbool>` - the C-style headers work in both languages, while the `c`-prefixed C++ versions are not valid C.
+- The opaque handle + `extern "C"` functions pattern is the industry-standard way to wrap C++ classes for C consumption.
+- Callback-based iteration with `void* user_data` is the C equivalent of passing a lambda - it lets callers thread arbitrary context into the callback without global variables.
+- On Windows, add `__declspec(dllexport)` for DLL exports; on Linux, use `__attribute__((visibility("default")))` to control which symbols are exported from a shared library.
+- `extern "C"` applies only to linkage - you can freely use C++ features (exceptions, STL, RAII) inside the function bodies.

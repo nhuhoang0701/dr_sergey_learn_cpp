@@ -11,10 +11,13 @@
 
 This topic focuses on **nanobind's ndarray support for zero-copy tensor interop**, its smart-pointer ownership semantics, and practical porting from pybind11. nanobind is designed for performance-critical scientific computing where binary size and import speed matter.
 
+The zero-copy aspect is particularly significant for numerical code. When you pass a NumPy array to a C++ function through pybind11, there's often a copy involved. With `nb::ndarray`, nanobind gives your C++ code direct access to the memory buffer that NumPy owns - no copy, no overhead, no synchronization needed. This is exactly what you want for image processing, signal processing, or machine learning pipelines where arrays can be megabytes or gigabytes in size.
+
 ### CMake Setup
 
-```cmake
+Setting up nanobind with CMake is straightforward. The `nanobind_add_module` function handles all the details of building a Python extension with the right flags.
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.18)
 project(mymodule)
@@ -24,10 +27,11 @@ find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(mymodule src/bindings.cpp)
 # Produces: mymodule.cpython-312-x86_64-linux-gnu.so
-
 ```
 
 ### Key API Differences from pybind11
+
+If you're porting an existing pybind11 module, here is the complete mapping. Most of it is just a namespace change and a few method renames.
 
 | pybind11 | nanobind | Notes |
 | --- | --- | --- |
@@ -47,8 +51,9 @@ nanobind_add_module(mymodule src/bindings.cpp)
 
 **Answer:**
 
-```cpp
+The example ports a `Signal` class that represents audio samples. The pybind11 original is shown first, then the nanobind port below it. Read them side by side - the structure is identical, only the names change.
 
+```cpp
 // ═══════════ pybind11 original: signal_pb11.cpp ═══════════
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -87,11 +92,11 @@ PYBIND11_MODULE(signal_pb11, m) {
         .def_readwrite("samples", &Signal::samples)
         .def_readonly("sample_rate", &Signal::sample_rate);
 }
-
 ```
 
-```cpp
+The nanobind port is almost a word-for-word translation. The C++ business logic (`Signal`, `generate_sine`, `rms`) is completely unchanged. Only the binding code at the bottom differs, and even that is mostly just substituting `nb::` for `py::` and `def_rw`/`def_ro` for `def_readwrite`/`def_readonly`. Also notice the STL include: nanobind uses `<nanobind/stl/vector.h>` rather than a blanket `<pybind11/stl.h>`, which is more explicit and faster to compile.
 
+```cpp
 // ═══════════ nanobind port: signal_nb.cpp ═══════════
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/vector.h>
@@ -133,15 +138,17 @@ NB_MODULE(signal_nb, m) {
 
 // Compile time: ~3s (pybind11: ~8s)
 // Binary size:  ~60 KB (pybind11: ~250 KB)
-
 ```
+
+The comment at the bottom is representative of what you can expect. For a module of this size, the compile time roughly triples in your favour, and the binary is about 4x smaller.
 
 ### Q2: Explain how nanobind's ownership model differs from pybind11 for smart pointer types
 
 **Answer:**
 
-```cpp
+This is the most important conceptual difference when migrating from pybind11, and it's also where nanobind gives you the most performance headroom. The mental model to carry around is: pybind11 defaults to shared ownership everywhere; nanobind defaults to unique ownership and makes you opt in to sharing.
 
+```cpp
 #include <nanobind/nanobind.h>
 #include <memory>
 
@@ -184,7 +191,7 @@ NB_MODULE(texture_mod, m) {
     nb::class_<Texture>(m, "Texture")
         .def(nb::init<int, int>())
         .def_ro("width", &Texture::width);
-    // Python del → C++ destructor runs immediately
+    // Python del -> C++ destructor runs immediately
 
     // Intrusive refcount: shared between Python and C++
     nb::class_<SharedTexture>(m, "SharedTexture")
@@ -199,15 +206,19 @@ NB_MODULE(texture_mod, m) {
 // Summary:
 // pybind11: shared_ptr everywhere (safe but overhead)
 // nanobind: unique ownership (fast, explicit sharing when needed)
-
 ```
+
+The practical consequence: if you have C++ code that stores a `shared_ptr<Texture>` and you want Python to be able to hold the same object, you need to use either `nb::intrusive_base` or the explicit `nb::holder<std::shared_ptr<...>>()` option. The default unique-ownership path won't work for that case.
 
 ### Q3: Show nanobind's nb::ndarray for zero-copy NumPy interop with explicit memory ownership
 
 **Answer:**
 
-```cpp
+`nb::ndarray` is where nanobind really shines for scientific computing. The template parameters encode constraints that nanobind checks at binding time - if Python passes a non-contiguous array to a function that requires contiguous layout, nanobind raises a clean `TypeError` rather than silently misbehaving or segfaulting.
 
+The in-place function below is the most powerful use case: Python passes a NumPy array, and C++ modifies it directly in the NumPy buffer. No copy, no synchronization - the NumPy array is updated when the function returns.
+
+```cpp
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <vector>
@@ -273,14 +284,14 @@ NB_MODULE(ndarray_demo, m) {
           "Normalize array values to [-1, 1] range (modifies in-place)");
     m.def("create_matrix", &create_matrix,
           nb::arg("rows"), nb::arg("cols"),
-          "Create a rows×cols matrix with sequential values");
+          "Create a rows x cols matrix with sequential values");
     m.def("sum_2d", &sum_2d, "Sum all elements of a 2D array");
 }
-
 ```
 
-```python
+The `nb::capsule` in `create_matrix` is the ownership transfer mechanism. When nanobind returns the array to Python, it attaches the capsule as a "base" object. When Python's GC eventually collects the NumPy array, it also collects the capsule, which runs the lambda deleter - freeing the C++-allocated buffer. This is how you safely hand off C++-allocated memory to Python without leaking it.
 
+```python
 # Usage from Python:
 import numpy as np
 import ndarray_demo
@@ -297,16 +308,17 @@ print(mat)        # [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]]
 
 # 2D sum
 print(ndarray_demo.sum_2d(mat))  # 66.0
-
 ```
+
+Notice that `arr` is printed after `normalize_inplace` and the values have changed - the function modified the NumPy buffer in place. From Python's side, it looks like the function mutated the array, which is exactly the expected behavior.
 
 ---
 
 ## Notes
 
-- `nb::ndarray` supports NumPy, PyTorch, TensorFlow, and JAX tensors with the same C++ code
-- Shape constraints (`nb::shape<3, nb::any>`) are checked at binding time — raises TypeError on mismatch
-- `nb::c_contig` requires C-contiguous layout; `nb::f_contig` for Fortran order
-- The `nb::capsule` deleter pattern ensures C++-allocated memory is freed when Python GCs the array
-- nanobind's ndarray is more powerful than pybind11's `py::array_t` — multi-framework + safer
-- For GPU tensors, use `nb::device::cuda` instead of `nb::device::cpu`
+- `nb::ndarray` supports NumPy, PyTorch, TensorFlow, and JAX tensors with the same C++ code - the framework is detected at runtime from the array's type.
+- Shape constraints like `nb::shape<3, nb::any>` are verified at binding time and raise a clean `TypeError` on mismatch rather than crashing inside native code.
+- `nb::c_contig` requires C-contiguous (row-major) layout; use `nb::f_contig` for Fortran (column-major) order when needed.
+- The `nb::capsule` deleter pattern ensures C++-allocated memory is freed when Python GCs the array - it's the safe alternative to assuming Python will call `free` or `delete`.
+- nanobind's ndarray is more powerful than pybind11's `py::array_t` because it supports multiple tensor frameworks and gives stricter shape/layout guarantees.
+- For GPU tensors, use `nb::device::cuda` instead of `nb::device::cpu` in the ndarray template parameters.

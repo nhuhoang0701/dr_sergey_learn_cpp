@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-**SWIG (Simplified Wrapper and Interface Generator)** reads C/C++ header files and a `.i` interface file, then auto-generates binding code for Python, Java, C#, Ruby, Go, Lua, and 20+ other languages. One interface file → multiple language targets.
+**SWIG (Simplified Wrapper and Interface Generator)** reads C/C++ header files and a `.i` interface file, then auto-generates binding code for Python, Java, C#, Ruby, Go, Lua, and 20+ other languages. One interface file, multiple language targets.
+
+The key selling point is the "write once, wrap everywhere" story. Instead of hand-coding a Python extension module and a Java JNI layer separately, you describe your API once in a `.i` file and let SWIG generate all the wrapper code. This makes SWIG especially attractive when you need to expose a large C API to multiple languages, or when you're working on a legacy codebase where manually written bindings would be a maintenance nightmare.
 
 ### SWIG Workflow
 
-```cpp
+Here is the high-level picture. Notice that the same `.i` file drives wrappers for every target language - SWIG runs once per target, producing a C++ wrapper file plus the target-language proxy code.
 
+```cpp
                         ┌──────────────┐
 mathlib.h ──────────────│              │──► mathlib_wrap.cxx (Python)
                         │    SWIG      │──► mathlib_wrap.cxx (Java)
@@ -23,10 +26,11 @@ mathlib.i ──────────────│  generator   │──�
                                │
                         One .i file generates wrappers
                         for ALL target languages
-
 ```
 
 ### SWIG vs pybind11 vs nanobind
+
+If you're trying to decide which tool to use, this table summarises the tradeoffs. The short version: SWIG when you need multiple languages or have a large C API; pybind11/nanobind when you're targeting Python only and want a more Pythonic result.
 
 | Feature | SWIG | pybind11 | nanobind |
 | --- | :---: | :---: | :---: |
@@ -37,7 +41,7 @@ mathlib.i ──────────────│  generator   │──�
 | C code support | **Excellent** | Good | Good |
 | Maintenance effort | Low (auto-gen) | Medium | Medium |
 | Binary size | Medium | Large | **Small** |
-| learning curve | Moderate | Easy | Easy |
+| Learning curve | Moderate | Easy | Easy |
 
 ---
 
@@ -47,8 +51,9 @@ mathlib.i ──────────────│  generator   │──�
 
 **Answer:**
 
-```cpp
+The example starts with a normal C++ header and implementation - SWIG doesn't require you to modify your existing code at all. The magic is entirely in the `.i` file.
 
+```cpp
 // ═══════════ mathlib.h — C++ header ═══════════
 #ifndef MATHLIB_H
 #define MATHLIB_H
@@ -82,11 +87,9 @@ double dot_product(const std::vector<double>& a, const std::vector<double>& b);
 std::vector<double> linspace(double start, double end, int n);
 
 #endif
-
 ```
 
 ```cpp
-
 // ═══════════ mathlib.cpp — implementation ═══════════
 #include "mathlib.h"
 #include <sstream>
@@ -144,11 +147,11 @@ std::vector<double> linspace(double start, double end, int n) {
         result[i] = start + (end - start) * i / (n - 1);
     return result;
 }
-
 ```
 
-```swig
+The `.i` interface file is the heart of SWIG. The `%{...%}` block is code that gets copied verbatim into the generated wrapper (for includes). The `%include` directives bring in SWIG's STL support so that `std::vector` and `std::string` get translated correctly. The `%exception` block translates C++ exceptions into the target language's exception type. The `%extend` block adds Python-specific methods (`__str__`, `__repr__`) without touching the C++ source.
 
+```swig
 // ═══════════ mathlib.i — SWIG interface file ═══════════
 %module mathlib
 
@@ -191,11 +194,11 @@ std::vector<double> linspace(double start, double end, int n) {
 
 // Parse the header — SWIG generates wrappers for everything in it
 %include "mathlib.h"
-
 ```
 
-```bash
+Running SWIG is a two-step process: first generate the wrapper code, then compile it. Notice that switching to Java bindings is just changing one flag - the same `.i` file works.
 
+```bash
 # Generate Python bindings:
 swig -c++ -python mathlib.i
 # Produces: mathlib_wrap.cxx, mathlib.py
@@ -209,11 +212,11 @@ g++ -shared -fPIC -o _mathlib.so \
 # Generate Java bindings (same .i file!):
 swig -c++ -java mathlib.i
 # Produces: mathlib_wrap.cxx, Matrix.java, mathlib.java, etc
-
 ```
 
-```python
+The Python usage looks just like a native Python class. SWIG generates proxy objects that delegate to the C++ implementation transparently.
 
+```python
 # Python usage:
 import mathlib
 
@@ -225,21 +228,22 @@ print(f"Det: {m.determinant()}")  # Det: -2.0
 
 v = mathlib.linspace(0, 1, 5)
 print(list(v))  # [0.0, 0.25, 0.5, 0.75, 1.0]
-
 ```
 
 ### Q2: Explain when SWIG is preferable to pybind11: multiple target languages, legacy codebase
 
 **Answer:**
 
+The decision usually comes down to two things: how many target languages you need, and how C++-heavy your API is. Here is the breakdown:
+
 **Use SWIG when:**
 
 | Scenario | Why SWIG wins |
 | --- | --- |
-| Need Python + Java + C# | One `.i` file → all targets |
+| Need Python + Java + C# | One `.i` file -> all targets |
 | Large C API (100+ functions) | Auto-wraps entire headers with `%include` |
 | Legacy C codebase | SWIG handles pure C naturally |
-| Minimal maintenance budget | Auto-generated — update `.h`, re-run SWIG |
+| Minimal maintenance budget | Auto-generated - update `.h`, re-run SWIG |
 | Embedded scripting (Lua, Tcl) | SWIG supports niche languages |
 
 **Use pybind11/nanobind when:**
@@ -252,17 +256,19 @@ print(list(v))  # [0.0, 0.25, 0.5, 0.75, 1.0]
 | NumPy integration | First-class `py::array_t` support |
 | Modern C++ (concepts, ranges) | Better C++17/20 support |
 
-**SWIG limitations:**
+**SWIG limitations** worth knowing up front:
 
-- `%template` must be declared for every template instantiation you want to expose
-- STL containers need `%include "std_vector.i"` etc. — must be explicit
-- Generated Python code looks "C-like" not Pythonic (no properties by default)
-- No direct NumPy buffer protocol — need typemaps
-- Complex C++ (SFINAE, constexpr, concepts) may confuse SWIG parser
+- Every template instantiation you want to expose needs an explicit `%template` declaration in the `.i` file.
+- STL containers need explicit includes (`%include "std_vector.i"`, etc.) - they're not automatic.
+- Generated Python code looks "C-like" rather than Pythonic. No properties by default, for example.
+- No direct NumPy buffer protocol support - you need custom typemaps for that.
+- Complex C++ features (SFINAE, `constexpr`, concepts) may confuse the SWIG parser.
 
 ### Q3: Compare SWIG-generated bindings with manual pybind11 bindings for type safety
 
 **Answer:**
+
+The type safety difference between SWIG and pybind11 is significant and worth understanding before you choose between them. The core issue is that SWIG's type checking happens at runtime through proxy objects, while pybind11's type checking is backed by the C++ template system and happens at the Python call site.
 
 | Aspect | SWIG | pybind11 |
 | --- | --- | --- |
@@ -274,43 +280,45 @@ print(list(v))  # [0.0, 0.25, 0.5, 0.75, 1.0]
 | **Smart pointers** | `%shared_ptr` directive | **Automatic** (shared_ptr holder) |
 | **Const correctness** | Mostly ignored | **Enforced** |
 
-```python
+The concrete Python-side difference looks like this:
 
+```python
 # SWIG: type safety is weaker
 import mathlib_swig
 m = mathlib_swig.Matrix(2, 2)
 m.set(0, 0, "hello")  # May silently pass or crash — no compile-time check
 # SWIG relies on C-style conversions
+```
 
+```python
 # pybind11: strict type checking
 import mathlib_pb11
 m = mathlib_pb11.Matrix(2, 2)
 m.set(0, 0, "hello")  # TypeError: incompatible function arguments
 # pybind11 checks types at call time using C++ template matching
-
 ```
 
-```cpp
+Here is the underlying reason for the difference. SWIG generates C code and embeds type information in runtime proxy classes. pybind11 compiles the binding code as C++ and inherits the C++ type system directly, so type errors surface at the Python call site with clear messages rather than deep inside C code.
 
+```cpp
 SWIG approach:
-  C++ header → SWIG parser → generated C code → compiled
+  C++ header -> SWIG parser -> generated C code -> compiled
   Type info: embedded in proxy classes at runtime
   Safety: depends on SWIG typemaps (customizable but manual)
 
 pybind11 approach:
-  C++ binding code → C++ compiler → compiled
+  C++ binding code -> C++ compiler -> compiled
   Type info: C++ template type system (checked at compile time)
   Safety: inherits C++ type system directly
-
 ```
 
 ---
 
 ## Notes
 
-- SWIG is best for "wrap an entire C library in 5 minutes" scenarios
+- SWIG is best for "wrap an entire C library quickly" scenarios where you need multiple target languages.
 - Use `%rename` to give Python-friendly names: `%rename(__getitem__) Matrix::get;`
-- `%extend` adds methods that didn't exist in C++ — useful for `__str__`, `__len__`, etc.
-- SWIG 4.1+ supports C++17; C++20 support is partial
-- For new projects targeting Python only, pybind11/nanobind is strongly preferred
-- SWIG-generated code can be large — consider `-O` flag for optimization
+- `%extend` adds methods that don't exist in C++ - useful for `__str__`, `__len__`, and other Python protocol methods.
+- SWIG 4.1+ supports C++17; C++20 support is partial and some newer constructs may confuse the parser.
+- For new projects targeting Python only, pybind11 or nanobind is strongly preferred over SWIG.
+- SWIG-generated code can be large - the `-O` flag enables optimizations that reduce the wrapper size.

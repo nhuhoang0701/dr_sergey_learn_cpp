@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-**Emscripten** compiles C/C++ to **WebAssembly (Wasm)**, letting you run native code in the browser at near-native speed. It provides a full POSIX-like environment, libc/libc++, and bridges to JavaScript APIs.
+**Emscripten** is a toolchain that compiles C/C++ to **WebAssembly (Wasm)**, letting you run native code directly in the browser at near-native speed. It provides a full POSIX-like environment, ships libc/libc++, and includes bridges to JavaScript APIs so you don't have to build that glue yourself.
 
 ### Compilation Pipeline
 
-```cpp
+The pipeline goes from your C++ source all the way down to a `.wasm` binary and a JavaScript loader, handled entirely by the `emcc` driver:
 
+```cpp
    C++ source (.cpp)
         │
         ▼  emcc (Clang/LLVM)
@@ -25,10 +26,11 @@
         │
         ▼  Browser / Node.js
    Runs in Wasm VM
-
 ```
 
 ### Key Emscripten Features
+
+Here's a quick reference for the major features you'll reach for most often:
 
 | Feature | Flag / API | Purpose |
 | --- | --- | --- |
@@ -46,10 +48,11 @@
 
 **Answer:**
 
+The simplest path into Wasm is wrapping plain C-style functions with `extern "C"` and marking them with `EMSCRIPTEN_KEEPALIVE` so the dead-code eliminator doesn't strip them out. Here's a small math library:
+
 **C++ source (math_lib.cpp):**
 
 ```cpp
-
 #include <emscripten.h>
 #include <cmath>
 
@@ -84,25 +87,25 @@ int fibonacci(int n) {
 }
 
 }  // extern "C"
-
 ```
+
+Compile it with `emcc`. The `-sEXPORTED_FUNCTIONS` list tells Emscripten which symbols to keep, and each name gets a leading underscore because that's how C symbols appear at the Wasm level:
 
 **Compile:**
 
 ```bash
-
 emcc math_lib.cpp -o math_lib.js \
     -sEXPORTED_FUNCTIONS='["_factorial","_distance","_fibonacci"]' \
     -sEXPORTED_RUNTIME_METHODS='["cwrap","ccall"]' \
     -O2
 # Produces: math_lib.js + math_lib.wasm
-
 ```
+
+On the JavaScript side, `cwrap` creates a reusable wrapper function so you don't have to type argument types on every call. `ccall` is useful when you only need to call something once. Both are only available after the Wasm module finishes initializing, which is why everything goes inside `onRuntimeInitialized`:
 
 **JavaScript usage:**
 
 ```html
-
 <script src="math_lib.js"></script>
 <script>
 Module.onRuntimeInitialized = () => {
@@ -119,15 +122,15 @@ Module.onRuntimeInitialized = () => {
     console.log(fib);                      // 6765
 };
 </script>
-
 ```
 
 ### Q2: Use Embind to expose a C++ class as a JavaScript class with Emscripten
 
 **Answer:**
 
-```cpp
+`cwrap` only works with free C functions. When you want to expose a full C++ class - with constructors, properties, and methods - Embind is the right tool. You register the class in a special `EMSCRIPTEN_BINDINGS` block, and Emscripten generates all the glue automatically:
 
+```cpp
 // vector2d.cpp
 #include <emscripten/bind.h>
 #include <cmath>
@@ -158,7 +161,7 @@ public:
     }
 };
 
-// ═══════════ Embind registration ═══════════
+// Embind registration - maps C++ names to JS names
 EMSCRIPTEN_BINDINGS(vector_module) {
     emscripten::class_<Vector2D>("Vector2D")
         .constructor<>()
@@ -172,18 +175,18 @@ EMSCRIPTEN_BINDINGS(vector_module) {
         .function("dot", &Vector2D::dot)
         .function("toString", &Vector2D::to_string);
 }
-
 ```
+
+Compile with `--bind` to activate Embind:
 
 ```bash
-
 emcc vector2d.cpp -o vector2d.js --bind -O2
-
 ```
 
-```javascript
+On the JS side, `Vector2D` behaves like a native class. The key thing to remember is that each object lives in Wasm's heap, not JS's garbage-collected heap, so you must call `.delete()` when you're done or you'll leak memory:
 
-// JavaScript — Vector2D is a real JS class!
+```javascript
+// JavaScript - Vector2D is a real JS class!
 Module.onRuntimeInitialized = () => {
     const v1 = new Module.Vector2D(3, 4);
     console.log(v1.length());       // 5.0
@@ -196,45 +199,43 @@ Module.onRuntimeInitialized = () => {
     const norm = v1.normalized();
     console.log(norm.length());    // ~1.0
 
-    // IMPORTANT: prevent memory leaks — delete C++ objects
+    // IMPORTANT: prevent memory leaks - delete C++ objects
     v1.delete();
     v2.delete();
     v3.delete();
     norm.delete();
 };
-
 ```
 
 ### Q3: Explain the Asyncify transform and how it enables co_await-style async in Wasm C++
 
 **Answer:**
 
-Wasm executes **synchronously** — there's no native `sleep()` or blocking I/O. Asyncify solves this by transforming synchronous C++ code to pause and resume, enabling async JS calls from blocking C++ code.
+This one's a bit mind-bending. WebAssembly executes synchronously by design - there's no native `sleep()` or blocking I/O. If you call `sleep(1000)` in a normal Wasm build, the entire browser tab freezes for a second. Asyncify solves this by transforming your compiled code so it can pause execution, return control to the JavaScript event loop, and then resume from exactly where it left off once the async operation completes.
+
+Here's the conceptual difference:
 
 ```cpp
-
 Without Asyncify:
-  C++ calls sleep(1000) → ENTIRE browser tab freezes for 1s
+  C++ calls sleep(1000) -> ENTIRE browser tab freezes for 1s
 
 With Asyncify:
-  C++ calls sleep(1000) → Asyncify pauses C++ execution
-                         → Returns control to JS event loop
-                         → setTimeout(1000ms) fires
-                         → Asyncify resumes C++ from where it paused
-
+  C++ calls sleep(1000) -> Asyncify pauses C++ execution
+                         -> Returns control to JS event loop
+                         -> setTimeout(1000ms) fires
+                         -> Asyncify resumes C++ from where it paused
 ```
 
-**How it works internally:**
+The reason this is possible is that Asyncify instruments every function with save/restore logic for the call stack and local variables. When an async trigger fires, Asyncify unwinds the C++ stack by saving everything to memory. When the async operation completes, it reloads that saved state and picks up right where it left off:
 
 ```cpp
-
 1. Compiler instruments every function call with save/restore state
 2. When async operation triggered:
 
    ┌──────────────┐
    │ C++ function  │
    │ ...           │
-   │ fetch(url)    │ ← triggers async
+   │ fetch(url)    │ <- triggers async
    │ ...           │
    └──────┬───────┘
           │ save stack + locals to memory
@@ -248,11 +249,11 @@ With Asyncify:
    │ at fetch()+1  │
    │ ...           │
    └──────────────┘
-
 ```
 
-```cpp
+To your C++ code, this looks completely synchronous. The `emscripten_sleep` call below pauses for 2 seconds without freezing the browser, and the fetch happens without callbacks:
 
+```cpp
 // async_example.cpp
 #include <emscripten.h>
 #include <emscripten/fetch.h>
@@ -277,28 +278,25 @@ extern "C" EMSCRIPTEN_KEEPALIVE void run_demo() {
     printf("Step 3: got %llu bytes\n", fetch->numBytes);
     emscripten_fetch_close(fetch);
 }
-
 ```
 
 ```bash
-
 emcc async_example.cpp -o async.js \
     -sASYNCIFY \
     -sASYNCIFY_STACK_SIZE=65536 \
     -sFETCH \
     -O2
-
 ```
 
-**Asyncify cost:** ~10% code size increase, ~5% runtime overhead for instrumented functions.
+**Asyncify cost:** roughly 10% code size increase and about 5% runtime overhead for instrumented functions. It's not free, but for code that needs to do blocking-style async work in a browser, it's a very clean solution.
 
 ---
 
 ## Notes
 
-- `emcc` is a drop-in replacement for `gcc`/`clang` — accepts same flags plus Emscripten-specific `-s` options
-- Use `-O2` or `-O3` for production; `-g` for debugging with DWARF info
-- Embind objects MUST be `.delete()`d from JS to avoid C++ memory leaks
-- `-sALLOW_MEMORY_GROWTH` enables dynamic heap resizing (slight perf cost)
-- Emscripten supports most of C++20 (std::format, ranges, concepts) via libc++
-- For file I/O, Emscripten provides MEMFS (in-memory), IDBFS (IndexedDB), NODEFS (Node.js)
+- `emcc` is a drop-in replacement for `gcc`/`clang` - it accepts the same flags plus Emscripten-specific `-s` options.
+- Use `-O2` or `-O3` for production; use `-g` for debugging with DWARF info.
+- Embind objects MUST be `.delete()`d from JS to avoid C++ memory leaks.
+- `-sALLOW_MEMORY_GROWTH` enables dynamic heap resizing (slight performance cost).
+- Emscripten supports most of C++20 (std::format, ranges, concepts) via libc++.
+- For file I/O, Emscripten provides MEMFS (in-memory), IDBFS (IndexedDB), and NODEFS (Node.js).

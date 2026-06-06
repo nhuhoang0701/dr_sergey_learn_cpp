@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-The **cxx** crate provides **safe** Rust↔C++ interop by generating type-safe FFI bindings from a `#[cxx::bridge]` declaration. Instead of writing raw `extern "C"` functions with `unsafe`, cxx generates glue code that preserves type safety on both sides.
+The **cxx** crate provides **safe** Rust/C++ interop by generating type-safe FFI bindings from a `#[cxx::bridge]` declaration. Instead of writing raw `extern "C"` functions with `unsafe`, cxx generates glue code that preserves type safety on both sides. The key idea is that you declare the interface once in a `#[cxx::bridge]` block and cxx generates both the C++ header and the Rust bindings from it - so both sides are always in sync.
 
 ### Architecture
 
-```cpp
+The bridge macro acts as a shared contract between the two languages. Each side declares what the other side provides, and cxx generates the necessary glue:
 
+```cpp
 ┌──────────────────────────────────────────────────────┐
 │               cxx::bridge macro                        │
 │  ┌────────────────────┐  ┌─────────────────────────┐ │
@@ -27,10 +28,11 @@ The **cxx** crate provides **safe** Rust↔C++ interop by generating type-safe F
 │  Generated C++ header        Generated Rust bindings  │
 │  (callable from C++)         (callable from Rust)     │
 └──────────────────────────────────────────────────────┘
-
 ```
 
 ### cxx Type Mappings
+
+cxx maintains its own set of bridge types that sit between Rust's standard types and C++'s standard types. Some of these are zero-copy borrows, others are owned conversions - the "Notes" column tells you which:
 
 | Rust Type | C++ Type | Notes |
 | --- | --- | --- |
@@ -51,14 +53,15 @@ The **cxx** crate provides **safe** Rust↔C++ interop by generating type-safe F
 
 **Answer:**
 
+The bridge declaration lives in Rust and is the single source of truth for both sides. `extern "Rust"` blocks declare functions implemented in Rust that C++ can call; `extern "C++"` blocks declare C++ functions that Rust can call. Here's a complete bidirectional example:
+
 **Rust side (src/lib.rs):**
 
 ```rust
-
 // src/lib.rs
 #[cxx::bridge]
 mod ffi {
-    // Shared types — usable on both sides
+    // Shared types - usable on both sides
     struct Point {
         x: f64,
         y: f64,
@@ -97,23 +100,21 @@ fn fibonacci(n: u32) -> u64 {
         }
     }
 }
-
 ```
+
+The C++ side includes the cxx-generated header and the header for the C++ functions it implements. From C++, calling into Rust feels like calling any other function:
 
 **C++ side (cpp_funcs.h / cpp_funcs.cpp):**
 
 ```cpp
-
 // cpp_funcs.h
 #pragma once
 #include "rust/cxx.h"  // cxx-generated header
 
 void log_message(int32_t level, const rust::String& msg);
-
 ```
 
 ```cpp
-
 // cpp_funcs.cpp
 #include "cpp_funcs.h"
 #include "myproject/src/lib.rs.h"  // cxx-generated Rust bindings
@@ -135,15 +136,15 @@ int main() {
     printf("fib(20) = %llu\n", fibonacci(20));  // 6765
     return 0;
 }
-
 ```
 
 ### Q2: Pass a std::string across the C++/Rust boundary using cxx's safe string bridge
 
 **Answer:**
 
-```rust
+String passing is probably the most common thing you'll do across this boundary, and cxx has specific types for each direction. The trick is knowing which type to use depending on whether you're borrowing or transferring ownership, and whether the string originates in Rust or C++:
 
+```rust
 // src/lib.rs
 #[cxx::bridge]
 mod ffi {
@@ -162,7 +163,7 @@ mod ffi {
 }
 
 fn process_name(input: &CxxString) -> String {
-    // CxxString → Rust &str (zero-copy borrow)
+    // CxxString -> Rust &str (zero-copy borrow)
     let s: &str = input.to_str().unwrap_or("invalid-utf8");
     // Transform and return as Rust String
     s.trim().to_uppercase()
@@ -171,11 +172,9 @@ fn process_name(input: &CxxString) -> String {
 fn validate_email(email: &str) -> bool {
     email.contains('@') && email.contains('.')
 }
-
 ```
 
 ```cpp
-
 // strings.h + strings.cpp
 #include "rust/cxx.h"
 #include <string>
@@ -183,10 +182,10 @@ fn validate_email(email: &str) -> bool {
 
 // C++ receives rust::Str (borrowed Rust string slice)
 std::unique_ptr<std::string> format_output(
-    rust::Str prefix,        // Borrowed from Rust — no copy
+    rust::Str prefix,        // Borrowed from Rust - no copy
     const std::string& value // Regular C++ string
 ) {
-    // rust::Str → std::string conversion (copies)
+    // rust::Str -> std::string conversion (copies)
     std::string result = std::string(prefix) + ": " + value;
     return std::make_unique<std::string>(result);
 }
@@ -194,30 +193,33 @@ std::unique_ptr<std::string> format_output(
 // Usage from C++:
 void demo() {
     std::string name = "  john doe  ";
-    
-    // C++ std::string → Rust: automatic via &CxxString
+
+    // C++ std::string -> Rust: automatic via &CxxString
     rust::String processed = process_name(name);
     // processed = "JOHN DOE"
-    
-    // Rust &str → C++: automatic via rust::Str
+
+    // Rust &str -> C++: automatic via rust::Str
     bool valid = validate_email("user@example.com");
     // valid = true
 }
-
 ```
+
+Here's a cheat sheet for the string crossing directions:
 
 **String type cheat sheet:**
 
 | Direction | Source Type | Bridge Type | Copy? |
 | --- | --- | --- | --- |
-| C++ → Rust | `const std::string&` | `&CxxString` | No (borrow) |
-| C++ → Rust | `std::string` (owned) | `CxxString` | Moved |
-| Rust → C++ | `&str` | `rust::Str` | No (borrow) |
-| Rust → C++ | `String` | `rust::String` | Moved |
+| C++ -> Rust | `const std::string&` | `&CxxString` | No (borrow) |
+| C++ -> Rust | `std::string` (owned) | `CxxString` | Moved |
+| Rust -> C++ | `&str` | `rust::Str` | No (borrow) |
+| Rust -> C++ | `String` | `rust::String` | Moved |
 
 ### Q3: Explain why direct C++ to Rust interop is unsafe and why the C ABI bridge is safer
 
 **Answer:**
+
+The reason you can't just call C++ code directly from Rust is that the two languages have completely different ideas about how code works at the binary level. It's not just naming - it's exceptions vs panics, vtable layout, memory aliasing rules, and the fact that `std::string` and Rust's `String` have entirely different internal representations. A direct call without a defined boundary would mean undefined behavior in several of these areas simultaneously.
 
 **Why direct interop is unsafe:**
 
@@ -226,50 +228,50 @@ void demo() {
 | **No shared ABI** | C++ and Rust have different name mangling, vtable layouts, exception mechanisms |
 | **Memory model mismatch** | C++ allows aliasing; Rust's borrow checker forbids it |
 | **Exceptions vs panics** | C++ exception unwinding through Rust frames = undefined behavior |
-| **std::string ≠ String** | Different allocation strategies, size fields, SSO |
+| **std::string vs String** | Different allocation strategies, size fields, SSO |
 | **Inheritance** | C++ has virtual inheritance; Rust has no inheritance |
 | **Templates vs generics** | C++ templates monomorphize differently than Rust generics |
+
+The solution is to use C as the stable middle ground. C has a well-defined, minimal ABI that both languages know how to speak. POD types and simple function signatures travel across that boundary safely:
 
 **Why C ABI is the safe bridge:**
 
 ```cpp
-
-Direct C++↔Rust:  ← UNSAFE
+Direct C++<->Rust:  <- UNSAFE
 ┌─────────┐          ┌──────┐
-│  C++    │ ←──?──→  │ Rust │
+│  C++    │ <--?-->  │ Rust │
 │ vtables │          │ traits│
 │ RTTI    │          │ enums │
 │ std::   │          │ std:: │
 └─────────┘          └──────┘
   Different ABIs, different layouts, UB
 
-C ABI bridge:  ← SAFE
+C ABI bridge:  <- SAFE
 ┌─────────┐    ┌──────┐    ┌──────┐
-│  C++    │←──→│ C ABI│←──→│ Rust │
+│  C++    │<-->│ C ABI│<-->│ Rust │
 │ std::   │    │ POD  │    │ repr │
 │ objects │    │ types│    │  (C) │
 └─────────┘    └──────┘    └──────┘
   C ABI is stable, well-defined, and minimal
-
 ```
+
+What cxx adds on top of raw `extern "C"` is compile-time safety checking and ownership tracking - you get the stability of the C ABI without having to write unsafe Rust by hand:
 
 **What cxx does better than raw `extern "C"`:**
 
-1. **Compile-time safety**: cxx generates bindings that the Rust AND C++ compilers both check
-2. **No unsafe Rust**: function signatures in `extern "Rust"` don't require `unsafe` blocks
-3. **Ownership tracking**: `Box<T>` ↔ `UniquePtr<T>` — ownership is explicit
-4. **String safety**: cxx validates UTF-8 when converting `CxxString` → Rust `&str`
-5. **Error handling**: Rust `Result` maps to C++ exceptions (caught, not UB)
+1. **Compile-time safety**: cxx generates bindings that the Rust AND C++ compilers both check.
+2. **No unsafe Rust**: function signatures in `extern "Rust"` don't require `unsafe` blocks.
+3. **Ownership tracking**: `Box<T>` and `UniquePtr<T>` make ownership explicit and enforceable.
+4. **String safety**: cxx validates UTF-8 when converting `CxxString` to Rust `&str`.
+5. **Error handling**: Rust `Result` maps to C++ exceptions (caught, not UB).
 
 ---
 
 ## Notes
 
-- cxx generates header files at build time via `build.rs` — add `cxx-build` to build-dependencies
-- Shared structs must be `#[repr(C)]` compatible (no enums with data, no generics)
-- `UniquePtr<T>` is the primary way to pass C++ objects to Rust by value
-- `Box<T>` is the primary way to pass Rust objects to C++ by value
-- cxx does NOT support raw pointers — forcing safe patterns by design
-- For async: use `cxx-async` crate to bridge C++ coroutines with Rust futures
-
-```text
+- cxx generates header files at build time via `build.rs` - add `cxx-build` to build-dependencies.
+- Shared structs must be `#[repr(C)]` compatible (no enums with data, no generics).
+- `UniquePtr<T>` is the primary way to pass C++ objects to Rust by value.
+- `Box<T>` is the primary way to pass Rust objects to C++ by value.
+- cxx does NOT support raw pointers - forcing safe patterns by design.
+- For async: use the `cxx-async` crate to bridge C++ coroutines with Rust futures.

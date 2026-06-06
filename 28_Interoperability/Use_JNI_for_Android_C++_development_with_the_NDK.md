@@ -10,16 +10,19 @@
 
 **JNI (Java Native Interface)** allows Java/Kotlin code on Android to call C++ functions compiled via the **NDK (Native Development Kit)**. This is essential for performance-critical code (audio, video, ML, game engines) and reusing existing C/C++ libraries.
 
+The reason JNI exists is that Android apps run on the Java Virtual Machine (or ART, Android Runtime), but sometimes you need to drop into native code - either because you have an existing C/C++ library you want to reuse, or because the JVM's overhead is too high for tight inner loops. JNI is the bridge between those two worlds.
+
 ### JNI Call Flow on Android
 
-```cpp
+Here is the big picture of how a Kotlin call ends up executing C++ code. The key points are: the function naming convention (`Java_package_Class_method`) is how the JVM finds the right native function without any registration step, and `System.loadLibrary` triggers the `dlopen` of your compiled `.so` file.
 
+```cpp
 Kotlin/Java Layer                       Native Layer (C++)
 ┌──────────────────────┐               ┌───────────────────────────────┐
 │ class NativeLib {    │               │ #include <jni.h>              │
-│   external fun       │   JNI call   │                               │
+│   external fun       │               │                               │
 │     process(s: String│──────────────►│ JNIEXPORT jstring JNICALL     │
-│     ): String        │               │ Java_com_app_NativeLib_process│
+│     ): String        │   JNI call    │ Java_com_app_NativeLib_process│
 │ }                    │◄──────────────│ (JNIEnv* env, jobject thiz,   │
 │                      │   return      │  jstring input) { ... }       │
 │ companion object {   │               │                               │
@@ -29,10 +32,11 @@ Kotlin/Java Layer                       Native Layer (C++)
 │   }                  │               └───────────────────────────────┘
 │ }                    │
 └──────────────────────┘
-
 ```
 
 ### JNI Type Mapping
+
+Every Java/Kotlin primitive type has a corresponding JNI type on the C++ side. The JNI types are just typedefs - `jint` is really just `int32_t`, `jstring` is really just a pointer. The table below is your quick reference when translating method signatures.
 
 | Java/Kotlin Type | JNI C++ Type | Size |
 | --- | :---: | :---: |
@@ -53,8 +57,9 @@ Kotlin/Java Layer                       Native Layer (C++)
 
 **Answer:**
 
-```kotlin
+The Kotlin side is straightforward: mark the function `external` and call `System.loadLibrary` in the companion object's `init` block. That `external` keyword tells the compiler "this function will be provided at runtime from native code."
 
+```kotlin
 // ═══════════ Kotlin side: NativeLib.kt ═══════════
 package com.example.myapp
 
@@ -74,11 +79,11 @@ class NativeLib {
 // val lib = NativeLib()
 // val result = lib.processString("Hello Android!")
 // println(result)  // "HELLO ANDROID!" (uppercased by C++)
-
 ```
 
-```cpp
+On the C++ side, the function naming convention is the critical piece. Every dot in the Java package name becomes an underscore, and the class name and method name follow. The comments below explain the two most important steps: the string conversion (with its mandatory Release call) and the return conversion.
 
+```cpp
 // ═══════════ C++ side: native-lib.cpp ═══════════
 #include <jni.h>
 #include <string>
@@ -88,14 +93,14 @@ class NativeLib {
 extern "C" {
 
 // Function name MUST follow: Java_<package>_<class>_<method>
-// com.example.myapp.NativeLib.processString → underscores replace dots
+// com.example.myapp.NativeLib.processString -> underscores replace dots
 JNIEXPORT jstring JNICALL
 Java_com_example_myapp_NativeLib_processString(
     JNIEnv* env,       // JNI environment — all JNI calls go through this
     jobject thiz,      // the NativeLib instance (use jclass for static methods)
     jstring input)     // Java String parameter
 {
-    // ─── Convert Java String → C++ string ───
+    // ─── Convert Java String -> C++ string ───
     const char* utf8 = env->GetStringUTFChars(input, nullptr);
     if (!utf8) return nullptr;  // OutOfMemoryError thrown
 
@@ -108,7 +113,7 @@ Java_com_example_myapp_NativeLib_processString(
     std::transform(cpp_str.begin(), cpp_str.end(), cpp_str.begin(),
                    [](unsigned char c) { return std::toupper(c); });
 
-    // ─── Convert C++ string → Java String and return ───
+    // ─── Convert C++ string -> Java String and return ───
     return env->NewStringUTF(cpp_str.c_str());
 }
 
@@ -131,21 +136,25 @@ Java_com_example_myapp_NativeLib_computeHash(
 }
 
 }  // extern "C"
-
 ```
+
+The `GetStringUTFChars` / `ReleaseStringUTFChars` pair is a resource management pattern that you'll repeat constantly in JNI code. Think of it like `new`/`delete` - every `Get` must have a matching `Release`.
 
 ### Q2: Manage JNI local and global references to avoid reference table overflow
 
 **Answer:**
 
-```cpp
+This is one of the most common JNI bugs and one of the hardest to diagnose in the field. The JNI runtime gives each native call a local reference table - by default it holds 512 entries. Every time you call a JNI function that returns a Java object (like `GetObjectArrayElement`), it adds an entry to that table. In a loop processing thousands of items, you can easily overflow the table and crash the app with a cryptic error.
 
+The fix is simple: delete each local reference as soon as you're done with it inside the loop.
+
+```cpp
 #include <jni.h>
 #include <string>
 
 // ═══════════ Local references: auto-freed when native method returns ═══════════
 // Each JNI method gets a local reference table (default: 512 entries)
-// Creating too many locals in a loop → TABLE OVERFLOW → crash
+// Creating too many locals in a loop -> TABLE OVERFLOW -> crash
 
 JNIEXPORT void JNICALL
 Java_com_example_myapp_NativeLib_processArray(
@@ -163,7 +172,7 @@ Java_com_example_myapp_NativeLib_processArray(
 
         // ═══════════ CRITICAL: Delete local ref in loops! ═══════════
         env->DeleteLocalRef(item);
-        // Without this, 10000 iterations = 10000 local refs → OVERFLOW
+        // Without this, 10000 iterations = 10000 local refs -> OVERFLOW
     }
 }
 
@@ -215,15 +224,17 @@ JNI_OnUnload(JavaVM* vm, void* reserved)
 // Local       | Current native call  | Auto / DeleteLocal| Temporary objects
 // Global      | Until DeleteGlobalRef| Manual            | Cached classes
 // Weak Global | Until GC'd           | DeleteWeakGlobal  | Caches that allow GC
-
 ```
+
+The `JNI_OnLoad` pattern is worth memorising. It runs when `System.loadLibrary` loads your `.so`, which makes it a natural place to cache class references and method IDs that you'll need repeatedly. The key detail is that `FindClass` returns a local reference - you must promote it to a global reference before storing it in a static variable, otherwise the local ref will be invalidated as soon as `JNI_OnLoad` returns.
 
 ### Q3: Use the Android NDK's android_log_print for C++ logging visible in Logcat
 
 **Answer:**
 
-```cpp
+Standard C++ output (`printf`, `std::cout`) goes nowhere on Android - there is no console. Instead, the NDK provides `__android_log_print` which sends messages to Android's Logcat system. The macros below wrap it into a comfortable API that mirrors the Android log levels you're used to from Java.
 
+```cpp
 // ═══════════ Logging from C++ via Android's Logcat ═══════════
 #include <jni.h>
 #include <android/log.h>  // NDK logging header
@@ -300,11 +311,11 @@ Java_com_example_myapp_NativeLib_loadFile(
 // Output:
 // D/MyAppNative: Computation result: 328350 (took 2 ms)
 // I/MyAppNative: Loading file: /data/data/com.example.myapp/files/config.json
-
 ```
 
-```cmake
+You need to link the `log` library in your CMakeLists.txt for `__android_log_print` to be available. Without this, you'll get a linker error at build time.
 
+```cmake
 # CMakeLists.txt — link against Android log library
 cmake_minimum_required(VERSION 3.18)
 project(myapp)
@@ -318,16 +329,15 @@ target_link_libraries(myapp
 )
 
 target_compile_features(myapp PRIVATE cxx_std_17)
-
 ```
 
 ---
 
 ## Notes
 
-- JNI function names follow strict naming: `Java_<package>_<class>_<method>` with `_` for `.` and `_1` for actual underscores
-- Always `ReleaseStringUTFChars` after `GetStringUTFChars` — memory leak otherwise
-- `DeleteLocalRef` is mandatory in loops; Android's local ref table is limited (512 by default)
-- Use `JNI_OnLoad` + `RegisterNatives` to avoid fragile naming conventions
-- Link `log` in CMakeLists.txt to use `__android_log_print`
-- NDK supports C++17 by default (C++20 with NDK r25+)
+- JNI function names follow strict naming: `Java_<package>_<class>_<method>` with `_` for `.` and `_1` for actual underscores in method names.
+- Always call `ReleaseStringUTFChars` after `GetStringUTFChars` - the memory is a JNI-managed resource and will leak otherwise.
+- `DeleteLocalRef` is mandatory inside loops; Android's local ref table is limited (512 entries by default) and overflow causes a hard crash.
+- Use `JNI_OnLoad` with `RegisterNatives` if you want to avoid the fragile naming convention and register functions explicitly instead.
+- Link the `log` library in CMakeLists.txt to use `__android_log_print`.
+- NDK supports C++17 by default; C++20 is available with NDK r25 and later.

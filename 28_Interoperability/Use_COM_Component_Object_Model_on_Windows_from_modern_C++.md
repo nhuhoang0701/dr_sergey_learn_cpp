@@ -9,9 +9,13 @@
 
 ## Topic Overview
 
-This topic focuses on **practical modern COM usage** in C++ — using smart pointers (`WRL::ComPtr`, `wil::com_ptr`), RAII initialization, and safe interface querying. COM is still essential for DirectX, Shell APIs, Media Foundation, and WinRT.
+This topic focuses on **practical modern COM usage** in C++ - using smart pointers (`WRL::ComPtr`, `wil::com_ptr`), RAII initialization, and safe interface querying. COM is still essential for DirectX, Shell APIs, Media Foundation, and WinRT. If you have ever worked with DirectX or the Windows Shell APIs, you have already been using COM whether you knew it or not.
+
+The core idea behind COM is that every object implements at least the `IUnknown` interface, which gives you `AddRef`, `Release`, and `QueryInterface`. The first two manage the object's lifetime via reference counting. The third lets you ask whether the object also implements some other interface. The problem with raw COM is that forgetting to call `Release` leaks the object permanently - RAII wrappers like `ComPtr` exist exactly to prevent that.
 
 ### COM Smart Pointer Comparison
+
+The table below shows your three options. Raw pointers are included for completeness, but you should almost never use them in new code.
 
 | Feature | Raw `IUnknown*` | `WRL::ComPtr` | `wil::com_ptr` |
 | --- | :---: | :---: | :---: |
@@ -20,12 +24,13 @@ This topic focuses on **practical modern COM usage** in C++ — using smart poin
 | QueryInterface | Manual | `.As<T>()` | `.query<T>()` |
 | Error handling | Manual HRESULT | Manual HRESULT | Throws on failure |
 | Null check | Manual | `.Get() != nullptr` | `.get() != nullptr` |
-| Part of SDK | — | Yes (Windows SDK) | No (NuGet: `wil`) |
+| Part of SDK | - | Yes (Windows SDK) | No (NuGet: `wil`) |
 
 ### COM Initialization Pattern
 
-```cpp
+Every thread that uses COM must call `CoInitializeEx` before creating any COM objects, and `CoUninitialize` when it's done. Forgetting the `CoUninitialize` call won't crash you immediately, but it can cause resource leaks and subtle instability. The standard fix is an RAII wrapper that ties the lifetime of COM initialization to a scope.
 
+```cpp
 Program Start
     │
     ▼
@@ -33,17 +38,16 @@ CoInitializeEx(NULL, COINIT_APARTMENTTHREADED)
     │
     ▼
 ┌──────────────────────┐
-│  Use COM objects     │ ← CoCreateInstance / QueryInterface
+│  Use COM objects     │ <- CoCreateInstance / QueryInterface
 │  ComPtr handles      │
 │  AddRef/Release      │
 └──────────────────────┘
     │
     ▼
-CoUninitialize()  ← MUST match every CoInitializeEx
+CoUninitialize()  <- MUST match every CoInitializeEx
     │
     ▼
 Program End
-
 ```
 
 ---
@@ -54,8 +58,9 @@ Program End
 
 **Answer:**
 
-```cpp
+The `ComInitializer` struct below is the standard RAII approach. When it goes out of scope, the destructor automatically calls `CoUninitialize` if initialization succeeded - so you can never forget it. After that, notice how `ComPtr<IShellItem>` handles the `Release` call automatically when the function returns.
 
+```cpp
 #include <windows.h>
 #include <wrl/client.h>
 #include <shobjidl.h>
@@ -109,15 +114,17 @@ int main() {
     return 0;
 }
 // Output: Item: notepad.exe
-
 ```
+
+Notice `IID_PPV_ARGS(&item)` - this macro extracts the interface ID from the ComPtr's template type parameter and passes both the IID and the address to receive the pointer. It prevents a common bug where you pass the wrong IID for the pointer type.
 
 ### Q2: Query an interface with QueryInterface and handle E_NOINTERFACE gracefully
 
 **Answer:**
 
-```cpp
+`QueryInterface` is how COM lets a single object implement multiple interfaces. You ask "does this object also implement `IFileDialog2`?" and it either hands back a pointer or returns `E_NOINTERFACE`. The `ComPtr::As` method is the clean way to do this - it calls `QueryInterface` under the hood and stores the result.
 
+```cpp
 #include <windows.h>
 #include <wrl/client.h>
 #include <shobjidl.h>
@@ -194,15 +201,17 @@ void check_hr(HRESULT hr, const char* context) {
             break;
     }
 }
-
 ```
+
+The "safe pattern" at the bottom is the one you'll use most often: try the `QueryInterface`, and if it succeeds, use the richer interface - if it fails, just skip the feature. The `ComPtr` handles cleanup in both branches so there's no way to leak.
 
 ### Q3: Use WRL::ComPtr or wil::com_ptr instead of raw IUnknown pointers for automatic Release
 
 **Answer:**
 
-```cpp
+This example deliberately shows both the raw-pointer version and the `ComPtr` version side by side for the same Direct2D code. The raw version looks manageable at first, but notice how every early-return error path requires a manual `Release` call - miss one and you have a permanent leak.
 
+```cpp
 #include <windows.h>
 #include <wrl/client.h>
 #include <d2d1.h>
@@ -211,7 +220,7 @@ void check_hr(HRESULT hr, const char* context) {
 
 using Microsoft::WRL::ComPtr;
 
-// ═══════════ BAD: Raw pointers — easy to leak ═══════════
+// BAD: Raw pointers — easy to leak
 void raw_pointer_danger() {
     ID2D1Factory* factory = nullptr;
     HRESULT hr = D2D1CreateFactory(
@@ -227,15 +236,15 @@ void raw_pointer_danger() {
     hr = factory->CreateHwndRenderTarget(rtProps, hwndProps, &target);
     if (FAILED(hr)) {
         factory->Release();  // Must remember to Release!
-        return;              // If you forget → LEAK
+        return;              // If you forget -> LEAK
     }
 
     // Use target...
     target->Release();      // Must Release in correct order
-    factory->Release();     // Miss one → LEAK
+    factory->Release();     // Miss one -> LEAK
 }
 
-// ═══════════ GOOD: ComPtr — automatic, exception-safe ═══════════
+// GOOD: ComPtr — automatic, exception-safe
 void comptr_safe() {
     ComPtr<ID2D1Factory> factory;
     HRESULT hr = D2D1CreateFactory(
@@ -293,16 +302,17 @@ void comptr_operations() {
     ComPtr<ID2D1Factory> a, b;
     a.Swap(b);
 }
-
 ```
+
+The `comptr_operations` function is a handy reference for all the `ComPtr` operations you'll use regularly. The one that trips people up is `Detach` - after calling it, the ComPtr no longer manages the object, so you own the `Release` call yourself.
 
 ---
 
 ## Notes
 
-- `IID_PPV_ARGS(&ptr)` macro extracts the IID from the ComPtr's template type — prevents IID/type mismatches
-- `wil::com_ptr` (Windows Implementation Libraries) throws `wil::ResultException` on failure instead of returning HRESULT — more C++-idiomatic
-- Never call `Release()` on a pointer obtained via `ComPtr::Get()` — the ComPtr still owns it
-- `ComPtr::ReleaseAndGetAddressOf()` resets and returns `**` — use for output parameters
-- COM objects can live in DLLs or EXEs (out-of-process servers) — ComPtr handles both transparently
-- For WinRT, prefer `winrt::com_ptr` from C++/WinRT over WRL
+- `IID_PPV_ARGS(&ptr)` extracts the IID from the ComPtr's template type, preventing IID/type mismatches that are otherwise a silent source of bugs.
+- `wil::com_ptr` (Windows Implementation Libraries) throws `wil::ResultException` on failure instead of returning HRESULT - more C++-idiomatic for code that uses exceptions.
+- Never call `Release()` on a pointer obtained via `ComPtr::Get()` - the ComPtr still owns it and will double-release.
+- `ComPtr::ReleaseAndGetAddressOf()` resets and returns `**` - use this for output parameters, not `GetAddressOf()`, when you're replacing an existing object.
+- COM objects can live in DLLs or EXEs (out-of-process servers) - ComPtr handles both transparently.
+- For WinRT, prefer `winrt::com_ptr` from C++/WinRT over WRL.

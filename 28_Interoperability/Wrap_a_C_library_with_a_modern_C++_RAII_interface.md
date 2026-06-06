@@ -9,30 +9,34 @@
 
 ## Topic Overview
 
-C libraries expose resources through paired `create`/`destroy` functions and return error codes. Wrapping them in C++ RAII classes provides automatic cleanup, exception safety, and a modern API that works with standard algorithms, ranges, and `std::span`.
+C libraries expose resources through paired `create`/`destroy` functions and return error codes rather than throwing exceptions. Wrapping them in C++ RAII classes gives you automatic cleanup, exception safety, and a modern API that works with standard algorithms, ranges, and `std::span`.
+
+The underlying pattern is always the same: you take C's imperative "allocate, use, free" and turn it into a C++ object whose constructor does the "allocate", whose methods do the "use", and whose destructor handles the "free" automatically - even when exceptions are involved.
 
 ### RAII Wrapper Strategy
 
-```cpp
+Here is the mental model for mapping a C API to a C++ wrapper. Each C function gets a C++ counterpart that replaces raw pointers with smart pointers and error codes with exceptions.
 
+```cpp
 C library API                 C++ RAII wrapper
 ────────────────────          ────────────────────────────
 EVP_MD_CTX_new()    ──►      unique_ptr<EVP_MD_CTX, Deleter>
 EVP_MD_CTX_free()   ──►      (automatic in destructor)
 EVP_DigestInit()    ──►      DigestContext::DigestContext(algo)
 EVP_DigestUpdate()  ──►      DigestContext::update(span<const byte>)
-EVP_DigestFinal()   ──►      DigestContext::finalize() → vector<byte>
+EVP_DigestFinal()   ──►      DigestContext::finalize() -> vector<byte>
 Error codes         ──►      Exceptions (std::system_error)
 int* + size_t       ──►      std::span<int>
-
 ```
 
 ### Wrapper Patterns Cheat Sheet
 
+This table covers the most common C patterns and their idiomatic C++ replacements.
+
 | C Pattern | C++ RAII Pattern |
 | --- | --- |
 | `T* create() / destroy(T*)` | `unique_ptr<T, void(*)(T*)>` |
-| `int func(...) → error code` | Throw `std::system_error` on failure |
+| `int func(...) -> error code` | Throw `std::system_error` on failure |
 | `void* opaque handle` | Class with private `unique_ptr<void, Deleter>` |
 | `T* buf + size_t len` | `std::span<T>` parameter |
 | `callback + void* user_data` | `std::function` or lambda stored in class |
@@ -46,8 +50,9 @@ int* + size_t       ──►      std::span<int>
 
 **Answer:**
 
-```cpp
+The key design insight here is that a stateless deleter struct costs exactly zero bytes when stored in a `unique_ptr`. Contrast that with storing a `std::function` or a raw function pointer as the deleter - those add a pointer's worth of overhead per object. For wrappers that need to be zero-cost, always prefer a stateless struct.
 
+```cpp
 #include <openssl/evp.h>
 #include <memory>
 #include <vector>
@@ -58,7 +63,7 @@ int* + size_t       ──►      std::span<int>
 #include <sstream>
 #include <cstdint>
 
-// ═══════════ Custom deleter for EVP_MD_CTX ═══════════
+// Custom deleter for EVP_MD_CTX
 struct EvpMdCtxDeleter {
     void operator()(EVP_MD_CTX* ctx) const noexcept {
         if (ctx) EVP_MD_CTX_free(ctx);
@@ -67,7 +72,7 @@ struct EvpMdCtxDeleter {
 
 using EvpMdCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpMdCtxDeleter>;
 
-// ═══════════ RAII wrapper class ═══════════
+// RAII wrapper class
 class DigestContext {
     EvpMdCtxPtr ctx_;
 
@@ -140,21 +145,25 @@ int main() {
     return 0;
 }
 // Compile: g++ -std=c++20 -lssl -lcrypto main.cpp
-
 ```
+
+A few design decisions here are worth calling out. The factory method `make_context()` throws before handing the raw pointer to `unique_ptr`, which means the `unique_ptr` only ever holds a valid, initialized pointer - you never have to check for null inside the class methods. And because `~DigestContext() = default`, the destructor is just `unique_ptr`'s destructor, which calls `EvpMdCtxDeleter::operator()`. No explicit cleanup code is needed anywhere.
 
 **Key design decisions:**
 
-- struct `EvpMdCtxDeleter` is stateless — zero overhead vs raw pointer
-- `unique_ptr` ensures `EVP_MD_CTX_free` is called even if exceptions are thrown
-- Factory method `make_context()` throws on allocation failure before storing into `unique_ptr`
+- `struct EvpMdCtxDeleter` is stateless - zero overhead vs raw pointer.
+- `unique_ptr` ensures `EVP_MD_CTX_free` is called even if exceptions are thrown.
+- Factory method `make_context()` throws on allocation failure before storing into `unique_ptr`.
 
 ### Q2: Provide a C++ exception-throwing wrapper around C functions that return error codes
 
 **Answer:**
 
-```cpp
+C libraries that use error codes (SQLite, zlib, libcurl, etc.) follow a consistent pattern: every function returns an integer where 0 means success and negative values mean failure. The standard C++ way to wrap these is a small helper that converts the return code into an exception, and a custom `std::error_category` that carries the C library's error messages through the standard error machinery.
 
+The reason to use `std::system_error` and `std::error_category` rather than just throwing `std::runtime_error` is that callers can inspect the error code programmatically - `e.code().value()` gives back the original C error code, which can be useful for logging or for deciding whether to retry.
+
+```cpp
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
@@ -164,7 +173,7 @@ int main() {
 #include <string>
 #include <vector>
 
-// ═══════════ Simulated C library (like SQLite, zlib, etc.) ═══════════
+// Simulated C library (like SQLite, zlib, etc.)
 extern "C" {
     typedef struct db_connection db_connection;
     typedef struct db_result db_result;
@@ -180,7 +189,7 @@ extern "C" {
     const char* db_error_message(int code);
 }
 
-// ═══════════ Error category for the C library ═══════════
+// Error category for the C library
 class DbErrorCategory : public std::error_category {
 public:
     const char* name() const noexcept override { return "db"; }
@@ -206,7 +215,7 @@ inline void db_check(int code, const char* operation) {
     }
 }
 
-// ═══════════ RAII Wrappers ═══════════
+// RAII Wrappers
 struct ResultDeleter {
     void operator()(db_result* r) const noexcept { if (r) db_result_free(r); }
 };
@@ -265,25 +274,27 @@ int main() {
         fprintf(stderr, "Database error [%d]: %s\n",
                 e.code().value(), e.what());
     }
-    // db, result auto-cleaned up — even if exception thrown
+    // db, result auto-cleaned up - even if exception thrown
     return 0;
 }
-
 ```
+
+Notice the exception safety: if `db_query` fails after `db_open` has already succeeded, the `Database` destructor still runs and closes the connection cleanly. That is RAII doing its job.
 
 **Pattern highlights:**
 
-- Custom `std::error_category` preserves the C library's error codes in `std::error_code`
-- `db_check()` is a thin translation layer — one call per C function
-- Both `Database` and `QueryResult` use `unique_ptr` with custom deleters
-- Exception safety: if `db_query` fails after `db_open` succeeded, connection is still cleaned up
+- Custom `std::error_category` preserves the C library's error codes in `std::error_code`.
+- `db_check()` is a thin translation layer - one call per C function wraps all error handling.
+- Both `Database` and `QueryResult` use `unique_ptr` with custom deleters.
+- Exception safety: if `db_query` fails after `db_open` succeeded, the connection is still cleaned up.
 
 ### Q3: Use std::span to bridge C array+length parameters with C++ range-based code
 
 **Answer:**
 
-```cpp
+`std::span` is the ideal glue between C's "pointer plus size" convention and C++'s range-based algorithms. It is nothing more than a pointer and a size bundled together with a nice interface - no allocation, no copying, zero overhead. What it gives you is the ability to pass C data directly into `std::ranges::sort`, range-based for loops, `std::accumulate`, and anything else that works with contiguous ranges.
 
+```cpp
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -294,7 +305,7 @@ int main() {
 #include <ranges>
 #include <iostream>
 
-// ═══════════ Simulated C library: image processing ═══════════
+// Simulated C library: image processing
 extern "C" {
     struct c_image {
         unsigned char* pixels;  // raw pixel buffer
@@ -309,7 +320,7 @@ extern "C" {
                                const float* kernel, size_t kernel_size);
 }
 
-// ═══════════ C++ wrapper using std::span ═══════════
+// C++ wrapper using std::span
 class Image {
     struct Deleter {
         void operator()(c_image* img) const noexcept {
@@ -330,7 +341,7 @@ public:
         return static_cast<size_t>(img_->width) * img_->height * img_->channels;
     }
 
-    // Bridge: C raw pointer+size → std::span
+    // Bridge: C raw pointer+size -> std::span
     std::span<unsigned char> pixels() {
         return { img_->pixels, pixel_count() };
     }
@@ -371,8 +382,8 @@ public:
     }
 };
 
-// ═══════════ Generic span-based utilities ═══════════
-// Works with ANY contiguous data — C arrays, vectors, std::array
+// Generic span-based utilities
+// Works with ANY contiguous data - C arrays, vectors, std::array
 struct Stats {
     double mean;
     double min_val;
@@ -406,34 +417,33 @@ int main() {
 
     return 0;
 }
-
 ```
 
-**Why `std::span` is the ideal C↔C++ bridge:**
+The `compute_stats` function works equally well on a C array, a `std::vector`, and a `malloc`'d buffer - because `std::span` accepts all of them. The caller does not need to know which kind of memory backs the span. This is exactly the kind of interface you want at the C/C++ boundary.
+
+**Why `std::span` is the ideal C/C++ bridge:**
 
 ```cpp
-
 C world                      std::span                    C++ world
 ────────────                ──────────────               ─────────────
 int* ptr + size_t n   ──►  span<int>{ptr, n}     ──►   range-for loops
 const float* + len    ──►  span<const float>     ──►   std::accumulate
 malloc'd buffer       ──►  span<uint8_t>         ──►   std::ranges::sort
 char buf[256]         ──►  span<char, 256>       ──►   compile-time size
-
 ```
 
-- **Zero copy, zero overhead** — span is just a pointer + size (16 bytes)
-- **Implicit conversion** from `std::vector`, `std::array`, and C arrays
-- **Bounds checking** available via `.at()` or `gsl::span` in debug builds
-- **Works with ranges** — `std::ranges::sort(my_span)` sorts C data in-place
+- **Zero copy, zero overhead** - span is just a pointer plus a size (16 bytes total).
+- **Implicit conversion** from `std::vector`, `std::array`, and C arrays.
+- **Bounds checking** available via `.at()` or `gsl::span` in debug builds.
+- **Works with ranges** - `std::ranges::sort(my_span)` sorts C data in-place.
 
 ---
 
 ## Notes
 
-- Prefer `struct Deleter` (stateless) over `std::function` for custom deleters — zero overhead
-- Use `std::unique_ptr<T, Deleter>` for exclusive ownership, `std::shared_ptr<T>` when shared
-- For C libraries requiring global init (`curl_global_init`), use a reference-counted singleton
-- `std::span` doesn't own data — ensure the underlying C buffer outlives the span
-- Combine patterns: RAII handle + span access + exception wrapper = full modern C++ interface
-- Always make wrappers non-copyable unless the C library supports reference counting
+- Prefer a stateless `struct Deleter` over `std::function` for custom deleters - stateless deleters have zero overhead, while `std::function` adds a pointer-sized member to the `unique_ptr`.
+- Use `std::unique_ptr<T, Deleter>` for exclusive ownership, `std::shared_ptr<T>` only when the resource truly needs shared ownership.
+- For C libraries requiring global initialization (like `curl_global_init`), use a reference-counted singleton that initializes in its constructor and shuts down in its destructor.
+- `std::span` does not own the data it points at - always ensure the underlying C buffer outlives every span that refers to it.
+- Combine the patterns together: RAII handle plus span access plus exception wrapper gives you a complete modern C++ interface over any C library.
+- Always make wrappers non-copyable unless the C library explicitly supports reference counting on its handles.

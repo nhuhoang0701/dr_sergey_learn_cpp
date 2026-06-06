@@ -9,12 +9,13 @@
 
 ## Topic Overview
 
-This second pybind11 topic focuses on **practical binding patterns**: class binding with constructors/methods/properties, automatic C++ → Python exception translation, and the buffer protocol for zero-copy array sharing. Emphasis on common pitfalls and real-world usage.
+This second pybind11 topic focuses on **practical binding patterns**: class binding with constructors, methods, and properties; automatic C++ to Python exception translation; and the buffer protocol for zero-copy array sharing. The emphasis is on common pitfalls and the patterns you will actually use in real-world code.
 
 ### pybind11 Build Setup
 
-```cmake
+Before you can use pybind11, you need to build your extension. Here are the two most common approaches: CMake (for larger projects) and a direct compiler invocation (for quick experiments or CI scripts).
 
+```cmake
 # CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
 project(mymodule)
@@ -24,17 +25,14 @@ find_package(pybind11 CONFIG REQUIRED)
 
 pybind11_add_module(mymodule src/bindings.cpp)
 target_compile_features(mymodule PRIVATE cxx_std_17)
-
 ```
 
 ```bash
-
 # Alternative: build with pip
 pip install pybind11
 c++ -O3 -shared -std=c++17 -fPIC \
     $(python3 -m pybind11 --includes) \
     bindings.cpp -o mymodule$(python3-config --extension-suffix)
-
 ```
 
 ---
@@ -45,8 +43,9 @@ c++ -O3 -shared -std=c++17 -fPIC \
 
 **Answer:**
 
-```cpp
+This example binds a `Histogram` class. Pay attention to how named arguments (`py::arg`) with default values make the Python API feel native - users get meaningful parameter names and can call `Histogram()` with no arguments to get sensible defaults. The `__repr__` and `__len__` bindings are just regular `.def()` calls using Python's dunder names, so `len(h)` and `repr(h)` work naturally.
 
+```cpp
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <string>
@@ -56,7 +55,7 @@ c++ -O3 -shared -std=c++17 -fPIC \
 
 namespace py = pybind11;
 
-// ═══════════ C++ class: Histogram ═══════════
+// C++ class: Histogram
 class Histogram {
     std::vector<int> bins_;
     double min_, max_;
@@ -123,11 +122,11 @@ PYBIND11_MODULE(histogram_mod, m) {
                    std::to_string(h.total()) + " values>";
         });
 }
-
 ```
 
-```python
+From the Python side, this feels like a properly designed Python class with a full docstring, default arguments visible in `help()`, and idiomatic property access.
 
+```python
 from histogram_mod import Histogram
 import random
 
@@ -137,15 +136,17 @@ print(h)           # <Histogram [0.0, 100.0) 1000 values>
 print(h.total)     # 1000
 print(h.bins)      # [98, 102, 105, ...]
 print(len(h))      # 1000
-
 ```
 
 ### Q2: Handle exceptions: translate a C++ exception to a Python RuntimeError automatically
 
 **Answer:**
 
-```cpp
+This is one of pybind11's most convenient features: you get exception translation for free. When a standard C++ exception propagates out of a bound function, pybind11 catches it at the boundary and raises the corresponding Python exception - no registration, no boilerplate on your part.
 
+The table below shows exactly what maps to what. Notice that `std::invalid_argument` becomes `ValueError` (not `RuntimeError`), which is the Pythonically correct mapping since it signals a bad input.
+
+```cpp
 #include <pybind11/pybind11.h>
 #include <stdexcept>
 #include <fstream>
@@ -153,7 +154,7 @@ print(len(h))      # 1000
 
 namespace py = pybind11;
 
-// ═══════════ C++ functions that may throw ═══════════
+// C++ functions that may throw
 std::string read_config(const std::string& path) {
     std::ifstream file(path);
     if (!file.is_open())
@@ -179,28 +180,28 @@ int parse_int(const std::string& s) {
 }
 
 PYBIND11_MODULE(config_mod, m) {
-    // ═══════════ Automatic translation table: ═══════════
-    // C++ exception              → Python exception
-    // std::runtime_error         → RuntimeError
-    // std::invalid_argument      → ValueError
-    // std::out_of_range          → IndexError
-    // std::overflow_error        → OverflowError
-    // std::domain_error          → ValueError
-    // std::length_error          → ValueError
-    // std::bad_alloc             → MemoryError
-    // std::bad_cast              → RuntimeError
-    // Any unhandled std::exception → RuntimeError
+    // Automatic translation table:
+    // C++ exception              -> Python exception
+    // std::runtime_error         -> RuntimeError
+    // std::invalid_argument      -> ValueError
+    // std::out_of_range          -> IndexError
+    // std::overflow_error        -> OverflowError
+    // std::domain_error          -> ValueError
+    // std::length_error          -> ValueError
+    // std::bad_alloc             -> MemoryError
+    // std::bad_cast              -> RuntimeError
+    // Any unhandled std::exception -> RuntimeError
 
     m.def("read_config", &read_config, py::arg("path"));
     m.def("parse_int", &parse_int, py::arg("s"));
 
-    // No special registration needed — pybind11 does it automatically!
+    // No special registration needed - pybind11 does it automatically!
 }
-
 ```
 
-```python
+The Python code below receives the right exception types without any Python-side try/except gymnastics needed in the binding itself.
 
+```python
 from config_mod import read_config, parse_int
 
 try:
@@ -217,15 +218,17 @@ try:
     parse_int("99999999999999999")
 except OverflowError as e:
     print(e)  # Integer too large: 99999999999999999
-
 ```
 
 ### Q3: Use py::buffer_protocol to expose a C++ array as a NumPy array without copying
 
 **Answer:**
 
-```cpp
+The buffer protocol is the mechanism that lets a Python object claim to own a contiguous block of memory and expose it to NumPy. When you tag your class with `py::buffer_protocol()` and supply a `def_buffer` lambda, `np.asarray(obj)` reads the buffer descriptor you return - getting the data pointer, element type, dimensions, and strides - and builds a NumPy array that points directly at your C++ memory.
 
+Getting the strides right is the most common mistake. Strides are in bytes, not elements. For a 3D image buffer with layout `[rows][cols][channels]`, the strides are `width * channels * sizeof(uint8_t)` for rows, `channels * sizeof(uint8_t)` for columns, and `sizeof(uint8_t)` for the channel dimension.
+
+```cpp
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <vector>
@@ -233,7 +236,7 @@ except OverflowError as e:
 
 namespace py = pybind11;
 
-// ═══════════ Image class with buffer protocol ═══════════
+// Image class with buffer protocol
 class Image {
     std::vector<uint8_t> pixels_;
     size_t width_, height_, channels_;
@@ -269,7 +272,7 @@ PYBIND11_MODULE(image_mod, m) {
         .def_property_readonly("width", &Image::width)
         .def_property_readonly("height", &Image::height)
 
-        // ═══════════ Buffer protocol ═══════════
+        // Buffer protocol
         .def_buffer([](Image& img) -> py::buffer_info {
             return py::buffer_info(
                 img.data(),                    // pointer to buffer
@@ -283,9 +286,9 @@ PYBIND11_MODULE(image_mod, m) {
             );
         })
 
-        // ═══════════ Construct from NumPy array ═══════════
+        // Construct from NumPy array
         .def_static("from_numpy", [](py::array_t<uint8_t> arr) {
-            auto buf = arr.unchecked<3>();  // H×W×C
+            auto buf = arr.unchecked<3>();  // H x W x C
             Image img(buf.shape(1), buf.shape(0), buf.shape(2));
             for (py::ssize_t r = 0; r < buf.shape(0); ++r)
                 for (py::ssize_t c = 0; c < buf.shape(1); ++c)
@@ -294,11 +297,11 @@ PYBIND11_MODULE(image_mod, m) {
             return img;
         });
 }
-
 ```
 
-```python
+Because both the C++ `Image` and the NumPy array point at the same memory, writes through either side are immediately visible on the other.
 
+```python
 import numpy as np
 from image_mod import Image
 
@@ -314,16 +317,15 @@ print(arr[0, 320, 0])  # ~127 (gradient midpoint)
 
 # Modify via NumPy, C++ Image also changes
 arr[0, 0, :] = [255, 0, 0]  # Set top-left pixel to red
-
 ```
 
 ---
 
 ## Notes
 
-- `py::buffer_protocol()` must be in the `py::class_<>` template args — not just in `def_buffer`
-- Strides must match the actual memory layout — get them wrong and NumPy reads garbage
-- For large data, always prefer buffer protocol over copying (`py::array_t` constructors copy by default)
-- pybind11 auto-translates standard C++ exceptions — no explicit registration needed for common types
-- Default argument values in `py::init` constructors are visible in Python's `help()` output
-- Use `py::array::c_style | py::array::forcecast` for strict layout requirements
+- `py::buffer_protocol()` must be listed inside the `py::class_<>` definition as a tag argument - it is not something you add separately.
+- Strides must exactly match the actual memory layout of your C++ object. Getting them wrong makes NumPy silently read garbage data - there is no runtime check.
+- For large data, always prefer the buffer protocol over copying. `py::array_t` constructors copy by default; the buffer protocol does not.
+- pybind11 auto-translates all standard C++ exceptions to the appropriate Python exception type - no explicit registration needed for the common types.
+- Default argument values in `py::init` are visible in Python's `help()` output, which makes your binding much friendlier to use interactively.
+- Use `py::array::c_style | py::array::forcecast` when you need to guarantee a C-contiguous layout before your function processes the array.

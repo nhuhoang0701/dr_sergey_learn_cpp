@@ -9,9 +9,11 @@
 
 ## Topic Overview
 
-This part focuses on **EMSCRIPTEN_BINDINGS**, automatic type marshaling between C++ and JavaScript, and the **linear memory model** of WebAssembly.
+This part focuses on **EMSCRIPTEN_BINDINGS**, automatic type marshaling between C++ and JavaScript, and the **linear memory model** of WebAssembly. Understanding how types cross the C++/JS boundary - and how Wasm's single flat memory works - will save you a lot of debugging time when things don't behave the way you expect.
 
-### Type Marshaling: C++ ↔ JavaScript
+### Type Marshaling: C++ -> JavaScript
+
+Not all C++ types can cross the boundary transparently. Primitives pass through directly as Wasm native values, but anything more complex requires marshaling - sometimes by copy, sometimes by handle. Here's how the common types map:
 
 | C++ Type | JS Type | Marshaling |
 | --- | --- | --- |
@@ -26,20 +28,20 @@ This part focuses on **EMSCRIPTEN_BINDINGS**, automatic type marshaling between 
 
 ### WebAssembly Memory Model
 
-```cpp
+The reason this feels unusual at first is that WebAssembly doesn't have a GC-managed heap like JavaScript. It has one flat `ArrayBuffer` - a single contiguous chunk of bytes - and your C++ stack and heap both live inside it. JavaScript can read and write this buffer directly through typed array views like `HEAP32` and `HEAPF64`:
 
+```cpp
 JavaScript                          WebAssembly
 ┌─────────────┐                    ┌─────────────────────┐
 │ JS Heap      │                    │ Linear Memory        │
-│ (GC managed) │  ← separate →    │ (one ArrayBuffer)    │
+│ (GC managed) │  <- separate ->   │ (one ArrayBuffer)    │
 │              │                    │ ┌─────────────────┐ │
-│ Module.HEAP8 │──────refers to──→│ │ Stack  ↓         │ │
+│ Module.HEAP8 │──────refers to──->│ │ Stack  ↓         │ │
 │ Module.HEAPU8│                    │ │ ...              │ │
 │ Module.HEAPF64                    │ │ Heap   ↑         │ │
 │              │                    │ │ (malloc/free)    │ │
 │              │                    │ └─────────────────┘ │
 └─────────────┘                    └─────────────────────┘
-
 ```
 
 ---
@@ -50,9 +52,10 @@ JavaScript                          WebAssembly
 
 **Answer:**
 
-```cpp
+A great practical use case for Wasm is image processing - pixel math is the kind of tight loop that benefits from near-native speed. This example allocates a pixel buffer inside Wasm memory and lets the C++ side crunch through it:
 
-// image_process.cpp — image processing in C++, called from JS
+```cpp
+// image_process.cpp - image processing in C++, called from JS
 #include <emscripten.h>
 #include <cstdint>
 #include <cmath>
@@ -98,20 +101,18 @@ EMSCRIPTEN_KEEPALIVE
 void destroy_buffer(uint8_t* buf) { delete[] buf; }
 
 }
-
 ```
 
 ```bash
-
 emcc image_process.cpp -o image.js \
     -sEXPORTED_FUNCTIONS='["_grayscale","_blur","_create_buffer","_destroy_buffer","_malloc","_free"]' \
     -sEXPORTED_RUNTIME_METHODS='["cwrap"]' \
     -sALLOW_MEMORY_GROWTH -O2
-
 ```
 
-```javascript
+On the JavaScript side, notice the data-shuttle pattern: you allocate a buffer inside Wasm memory, copy the canvas pixel data in, call the C++ function, then copy the results back out. The key to this is `Module.HEAPU8`, which is a view into the Wasm linear memory:
 
+```javascript
 // JavaScript: apply grayscale to canvas image data
 const grayscale = Module.cwrap('grayscale', null, ['number', 'number', 'number']);
 const createBuf = Module.cwrap('create_buffer', 'number', ['number']);
@@ -134,15 +135,15 @@ function applyGrayscale(canvas) {
 
     destroyBuf(buf);
 }
-
 ```
 
 ### Q2: Use EMSCRIPTEN_BINDINGS to expose a class to JavaScript with automatic type marshaling
 
 **Answer:**
 
-```cpp
+For a more complex object like a `Matrix`, Embind lets you expose the full class API to JavaScript without writing any manual glue. C++ exceptions automatically surface as JavaScript `Error` objects on the JS side, which is a nice touch:
 
+```cpp
 // matrix.cpp
 #include <emscripten/bind.h>
 #include <vector>
@@ -210,12 +211,12 @@ EMSCRIPTEN_BINDINGS(matrix_module) {
     // Register std::vector for JS array interop
     emscripten::register_vector<double>("VectorDouble");
 }
-
 ```
 
-```javascript
+The JavaScript usage is clean - you get a class that behaves like a normal JS object. Just remember the `.delete()` calls at the end, because Wasm memory is not garbage collected:
 
-// JavaScript — automatic type marshaling
+```javascript
+// JavaScript - automatic type marshaling
 const m1 = new Module.Matrix(2, 3);
 m1.set(0, 0, 1); m1.set(0, 1, 2); m1.set(0, 2, 3);
 m1.set(1, 0, 4); m1.set(1, 1, 5); m1.set(1, 2, 6);
@@ -235,15 +236,15 @@ try { m1.get(10, 10); } catch(e) { console.log(e.message); }
 // "Index out of bounds"
 
 m1.delete(); m2.delete(); result.delete();  // Must free!
-
 ```
 
 ### Q3: Explain the memory model: WASM has a linear memory shared with JavaScript via TypedArrays
 
 **Answer:**
 
-```cpp
+This is worth understanding properly because it affects how you move data between C++ and JavaScript. Wasm has a single contiguous block of memory - no separate heap and stack segment from JavaScript's perspective. That block is laid out roughly like this:
 
+```cpp
 WebAssembly Linear Memory:
 ┌────────────────────────────────────────────────────────────┐
 │ Address 0                                                    │
@@ -271,13 +272,11 @@ JavaScript sees this as one ArrayBuffer:
   Module.HEAPU32   = new Uint32Array(buffer)
   Module.HEAPF32   = new Float32Array(buffer)
   Module.HEAPF64   = new Float64Array(buffer)
-
 ```
 
-**Reading/writing C++ memory from JavaScript:**
+The important practical consequence is that a C++ pointer is just a byte offset into this buffer. When you read `Module.HEAP32[(ptr >> 2) + i]`, you're dividing the byte offset by 4 to get the 32-bit integer index - it's direct access to the same memory your C++ code is using:
 
 ```javascript
-
 // Allocate 100 ints in Wasm memory
 const ptr = Module._malloc(100 * 4);  // 4 bytes per int32
 
@@ -292,29 +291,28 @@ console.log(Module.HEAP32[(ptr >> 2) + 5]);  // 25
 // IMPORTANT: free when done
 Module._free(ptr);
 
-// ═══════════ Memory growth ═══════════
+// Memory growth warning:
 // With -sALLOW_MEMORY_GROWTH:
 //   When heap runs out, Emscripten grows the ArrayBuffer
 //   WARNING: All TypedArray views (HEAP8, HEAP32, etc.) become INVALIDATED!
 //   Always re-read Module.HEAP* after any allocation that might grow memory
-
 ```
 
-**Key rules:**
+There are a few rules here that will bite you if you forget them:
 
-1. Wasm memory is a **single contiguous ArrayBuffer** — no separate heap/stack segments
-2. JS and Wasm share this buffer — changes on either side are immediately visible
-3. With `ALLOW_MEMORY_GROWTH`, buffer can be reallocated (invalidates JS TypedArray views)
-4. Default stack size: 64KB (`-sSTACK_SIZE=1048576` for 1MB)
-5. Pointers in C++ are just **byte offsets** into this ArrayBuffer
+1. Wasm memory is a **single contiguous ArrayBuffer** - no separate heap/stack segments from JS's view.
+2. JS and Wasm share this buffer - changes on either side are immediately visible to the other.
+3. With `ALLOW_MEMORY_GROWTH`, the buffer can be reallocated, which invalidates all existing JS TypedArray views.
+4. Default stack size is 64KB; set `-sSTACK_SIZE=1048576` if you need a 1MB stack.
+5. C++ pointers are just **byte offsets** into this ArrayBuffer, not JS references.
 
 ---
 
 ## Notes
 
-- Embind auto-marshals `std::string` ↔ JS `string` via UTF-8 — allocates on each conversion
-- Use `register_vector<T>()` and `register_map<K,V>()` for container interop
-- JS→Wasm string copies are expensive; for hot paths, pass raw pointers + length
-- `emscripten::val` lets you manipulate any JS value from C++ (DOM, promises, etc.)
-- Default initial memory: 16MB; set with `-sINITIAL_MEMORY=33554432` (32MB)
-- Memory is NOT garbage collected — C++ new/delete rules apply
+- Embind auto-marshals `std::string` to/from JS `string` via UTF-8 - this allocates on each conversion.
+- Use `register_vector<T>()` and `register_map<K,V>()` for container interop.
+- JS to Wasm string copies are expensive; for hot paths, pass raw pointers and length instead.
+- `emscripten::val` lets you manipulate any JS value from C++ (DOM, promises, etc.).
+- Default initial memory is 16MB; set with `-sINITIAL_MEMORY=33554432` (32MB).
+- Memory is NOT garbage collected - C++ `new`/`delete` rules apply in full.

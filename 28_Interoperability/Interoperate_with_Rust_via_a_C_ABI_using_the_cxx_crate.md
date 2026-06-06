@@ -8,33 +8,35 @@
 
 ## Topic Overview
 
-This part focuses on **ownership semantics** across the Rust↔C++ boundary and **error handling** — how cxx maps C++ exceptions to Rust `Result` and vice versa.
+This part focuses on **ownership semantics** across the Rust/C++ boundary and **error handling** - how cxx maps C++ exceptions to Rust `Result` and vice versa. These are the two areas where most cxx-related bugs originate, because both languages have strong opinions about who owns what and what happens when something goes wrong.
 
 ### Ownership Model
 
-```cpp
+The ownership picture becomes clearer once you accept that each language manages its own heap. Rust-allocated objects are represented as `Box<T>` on the Rust side and `rust::Box<T>` on the C++ side. C++-allocated objects are `std::unique_ptr<T>` on the C++ side and `cxx::UniquePtr<T>` on the Rust side. The destructor always runs on the side that allocated:
 
+```cpp
 Rust-owned:                     C++-owned:
 ┌───────────────┐               ┌───────────────┐
 │ Box<T>        │               │ UniquePtr<T>   │
-│ (Rust heap)   │──→ C++ sees   │ (C++ heap)    │──→ Rust sees
+│ (Rust heap)   │-> C++ sees    │ (C++ heap)    │-> Rust sees
 │ Drop on Rust  │   rust::Box   │ ~T() on C++   │   cxx::UniquePtr
 │ side          │   <T>         │ side          │   <T>
 └───────────────┘               └───────────────┘
 
 Shared references:
-  Rust &T      ──→  C++ sees const T&   (borrowing, no ownership transfer)
-  Rust &mut T  ──→  C++ sees T&         (exclusive mutable access)
-
+  Rust &T      -->  C++ sees const T&   (borrowing, no ownership transfer)
+  Rust &mut T  -->  C++ sees T&         (exclusive mutable access)
 ```
 
 ### Error Handling Across the Boundary
 
+The general rule is: Rust `Result::Err` becomes a C++ exception, and a C++ exception becomes a Rust `Result::Err`. But only when you declare the function correctly. If you forget to declare `Result<>` on a C++ function that can throw, an uncaught exception will call `std::terminate` and abort the process:
+
 | Rust Side | Bridge Action | C++ Side |
 | --- | :---: | --- |
-| `fn foo() -> Result<T>` | `Err` → thrown | `try { foo(); } catch(rust::Error&)` |
-| `fn bar()` (no Result) | Panic → `std::terminate` | Process aborts |
-| — | C++ throws | `Result<T>` in Rust (if declared) |
+| `fn foo() -> Result<T>` | `Err` -> thrown | `try { foo(); } catch(rust::Error&)` |
+| `fn bar()` (no Result) | Panic -> `std::terminate` | Process aborts |
+| - | C++ throws | `Result<T>` in Rust (if declared) |
 
 ---
 
@@ -44,12 +46,13 @@ Shared references:
 
 **Answer:**
 
-```rust
+Here's a more realistic bidirectional bridge - a Rust database pool exposed to C++, and a C++ logger exposed to Rust. Notice that the C++ functions are declared in an `unsafe extern "C++"` block because cxx can't statically verify their implementation is safe:
 
-// src/lib.rs — bidirectional bridge
+```rust
+// src/lib.rs - bidirectional bridge
 #[cxx::bridge(namespace = "myapp")]
 mod ffi {
-    // Shared struct — usable on both sides
+    // Shared struct - usable on both sides
     #[derive(Debug, Clone)]
     struct Config {
         max_connections: u32,
@@ -98,11 +101,11 @@ fn query(pool: &DatabasePool, sql: &str) -> Result<Vec<String>, cxx::Exception> 
 fn pool_size(pool: &DatabasePool) -> usize {
     pool.connections.len()
 }
-
 ```
 
-```cpp
+The C++ `Logger` class can throw from its `flush` method. Because `flush` is declared as `Result<()>` in the bridge, that exception will be caught by cxx and delivered to Rust as an `Err` value rather than crashing the process:
 
+```cpp
 // logger.h
 #pragma once
 #include "rust/cxx.h"
@@ -121,13 +124,13 @@ public:
     }
 
     void log(int32_t level, rust::Str msg) const {
-        // rust::Str → std::string_view-like (no copy for read)
+        // rust::Str -> std::string_view-like (no copy for read)
         file_ << "[" << level << "] " << std::string(msg) << "\n";
     }
 
     void flush() const {
         if (!file_) throw std::runtime_error("File not open");
-        // This exception → Rust Result::Err
+        // This exception -> Rust Result::Err
     }
 };
 
@@ -136,27 +139,27 @@ std::unique_ptr<Logger> create_logger(const std::string& path) {
 }
 
 }  // namespace myapp
-
 ```
 
-### Q2: Explain how cxx handles ownership: Box<T> (Rust owned) vs UniquePtr<T> (C++ owned)
+### Q2: Explain how cxx handles ownership: `Box<T>` (Rust owned) vs `UniquePtr<T>` (C++ owned)
 
 **Answer:**
 
-```rust
+The mental model is straightforward: you always free memory on the side that allocated it. cxx enforces this through its type system rather than leaving it to convention. Here's the bridge declaration that makes the ownership contracts visible:
 
+```rust
 #[cxx::bridge]
 mod ffi {
     extern "Rust" {
         type ImageProcessor;
 
-        // Returns Box<T> — Rust allocates, Rust owns
+        // Returns Box<T> - Rust allocates, Rust owns
         fn create_processor(width: u32, height: u32) -> Box<ImageProcessor>;
 
-        // Takes &T — borrows, no ownership transfer
+        // Takes &T - borrows, no ownership transfer
         fn process(proc: &ImageProcessor, data: &[u8]) -> Vec<u8>;
 
-        // Takes Box<T> — ownership transferred TO this function (consumed)
+        // Takes Box<T> - ownership transferred TO this function (consumed)
         fn destroy_processor(proc: Box<ImageProcessor>);
     }
 
@@ -164,18 +167,19 @@ mod ffi {
         include!("myapp/renderer.h");
         type Renderer;
 
-        // Returns UniquePtr<T> — C++ allocates, C++ owns
+        // Returns UniquePtr<T> - C++ allocates, C++ owns
         fn create_renderer() -> UniquePtr<Renderer>;
 
-        // Takes &T — borrows the C++ object
+        // Takes &T - borrows the C++ object
         fn render(renderer: &Renderer, width: u32, height: u32);
 
-        // Takes Pin<&mut T> — mutable borrow of C++ object
+        // Takes Pin<&mut T> - mutable borrow of C++ object
         fn set_viewport(renderer: Pin<&mut Renderer>, w: u32, h: u32);
     }
 }
-
 ```
+
+Here's the full ownership table for reference, because this is easy to get confused:
 
 **Ownership rules:**
 
@@ -188,40 +192,41 @@ mod ffi {
 | `Pin<&mut T>` | Pinned mutable reference | `T&` | Nobody (prevents move) |
 | `Vec<T>` returned | Owned Rust vec | `rust::Vec<T>` (can iterate) | Rust (when Vec dropped) |
 
-```cpp
+On the C++ side, working with a Rust-owned `Box` looks like this - it's automatically freed when it goes out of scope, which calls Rust's `Drop`:
 
-// C++ side — working with Rust-owned objects
+```cpp
+// C++ side - working with Rust-owned objects
 void demo() {
     // Rust allocates, returns Box
     rust::Box<ImageProcessor> proc = create_processor(1920, 1080);
 
-    // Borrow — no ownership transfer
+    // Borrow - no ownership transfer
     std::vector<uint8_t> input = load_image();
     rust::Vec<uint8_t> output = process(*proc, {input.data(), input.size()});
 
     // proc automatically freed when it goes out of scope
     // (calls Rust's Drop)
 }
-
 ```
 
 ### Q3: Show error handling across the boundary: C++ exceptions become Rust Results
 
 **Answer:**
 
-```rust
+Error handling is the area where forgetting a `Result<>` declaration can crash your process, so it's worth going through carefully. When a Rust function returns `Result::Err`, cxx translates it to a C++ exception of type `rust::Error`. When a C++ function throws and it's declared as `Result<>`, cxx catches the exception and delivers it as a Rust `Err`. Here's both directions in full:
 
+```rust
 #[cxx::bridge]
 mod ffi {
     extern "Rust" {
-        // Rust → C++: Result becomes catchable exception
+        // Rust -> C++: Result becomes catchable exception
         fn parse_config(json: &str) -> Result<String>;
         fn divide(a: f64, b: f64) -> Result<f64>;
     }
 
     unsafe extern "C++" {
         include!("myapp/io.h");
-        // C++ → Rust: declared as Result = exceptions caught
+        // C++ -> Rust: declared as Result = exceptions caught
         fn read_file(path: &CxxString) -> Result<Vec<u8>>;
         fn write_file(path: &CxxString, data: &[u8]) -> Result<()>;
     }
@@ -241,42 +246,42 @@ fn divide(a: f64, b: f64) -> Result<f64, cxx::Exception> {
     }
     Ok(a / b)
 }
-
 ```
 
-```cpp
+From the C++ side, Rust errors look like regular C++ exceptions - you catch them as `rust::Error` and call `.what()` to get the message:
 
+```cpp
 // C++ calling Rust functions with error handling
 #include "myapp/src/lib.rs.h"
 #include <iostream>
 
 void demo() {
-    // Rust Result::Ok → returns value
+    // Rust Result::Ok -> returns value
     try {
         rust::String result = parse_config("{}");
         std::cout << std::string(result) << "\n";
     } catch (const rust::Error& e) {
-        // Rust Result::Err → caught as rust::Error
+        // Rust Result::Err -> caught as rust::Error
         std::cerr << "Parse error: " << e.what() << "\n";
     }
 
-    // Rust Result::Err → exception
+    // Rust Result::Err -> exception
     try {
         double result = divide(10.0, 0.0);
     } catch (const rust::Error& e) {
         std::cerr << e.what() << "\n";  // "Division by zero"
     }
 }
-
 ```
 
-```rust
+From the Rust side, C++ exceptions on `Result<>`-declared functions arrive as `Err` values. The warning at the end is critical: if a C++ function is NOT declared as `Result<>` and it throws, the exception is unhandled and the process aborts via `std::terminate`:
 
+```rust
 // Rust calling C++ functions with error handling
 fn demo() {
     let path = std::pin::Pin::new(&cxx::CxxString::new("config.txt"));
 
-    // C++ exception → Rust Result::Err
+    // C++ exception -> Rust Result::Err
     match ffi::read_file(&path) {
         Ok(data) => println!("Read {} bytes", data.len()),
         Err(e) => eprintln!("C++ threw: {}", e),
@@ -284,19 +289,18 @@ fn demo() {
     }
 
     // If C++ function NOT declared as Result and it throws:
-    // → std::terminate() — program aborts!
+    // -> std::terminate() - program aborts!
     // ALWAYS declare Result<> for C++ functions that may throw
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `Box<T>` crosses the boundary by transferring ownership — Rust's Drop runs when C++ releases it
-- `UniquePtr<T>` crossing to Rust — C++ destructor runs when Rust drops the UniquePtr wrapper
-- `SharedPtr<T>` is also supported for shared ownership across the boundary
-- Never declare a C++ function without `Result<>` if it can throw — unhandled exceptions = abort
-- cxx doesn't support passing raw pointers — forces safe ownership patterns
-- Build integration: add `cxx-build` crate to `build-dependencies` in Cargo.toml
+- `Box<T>` crosses the boundary by transferring ownership - Rust's Drop runs when C++ releases it.
+- `UniquePtr<T>` crossing to Rust - C++ destructor runs when Rust drops the UniquePtr wrapper.
+- `SharedPtr<T>` is also supported for shared ownership across the boundary.
+- Never declare a C++ function without `Result<>` if it can throw - unhandled exceptions cause an abort.
+- cxx doesn't support passing raw pointers - forcing safe ownership patterns by design.
+- Build integration: add `cxx-build` crate to `build-dependencies` in Cargo.toml.

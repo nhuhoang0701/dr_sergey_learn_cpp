@@ -10,25 +10,29 @@
 
 This topic covers **advanced JNI patterns**: implementing native methods with correct naming conventions, converting between `jstring` and `std::string` with proper UTF-8 handling, and using `RegisterNatives` for dynamic method registration (avoiding fragile name-mangled dispatch).
 
+JNI is Java's mechanism for calling native code - which in Android almost always means C++. The API is notoriously verbose, but once you understand the patterns they repeat consistently: get a pointer into JVM memory, use it, release it. Skipping the release is a common source of subtle memory leaks.
+
 ### Static vs Dynamic JNI Registration
 
-```cpp
+There are two ways to connect a `native` Java method to its C++ implementation. The static approach relies on a naming convention that the JVM uses to find the function by name at runtime. The dynamic approach registers a table of function pointers explicitly in `JNI_OnLoad`, which the JVM calls when your library is loaded.
 
+```cpp
 Static Registration (naming convention):
   Java: native void process()  in com.example.Foo
   C++:  Java_com_example_Foo_process(JNIEnv*, jobject)
-  → JVM finds by name at runtime (slow first call, fragile names)
+  // JVM finds by name at runtime (slow first call, fragile names)
 
 Dynamic Registration (RegisterNatives):
   C++:  any_name(JNIEnv*, jobject)  // any function name
   Register: JNINativeMethod methods[] = {
     {"process", "()V", (void*)any_name}
   };
-  → Registered in JNI_OnLoad (fast, refactorable, less error-prone)
-
+  // Registered in JNI_OnLoad (fast, refactorable, less error-prone)
 ```
 
 ### String Conversion Pitfalls
+
+JNI has multiple string access functions with important differences. The most common mistake is forgetting to release the pointer returned by `GetStringUTFChars`, which leaks memory. Use the table below to choose the right function for your situation.
 
 | JNI Function | Returns | Encoding | Must Release? |
 | --- | --- | --- | :---: |
@@ -46,9 +50,10 @@ Dynamic Registration (RegisterNatives):
 
 **Answer:**
 
-```java
+Here is a complete example with both the Java declaration and the C++ implementation. Static registration requires the function name to exactly match the Java package, class, and method name - dots become underscores. One mistake in the name and the JVM throws `UnsatisfiedLinkError` at runtime with no helpful message about what went wrong.
 
-// ═══════════ Java side: com/example/crypto/CryptoLib.java ═══════════
+```java
+// Java side: com/example/crypto/CryptoLib.java
 package com.example.crypto;
 
 public class CryptoLib {
@@ -59,18 +64,18 @@ public class CryptoLib {
     public native byte[] decrypt(byte[] data, String key);
     public native String hash(String input, String algorithm);
 }
-
 ```
 
-```cpp
+The C++ side must use `extern "C"` to prevent name mangling, which would otherwise change the function name and break the JVM's lookup.
 
-// ═══════════ C++ side: crypto_jni.cpp ═══════════
+```cpp
+// C++ side: crypto_jni.cpp
 #include <jni.h>
 #include <string>
 #include <vector>
 #include <numeric>
 
-// ─── Static registration: name MUST match Java_<package>_<class>_<method> ───
+// Static registration: name MUST match Java_<package>_<class>_<method>
 extern "C" {
 
 JNIEXPORT jbyteArray JNICALL
@@ -90,7 +95,7 @@ Java_com_example_crypto_CryptoLib_encrypt(
     jbyte* dataPtr = env->GetByteArrayElements(data, nullptr);
     jint dataLen = env->GetArrayLength(data);
 
-    // Simple XOR "encryption" (for demonstration — NOT secure!)
+    // Simple XOR "encryption" (for demonstration - NOT secure!)
     std::vector<jbyte> encrypted(dataLen);
     for (jint i = 0; i < dataLen; ++i) {
         encrypted[i] = dataPtr[i] ^ keyStd[i % keyStd.size()];
@@ -125,19 +130,21 @@ Java_com_example_crypto_CryptoLib_hash(
 }
 
 }  // extern "C"
-
 ```
 
 ### Q2: Convert between JNI jstring and std::string correctly including UTF-8 handling
 
 **Answer:**
 
-```cpp
+String handling in JNI is where most bugs hide. The reason is that JNI's "UTF-8" is actually Modified UTF-8 - a variant of CESU-8 that differs from standard UTF-8 in two ways: the null character (U+0000) is encoded as the two-byte sequence `0xC0 0x80` instead of a single `0x00`, and Unicode supplementary characters (anything above U+FFFF, like most emoji) are encoded using surrogate pairs rather than the standard four-byte sequence. For ASCII-only text this does not matter. For emoji and certain CJK characters, you need to be aware of it.
 
+The RAII wrapper below makes the pattern safe by tying `ReleaseStringUTFChars` to the destructor, so you cannot forget the release.
+
+```cpp
 #include <jni.h>
 #include <string>
 
-// ═══════════ RAII wrapper for JNI string access ═══════════
+// RAII wrapper for JNI string access
 class JniString {
     JNIEnv* env_;
     jstring jstr_;
@@ -157,7 +164,7 @@ public:
         }
     }
 
-    // Convert to std::string (copies — safe after release)
+    // Convert to std::string (copies - safe after release)
     std::string str() const {
         return chars_ ? std::string(chars_) : std::string();
     }
@@ -170,7 +177,7 @@ public:
     JniString& operator=(const JniString&) = delete;
 };
 
-// ═══════════ UTF-8 handling details ═══════════
+// UTF-8 handling details
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_com_example_App_processText(JNIEnv* env, jobject thiz, jstring input)
@@ -183,10 +190,10 @@ Java_com_example_App_processText(JNIEnv* env, jobject thiz, jstring input)
         JniString str(env, input);
         if (!str.valid()) return nullptr;
         std::string processed = str.str();
-        // processed is Modified UTF-8 — fine for ASCII, careful with emoji/CJK
+        // processed is Modified UTF-8 - fine for ASCII, careful with emoji/CJK
     }
 
-    // Method 2: GetStringChars (UTF-16) — correct for all Unicode
+    // Method 2: GetStringChars (UTF-16) - correct for all Unicode
     {
         const jchar* utf16 = env->GetStringChars(input, nullptr);
         jint len = env->GetStringLength(input);
@@ -205,7 +212,7 @@ Java_com_example_App_processText(JNIEnv* env, jobject thiz, jstring input)
         jint len = env->GetStringUTFLength(input);
         std::string buf(len, '\0');
         env->GetStringUTFRegion(input, 0, env->GetStringLength(input), buf.data());
-        // buf contains Modified UTF-8 — efficient, no release needed
+        // buf contains Modified UTF-8 - efficient, no release needed
     }
 
     // Return a new Java String from C++ string
@@ -213,15 +220,15 @@ Java_com_example_App_processText(JNIEnv* env, jobject thiz, jstring input)
     return env->NewStringUTF(result.c_str());
     // NewStringUTF expects Modified UTF-8 input
 }
-
 ```
 
 ### Q3: Use RegisterNatives for dynamic JNI registration instead of name-mangled static dispatch
 
 **Answer:**
 
-```cpp
+`RegisterNatives` is the production-quality approach. Instead of the JVM hunting for a function named `Java_com_example_myapp_MathLib_greet` at runtime, you build a table that maps Java method names to C++ function pointers, and you register the whole table in `JNI_OnLoad`. This fails fast (at library load time rather than first use), works correctly with Proguard/R8 name obfuscation, and lets you rename your C++ functions without touching Java.
 
+```cpp
 #include <jni.h>
 #include <string>
 #include <android/log.h>
@@ -229,7 +236,7 @@ Java_com_example_App_processText(JNIEnv* env, jobject thiz, jstring input)
 #define TAG "NativeReg"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
-// ═══════════ Native implementations (any function name!) ═══════════
+// Native implementations (any function name!)
 static jstring native_greet(JNIEnv* env, jobject thiz, jstring name) {
     const char* nameStr = env->GetStringUTFChars(name, nullptr);
     std::string greeting = "Hello, " + std::string(nameStr) + "!";
@@ -257,7 +264,7 @@ static jdoubleArray native_linspace(
     return result;
 }
 
-// ═══════════ Registration table ═══════════
+// Registration table
 // Format: { "javaMethodName", "(JNI signature)return", functionPointer }
 static JNINativeMethod methods[] = {
     {"greet",    "(Ljava/lang/String;)Ljava/lang/String;", (void*)native_greet},
@@ -265,7 +272,7 @@ static JNINativeMethod methods[] = {
     {"linspace", "(DDI)[D",                                 (void*)native_linspace},
 };
 
-// ═══════════ JNI_OnLoad: register all native methods ═══════════
+// JNI_OnLoad: register all native methods
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     JNIEnv* env;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
@@ -291,59 +298,45 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     return JNI_VERSION_1_6;
 }
 
-// ═══════════ Advantages over static registration ═══════════
+// Advantages over static registration:
 //
 // Static:  Java_com_example_myapp_MathLib_greet(...)
-//   ✗ Rename package/class → must rename C++ function
-//   ✗ Long ugly names
-//   ✗ Symbol lookup at first call (slower)
-//   ✗ Proguard can break it (name obfuscation)
+//   BAD: Rename package/class -> must rename C++ function
+//   BAD: Long ugly names
+//   BAD: Symbol lookup at first call (slower)
+//   BAD: Proguard can break it (name obfuscation)
 //
 // Dynamic: RegisterNatives in JNI_OnLoad
-//   ✓ Any C++ function name
-//   ✓ Rename via table update, not function rename
-//   ✓ All methods registered upfront (fail-fast)
-//   ✓ Works with Proguard (use @Keep on native methods)
-//   ✓ Smaller symbol table (no exported Java_* names)
-
+//   GOOD: Any C++ function name
+//   GOOD: Rename via table update, not function rename
+//   GOOD: All methods registered upfront (fail-fast)
+//   GOOD: Works with Proguard (use @Keep on native methods)
+//   GOOD: Smaller symbol table (no exported Java_* names)
 ```
 
-```java
+The Java side is completely independent of what your C++ functions are named - it only cares about the names in the registration table.
 
-// ═══════════ Java side: MathLib.java ═══════════
+```java
+// Java side: MathLib.java
 package com.example.myapp;
 
 public class MathLib {
     static { System.loadLibrary("mathlib"); }
 
-    // These names match the RegisterNatives table — NOT the C++ function names
+    // These names match the RegisterNatives table - NOT the C++ function names
     public native String greet(String name);
     public native int add(int a, int b);
     public native double[] linspace(double start, double end, int count);
 }
-
 ```
 
 ---
 
 ## Notes
 
-- `RegisterNatives` is the preferred approach for production Android apps
-- JNI signatures use `L<fully/qualified/name>;` for objects, `[` prefix for arrays
-- Use `javap -s com.example.MyClass` to generate correct JNI signatures
-- Modified UTF-8 ≠ standard UTF-8 — beware with emoji and CJK supplementary characters
-- `GetStringUTFRegion` avoids allocation — best for short strings you'll immediately copy
-- Always check for `nullptr` after `GetStringUTFChars` — indicates `OutOfMemoryError`
-- Keep native methods annotated with `@Keep` when using Proguard/R8
-
----
-
-## Notes
-
-_Add your own notes, examples, and observations here._
-
-```cpp
-
-// Your practice code
-
-```
+- `RegisterNatives` is the preferred approach for production Android apps - it is faster, more refactorable, and Proguard-safe.
+- JNI type signatures use `L<fully/qualified/name>;` for object types and a `[` prefix for arrays. Use `javap -s com.example.MyClass` to generate the correct signature strings for any class.
+- Modified UTF-8 is not the same as standard UTF-8 - you will only notice the difference with emoji and CJK supplementary characters, but when you do notice it, it will be confusing.
+- `GetStringUTFRegion` is the best choice for short strings you are going to copy immediately, since it avoids any allocation and requires no release.
+- Always check for `nullptr` after `GetStringUTFChars` - a null return signals that an `OutOfMemoryError` has been thrown in the JVM.
+- Keep native methods annotated with `@Keep` when using Proguard or R8 to prevent them from being renamed or removed.
