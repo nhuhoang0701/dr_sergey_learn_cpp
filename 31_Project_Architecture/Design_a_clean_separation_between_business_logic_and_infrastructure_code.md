@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Business logic** encodes the rules and processes of your domain. **Infrastructure code** handles external concerns: databases, networks, file I/O, frameworks. Mixing them creates code that's hard to test, hard to change, and hard to reason about. Clean separation means business logic has zero infrastructure dependencies.
+**Business logic** encodes the rules and processes of your domain. **Infrastructure code** handles external concerns: databases, networks, file I/O, frameworks. Mixing them creates code that is hard to test, hard to change, and hard to reason about. Clean separation means business logic has zero infrastructure dependencies.
+
+Here is the practical test: can you run your business rules without a database? If the answer is no, your business logic and infrastructure are tangled. The moment you need a database to verify that a 10% discount applies to orders over $100, something has gone wrong. That rule should live in a pure function that a test can call with a list of items and get back a number - no connection strings, no mock setup, just math.
 
 ### Separation Signals
 
@@ -15,7 +17,7 @@
 | Domain classes have no `#include <sqlite3.h>` | `Order::save()` writes to database directly |
 | Business rules testable without mocks | Tests require database setup |
 | Can swap database without touching domain | Database change requires editing 50 files |
-| Domain code compiles standalone | Domain code won't compile without infra headers |
+| Domain code compiles standalone | Domain code will not compile without infra headers |
 
 ---
 
@@ -25,9 +27,10 @@
 
 **Answer:**
 
-```cpp
+Here is what the mixed version looks like - everything living inside one class, business logic right next to raw SQL calls and SMTP calls:
 
-// === BAD: Business logic mixed with infrastructure ===
+```cpp
+// BAD: Business logic mixed with infrastructure
 class OrderProcessor_Bad {
 public:
     void process_order(int order_id) {
@@ -52,12 +55,12 @@ public:
 private:
     sqlite3* db_;
 };
-
 ```
 
-```cpp
+Now here is the same functionality split into clean layers. The domain objects and business rules are pure C++ - no external headers, no side effects. The port interfaces (`IOrderStore`, `INotifier`) are how the domain declares what it needs from the outside world without saying how it will be provided:
 
-// === GOOD: Separated into clean layers ===
+```cpp
+// GOOD: Separated into clean layers
 
 // --- Domain layer (pure business logic, zero infra deps) ---
 struct OrderItem {
@@ -122,15 +125,17 @@ private:
     IOrderStore& store_;
     INotifier& notifier_;
 };
-
 ```
+
+The term "port" comes from hexagonal architecture (also called ports and adapters). A port is an interface that the domain defines but does not implement. The infrastructure layer provides the adapters - concrete classes that implement those interfaces using SQLite, SMTP, or whatever technology you choose. Swapping technologies means writing a new adapter; the domain never changes.
 
 ### Q2: Test business logic without any infrastructure
 
 **Answer:**
 
-```cpp
+This is where the payoff becomes obvious. The `OrderCalculator` tests do not need a single mock - they just call a static function:
 
+```cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
@@ -180,15 +185,17 @@ TEST(OrderProcessorTest, ProcessesOrderEndToEnd) {
     auto result = processor.process(42, "a@b.com");
     EXPECT_DOUBLE_EQ(result.total, 135.0);
 }
-
 ```
+
+The domain tests run in microseconds and never fail due to external state. The application service tests use mocks precisely because the service is supposed to call the store and notifier - you are verifying the orchestration. If `OrderProcessor` forgot to call `update_total`, the test catches it.
 
 ### Q3: Enforce separation with CMake build structure
 
 **Answer:**
 
-```cmake
+The same architecture you drew in the code should be reflected in the build system. If the domain library does not link to `sqlite3`, then domain code cannot accidentally include `<sqlite3.h>` - the linker would fail. CMake becomes your architectural guard:
 
+```cmake
 # Domain library: ZERO external dependencies
 add_library(domain
     src/domain/order_calculator.cpp
@@ -219,17 +226,18 @@ target_link_libraries(domain_tests PRIVATE domain GTest::gtest_main)
 # Application tests: mocked infrastructure
 add_executable(app_tests tests/test_order_processor.cpp)
 target_link_libraries(app_tests PRIVATE application GTest::gtest_main GTest::gmock)
-
 ```
+
+The `sqlite3` and `curl` dependencies are `PRIVATE` to the infrastructure library. That means they do not propagate to anything that links against infrastructure - the application layer and domain layer are completely shielded from those headers. Any violation (someone including `<sqlite3.h>` in a domain file) becomes a compile error immediately.
 
 ---
 
 ## Notes
 
-- **The domain library must compile with zero external dependencies** — this is the litmus test
-- Business rules in pure functions (like `OrderCalculator::calculate`) are trivially testable
-- Infrastructure interfaces are defined by the domain, implemented by infrastructure (Dependency Inversion)
-- CMake enforces boundaries: if domain accidentally includes `<sqlite3.h>`, the build breaks
-- Domain tests are fast (milliseconds) and never flaky — they don't touch I/O
-- The application service orchestrates but contains no business rules itself
-- This pattern is the foundation of hexagonal architecture and clean architecture
+- **The domain library must compile with zero external dependencies** - this is the clearest litmus test for whether your separation is real.
+- Business rules in pure functions (like `OrderCalculator::calculate`) are trivially testable and never flaky.
+- Infrastructure interfaces are defined by the domain and implemented by infrastructure - this is the Dependency Inversion Principle.
+- CMake enforces boundaries: if the domain accidentally includes `<sqlite3.h>`, the build breaks.
+- Domain tests are fast (milliseconds) and never flaky because they do not touch I/O.
+- The application service orchestrates the workflow but contains no business rules itself.
+- This pattern is the foundation of hexagonal architecture and clean architecture.

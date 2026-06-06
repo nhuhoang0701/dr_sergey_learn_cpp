@@ -8,6 +8,8 @@
 
 The **Saga pattern** manages distributed transactions across multiple services without a global lock. Each step executes a local transaction and publishes an event. If any step fails, **compensating transactions** undo the effects of previous steps in reverse order. There are two coordination approaches: **choreography** (event-driven, decentralized) and **orchestration** (centralized controller).
 
+The reason this pattern exists is that classic ACID transactions across multiple independent services are either impossible or prohibitively expensive in a microservices world. You can not hold a database lock across an HTTP call to a payment processor. The Saga pattern accepts this and instead builds correctness out of a chain of compensatable steps - if something goes wrong at step N, you roll back steps N-1, N-2, and so on by explicitly undoing each one.
+
 ### Choreography vs Orchestration
 
 | Aspect | Choreography | Orchestration |
@@ -26,8 +28,9 @@ The **Saga pattern** manages distributed transactions across multiple services w
 
 **Answer:**
 
-```cpp
+In the orchestration approach, a single `SagaOrchestrator` object drives the workflow. It knows the full list of steps and their compensating actions. When a step fails, it walks backward through the already-completed steps and compensates each one in reverse order:
 
+```cpp
 #include <string>
 #include <vector>
 #include <functional>
@@ -145,15 +148,17 @@ SagaOrchestrator create_order_saga(
 // auto saga = create_order_saga(orders, payments, inventory, shipping, req);
 // auto status = saga.execute();
 // If payment fails -> inventory released, order cancelled (reverse order)
-
 ```
+
+The important detail is that compensation excludes the failed step itself - you do not try to undo something that never succeeded. You only walk back the steps that already ran successfully.
 
 ### Q2: Implement choreography-based saga with events
 
 **Answer:**
 
-```cpp
+In choreography, there is no central orchestrator. Each service listens for specific events and reacts by doing its job and publishing the next event. The saga "flow" emerges from the chain of event reactions. This feels more loosely coupled, but it can be hard to reason about because the flow is implicit:
 
+```cpp
 // === Choreography: each service reacts to events ===
 
 // Events
@@ -225,15 +230,17 @@ public:
 private:
     EventBus& bus_;
 };
-
 ```
+
+Each service only knows about the events immediately before and after it in the chain. `PaymentService` has no idea that inventory was involved - it just reacts to `InventoryReserved`. The saga is the emergent behaviour of all these reactions together.
 
 ### Q3: Saga with timeout, retry, and idempotency
 
 **Answer:**
 
-```cpp
+A production saga needs to handle transient failures gracefully. Network calls time out, services are briefly unavailable, and messages can be delivered more than once. Here is a resilient orchestrator that adds retry logic, timeouts, and idempotency guards:
 
+```cpp
 // === Production-grade saga step with retry and timeout ===
 struct ResilientSagaStep {
     std::string name;
@@ -330,17 +337,18 @@ auto make_idempotent(IdempotencyStore& store, const std::string& key,
         return action();
     };
 }
-
 ```
+
+The `make_idempotent` wrapper is subtle but critical: if a message is delivered twice (a real risk in distributed systems), the second execution finds the key already present and returns success without doing the work again. Compensations need the same treatment - a compensation that runs twice should be safe.
 
 ---
 
 ## Notes
 
-- Use **orchestration** for complex workflows; **choreography** for simple 2-3 step flows
-- Compensating transactions must be **idempotent** — they may be called multiple times
-- Compensations that fail need a **dead letter queue** for manual resolution
-- Each saga step should be atomic at the local service level
-- Saga state must be persisted to survive crashes (store step index + status in DB)
-- Timeout + retry is essential for cross-service calls; use exponential backoff
-- Sagas provide **eventual consistency**, not ACID — design UIs to handle intermediate states
+- Use **orchestration** for complex workflows; **choreography** for simple 2-3 step flows where the added traceability cost is not worth it.
+- Compensating transactions must be **idempotent** - they may be called multiple times due to retries.
+- Compensations that fail even after retries need a **dead letter queue** for manual resolution.
+- Each saga step should be atomic at the local service level.
+- Saga state must be persisted to survive crashes - store the step index and status in a database.
+- Timeout plus retry is essential for cross-service calls; use exponential backoff to avoid hammering a struggling service.
+- Sagas provide **eventual consistency**, not ACID - design your UIs to handle intermediate states gracefully.

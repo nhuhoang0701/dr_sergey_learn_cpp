@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-**Logging and telemetry** are the eyes and ears of production systems. Logging records discrete events (errors, state changes); telemetry collects continuous metrics (latency, throughput, resource usage). A good architecture makes both low-overhead, structured, and configurable without code changes. In C++ the challenge is achieving this with minimal performance impact.
+**Logging and telemetry** are the eyes and ears of production systems. Logging records discrete events (errors, state changes); telemetry collects continuous metrics (latency, throughput, resource usage). A good architecture makes both low-overhead, structured, and configurable without code changes. In C++ the challenge is achieving this with minimal performance impact - the last thing you want is your observability layer becoming a bottleneck.
 
 ### Logging vs Metrics vs Tracing
+
+Think of these three as complementary tools that answer different questions. Logs tell you *what happened*, metrics tell you *how much* and *how often*, and traces tell you *where time went* across a distributed request.
 
 | Type | Data | Cardinality | Overhead | Use Case |
 | --- | --- | --- | --- | --- |
@@ -22,10 +24,13 @@
 
 ### Q1: Design a structured logging architecture
 
+Structured logging means attaching key-value fields to every log entry instead of baking everything into a free-text message. That way, a log aggregation system (like Elasticsearch or Splunk) can query `level=ERROR AND service=payments` instead of trying to grep through strings. The architecture below shows a `Logger` that routes `LogEntry` objects to one or more sinks - a console sink for humans, a JSON sink for machines.
+
+Notice the `should_log()` fast path: we check the log level *before* constructing the message string. String formatting is surprisingly expensive, and you'll call these macros thousands of times per second in production.
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <chrono>
 #include <unordered_map>
@@ -153,15 +158,19 @@ private:
 #define LOG_ERROR(logger, msg, ...) \
     if ((logger).should_log(LogLevel::Error)) \
         (logger).log(LogLevel::Error, msg, ##__VA_ARGS__, __FILE__, __LINE__)
-
 ```
 
+The macros capture `__FILE__` and `__LINE__` automatically, which saves you from threading that context through every call site. The `if (should_log(...))` guard in the macro body is the key optimization - the entire message construction is skipped when the level is filtered out.
+
 ### Q2: Implement a metrics collection system
+
+Metrics are fundamentally different from logs: you want counters and gauges that are updated thousands of times per second with near-zero overhead. The trick is using `std::atomic` with `memory_order_relaxed` on the hot path - we only need eventual consistency here, not strict ordering. The `Histogram` type lets you track latency distributions (how many requests took 0-5ms, 5-10ms, etc.) rather than just averages, which is far more useful in production.
+
+The `ScopedTimer` wraps RAII around latency measurement - it starts a clock on construction and records the elapsed time to a `Histogram` on destruction, so you can't accidentally forget to record the measurement even if the function throws.
 
 **Answer:**
 
 ```cpp
-
 #include <atomic>
 #include <chrono>
 
@@ -276,15 +285,19 @@ void handle_request() {
     ScopedTimer timer(latency);
     // ... process request ...
 }
-
 ```
 
+The `export_prometheus()` method produces text in the Prometheus exposition format, which tools like Grafana can scrape directly. The registry lookup uses a mutex, but that only happens on first access - `handle_request()` holds a `static Histogram` reference so subsequent calls go straight to the atomic update, no locking needed.
+
 ### Q3: Implement distributed tracing with context propagation
+
+Distributed tracing answers the question: "When a user request came in, what did it actually do, and how long did each step take?" A `TraceContext` carries a `trace_id` (unique per request, same across all services) and a `span_id` (unique per operation within that request). Child spans inherit the parent's `trace_id` so everything stitches together in a trace viewer.
+
+The clever part is using a thread-local pointer to propagate context automatically - functions don't need to accept a context parameter explicitly, and the `Span` RAII object saves and restores the previous context on destruction so nested spans work naturally.
 
 **Answer:**
 
 ```cpp
-
 #include <random>
 
 // === Trace context ===
@@ -355,17 +368,18 @@ void handle_http_request() {
         // ... cache lookup ...
     }
 }
-
 ```
+
+Each `Span` creation calls `ctx.child()` to produce a new span ID that knows its parent - this is what lets a trace viewer reconstruct the call tree. When the `Span` destructor fires, it reports the duration and restores whatever context was active before, so you can safely nest spans arbitrarily deep.
 
 ---
 
 ## Notes
 
-- **Check log level before constructing the message** (`should_log()`) — avoids expensive string formatting
-- Use **structured logging** (key=value fields) for machine parsing, not just free-text messages
-- Metrics should use **atomic operations** and be lock-free on the hot path
-- `ScopedTimer` is the easiest way to measure latency — RAII guarantees measurement even on exceptions
-- **Thread-local** trace context avoids passing context through every function signature
-- Production logging libraries: spdlog (fast, header-only), Boost.Log, Google glog
-- Export metrics in Prometheus format for easy integration with Grafana dashboards
+- **Check log level before constructing the message** (`should_log()`) - avoids expensive string formatting.
+- Use **structured logging** (key=value fields) for machine parsing, not just free-text messages.
+- Metrics should use **atomic operations** and be lock-free on the hot path.
+- `ScopedTimer` is the easiest way to measure latency - RAII guarantees measurement even on exceptions.
+- **Thread-local** trace context avoids passing context through every function signature.
+- Production logging libraries: spdlog (fast, header-only), Boost.Log, Google glog.
+- Export metrics in Prometheus format for easy integration with Grafana dashboards.

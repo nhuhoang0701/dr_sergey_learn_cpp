@@ -8,6 +8,8 @@
 
 **Symbol visibility** controls which functions and classes are accessible from outside a shared library (`.so`/`.dll`). By default, GCC exports everything; MSVC exports nothing. Proper visibility reduces library size, improves load times, prevents symbol collisions, and enforces a clean public API boundary.
 
+The reason this matters more than it might seem: every exported symbol has a cost. The dynamic linker has to process it at load time. Two libraries that export a symbol with the same name can silently conflict. And from a design standpoint, exporting a symbol is making a promise to your users - you cannot easily change or remove it later without breaking ABI compatibility. Controlling visibility carefully forces you to be intentional about what your library's public surface actually is.
+
 ### Visibility Defaults
 
 | Compiler | Default | Result |
@@ -24,9 +26,10 @@
 
 **Answer:**
 
-```cpp
+The standard approach is a single header with platform-detection macros that map to the right compiler annotation. On MSVC you use `dllexport`/`dllimport`; on GCC/Clang you use visibility attributes. The `MYLIB_BUILDING` define is set by CMake only when building the library itself - consumers never define it:
 
-// === mylib_export.h — cross-platform visibility macros ===
+```cpp
+// === mylib_export.h - cross-platform visibility macros ===
 #pragma once
 
 #if defined(_MSC_VER)
@@ -80,15 +83,17 @@ MYLIB_API const char* version();
 MYLIB_HIDDEN void internal_helper();
 
 }  // namespace mylib
-
 ```
+
+The `dllimport` annotation on the consumer side is not just cosmetic - it tells the compiler the symbol lives in a DLL and generates more efficient import thunk code. This is why the same header needs different macros depending on whether you are building or consuming the library.
 
 ### Q2: Use CMake's GenerateExportHeader for automated macros
 
 **Answer:**
 
-```cmake
+Writing the visibility macros by hand is error-prone. CMake's built-in `GenerateExportHeader` module generates them for you based on the target name, and it handles the static library case automatically:
 
+```cmake
 # === CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.20)
 project(mylib VERSION 1.0.0)
@@ -124,11 +129,9 @@ target_include_directories(mylib
 
 # Support both shared and static builds
 # When built as STATIC, MYLIB_STATIC is defined and macros expand to nothing
-
 ```
 
 ```cpp
-
 // === Generated mylib_export.h looks like: ===
 // #ifdef MYLIB_STATIC
 //   #define MYLIB_API
@@ -141,15 +144,17 @@ target_include_directories(mylib
 //   #endif
 //   #define MYLIB_HIDDEN
 // #endif
-
 ```
+
+The `SOVERSION` property is worth understanding. It sets the `libmylib.so.1` symlink that clients link against. If you make breaking API changes, you bump `SOVERSION`, and the old `.so.1` can coexist with the new `.so.2` on the same system - existing binaries keep working.
 
 ### Q3: Design ABI-stable library with PIMPL
 
 **Answer:**
 
-```cpp
+Symbol visibility tells the linker what to export. ABI stability is a harder problem: it means that a binary compiled against version 1.0 of your library still works correctly when loaded against version 1.1, without recompilation. The PIMPL (pointer to implementation) idiom is the standard C++ solution. The public header declares only the pointer; the actual data layout lives in the `.cpp` file and can change freely:
 
+```cpp
 // === Public header: ABI-stable, never changes layout ===
 // include/mylib/engine.h
 #include "mylib_export.h"
@@ -214,17 +219,18 @@ void Engine::process() { impl_->process(); }
 int Engine::status() const { return impl_->status(); }
 
 }  // namespace mylib
-
 ```
+
+The reason `~Engine()` must be defined in the `.cpp` file even though it is `= default`: at the point where the destructor runs, `std::unique_ptr<Impl>` needs to know the complete type of `Impl` to call its destructor. If the destructor were inlined in the header, the compiler would see an incomplete `Impl` type and refuse to compile. Moving `= default` to the `.cpp` fixes this.
 
 ---
 
 ## Notes
 
-- **Always use `-fvisibility=hidden`** (GCC/Clang) — export only what you intend
-- CMake's `GenerateExportHeader` handles cross-platform macros automatically
-- **PIMPL idiom** is essential for ABI stability: changing Impl doesn't change header layout
-- Exported classes should not have inline functions that use non-exported types
-- Template classes cannot be exported — they must be in headers (or explicitly instantiated)
-- Use `nm -D libmylib.so` or `dumpbin /exports mylib.dll` to inspect exported symbols
-- Version your SO: `libmylib.so.1.0.0` with `SOVERSION 1` for compatible updates
+- **Always use `-fvisibility=hidden`** (GCC/Clang) - export only what you explicitly intend to.
+- CMake's `GenerateExportHeader` handles cross-platform macros automatically and is the recommended approach.
+- **PIMPL idiom** is essential for ABI stability: changing `Impl` does not change the header layout that consumers compiled against.
+- Exported classes should not have inline functions that use non-exported types.
+- Template classes cannot be exported - they must be in headers (or explicitly instantiated and exported).
+- Use `nm -D libmylib.so` or `dumpbin /exports mylib.dll` to inspect which symbols are actually exported.
+- Version your SO: `libmylib.so.1.0.0` with `SOVERSION 1` so compatible updates can coexist with older binaries.

@@ -8,10 +8,11 @@
 
 **Layered architecture** organizes code into horizontal layers where each layer only depends on the layer below it. This enforces separation of concerns and makes each layer independently testable and replaceable.
 
+The reason this is so valuable is that change tends to cluster by concern. UI requirements change frequently; business rules change occasionally; infrastructure (databases, networking) changes rarely but disruptively. If all three are tangled together, any change can ripple everywhere. Layers are a fence between those change patterns.
+
 ### Classic Layers
 
 ```cpp
-
 +-----------------------------+
 |   Presentation / CLI / API  |  Layer 4: User interface
 +-----------------------------+
@@ -23,7 +24,6 @@
 +-----------------------------+
 
 Dependency direction: TOP -> BOTTOM (each layer depends only on below)
-
 ```
 
 | Layer | Responsibility | Dependencies | Changes when... |
@@ -41,8 +41,9 @@ Dependency direction: TOP -> BOTTOM (each layer depends only on below)
 
 **Answer:**
 
-```cpp
+The folder structure is half the battle - you are making the layers visible and enforceable. Here is what that looks like:
 
+```cpp
 project/
 ├── include/
 │   ├── domain/           # Layer 2: Pure business logic
@@ -55,11 +56,11 @@ project/
 │   │   └── sqlite_order_repository.h
 │   └── presentation/     # Layer 4: API/CLI
 │       └── order_controller.h
-
 ```
 
-```cpp
+The domain layer is the most important one to get right. It has zero dependencies on anything external - no database headers, no networking, no framework types. `Product` and `Order` are pure value types, and `IOrderRepository` defines what the domain needs from storage without specifying how storage works:
 
+```cpp
 // === domain/product.h (Layer 2 - no dependencies) ===
 #pragma once
 #include <string>
@@ -121,11 +122,11 @@ public:
     virtual std::vector<Order> find_all() = 0;
     virtual void remove(int id) = 0;
 };
-
 ```
 
-```cpp
+The application layer (Layer 3) only knows about domain types. It applies use-case rules - like "you can't place an empty order" - and delegates persistence to whatever implements `IOrderRepository`. It never mentions SQLite:
 
+```cpp
 // === application/order_service.h (Layer 3 - depends on domain) ===
 #pragma once
 #include "domain/order.h"
@@ -159,11 +160,11 @@ public:
 private:
     IOrderRepository& repo_;
 };
-
 ```
 
-```cpp
+The infrastructure layer (Layer 1) is where the database actually lives. It implements the interface the domain declared. Notice how the dependency arrow points upward - infrastructure depends on domain, not the other way round. This is the Dependency Inversion Principle in action:
 
+```cpp
 // === infrastructure/sqlite_order_repository.h (Layer 1) ===
 #pragma once
 #include "domain/i_order_repository.h"
@@ -186,15 +187,15 @@ public:
 private:
     std::string db_path_;
 };
-
 ```
 
 ### Q2: Enforce layer dependencies with CMake
 
 **Answer:**
 
-```cmake
+CMake's `target_link_libraries` is your enforcement mechanism. If the domain library does not link to anything external, then domain code literally cannot compile if someone sneaks in an infrastructure include. The build system becomes your architecture guardian:
 
+```cmake
 # === CMakeLists.txt ===
 # Domain layer: ZERO dependencies
 add_library(domain INTERFACE)
@@ -218,15 +219,17 @@ target_link_libraries(domain_tests PRIVATE domain GTest::gtest_main)
 
 add_executable(service_tests tests/test_order_service.cpp)
 target_link_libraries(service_tests PRIVATE application GTest::gtest_main GTest::gmock)
-
 ```
+
+Notice that `sqlite3` is a `PRIVATE` dependency of infrastructure. That means domain and application layers never see the SQLite headers transitively - the boundary is enforced by the build graph itself.
 
 ### Q3: Test layers independently
 
 **Answer:**
 
-```cpp
+This is where the layered design pays off most visibly. The domain layer tests need nothing but the domain itself - no mocks, no fakes, just plain function calls:
 
+```cpp
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "application/order_service.h"
@@ -271,16 +274,17 @@ TEST(OrderServiceTest, EmptyOrderRejected) {
     Order empty;
     EXPECT_THROW(service.place_order(empty), std::invalid_argument);
 }
-
 ```
+
+The `MockOrderRepo` replaces SQLite entirely for the application layer tests. You can exercise every code path in `OrderService` - including error paths - without a database anywhere in sight. Tests that do not touch I/O are fast, deterministic, and never fail due to environment issues.
 
 ---
 
 ## Notes
 
-- **Domain layer must have zero external dependencies** — it's the core of your application
-- Interface definitions (e.g., `IOrderRepository`) live in the domain layer, implementations in infrastructure
-- CMake `target_link_libraries` enforces layer boundaries at build time
-- Each layer can be tested independently: domain with no mocks, application with mocked interfaces
-- The data flows down (domain doesn't know about databases), but control can be inverted via interfaces
-- Layered architecture is a stepping stone to hexagonal architecture (ports and adapters)
+- **Domain layer must have zero external dependencies** - it is the core of your application, and everything else depends on it, not vice versa.
+- Interface definitions (e.g., `IOrderRepository`) live in the domain layer; their implementations live in infrastructure.
+- CMake `target_link_libraries` enforces layer boundaries at build time - if a layer accidentally depends on the wrong thing, the build fails.
+- Each layer can be tested independently: domain with no mocks, application with mocked interfaces.
+- Data flows down (domain does not know about databases), but control can be inverted via interfaces.
+- Layered architecture is a stepping stone to hexagonal architecture (ports and adapters).

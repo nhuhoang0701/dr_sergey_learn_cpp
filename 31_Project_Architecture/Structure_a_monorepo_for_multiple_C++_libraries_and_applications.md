@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-A **monorepo** keeps multiple libraries, applications, and shared tooling in a single repository. For C++ projects this simplifies dependency management, ensures version consistency, and enables atomic cross-project refactoring. The challenge is organizing CMake to handle independent builds, selective compilation, and team ownership.
+A **monorepo** keeps multiple libraries, applications, and shared tooling in a single repository. For C++ projects this simplifies dependency management, ensures version consistency across all components, and enables atomic cross-project refactoring - if you rename a function in a shared library, you can update every caller in the same commit and know that everything compiles together.
+
+The challenge is keeping the build system from becoming a monolith that rebuilds everything every time. Good monorepo CMake lets you build just the libraries that changed, and CI pipelines should detect which components were modified and only rebuild those.
 
 ### Monorepo vs Polyrepo
 
@@ -18,16 +20,19 @@ A **monorepo** keeps multiple libraries, applications, and shared tooling in a s
 | CI/CD | Complex (selective builds) | Simple per-repo |
 | Code ownership | Need CODEOWNERS | Natural per-repo |
 
+There is no universally correct answer here. The table's "potentially large" build time for monorepos is manageable with selective CI builds and build caching (ccache, sccache). The "diamond dependency" problem in polyrepos - where library A and library B both depend on different versions of library C - becomes genuinely painful at scale and is one of the strongest arguments for a monorepo.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Design a monorepo directory layout
 
+The directory layout expresses the ownership model. Libraries that multiple teams depend on live in `libs/`. Applications that consume those libraries live in `apps/`. Shared build tooling lives in `cmake/`. The top-level `CMakeLists.txt` is the orchestrator that pulls everything together.
+
 **Answer:**
 
 ```cpp
-
 project-root/
 ├─ CMakeLists.txt              # Top-level: orchestrates everything
 ├─ cmake/
@@ -65,11 +70,9 @@ project-root/
 ├─ docs/
 ├─ .github/CODEOWNERS
 └─ CMakePresets.json
-
 ```
 
 ```cmake
-
 # === Top-level CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.25)
 project(myproject VERSION 1.0.0)
@@ -100,15 +103,17 @@ endif()
 if(BUILD_TOOLS)
     add_subdirectory(tools/proto_gen)
 endif()
-
 ```
 
+The `BUILD_TOOLS=OFF` default is deliberate. Code generators and dev utilities take time to build and most builds do not need them. CI can enable them explicitly. Individual developers enable them only when working on tooling.
+
 ### Q2: Design per-library CMake with proper target export
+
+Each library owns its own `CMakeLists.txt` and declares its dependencies through `target_link_libraries`. The distinction between `PUBLIC` and `PRIVATE` dependencies is important: `PUBLIC` means the dependency is part of the library's interface and consumers will need it too; `PRIVATE` means it is an implementation detail that consumers do not need to know about.
 
 **Answer:**
 
 ```cmake
-
 # === libs/core/CMakeLists.txt ===
 add_library(core
     src/logger.cpp
@@ -165,15 +170,17 @@ if(BUILD_TESTING)
     )
     add_test(NAME core_tests COMMAND core_tests)
 endif()
-
 ```
 
+Notice that `asio` is a `PRIVATE` dependency of `networking`. Consumers of `myproject::networking` will not need to link against `asio` themselves - CMake handles the transitive dependency tracking automatically. If you mistakenly made it `PUBLIC`, consumers would get pulled into depending on `asio` even if they never use networking features directly.
+
 ### Q3: Selective CI builds for changed components
+
+The main scalability problem with monorepos and CI is that you do not want to rebuild and retest every component every time someone touches one library. Path-based change detection solves this: if only `libs/core` changed, only build and test `core` and the components that depend on it.
 
 **Answer:**
 
 ```yaml
-
 # === .github/workflows/ci.yml ===
 name: CI
 on: [push, pull_request]
@@ -234,11 +241,9 @@ jobs:
           cmake --build build --target server
           cmake --build build --target server_tests
           ctest --test-dir build -R server --output-on-failure
-
 ```
 
 ```cpp
-
 # === .github/CODEOWNERS ===
 libs/core/           @team-platform
 libs/networking/     @team-networking
@@ -246,17 +251,18 @@ libs/serialization/  @team-data
 apps/server/         @team-backend
 apps/cli/            @team-cli
 cmake/               @team-platform
-
 ```
+
+The `CODEOWNERS` file and the path-based CI detection reinforce the same team ownership model. Changes to `libs/core/` require review from `@team-platform` and trigger the core build job. That combination of automatic enforcement is what makes a monorepo with many teams actually workable.
 
 ---
 
 ## Notes
 
-- Use **ALIAS targets** (`myproject::core`) for a clean namespace and instant error detection
-- Each library should be independently testable with its own `add_test` targets
-- **Selective CI** avoids rebuilding the entire monorepo on every push
-- `CODEOWNERS` enforces review by the owning team
-- `CMakePresets.json` standardizes build configurations across developers
-- Use `FetchContent` or `add_subdirectory(third_party/...)` for external dependencies
-- For very large monorepos (100+ libs), consider Bazel or build caching (ccache, sccache)
+- Use ALIAS targets (`myproject::core`) for a clean namespace and instant error detection.
+- Each library should be independently testable with its own `add_test` targets.
+- Selective CI avoids rebuilding the entire monorepo on every push.
+- `CODEOWNERS` enforces review by the owning team.
+- `CMakePresets.json` standardizes build configurations across developers.
+- Use `FetchContent` or `add_subdirectory(third_party/...)` for external dependencies.
+- For very large monorepos (100+ libs), consider Bazel or build caching (ccache, sccache).

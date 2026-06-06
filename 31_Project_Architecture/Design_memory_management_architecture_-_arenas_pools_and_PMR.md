@@ -8,6 +8,8 @@
 
 Custom memory management replaces `new`/`delete` with allocators optimized for specific access patterns. **Arena allocators** batch-free all memory at once, **pool allocators** recycle fixed-size blocks, and **PMR** (polymorphic memory resources, C++17) provides a standard interface for pluggable allocators. These techniques reduce fragmentation, improve cache locality, and eliminate per-object allocation overhead.
 
+The reason this matters in practice: `malloc` and `free` are general-purpose, which means they handle every imaginable allocation pattern - and that generality has a cost. If you know that all your allocations within a game frame will be thrown away together, or that your object pool always dispenses objects of the same size, you can beat `malloc` by a large margin with far simpler code.
+
 ### Allocator Comparison
 
 | Allocator | Allocation | Deallocation | Fragmentation | Use Case |
@@ -24,10 +26,13 @@ Custom memory management replaces `new`/`delete` with allocators optimized for s
 
 ### Q1: Implement an arena allocator
 
+An arena allocator is beautifully simple: it owns a big block of memory and hands it out by bumping a pointer forward. Allocation is just a pointer increment and an alignment adjustment - there's no bookkeeping per object. The trade-off is that you can't free individual objects; you free everything at once by resetting the pointer back to the start. This is perfect for per-frame game data, per-request server allocations, or any situation where a group of objects all die together.
+
+The alignment logic here is worth understanding: we round up the current pointer to the next multiple of `alignment` using the bitmask trick `(ptr + align - 1) & ~(align - 1)`. If the current block doesn't have enough room, we allocate a new block and retry.
+
 **Answer:**
 
 ```cpp
-
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -114,15 +119,19 @@ void game_frame(Arena& frame_arena) {
     // ... process frame ...
     // No individual frees needed; reset() at start of next frame
 }
-
 ```
 
+Notice that `reset()` keeps the first block and releases any overflow blocks. That means in the steady state (where each frame's allocation fits in one block) you have zero heap traffic after the first frame. Also note: `create<T>()` uses placement new to construct the object in the arena memory, but the arena's `reset()` does *not* call destructors - if your objects have non-trivial destructors, you need to call them manually or use a different approach.
+
 ### Q2: Implement a pool allocator for fixed-size objects
+
+A pool allocator is the right tool when you're constantly creating and destroying many objects of the same type - think particles, tree nodes, or network connections. It pre-allocates a contiguous slab of memory and builds a free list by reusing each free slot's storage to hold a pointer to the next free slot. Allocation pops from the free list, deallocation pushes back onto it - both O(1), no fragmentation, and the contiguous storage is cache-friendly.
+
+The `static_assert` that `sizeof(T) >= sizeof(FreeNode)` is important: we're storing a `FreeNode*` in the same memory that will later hold a `T`. If `T` is smaller than a pointer, this scheme doesn't work.
 
 **Answer:**
 
 ```cpp
-
 // === Pool allocator: recycling fixed-size blocks ===
 template<typename T>
 class Pool {
@@ -194,15 +203,19 @@ void spawn_particle(float x, float y) {
 void kill_particle(Particle* p) {
     particle_pool.deallocate(p);  // Recycles memory
 }
-
 ```
 
+The key insight in `deallocate` is that we call `obj->~T()` explicitly (destroy the object) but then immediately reinterpret that memory as a `FreeNode` to thread it back into the free list. The memory is *reused*, not freed back to the OS. This is perfectly valid C++ as long as you don't access the object after destruction.
+
 ### Q3: Use PMR for pluggable allocators with standard containers
+
+PMR (polymorphic memory resources) is the C++17 answer to a long-standing problem: how do you use `std::vector` and `std::string` with a custom allocator without templating everything in sight? The answer is a polymorphic base class `std::pmr::memory_resource` with virtual `do_allocate` and `do_deallocate`, and `std::pmr::vector<T>` is just `std::vector<T, std::pmr::polymorphic_allocator<T>>`. You pass the resource at construction time, and the container uses it for all its allocations.
+
+The real payoff is `std::pmr::monotonic_buffer_resource`: back it with a stack array and you get zero heap allocations for your entire container, which is extremely useful for short-lived per-request processing.
 
 **Answer:**
 
 ```cpp
-
 #include <memory_resource>
 #include <vector>
 #include <string>
@@ -280,17 +293,18 @@ protected:
 private:
     Arena& arena_;
 };
-
 ```
+
+`ArenaPmrResource` is the bridge between the custom `Arena` from Q1 and the PMR ecosystem - wrap your arena in this adapter and suddenly `std::pmr::vector`, `std::pmr::string`, and `std::pmr::map` all work with it, no template surgery required. The `do_deallocate` no-op is intentional: the arena doesn't free individual slots, it frees everything on `reset()`.
 
 ---
 
 ## Notes
 
-- **Arena allocator** is the most impactful optimization: O(1) allocate, O(1) reset, zero fragmentation
-- Use arenas for per-frame (games), per-request (servers), per-task (batch processing) lifetimes
-- **Pool allocator** is ideal for many same-sized objects: particles, tree nodes, connections
-- **PMR** (`std::pmr`) lets you use standard containers (`vector`, `string`, `map`) with custom allocators
-- `monotonic_buffer_resource` + stack buffer = zero heap allocations for small requests
-- Never use arenas for objects with complex destructors unless you explicitly call them
-- Profile first: custom allocators add complexity; only use them where `malloc` is a measured bottleneck
+- **Arena allocator** is the most impactful optimization: O(1) allocate, O(1) reset, zero fragmentation.
+- Use arenas for per-frame (games), per-request (servers), per-task (batch processing) lifetimes.
+- **Pool allocator** is ideal for many same-sized objects: particles, tree nodes, connections.
+- **PMR** (`std::pmr`) lets you use standard containers (`vector`, `string`, `map`) with custom allocators.
+- `monotonic_buffer_resource` + stack buffer = zero heap allocations for small requests.
+- Never use arenas for objects with complex destructors unless you explicitly call them.
+- Profile first: custom allocators add complexity; only use them where `malloc` is a measured bottleneck.

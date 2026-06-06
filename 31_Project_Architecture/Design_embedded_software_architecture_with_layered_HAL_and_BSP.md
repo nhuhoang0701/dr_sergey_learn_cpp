@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Layered embedded architecture** separates hardware-specific code from application logic through a **BSP** (Board Support Package) and **HAL** (Hardware Abstraction Layer). The BSP contains board-specific initialization (clocks, pins, peripherals). The HAL provides hardware-independent interfaces. Application code depends only on HAL interfaces, enabling portability across MCUs and testability on a host PC.
+**Layered embedded architecture** separates hardware-specific code from application logic through two layers: a **BSP** (Board Support Package) and a **HAL** (Hardware Abstraction Layer). The BSP contains board-specific initialization - clocks, pin assignments, peripheral setup. The HAL provides hardware-independent interfaces that the application code calls. Application code never touches vendor headers or hardware registers directly; it only talks to the HAL.
+
+The payoff is portability and testability. If you swap from an STM32F4 to an nRF52840, you write a new BSP and BSP implementations, but the application logic does not change at all. And because application code depends only on interfaces, you can implement mock HAL objects that run on your host PC - no hardware required to run unit tests.
 
 ### Layer Architecture
 
@@ -26,8 +28,9 @@
 
 **Answer:**
 
-```cpp
+The HAL interfaces below define what the application can ask the hardware to do - set a pin, perform a SPI transfer, send bytes over UART, start a timer. Every method is pure virtual. The application only ever sees these interfaces. Below them is the BSP implementation for a specific MCU, which knows about `GPIO_TypeDef` and `HAL_GPIO_Init` - that knowledge is entirely contained in the BSP files and never leaks upward.
 
+```cpp
 // === HAL interfaces (platform-independent) ===
 // hal/gpio.h
 #pragma once
@@ -141,15 +144,17 @@ private:
 };
 
 } // namespace bsp
-
 ```
+
+The `to_hal_mode` and `to_hal_pull` helpers are private and static because they are pure translation functions. They map from the HAL's vocabulary to the vendor HAL's vocabulary. That translation is entirely a BSP concern and should never be visible to application code.
 
 ### Q2: Board-level initialization and dependency wiring
 
 **Answer:**
 
-```cpp
+The `Board` class is the top-level wiring object for a specific PCB revision. It owns all the BSP implementation objects and initializes the clocks and peripherals they depend on. Application code gets handles to the HAL interfaces through accessor methods - it receives an `IGpio&`, not a `GpioStm32F4&`. The concrete type stays hidden inside the BSP.
 
+```cpp
 // === BSP board initialization ===
 // bsp/stm32f4_discovery/board.h
 #pragma once
@@ -235,15 +240,17 @@ int main() {
     SensorReader sensor(board.sensor_spi(), board.led_green());
     float temp = sensor.read_temperature();
 }
-
 ```
+
+The `main.cpp` shows the key property of this architecture: `SensorReader` is constructed with `hal::ISpi&` and `hal::IGpio&`. It does not know or care which MCU it is running on. That same class compiles and runs in unit tests on your development machine using mock objects.
 
 ### Q3: Host-side test doubles for HAL
 
 **Answer:**
 
-```cpp
+The mock HAL classes below implement the same interfaces as the real BSP, but instead of touching hardware registers they record what was called. Tests can then inspect `cs.state_history` to verify the CS pin was toggled in the right order, or check `spi.tx_log` to verify the correct command byte was sent. You are testing protocol logic, not hardware behavior.
 
+```cpp
 // === Mock HAL for host-PC testing ===
 // test/mock_gpio.h
 #include "hal/gpio.h"
@@ -307,7 +314,7 @@ void test_sensor_reader() {
     MockSpi spi;
     MockGpio cs;
 
-    // Pre-load SPI response: 25.5°C = 0x01 0x98
+    // Pre-load SPI response: 25.5 degrees C = 0x01 0x98
     spi.rx_data = {0x01, 0x98};
 
     SensorReader reader(spi, cs);
@@ -324,17 +331,18 @@ void test_sensor_reader() {
     // Verify temperature conversion
     assert(std::abs(temp - 25.5f) < 0.1f);
 }
-
 ```
+
+The `rx_data` field on `MockSpi` lets you pre-load the bytes you want the mock to return from a `transfer()` call. That is how you simulate a sensor responding with a specific temperature reading. You control both sides of the conversation, so the test is fully deterministic and hardware-independent.
 
 ---
 
 ## Notes
 
-- **Application code should NEVER include vendor headers** (`stm32f4xx.h`) — only HAL interfaces
-- BSP changes when you switch boards; HAL interfaces stay stable; application code unchanged
-- Mock HAL enables **unit testing on the host PC** without hardware — test 90% of logic this way
-- Use a `Board` class to wire BSP implementations to HAL interfaces (poor man's DI)
-- Each supported board gets its own BSP directory: `bsp/stm32f4/`, `bsp/nrf52/`, `bsp/host/`
-- CMake selects the BSP at build time: `-DBSP=stm32f4_discovery`
-- Keep HAL interfaces minimal and stable — they are the contract between portable and platform code
+- Application code should never include vendor headers like `stm32f4xx.h` - only HAL interface headers.
+- The BSP changes when you switch boards; HAL interfaces stay stable; application code is unchanged throughout.
+- Mock HAL objects enable unit testing on the host PC without any hardware - you can realistically cover 90% of application logic this way.
+- Use a `Board` class to wire BSP implementations to HAL interfaces - it acts as a simple, manual dependency injection root.
+- Each supported board gets its own BSP directory: `bsp/stm32f4/`, `bsp/nrf52/`, `bsp/host/`.
+- CMake selects the correct BSP at build time using a define like `-DBSP=stm32f4_discovery`.
+- Keep HAL interfaces minimal and stable - they are the contract between portable application code and platform-specific code, and breaking them is expensive.

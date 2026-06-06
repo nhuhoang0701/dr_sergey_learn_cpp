@@ -6,17 +6,19 @@
 
 ## Topic Overview
 
-The **Outbox pattern** solves the dual-write problem: when a service must update its database AND publish an event, either operation can fail independently, leading to inconsistency. The solution: write events to an "outbox" table in the same database transaction as the business data, then a separate process reads the outbox and publishes events to the message broker. This guarantees at-least-once delivery.
+The **Outbox pattern** solves a subtle but critical problem called the **dual-write problem**. Here's the scenario: your service updates its database (say, marking an order as created) and then publishes an event to a message broker (so other services can react). These are two separate operations. If the database write succeeds but the event publish fails, your data says the order exists but no other service knows about it. If the publish succeeds but the database write fails, other services react to an order that doesn't actually exist.
+
+The Outbox pattern resolves this by never publishing events directly at all. Instead, you write the event into an "outbox" table in the same database transaction as your business data. A separate relay process then reads the outbox and forwards events to the message broker. Since the outbox write is in the same transaction as the business data, they either both succeed or both fail - atomically. The relay provides at-least-once delivery from there.
 
 ### Dual-Write Problem
 
 | Scenario | DB Write | Event Publish | Result |
 | --- | --- | --- | --- |
-| Happy path | ✅ | ✅ | Consistent |
-| Event fails | ✅ | ❌ | DB updated, no event — **inconsistent** |
-| DB fails | ❌ | ✅ | Event sent, no data — **inconsistent** |
-| Both fail | ❌ | ❌ | Consistent (nothing happened) |
-| **Outbox** | ✅ (data + event in one txn) | Async relay | **Always consistent** |
+| Happy path | Yes | Yes | Consistent |
+| Event fails | Yes | No | DB updated, no event - **inconsistent** |
+| DB fails | No | Yes | Event sent, no data - **inconsistent** |
+| Both fail | No | No | Consistent (nothing happened) |
+| **Outbox** | Yes (data + event in one txn) | Async relay | **Always consistent** |
 
 ---
 
@@ -26,8 +28,9 @@ The **Outbox pattern** solves the dual-write problem: when a service must update
 
 **Answer:**
 
-```cpp
+The central idea to watch for here is that both the business data INSERT and the outbox INSERT happen inside the same `txn`. They commit together or roll back together. That's what gives you atomicity.
 
+```cpp
 #include <string>
 #include <vector>
 #include <chrono>
@@ -103,15 +106,17 @@ public:
 private:
     Database& db_;
 };
-
 ```
+
+After `txn.commit()` succeeds, you have guaranteed that both the order row and the outbox row exist in the database. Even if the process crashes immediately afterward, the outbox row survives and will be picked up on the next restart.
 
 ### Q2: Implement the outbox relay (publisher)
 
 **Answer:**
 
-```cpp
+The relay is a background process that polls the outbox for unpublished entries, forwards them to the message broker, and then marks them as published. The `FOR UPDATE SKIP LOCKED` clause in the query is important if you run multiple relay instances - it prevents two relays from picking up the same row simultaneously.
 
+```cpp
 // === Outbox relay: reads outbox and publishes to message broker ===
 class OutboxRelay {
 public:
@@ -180,15 +185,19 @@ void cleanup_outbox(Database& db, std::chrono::hours retention) {
         "DELETE FROM outbox WHERE published = true AND created_at < ?",
         cutoff);
 }
-
 ```
+
+Notice the `break` on publish failure. This is deliberate - it preserves event ordering. If entry 5 fails to publish, you don't skip it and publish entry 6, because downstream consumers might depend on receiving events in order. You stop the batch and retry from entry 5 on the next poll cycle.
 
 ### Q3: Idempotent consumer to handle duplicate events
 
 **Answer:**
 
-```cpp
+Because the relay provides at-least-once delivery (it might retry an entry that was actually published but not yet marked as such), consumers can receive the same event more than once. An idempotent consumer handles this gracefully by recording which event IDs it has already processed and skipping duplicates.
 
+The key - and this is the same transactional trick as the producer side - is that recording "I processed this event" happens in the same transaction as the actual processing. That way, if the processing succeeds but the "mark as done" write fails, the event will be retried and the processing will be deduplicated correctly.
+
+```cpp
 // === Idempotent consumer: deduplicates at-least-once delivery ===
 class IdempotentConsumer {
 public:
@@ -268,17 +277,18 @@ void setup_consumer(MessageBroker& broker, IdempotentConsumer& consumer) {
 //     event_id VARCHAR(100) PRIMARY KEY,
 //     processed_at TIMESTAMP DEFAULT NOW()
 // );
-
 ```
+
+The partial index on the outbox table (`WHERE published = false`) is important in production. The index only covers unpublished rows, so it stays small and fast even as the table grows with millions of historical entries.
 
 ---
 
 ## Notes
 
-- The outbox guarantees **atomicity** between DB write and event: both in one transaction
-- The relay provides **at-least-once delivery** — consumers must be idempotent
-- **Polling** is simplest; **CDC (Change Data Capture)** via Debezium/WAL tailing is more efficient
-- `FOR UPDATE SKIP LOCKED` allows multiple relay instances without conflicts
-- Clean up old published entries periodically (e.g., retain 7 days)
-- The outbox table acts as a persistent event log — useful for replay and debugging
-- Alternative: use PostgreSQL LISTEN/NOTIFY instead of polling for lower latency
+- The outbox guarantees **atomicity** between DB write and event: both happen in one transaction, so they can never get out of sync.
+- The relay provides **at-least-once delivery** - consumers must be idempotent to handle the (rare) case where the same event arrives twice.
+- **Polling** is the simplest relay implementation; **CDC (Change Data Capture)** via tools like Debezium or WAL tailing is more efficient for high-throughput systems since it reacts to changes in real time instead of checking on a timer.
+- `FOR UPDATE SKIP LOCKED` allows multiple relay instances to run in parallel without conflicts - each row is processed by exactly one relay instance.
+- Clean up old published entries periodically (a retention of 7 days is a common default) to keep the outbox table from growing without bound.
+- The outbox table doubles as a persistent event log, which is useful for replaying events during debugging or after a consumer failure.
+- An alternative for PostgreSQL is to use `LISTEN/NOTIFY` instead of polling the relay, which reduces latency significantly.

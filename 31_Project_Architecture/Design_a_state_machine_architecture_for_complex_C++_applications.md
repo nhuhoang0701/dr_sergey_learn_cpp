@@ -6,9 +6,13 @@
 
 ## Topic Overview
 
-**State machines** model systems where behavior depends on current state and incoming events. In C++ projects they appear in protocol parsers, UI workflows, device drivers, and game logic. A well-designed state machine makes transitions explicit, eliminates impossible states, and simplifies testing. Modern C++ offers `std::variant`-based approaches that give compile-time exhaustiveness checking.
+**State machines** model systems where behavior depends on the current state and an incoming event. You encounter them everywhere: protocol parsers, UI workflows, device drivers, game logic, connection managers. The core promise is that transitions are explicit - you can look at the code and see every valid path. That makes impossible states stay impossible, and it makes testing dramatically easier.
+
+Modern C++ gives you a particularly nice tool for this: `std::variant`-based state machines. The reason this approach stands out is compile-time exhaustiveness. If you forget to handle a (state, event) combination, the compiler tells you before the program runs. That's a much better feedback loop than discovering a missed case in production.
 
 ### State Machine Implementation Approaches
+
+If the table feels like a lot, the key tradeoff is between flexibility and safety. `switch/enum` is fast to write but lets invalid combinations slip through silently. `std::variant + std::visit` is a bit more ceremony upfront but gives you the compiler as a correctness partner.
 
 | Approach | Type Safety | Overhead | Extensibility |
 | --- | --- | --- | --- |
@@ -25,8 +29,9 @@
 
 **Answer:**
 
-```cpp
+Here's a connection state machine that models the full lifecycle of a network session - idle, connecting (with retries), connected, disconnecting, and error. Each state is its own struct so it can carry state-specific data. Notice how the `Transition` struct handles each (state, event) pair as a separate overload - this is what gives us exhaustiveness checking.
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -128,15 +133,17 @@ public:
 private:
     State state_ = Idle{};
 };
-
 ```
+
+The key design move here is that `process()` replaces the current state entirely - it doesn't mutate it in place. Each transition returns a brand new state value. That makes the state machine easy to reason about, because each state transition is a pure function from (old state, event) to new state.
 
 ### Q2: Test state machine transitions exhaustively
 
 **Answer:**
 
-```cpp
+The nice thing about a variant-based state machine is that the test code reads almost like a table of expected behavior. You push events in, check the resulting state name, and optionally inspect the state-specific data. This test suite covers valid transitions, the retry logic, and the catch-all for invalid inputs - that last one is important to confirm the machine does nothing when it shouldn't.
 
+```cpp
 #include <gtest/gtest.h>
 
 TEST(ConnectionSM, IdleToConnecting) {
@@ -184,15 +191,17 @@ TEST(ConnectionSM, InvalidTransitionIgnored) {
     sm.process(ConnectOk{1});   // Invalid: Idle + ConnectOk
     EXPECT_EQ(sm.state_name(), "Idle");  // Unchanged
 }
-
 ```
+
+Notice that `InvalidTransitionIgnored` is just as important as the happy-path tests. The catch-all overload in `Transition` should leave the machine unchanged - that's the contract, and it needs to be verified.
 
 ### Q3: Add entry/exit actions and transition guards
 
 **Answer:**
 
-```cpp
+A pure state machine only tracks which state you're in. Real applications also need to do things when entering or leaving a state - start a timer, flush a buffer, log an event, cancel pending requests. The `WithActions` wrapper adds that layer cleanly without touching the core state machine logic. It captures both the old and new state, then fires the appropriate callbacks at each boundary.
 
+```cpp
 // === State machine with actions and guards ===
 template<typename StateMachine>
 class WithActions {
@@ -241,17 +250,18 @@ private:
 // WithActions<ConnectionStateMachine> sm;
 // sm.process(Connect{"host"});  // Prints: Starting connection to host
 // sm.process(ConnectOk{1});     // Prints: Connected, session=1
-
 ```
+
+The check `old_state.index() != sm_.current().index()` is a compact way to ask "did the state actually change?" - `index()` returns which alternative of the variant is currently active. If the machine stayed in the same state (due to the catch-all), entry actions don't fire, which is the correct behavior.
 
 ---
 
 ## Notes
 
-- `std::variant` + `std::visit` gives **compile-time exhaustiveness** — missing transition = compile error
-- Each state struct can carry state-specific data (address, retries, session ID)
-- The `auto& state, auto& event` catch-all handles invalid transitions gracefully
-- **Test every valid transition AND every invalid one** — the catch-all must preserve state
-- Entry/exit actions handle resource acquisition and cleanup at state boundaries
-- For large state machines (>15 states), consider Boost.SML for a declarative DSL
-- Hierarchical state machines: a state can contain a nested state machine (HSM pattern)
+- `std::variant` + `std::visit` gives **compile-time exhaustiveness** - a missing transition overload is a compile error, not a runtime surprise.
+- Each state struct can carry its own data, such as the address and retry count in `Connecting` or the session ID in `Connected`.
+- The `auto& state, auto& event` catch-all handles invalid transitions gracefully by leaving the machine unchanged.
+- Test every valid transition AND every invalid one - the catch-all contract must be verified separately.
+- Entry and exit actions are the right place for resource acquisition and cleanup at state boundaries.
+- For large state machines with more than 15 states, consider Boost.SML for a more declarative DSL-based approach.
+- Hierarchical state machines, where a state contains a nested state machine, are an extension of this pattern known as HSM.

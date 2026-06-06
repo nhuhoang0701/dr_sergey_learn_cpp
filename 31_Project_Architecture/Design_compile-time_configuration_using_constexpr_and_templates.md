@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Compile-time configuration** uses `constexpr`, `if constexpr`, template parameters, and preprocessor defines to select behavior at compile time rather than runtime. This eliminates dead code, enables zero-overhead abstractions, and catches misconfiguration as compile errors. It's especially valuable in embedded systems where every byte and cycle counts.
+**Compile-time configuration** uses `constexpr`, `if constexpr`, template parameters, and preprocessor defines to select behavior at compile time rather than at runtime. The key benefit is that dead code disappears entirely - if logging is disabled, the logging function body is empty, not just skipped at runtime. The optimizer sees the condition as a compile-time constant and removes the whole branch.
+
+This is especially valuable in embedded systems, where every byte and cycle matters. But it also applies to desktop/server software: compile-time configuration catches misconfiguration as a compile error instead of a runtime crash, and policy-class templates give you zero-overhead customization points with no vtable involved.
 
 ### Configuration Mechanisms
 
@@ -26,8 +28,9 @@
 
 **Answer:**
 
-```cpp
+The `Config` struct below is the single source of truth for all build-time settings. Because every member is `static constexpr`, the compiler can evaluate any expression involving them at compile time - including `POOL_SIZE`, which is derived from `IS_EMBEDDED`. The `static_assert` calls at the bottom turn invalid configurations into compile errors, which is exactly where you want to catch them.
 
+```cpp
 #include <cstdint>
 #include <type_traits>
 
@@ -80,15 +83,17 @@ static_assert(Config::BUFFER_SIZE >= 256,
     "BUFFER_SIZE too small");
 static_assert(!Config::IS_EMBEDDED || Config::POOL_SIZE <= 64,
     "Pool too large for embedded");
-
 ```
+
+The reason `if constexpr` beats a regular `if` here is that with a regular `if`, both branches must compile even if one is never taken. With `if constexpr`, the compiler only instantiates the branch that is actually active for this build. That means the debug logging code never appears in a release binary at all - not as dead code, not as eliminated code, simply not compiled.
 
 ### Q2: Use policy classes for compile-time behavior injection
 
 **Answer:**
 
-```cpp
+Policy classes are a way of injecting behavior into a class at compile time by making the behavior a template parameter. The class you are customizing does not know or care which policy it gets - it just calls the policy's interface. The compiler selects the right implementation and inlines everything.
 
+```cpp
 // === Policy classes: inject behavior at compile time ===
 
 // Allocation policy
@@ -154,18 +159,20 @@ private:
 };
 
 // Compile-time configuration:
-using ProdPool = ConnectionPool<HeapAllocation, MultiThreaded>;
+using ProdPool     = ConnectionPool<HeapAllocation, MultiThreaded>;
 using EmbeddedPool = ConnectionPool<PoolAllocation, SingleThreaded>;
-using TestPool = ConnectionPool<HeapAllocation, SingleThreaded>;
-
+using TestPool     = ConnectionPool<HeapAllocation, SingleThreaded>;
 ```
+
+Notice that `SingleThreaded::Lock` does nothing - its constructor and destructor are empty. When the compiler inlines a `SingleThreaded` policy, the lock acquisition disappears entirely. There is no branch, no atomic, no mutex - just zero overhead. That is the promise of policy-based design.
 
 ### Q3: Compile-time feature flags with concepts
 
 **Answer:**
 
-```cpp
+Taking the policy idea one step further, you can encode an entire build configuration as a single type. Each configuration type bundles all its feature flags together, and the application is parameterized by the configuration type. The `if constexpr` checks inside then select exactly the right behavior for each build variant.
 
+```cpp
 #include <concepts>
 
 // === Feature flags as types ===
@@ -236,17 +243,18 @@ void maybe_log(const char* msg) {
     }
     // When disabled: function body is EMPTY, completely optimized away
 }
-
 ```
+
+The worker array (`std::array<Worker, Cfg::WorkerCount>`) is a good example of why compile-time values matter more than they might seem. Because the size is a compile-time constant, the compiler can allocate the array on the stack and unroll loops over it. If it were a runtime variable, none of that would be possible.
 
 ---
 
 ## Notes
 
-- `if constexpr` eliminates dead branches entirely — the compiler doesn't even check the unused branch's syntax for dependent code
-- `static_assert` validates configuration at compile time, catching errors before runtime
-- Policy classes + templates = zero-overhead customization (no vtable, fully inlined)
-- Prefer `constexpr` variables over `#define` — type-safe, scoped, debugger-visible
-- CMake passes configuration: `target_compile_definitions(app PRIVATE PLATFORM_EMBEDDED)`
-- For embedded: compile-time configuration avoids runtime overhead and reduces binary size
-- Concepts (C++20) can constrain policy types for better error messages
+- `if constexpr` eliminates dead branches entirely - the compiler does not even check the syntax of the unused branch for dependent expressions, which is different from a regular `if`.
+- `static_assert` validates configuration at compile time, catching errors before the program ever runs.
+- Policy classes combined with templates give zero-overhead customization with no vtable and full inlining.
+- Prefer `constexpr` variables over `#define` - they are type-safe, scoped to their namespace, and visible in the debugger.
+- CMake passes configuration into the build with `target_compile_definitions(app PRIVATE PLATFORM_EMBEDDED)`.
+- For embedded targets, compile-time configuration avoids runtime overhead and reduces binary size, which is often a hard constraint.
+- C++20 concepts can constrain policy types so that a wrong policy gives a readable error message instead of a wall of template noise.

@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Event-driven architecture (EDA)** decouples producers from consumers through asynchronous event dispatch. Components publish events without knowing who handles them; subscribers react independently. Combined with **message queues**, EDA enables loose coupling, scalability, and fault tolerance. In C++ this ranges from in-process event buses to inter-process queues (ZeroMQ, RabbitMQ, Kafka).
+**Event-driven architecture (EDA)** decouples producers from consumers through asynchronous event dispatch. A component publishes an event without knowing who handles it. Subscribers react independently when they see an event they care about. The result is loose coupling: you can add a new subscriber without touching the code that publishes the event.
+
+Combined with **message queues**, EDA also gives you buffering and back-pressure. A producer can keep pushing events even if the consumer is temporarily slow - the queue absorbs the difference. In C++ this spans a wide range: in-process event buses using `std::function` and `std::any`, cross-thread queues using mutexes and condition variables, and inter-process queues backed by ZeroMQ, RabbitMQ, or Kafka.
 
 ### Event-Driven vs Request-Response
 
@@ -26,8 +28,9 @@
 
 **Answer:**
 
-```cpp
+The `EventBus` uses `std::type_index` as the key and `std::any` to store typed event values behind a type-erased handler. The template subscribe and publish methods recover the type at the boundaries. Because the handlers are called outside the lock, a subscriber that publishes another event does not deadlock.
 
+```cpp
 #include <functional>
 #include <unordered_map>
 #include <typeindex>
@@ -124,20 +127,20 @@ void setup(EventBus& bus) {
     // Notification reacts to shipping
     bus.subscribe<OrderShipped>([](const OrderShipped& e) {
         send_email("Your order " + std::to_string(e.order_id)
-
                    + " shipped: " + e.tracking);
-
     });
 }
-
 ```
+
+Notice how the payment handler publishes `PaymentProcessed` after processing, and the shipping handler in turn publishes `OrderShipped`. Each service only knows about the events it cares about - no service calls another service directly. This chain of reactions is the characteristic pattern of event-driven systems.
 
 ### Q2: Add an async message queue with worker threads
 
 **Answer:**
 
-```cpp
+The synchronous event bus dispatches events on the caller's thread. For anything heavier - or when you need to decouple production rate from consumption rate - you want a queue and a worker pool. The `MessageQueue` below is thread-safe with a condition variable so workers sleep rather than spin. `AsyncEventProcessor` wraps the queue and gives you configurable concurrency.
 
+```cpp
 #include <queue>
 #include <thread>
 #include <condition_variable>
@@ -237,15 +240,17 @@ private:
     std::vector<std::jthread> threads_;
     int workers_;
 };
-
 ```
+
+The `stop()` and join pattern in the destructor is important: when the processor is destroyed, it signals the queue to stop, which wakes all waiting workers. Each worker catches the exception from `pop()` and exits cleanly. If you skip this and just destroy the threads, you get undefined behavior.
 
 ### Q3: Implement event sourcing with replay
 
 **Answer:**
 
-```cpp
+Event sourcing is an architectural pattern where you store every event that ever happened, rather than storing only the current state. The current state is computed by replaying events from the beginning. This gives you a complete audit trail and the ability to rebuild state from scratch if something goes wrong. The reason this trips people up is that it requires a mental shift: the event log is the source of truth, and the current state is just a derived view of it.
 
+```cpp
 // === Event Store: persist all events for replay ===
 class EventStore {
 public:
@@ -324,17 +329,18 @@ private:
     std::string status_;
     std::string tracking_;
 };
-
 ```
+
+The `since(seq)` method enables incremental replay - if you have a checkpoint at sequence 500 and want to bring it up to date, you only replay events from 501 onward. That is essential for production event stores where replaying from the beginning would be too slow.
 
 ---
 
 ## Notes
 
-- **Event bus** for in-process: simple, fast, same-process communication
-- **Message queue** for cross-thread or cross-process: buffered, back-pressure capable
-- Always copy subscribers list before invoking — handlers may modify the subscriber list
-- Event ordering matters: use sequence numbers and single-writer per aggregate
-- Event sourcing gives full audit trail and state rebuild capability but increases storage
-- For high-throughput, consider lock-free SPSC (single-producer, single-consumer) queues
-- Real-world queues: ZeroMQ (in-process/IPC/TCP), Redis Streams, Apache Kafka for distributed
+- Use an in-process **event bus** for fast, same-process communication between components.
+- Use a **message queue** when you need cross-thread or cross-process communication with buffering and back-pressure.
+- Always copy the subscriber list before invoking handlers - a handler might subscribe or unsubscribe during dispatch, which would invalidate the iteration.
+- Event ordering matters in multi-producer scenarios: use sequence numbers and enforce a single-writer per aggregate.
+- Event sourcing gives you a complete audit trail and state rebuild capability, but it increases storage requirements.
+- For high throughput, consider lock-free SPSC (single-producer, single-consumer) queues to eliminate mutex contention entirely.
+- Real-world queue choices: ZeroMQ for in-process/IPC/TCP, Redis Streams for lightweight distributed queues, Apache Kafka for high-throughput distributed event streaming.

@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Repository pattern** provides a collection-like interface for accessing domain objects, hiding the details of data storage (database, file, network). The domain code works with `IRepository<T>` — it doesn't know if data comes from SQLite, PostgreSQL, an in-memory map, or a REST API. This decouples persistence from business logic.
+The **Repository pattern** provides a collection-like interface for accessing domain objects while hiding the details of data storage (database, file, network). Your domain code works with `IRepository<T>` - it doesn't know or care whether data comes from SQLite, PostgreSQL, an in-memory map, or a REST API. This decouples persistence from business logic, which matters a lot when you want to test your domain code without spinning up a real database.
+
+The mental model that helps here: think of a repository as if it were a `std::vector<User>` that happens to be backed by a database. You call `find_by_id`, `add`, `update`, `remove` - clean collection operations - and the repository handles translating those into whatever SQL or file operations are needed behind the scenes.
 
 ### Repository vs Direct Data Access
 
@@ -26,8 +28,9 @@ The **Repository pattern** provides a collection-like interface for accessing do
 
 **Answer:**
 
-```cpp
+The repository interface lives in the domain layer - it's defined in terms of your domain types (`User`, `int` ID) and has no dependencies on any storage library. The concrete implementations (in-memory, SQLite) live in the infrastructure layer and depend on storage-specific code. That direction of dependency is crucial: the domain never depends on infrastructure, only on its own abstractions.
 
+```cpp
 #include <memory>
 #include <optional>
 #include <string>
@@ -139,15 +142,17 @@ public:
 private:
     sqlite3* db_ = nullptr;
 };
-
 ```
+
+The in-memory implementation uses a plain `std::vector<User>` under the hood - it's the simplest possible storage that satisfies the interface. The SQLite implementation wraps the C API with the same clean interface. From the domain's perspective, they're identical.
 
 ### Q2: Use repository in domain service with tests
 
 **Answer:**
 
-```cpp
+This is where you see the payoff. `UserService` takes an `IUserRepository` reference in its constructor and never mentions SQLite, Postgres, or files. You can test it completely with the in-memory repository - no test database to set up, no file paths to configure, no network to mock.
 
+```cpp
 // === Domain service (depends only on IUserRepository) ===
 class UserService {
 public:
@@ -177,7 +182,7 @@ private:
     IUserRepository& repo_;
 };
 
-// === Tests — fast, no database ===
+// === Tests - fast, no database ===
 #include <gtest/gtest.h>
 
 TEST(UserServiceTest, DeactivatesAllActiveUsers) {
@@ -198,15 +203,17 @@ TEST(UserServiceTest, GetUserReturnsNulloptForMissing) {
     UserService service(repo);
     EXPECT_FALSE(service.get_user(999).has_value());
 }
-
 ```
+
+These tests run in microseconds, require no external setup, and are deterministic. That's the concrete benefit of the pattern: your business logic tests are fast and independent of infrastructure.
 
 ### Q3: Add query specifications for complex filters
 
 **Answer:**
 
-```cpp
+When query predicates grow complex - "find all active users from a specific email domain, whose account was created in the last 30 days" - embedding that logic as a lambda starts to feel unwieldy, and you can't reuse it. The **Specification pattern** gives you composable, named query objects that can be combined with logical AND/OR.
 
+```cpp
 // === Specification pattern for complex queries ===
 template<typename T>
 class ISpecification {
@@ -263,17 +270,18 @@ public:
 // EmailDomainSpec company("company.com");
 // AndSpec<User> active_company(active, company);
 // auto users = repo.find_matching(active_company);
-
 ```
+
+Each specification is a small, testable unit. In production, a smart `SqliteUserRepository` could translate `AndSpec<User>` into a SQL `WHERE` clause for efficient execution rather than filtering in memory. That translation lives in infrastructure, not in the specification or domain logic.
 
 ---
 
 ## Notes
 
-- Repository is defined in the **domain layer** — concrete implementations live in **infrastructure**
-- `InMemoryRepository` is both a test double and a useful prototype implementation
-- The domain service should never know the storage technology
-- For simple CRUD, a generic `IRepository<T>` works; add domain-specific methods as needed
-- Don't expose database concepts (transactions, connections) through the repository interface
-- Specification pattern keeps complex query logic testable and composable
-- In production, the SQLite/PostgreSQL repository translates specifications to SQL for efficiency
+- The repository interface is defined in the **domain layer** - concrete implementations live in **infrastructure**. This keeps the dependency arrow pointing inward, toward the domain.
+- `InMemoryRepository` is both a test double and a useful prototype implementation you can use before the real database is ready.
+- The domain service should never know the storage technology - if you find yourself writing `if (is_sqlite_)` inside a service, something has gone wrong.
+- For simple CRUD, a generic `IRepository<T>` works well; add domain-specific query methods only when the generic interface isn't expressive enough.
+- Don't expose database concepts (transactions, connections, cursors) through the repository interface - callers shouldn't need to manage transaction lifetimes.
+- The Specification pattern keeps complex query logic testable, composable, and reusable across different repository implementations.
+- In production, the SQLite/PostgreSQL repository can translate specifications to SQL for efficiency, avoiding the overhead of fetching all rows into memory just to filter them.

@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Hot-reload** updates application logic at runtime without restarting. In C++ this is achieved by reloading shared libraries (`.so`/`.dll`), reloading configuration/scripts, or using data-driven architectures where behavior changes without recompilation. It's essential for game development, audio plugins, long-running servers, and embedded devices that can't restart.
+**Hot-reload** updates application logic at runtime without restarting the process. In C++ this is a genuinely hard problem because the language does not have built-in support for it - but there are several practical approaches. The most powerful is reloading shared libraries (`.so` on Linux, `.dll` on Windows), which lets you recompile a module and have the running process load the new version. Simpler cases - config files, shader files, Lua scripts - use file-watching and can reload in milliseconds.
+
+Hot-reload is essential in game development (change gameplay logic without restarting a level), audio plugins (swap DSP code live), and long-running servers where downtime is expensive. The fundamental rule that makes it work is: **state lives in the host process, logic lives in the reloadable module**. When you reload the module, you get new code, but the existing state - player position, score, session data - is preserved because it was never inside the module in the first place.
 
 ### Hot-Reload Approaches
 
@@ -25,8 +27,9 @@
 
 **Answer:**
 
-```cpp
+The `HotReloader` manages a single loaded module. When a file change is detected, it calls `on_unload()` on the old instance, destroys it, unloads the library, then loads the new `.so`, creates a new instance, and calls `on_load()` with a pointer to the host's state. The host's application state is untouched through all of this.
 
+```cpp
 #include <dlfcn.h>  // Linux; use LoadLibrary on Windows
 #include <string>
 #include <memory>
@@ -139,15 +142,19 @@ void game_loop(HotReloader& reloader, GameState& state) {
         }
     }
 }
-
 ```
+
+The `create_module` and `destroy_module` functions must be declared `extern "C"` in the module's implementation. Without that, the C++ name mangler changes their names in the `.so` file and `dlsym` cannot find them. This is one of those things that fails silently at `dlsym` time and is confusing the first time you encounter it.
 
 ### Q2: Preserve state across reloads
 
 **Answer:**
 
-```cpp
+This is the core design constraint for hot-reload. The reason state cannot live in the module is that when you `dlclose` the library, all memory belonging to it is potentially invalidated. Any objects the module allocated, any statics it owned, are gone. If the host had pointers into module memory, they are now dangling.
 
+The solution is to put all mutable state in the host and pass a pointer to it into the module on load.
+
+```cpp
 // === State preservation: host owns the state, module only has logic ===
 
 // State lives in the HOST (never in the .so)
@@ -157,7 +164,7 @@ struct GameState {
     float delta_time;
     bool running;
     std::vector<Entity> entities;
-    // All mutable state here — survives reload
+    // All mutable state here - survives reload
 };
 
 // Module receives state pointer on load
@@ -195,15 +202,17 @@ private:
 // 3. on_unload() must release any module-local resources
 // 4. Never store pointers to module functions in state
 // 5. State struct changes require full restart (ABI change)
-
 ```
+
+Rule 5 is the hard limit of hot-reload: you can change function bodies freely, but if you change the layout of `GameState` itself, old host code and new module code will have incompatible views of what the struct looks like. That requires a full restart. This is the ABI boundary, and it is the reason hot-reload works well for logic changes but not for data structure changes.
 
 ### Q3: Implement config/data hot-reload with file watching
 
 **Answer:**
 
-```cpp
+Config hot-reload is the simpler and lower-risk version of hot-reload. No shared library loading, no ABI concerns. You watch a file for changes, re-parse it when it changes, and atomically swap in the new config so readers always see a consistent snapshot.
 
+```cpp
 #include <filesystem>
 #include <fstream>
 #include <atomic>
@@ -282,17 +291,18 @@ private:
 // HotConfig config("settings.conf");
 // auto cfg = config.get();  // Always returns latest
 // int port = cfg->get_int("server.port");
-
 ```
+
+The `std::atomic_load` and `std::atomic_store` with `shared_ptr` is the key thread-safety mechanism here. Any thread that calls `get()` gets a `shared_ptr` snapshot - the config object it points to will not be destroyed while that snapshot is alive, even if `reload()` runs concurrently and replaces the pointer. This is a standard lock-free config swap pattern.
 
 ---
 
 ## Notes
 
-- **State must live in the host**, never in the reloadable module — module replacement destroys its state
-- On Linux, you can dlopen the same path after rebuilding; the kernel loads the new file
-- On Windows, you must copy the DLL before loading (the OS locks the file)
-- **File watching** is the simplest hot-reload: config files, Lua scripts, shader files
-- `std::atomic_store/load` with `shared_ptr` enables lock-free config swaps
-- For game development: hot-reload saves hours of iteration time (change logic without restarting)
-- Production servers: hot-reload config (log levels, feature flags) without downtime
+- State must live in the host process, never inside the reloadable module. Module replacement destroys everything the module owned.
+- On Linux, you can `dlopen` the same path after rebuilding and the kernel loads the new file automatically.
+- On Windows, the OS locks `.dll` files that are loaded, so you must copy the DLL to a temporary path before loading it.
+- **File watching** is the simplest form of hot-reload and covers config files, Lua scripts, and shader files with very low risk.
+- `std::atomic_store` and `std::atomic_load` with `shared_ptr` enable lock-free config swaps between the file-watcher thread and reader threads.
+- For game development, hot-reload can save hours of iteration time per day - changing game logic without restarting a level is a significant productivity improvement.
+- Production servers can use config hot-reload to adjust log levels, feature flags, and rate limits without any service downtime.

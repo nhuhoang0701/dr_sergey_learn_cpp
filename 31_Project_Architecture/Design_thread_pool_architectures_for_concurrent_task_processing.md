@@ -8,6 +8,8 @@
 
 A **thread pool** manages a fixed number of worker threads that execute tasks from a shared queue. This avoids the overhead of thread creation/destruction per task and bounds concurrency. Modern C++ thread pools range from simple work queues to work-stealing designs optimized for different workload patterns.
 
+The core intuition: creating a `std::thread` is expensive (OS call, stack allocation, scheduler registration). If you're processing thousands of short tasks, spawning a thread per task would spend more time on thread management than actual work. A thread pool amortizes that cost by keeping N threads alive and handing them tasks to execute as they become available.
+
 ### Thread Pool Design Variants
 
 | Design | Best For | Overhead | Scalability |
@@ -23,10 +25,13 @@ A **thread pool** manages a fixed number of worker threads that execute tasks fr
 
 ### Q1: Implement a production-quality thread pool with futures
 
+This implementation uses a single shared queue protected by a mutex and a condition variable. Workers sleep on the condition variable when the queue is empty and wake up when a task is pushed. The `submit()` method returns a `std::future<ReturnType>` so the caller can optionally wait for the result and retrieve it (or catch any exception the task threw).
+
+The `packaged_task` + `shared_ptr` pattern is the standard trick for erasing the return type: `std::function<void()>` in the queue stores a lambda that calls the `packaged_task`, and the future is detached from it before we move everything into the queue.
+
 **Answer:**
 
 ```cpp
-
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -143,15 +148,17 @@ void example() {
     std::cout << f2.get() << "\n";  // 30
     std::cout << f3.get() << "\n";  // 499999500000
 }
-
 ```
 
+The destructor sets `stopped_ = true`, then `notify_all()` wakes all sleeping workers, and each one sees the stop condition and exits cleanly. This ensures no tasks are dropped silently - the workers drain pending tasks first (note: `stopped_ && tasks_.empty()` means a worker exits only when both the stop flag is set *and* the queue is empty).
+
 ### Q2: Implement work-stealing for better load balancing
+
+The limitation of a single shared queue is mutex contention: every push and pop takes the lock. With many threads, that becomes a bottleneck. Work-stealing solves this by giving each worker its own queue. A worker pushes new tasks onto its own queue (no contention) and pops from the back (LIFO, which is cache-friendly because recently pushed tasks are still warm in cache). If a worker's queue is empty, it "steals" from the *front* of a randomly chosen sibling's queue (FIFO, which tends to steal larger/older tasks - the kind most worth stealing).
 
 **Answer:**
 
 ```cpp
-
 #include <deque>
 #include <random>
 
@@ -163,7 +170,7 @@ public:
         deque_.push_back(std::move(task));
     }
 
-    // Owner pops from back (LIFO — cache-friendly)
+    // Owner pops from back (LIFO - cache-friendly)
     bool pop(std::function<void()>& task) {
         std::lock_guard lock(mutex_);
         if (deque_.empty()) return false;
@@ -172,7 +179,7 @@ public:
         return true;
     }
 
-    // Thieves steal from front (FIFO — older/larger tasks)
+    // Thieves steal from front (FIFO - older/larger tasks)
     bool steal(std::function<void()>& task) {
         std::lock_guard lock(mutex_);
         if (deque_.empty()) return false;
@@ -236,7 +243,7 @@ private:
             }
 
             if (!stolen) {
-                // No work anywhere — wait
+                // No work anywhere - wait
                 std::unique_lock lock(wait_mutex_);
                 cv_.wait_for(lock, std::chrono::milliseconds(1));
             }
@@ -250,15 +257,19 @@ private:
     std::mutex wait_mutex_;
     std::condition_variable cv_;
 };
-
 ```
 
+The reason this is often described as "lock-free-ish" rather than truly lock-free is that this simplified version still uses a mutex per queue. In a production work-stealing implementation (like those in Intel TBB or the Tokio runtime) the queue uses atomic operations only, which is harder to implement correctly but eliminates all lock overhead on the hot path.
+
 ### Q3: Implement parallel for_each and parallel_reduce
+
+Once you have a thread pool, you can build parallel algorithms on top of it. The idea is to divide the input range into chunks, submit one task per chunk, and wait for all futures to complete. The `parallel_reduce` collects partial results from each chunk and combines them in the main thread.
+
+The `chunk_size` formula `total / (thread_count * 4)` produces about four chunks per thread. That's intentional over-decomposition: if one chunk takes longer than the others, idle threads can start the next chunk. Exactly one chunk per thread would leave idle capacity if the work is uneven.
 
 **Answer:**
 
 ```cpp
-
 // === Parallel algorithms on top of thread pool ===
 template<typename Iter, typename Func>
 void parallel_for_each(ThreadPool& pool, Iter begin, Iter end, Func fn,
@@ -310,17 +321,18 @@ T parallel_reduce(ThreadPool& pool, Iter begin, Iter end,
 //
 // double sum = parallel_reduce(pool, data.begin(), data.end(),
 //     0.0, std::plus<>{});
-
 ```
+
+The `parallel_reduce` result is only correct if `op` is associative - addition and multiplication are fine, but operations that depend on order are not. The partial results are combined in the order futures complete, which may differ from the original element order.
 
 ---
 
 ## Notes
 
-- **Default thread count** = `std::thread::hardware_concurrency()`, adjust for I/O-bound workloads
-- Single-queue pools: simple but contended under high load; sufficient for most applications
-- Work-stealing: excellent for uneven tasks, minimal idle time, more complex to implement
-- Use `std::future` for tasks that produce results; fire-and-forget for side effects
-- `wait_idle()` is essential for testing and batch processing
-- Pool destructor must drain pending tasks or cancel them — decide which semantic you need
-- C++23 `std::execution` / sender-receiver will eventually standardize thread pool semantics
+- **Default thread count** = `std::thread::hardware_concurrency()`, adjust for I/O-bound workloads.
+- Single-queue pools: simple but contended under high load; sufficient for most applications.
+- Work-stealing: excellent for uneven tasks, minimal idle time, more complex to implement.
+- Use `std::future` for tasks that produce results; fire-and-forget for side effects.
+- `wait_idle()` is essential for testing and batch processing.
+- Pool destructor must drain pending tasks or cancel them - decide which semantic you need.
+- C++23 `std::execution` / sender-receiver will eventually standardize thread pool semantics.

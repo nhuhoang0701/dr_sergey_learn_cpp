@@ -8,6 +8,8 @@
 
 **Module boundaries** define what a component exposes and what it hides. C++20 modules replace the header/source split with explicit `export` declarations, giving precise control over the public API. Header-only libraries remain relevant for template-heavy code and maximum portability. Choosing the right boundary mechanism affects build times, encapsulation, and API clarity.
 
+Here's the thing that trips people up about traditional headers: everything in a header is visible to every translation unit that includes it, including all the internal helper functions and implementation details you never intended to make public. C++20 modules fix this by requiring you to explicitly `export` what you want the outside world to see - everything else is module-private and genuinely invisible to consumers.
+
 ### Comparison
 
 | Aspect | C++20 Modules | Header-Only | Traditional Header/Source |
@@ -24,10 +26,13 @@
 
 ### Q1: Design module boundaries with C++20 modules
 
+With modules, you write a primary module interface file (`.cppm`) that declares what's exported, and an implementation unit (`.cpp`) that provides the definitions. The consumer just writes `import math;` and gets access to everything in the `export namespace math` block - and nothing else. The `detail` namespace here is completely invisible to the consumer; it doesn't even appear in the module's compiled representation.
+
+Watch how the template function `lerp` lives entirely in the interface file - that's fine with modules. Unlike traditional headers, you don't pay a re-parse cost for it in every translation unit.
+
 **Answer:**
 
 ```cpp
-
 // === math.cppm (primary module interface) ===
 export module math;
 
@@ -92,15 +97,19 @@ void example() {
 
     auto mid = math::lerp(v, math::Vec2{6.0, 8.0}, 0.5);
 }
-
 ```
 
+This is a much cleaner encapsulation story than `#pragma once` headers where everything leaks through. The consumer sees `math::Vec2`, `math::lerp`, etc., and the compiler enforces that `detail::` truly stays private.
+
 ### Q2: Use module partitions for large modules
+
+When a module grows big, you split it into **partitions**. Each partition is its own file with a name like `graphics:types`, and they're assembled into a unified interface by the primary module. A consumer just writes `import graphics;` and gets everything - they never need to know about the partition structure.
+
+The key syntax to notice: within a partition, `import :types;` (with the leading colon) imports a sibling partition by its short name. The primary module file uses `export import :types;` to re-export the partition's contents to consumers.
 
 **Answer:**
 
 ```cpp
-
 // === Large module split into partitions ===
 
 // --- graphics:types (partition) ---
@@ -136,7 +145,7 @@ private:
     int width_, height_;
 };
 
-// --- graphics (primary interface — re-exports partitions) ---
+// --- graphics (primary interface - re-exports partitions) ---
 export module graphics;
 export import :types;
 export import :renderer;
@@ -149,15 +158,19 @@ void draw(IRenderer& r) {
     r.clear({0, 0, 0, 1});
     r.draw_rect({10, 10, 100, 100}, {1, 0, 0, 1});
 }
-
 ```
 
+From the consumer's perspective this looks just like one big `graphics` module. The partition structure is an internal organizational detail. This lets large teams split a module across files without creating a complex import graph for consumers to deal with.
+
 ### Q3: Design a header-only library with clean boundaries
+
+Header-only libraries remain the most portable choice, especially for template-heavy code where definitions must be visible to the compiler at every call site. The main discipline is using a `detail/` directory (and `detail` namespace) as a convention to mark internal helpers that users shouldn't depend on.
+
+Notice the CMakeLists.txt snippet at the bottom - a header-only library uses `INTERFACE` linkage, meaning it has no compiled sources. The `$<BUILD_INTERFACE:...>` / `$<INSTALL_INTERFACE:...>` generator expressions ensure the right include paths are set whether the library is used from the build tree or after installation.
 
 **Answer:**
 
 ```cpp
-
 // === Header-only library structure ===
 // include/mylib/mylib.hpp          <-- Single-include entry point
 // include/mylib/core/types.hpp
@@ -216,17 +229,18 @@ namespace mylib::detail {
 //     $<INSTALL_INTERFACE:include>
 // )
 // target_compile_features(mylib INTERFACE cxx_std_20)
-
 ```
+
+The `detail/` directory convention is just that - a convention - so users *can* include internal headers if they want. That's the downside vs. true modules. The discipline is enforced by code review and documentation, not the compiler.
 
 ---
 
 ## Notes
 
-- **C++20 modules** give true encapsulation: non-exported names are invisible, no macro leakage
-- Module **partitions** let you split large modules while presenting a unified API
-- Header-only libraries: use `detail/` namespace and directory convention to mark internals
-- For template-heavy code, header-only is still the pragmatic choice (maximum compatibility)
-- CMake module support: use `CXX_SCAN_FOR_MODULES` property (CMake 3.28+)
-- Never `#include` inside a module — use `import` or `import <header>` for standard library
-- Module build order matters: BMI (Binary Module Interface) files must be built before consumers
+- **C++20 modules** give true encapsulation: non-exported names are invisible, no macro leakage.
+- Module **partitions** let you split large modules while presenting a unified API.
+- Header-only libraries: use `detail/` namespace and directory convention to mark internals.
+- For template-heavy code, header-only is still the pragmatic choice (maximum compatibility).
+- CMake module support: use `CXX_SCAN_FOR_MODULES` property (CMake 3.28+).
+- Never `#include` inside a module - use `import` or `import <header>` for standard library.
+- Module build order matters: BMI (Binary Module Interface) files must be built before consumers.

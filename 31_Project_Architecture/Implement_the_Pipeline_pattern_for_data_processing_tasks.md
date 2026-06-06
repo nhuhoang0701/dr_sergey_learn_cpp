@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Pipeline pattern** chains processing stages where the output of one stage feeds the input of the next. Each stage runs independently and can be parallelized. Pipelines are ideal for ETL, image processing, network packet handling, and any sequential data transformation. In C++, pipelines can be implemented with function composition, coroutines, or thread-per-stage designs.
+The **Pipeline pattern** is about chaining processing stages so that the output of one feeds directly into the input of the next. Think of an assembly line: raw material enters at one end, passes through a series of transformation stations, and finished product comes out the other end. In software, each stage does one focused thing, stages can run at different speeds, and the whole system becomes easy to extend by inserting a new stage between two existing ones.
+
+Pipelines are a natural fit for ETL (extract, transform, load) jobs, image or video processing, network packet handling, log ingestion, and any problem that naturally decomposes into sequential transformations. In C++ you have three main implementation strategies with very different trade-offs, and the choice depends on whether you care more about latency, throughput, or simplicity.
 
 ### Pipeline Variants
 
@@ -23,10 +25,11 @@ The **Pipeline pattern** chains processing stages where the output of one stage 
 
 ### Q1: Implement a type-safe synchronous pipeline
 
+The key design goal here is that the type system enforces stage compatibility at compile time. You cannot accidentally chain a stage that outputs `std::string` to a stage that expects `int` - the types have to match. The `then` method produces a new `Stage<In, Next>` by composing closures, so the entire pipeline collapses into a single function at construction time with no runtime overhead per stage.
+
 **Answer:**
 
 ```cpp
-
 #include <functional>
 #include <vector>
 #include <string>
@@ -89,15 +92,17 @@ auto pipeline =
 // Usage:
 // int count = pipeline.process("  Hello World  FOO  ");
 // count == 3
-
 ```
 
+The pipeline type ends up being `Stage<std::string, int>` - the compiler has tracked the type transformation through all four stages. If you were to chain a fifth stage that expected `double` instead of `int`, you would get a compile error pointing right to the type mismatch. That is the payoff of the template gymnastics.
+
 ### Q2: Build a concurrent thread-per-stage pipeline
+
+When stages run at different speeds, concurrency helps. A decode stage might be CPU-bound and slow, while a resize stage is fast. With a thread per stage and a bounded queue between each pair, the slow stage gets to run full-speed without blocking the fast ones - they just fill the queue and wait. That back-pressure is important: without bounds on the queue, a fast producer can exhaust memory by overwhelming a slow consumer.
 
 **Answer:**
 
 ```cpp
-
 #include <queue>
 #include <thread>
 #include <mutex>
@@ -200,15 +205,17 @@ private:
 // pipe.start();
 // for (auto& file : files) pipe.push(load(file));
 // pipe.finish();
-
 ```
 
+The shutdown sequence matters here. Calling `finish()` closes the front of the pipeline, which causes stage 0's `pop()` to return `nullopt`, which causes stage 0 to close its output queue, which cascades through every stage in turn. No stage ever gets stuck waiting because every close triggers a `notify_all`.
+
 ### Q3: C++20 coroutine-based lazy pipeline
+
+The coroutine approach is fundamentally different from the thread-per-stage approach. Instead of stages running concurrently and communicating through queues, a coroutine pipeline is pull-based and lazy: the final consumer asks for one item, which causes stage N to ask stage N-1, which asks stage N-2, all the way to the source. Nothing runs until you ask for it, and only as much work is done as is needed to produce one output item.
 
 **Answer:**
 
 ```cpp
-
 #include <coroutine>
 #include <ranges>
 
@@ -279,17 +286,18 @@ void process() {
 // auto result = data
 //     | std::views::filter([](int n) { return n % 2 == 0; })
 //     | std::views::transform([](int n) { return n * 10; });
-
 ```
+
+Each call to `stage3.next()` resumes the multiply coroutine, which calls `source.next()` on `stage2`, which calls `source.next()` on `stage1`. Control flows back and forth between coroutine frames rather than across thread boundaries. The result is very low overhead per item and no queue synchronization at all - at the cost of no true parallelism.
 
 ---
 
 ## Notes
 
-- **Synchronous pipelines**: compose functions, ideal when processing is fast
-- **Thread-per-stage**: best when stages have different speeds — bounded queues provide backpressure
-- **Coroutine pipelines**: lazy evaluation, no extra threads, pull-based
-- **C++20 ranges**: the standard library's built-in pipeline mechanism
-- Bounded queues prevent fast producers from overwhelming slow consumers
-- Monitor queue sizes at runtime to identify pipeline bottlenecks
-- For batch processing, accumulate items and process in bulk for better cache utilization
+- Synchronous pipelines: compose functions, ideal when processing is fast.
+- Thread-per-stage: best when stages have different speeds - bounded queues provide backpressure.
+- Coroutine pipelines: lazy evaluation, no extra threads, pull-based.
+- C++20 ranges: the standard library's built-in pipeline mechanism.
+- Bounded queues prevent fast producers from overwhelming slow consumers.
+- Monitor queue sizes at runtime to identify pipeline bottlenecks.
+- For batch processing, accumulate items and process in bulk for better cache utilization.

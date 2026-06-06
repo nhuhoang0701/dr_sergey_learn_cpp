@@ -6,16 +6,20 @@
 
 ## Topic Overview
 
-Embedded projects often produce multiple firmware images from a single codebase: a **bootloader** (firmware updater), the main **application**, and **host-based tests**. Each target has different linker scripts, startup code, and memory layouts but shares common drivers and business logic. A well-structured CMake build manages these targets cleanly.
+Embedded projects often produce multiple firmware images from a single codebase: a **bootloader** that handles firmware updates and jumps to the main application, the main **application** itself, and **host-based tests** that run on your development PC without any hardware. Each of these targets has different linker scripts, different startup code, and different memory layouts - but they all share the same HAL interfaces, device drivers, and business logic.
+
+Managing all of this cleanly with CMake requires understanding how to conditionally include targets based on whether you are cross-compiling for the target hardware or building natively for the host.
 
 ### Multi-Target Project Structure
 
 | Target | Memory Region | Size | Purpose |
 | --- | --- | --- | --- |
-| **Bootloader** | 0x0800_0000 – 0x0800_7FFF | 32KB | Firmware update, jump to app |
-| **Application** | 0x0800_8000 – 0x080F_FFFF | 992KB | Main application firmware |
+| **Bootloader** | 0x0800_0000 - 0x0800_7FFF | 32KB | Firmware update, jump to app |
+| **Application** | 0x0800_8000 - 0x080F_FFFF | 992KB | Main application firmware |
 | **Tests** | Host PC | N/A | Unit tests (no hardware) |
 | **Factory test** | Full flash | 1MB | Production line testing |
+
+The address split between bootloader and application is intentional. The bootloader owns the low part of flash at 0x08000000, which is where the processor looks for the reset vector on power-up. The application starts at 0x08008000, which is 32KB up - exactly enough room for the bootloader. The bootloader validates the application image and then jumps to that address.
 
 ---
 
@@ -23,10 +27,11 @@ Embedded projects often produce multiple firmware images from a single codebase:
 
 ### Q1: Structure the project directory and CMake
 
+The key CMake insight for embedded multi-target builds is the `CMAKE_CROSSCOMPILING` variable. When you configure with an ARM toolchain file, CMake sets this to true and you build bootloader and app. When you configure without a toolchain file (using your host GCC or Clang), it is false and you build only the host tests with a mock BSP. The same `CMakeLists.txt` serves both scenarios.
+
 **Answer:**
 
 ```cpp
-
 project/
 ├── CMakeLists.txt              # Top-level: defines targets
 ├── cmake/
@@ -71,11 +76,9 @@ project/
     ├── test_state_machine.cpp
     ├── test_crc32.cpp
     └── CMakeLists.txt
-
 ```
 
 ```cmake
-
 # === Top-level CMakeLists.txt ===
 cmake_minimum_required(VERSION 3.20)
 project(embedded_project C CXX ASM)
@@ -127,15 +130,17 @@ target_link_options(application PRIVATE
     -T${CMAKE_SOURCE_DIR}/cmake/linker/application.ld
     -Wl,--gc-sections
 )
-
 ```
 
+The `--gc-sections` linker flag is important for embedded targets. It removes any code sections that are not reachable from the entry point, which keeps the firmware image as small as possible. You only get this benefit if you also compile with `-ffunction-sections -fdata-sections`, which puts each function and variable in its own section so the linker can individually discard unused ones.
+
 ### Q2: Linker scripts and memory layout
+
+Linker scripts tell the linker where each section of your program lives in physical memory. Without them, an ARM Cortex-M processor will not boot correctly because it will not find the interrupt vector table at the right address. The bootloader and application need separate linker scripts because they live at different addresses.
 
 **Answer:**
 
 ```cmake
-
 /* === bootloader.ld === */
 MEMORY
 {
@@ -175,11 +180,9 @@ SECTIONS
         KEEP(*(.shared_data))
     } > RAM
 }
-
 ```
 
 ```cpp
-
 // === Bootloader: jump to application ===
 void jump_to_application() {
     constexpr uint32_t APP_ADDRESS = 0x08008000;
@@ -211,15 +214,17 @@ struct SharedData {
     uint32_t firmware_version;
     uint32_t crc32;
 } __attribute__((section(".shared_data")));
-
 ```
 
+The stack pointer validation before jumping is not optional - it is the safety check that prevents the bootloader from jumping to garbage if the application flash region is erased or corrupt. An erased STM32 flash reads as 0xFFFFFFFF, so `app_sp` would be 0xFFFFFFFF, which is well outside valid RAM and correctly rejected. The `SCB->VTOR` assignment relocates the vector table so the application's interrupt handlers are found at the right address after the jump.
+
 ### Q3: Build presets for all targets
+
+With three distinct configurations (ARM debug, ARM release, and host tests), `CMakePresets.json` is particularly valuable here. Without presets, you would need separate shell scripts to invoke CMake with the right toolchain file and options for each case.
 
 **Answer:**
 
 ```json
-
 // === CMakePresets.json ===
 {
   "version": 6,
@@ -263,11 +268,9 @@ struct SharedData {
     { "name": "tests", "configurePreset": "host-test" }
   ]
 }
-
 ```
 
 ```cmake
-
 # === cmake/toolchain-arm.cmake ===
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
@@ -283,17 +286,18 @@ set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT} -fno-exceptions -fno-rtti")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-
 ```
+
+The `CMAKE_FIND_ROOT_PATH_MODE_*` settings at the bottom of the toolchain file tell CMake not to look for programs (like `cmake`, `python`) in the sysroot, but to look for libraries and headers only there. Without these, CMake might accidentally find host system headers or tools and try to use them when building for ARM.
 
 ---
 
 ## Notes
 
-- **Bootloader** and **app** are separate ELF files with separate linker scripts and separate flash regions
-- Shared code (HAL, drivers) is compiled for each target but linked separately
-- **Host tests** use mock BSP (no vendor HAL headers); test business logic and algorithms on PC
-- Use `CMakePresets.json` for reproducible builds: `cmake --preset arm-release`
-- The bootloader validates the app image (CRC, magic number) before jumping
-- Shared memory (`.shared_data` section) allows bootloader/app communication (boot reason, update status)
-- Always validate the stack pointer before jumping — an erased flash (0xFFFFFFFF) would crash
+- Bootloader and app are separate ELF files with separate linker scripts and separate flash regions.
+- Shared code (HAL, drivers) is compiled for each target but linked separately.
+- Host tests use mock BSP (no vendor HAL headers); test business logic and algorithms on PC.
+- Use `CMakePresets.json` for reproducible builds: `cmake --preset arm-release`.
+- The bootloader validates the app image (CRC, magic number) before jumping.
+- Shared memory (`.shared_data` section) allows bootloader/app communication (boot reason, update status).
+- Always validate the stack pointer before jumping - an erased flash (0xFFFFFFFF) would crash.

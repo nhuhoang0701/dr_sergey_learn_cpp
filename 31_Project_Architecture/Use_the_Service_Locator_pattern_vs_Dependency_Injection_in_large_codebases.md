@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Service Locator** is a registry where objects look up their dependencies at runtime. **Dependency Injection** pushes dependencies into objects from outside. Both solve the same problem (decoupling from concrete types) but with dramatically different trade-offs. In modern C++, DI is generally preferred, but Service Locator has legitimate uses in plugin systems and legacy code.
+**Service Locator** is a registry where objects reach out and ask for their dependencies at runtime. **Dependency Injection** pushes dependencies into objects from the outside, typically through the constructor. Both patterns solve the same problem - decoupling a class from the concrete types it depends on - but with very different trade-offs.
+
+The reason this topic is worth understanding carefully is that Service Locator looks simpler at first. Any class can call the locator and get what it needs, with no constructor changes required. But this hides dependencies inside implementations instead of declaring them up front, and that hidden-ness makes code genuinely harder to reason about, test, and maintain. DI makes dependencies visible and verifiable at compile time. In modern C++, DI is the default choice - but Service Locator has real legitimate uses and you'll encounter it in existing codebases.
 
 ### Pattern Comparison
 
@@ -27,8 +29,9 @@
 
 **Answer:**
 
-```cpp
+Here's a standard Service Locator implementation. Read through it and then look closely at `PaymentProcessor` - the problem becomes obvious when you try to construct one in a test.
 
+```cpp
 #include <any>
 #include <typeindex>
 #include <unordered_map>
@@ -93,15 +96,17 @@ private:
     ILogger& logger_;
     IPaymentGateway& gateway_;
 };
-
 ```
+
+The difference is stark. With `PaymentProcessor`, to write a test you have to know - by reading the implementation - that it needs `ILogger` and `IPaymentGateway`, then pre-configure the global locator before calling `process()`. Forget to register one of them and you get a runtime exception. With `PaymentProcessorDI`, the constructor tells you everything you need to know at a glance, and the compiler will reject any test that fails to provide the right types.
 
 ### Q2: Show a legitimate use for Service Locator (plugin system)
 
 **Answer:**
 
-```cpp
+So when should you actually use a Service Locator? The genuine use case is dynamic plugin systems. When plugins are loaded at runtime via `dlopen`/`LoadLibrary`, the host application has no idea what plugin types will appear - they're not in the codebase. You can't inject dependencies through constructors because constructors aren't part of a stable binary ABI the way a C function pointer is. Passing a context object that plugins can query is the natural solution here.
 
+```cpp
 // === Plugin system where DI is impractical ===
 // Plugins are loaded at runtime via dlopen/LoadLibrary.
 // We can't inject dependencies through constructors because
@@ -160,15 +165,17 @@ public:
         logger_->log("Plugin running");
     }
 };
-
 ```
+
+Notice this version is scoped (it's a `PluginContext` object, not a global singleton), and the set of services it holds is small and well-defined. That's the key difference from the anti-pattern: this is a bounded locator with a clear purpose, not a global grab-bag for all application dependencies.
 
 ### Q3: Migrate from Service Locator to DI incrementally
 
 **Answer:**
 
-```cpp
+If you're working in a legacy codebase that already uses Service Locator everywhere, a big-bang refactoring is usually too risky. The four-step incremental migration below lets you move toward DI one class at a time, keeping the code working throughout.
 
+```cpp
 // === Step 1: Wrap SL calls in constructors ===
 // Before:
 class OrderService {
@@ -216,16 +223,17 @@ public:
 private:
     IDatabase& db_;
 };
-
 ```
+
+Step 1 is the most important one. By moving all locator calls to the constructor, you at least centralize the dependency acquisition in one place. The class body becomes clean. Steps 2-4 can then proceed at whatever pace the codebase allows.
 
 ---
 
 ## Notes
 
-- **Default to Dependency Injection** for new code — explicit dependencies are easier to reason about
-- Service Locator is an anti-pattern when used as a global registry for all dependencies
-- Service Locator is legitimate for: plugin systems, legacy migration, dynamic service discovery
-- The key smell: if you can't tell what a class needs without reading its implementation, it's a hidden dependency
-- DI + composition root gives compile-time verification of the dependency graph
-- In embedded C++ without dynamic loading, there's almost never a reason for Service Locator
+- **Default to Dependency Injection** for all new code - explicit dependencies in constructors are easier to read, test, and refactor.
+- Service Locator is an anti-pattern when used as a global registry for all application dependencies - it's the "hidden dependency" smell taken to its logical extreme.
+- Service Locator is legitimate for plugin systems, legacy migration paths, and dynamic service discovery where the set of available services isn't known at compile time.
+- The key smell to watch for: if you can't tell what a class needs without reading its implementation body, it has hidden dependencies.
+- DI combined with a composition root (usually `main.cpp`) gives you compile-time verification of the entire dependency graph - if you forget to wire something, you get a compiler error, not a runtime crash.
+- In embedded C++ without dynamic loading, there's almost never a reason for Service Locator - the entire program is known at compile time, so DI works cleanly.

@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Microkernel architecture** keeps a minimal core system that provides essential services (plugin loading, messaging, lifecycle management) while all features are implemented as plugins. Unlike monolithic designs, the core knows nothing about specific functionality — it only manages the plugin infrastructure. This is the architecture behind IDEs, game engines, and audio workstations.
+The **Microkernel architecture** keeps a minimal core system that provides essential services (plugin loading, messaging, lifecycle management) while all features are implemented as plugins. Unlike monolithic designs, the core knows nothing about specific functionality - it only manages the plugin infrastructure. This is the architecture behind IDEs, game engines, and audio workstations.
+
+The key idea is that the kernel is deliberately kept dumb. It does not know how to log, process HTTP requests, or manage users - all it knows is how to load plugins, give them a communication channel, and call them in the right order. Every useful capability comes from a plugin. That means you can add or remove features by shipping a plugin, not by recompiling the core.
 
 ### Microkernel vs Monolithic
 
@@ -26,8 +28,9 @@ The **Microkernel architecture** keeps a minimal core system that provides essen
 
 **Answer:**
 
-```cpp
+The kernel has three components: an `ExtensionRegistry` (named hooks where plugins register capabilities), a `MessageBus` (asynchronous communication between plugins), and the `Kernel` itself (lifecycle management). Notice how thin the kernel is - it contains zero business logic:
 
+```cpp
 #include <memory>
 #include <string>
 #include <vector>
@@ -140,15 +143,17 @@ public:
     virtual void start() = 0;
     virtual void stop() = 0;
 };
-
 ```
+
+The two-phase start (`initialize` then `start`) is intentional. During `initialize`, all plugins register their extension handlers. Only after every plugin has registered does `start` run, so a plugin's startup code can safely call extension points registered by other plugins.
 
 ### Q2: Write feature plugins that communicate via the kernel
 
 **Answer:**
 
-```cpp
+Here is how two concrete plugins - logging and HTTP - are implemented without any reference to each other. The `HttpPlugin` sends log messages via the extension registry rather than calling `LoggingPlugin` directly. If you replace the logging plugin with a different one tomorrow, `HttpPlugin` does not change:
 
+```cpp
 // === LoggingPlugin: provides logging extension point ===
 class LoggingPlugin : public IPlugin {
 public:
@@ -220,15 +225,17 @@ int main() {
     // ... run application ...
     kernel.stop();
 }
-
 ```
+
+The `main` function is the only place that knows which plugins exist. Everything else is mediated through the kernel. This is the composition root pattern - the one place where you wire things together, so the rest of the code stays decoupled.
 
 ### Q3: Handle plugin dependencies and ordered startup
 
 **Answer:**
 
-```cpp
+In real systems, plugins have dependencies. A `HttpPlugin` might need `LoggingPlugin` to be initialized first. You can handle this by declaring dependencies explicitly and sorting the startup order with a topological sort. Kahn's algorithm is a clean fit here:
 
+```cpp
 // === Plugin with declared dependencies ===
 class IPluginEx : public IPlugin {
 public:
@@ -289,17 +296,18 @@ private:
         return result;
     }
 };
-
 ```
+
+The reason this trips people up: Kahn's algorithm processes nodes with zero in-degree first (no unresolved dependencies), then reduces the in-degree of everything that depended on them. If the sorted result is shorter than the plugin list, you have a cycle - which becomes a clean `runtime_error` rather than a mysterious hang.
 
 ---
 
 ## Notes
 
-- The **kernel should contain zero business logic** — only plugin management, messaging, and extension points
-- Extension points are named hooks: plugins register handlers, others invoke them
-- Message bus enables loose coupling: publishers don't know subscribers
-- Plugin ordering via topological sort prevents initialization race conditions
-- For ABI safety with dynamic loading, keep `extern "C"` factory functions and C-compatible data at boundaries
-- Real-world examples: JUCE (audio), Qt (plugins), Unreal Engine (modules)
-- Error in one plugin should not crash the kernel: wrap plugin calls in try/catch
+- The **kernel should contain zero business logic** - only plugin management, messaging, and extension points.
+- Extension points are named hooks: plugins register handlers, and other plugins invoke them by name.
+- The message bus enables loose coupling: publishers do not know who their subscribers are.
+- Plugin ordering via topological sort prevents initialization race conditions when one plugin depends on another.
+- For ABI safety with dynamic loading, keep `extern "C"` factory functions and C-compatible data at the library boundary.
+- Real-world examples: JUCE (audio), Qt (plugins), Unreal Engine (modules).
+- Errors in one plugin should not crash the kernel - wrap plugin calls in `try`/`catch`.

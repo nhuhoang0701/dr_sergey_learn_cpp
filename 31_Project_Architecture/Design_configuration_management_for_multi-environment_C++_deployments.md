@@ -6,9 +6,13 @@
 
 ## Topic Overview
 
-**Configuration management** handles different settings across environments (development, staging, production, embedded targets). C++ applications need to load configuration from files, environment variables, or command-line arguments while keeping defaults safe and overrides explicit. A good config system is type-safe, validates at load time, and supports environment-specific overrides.
+**Configuration management** is how your application adapts to different environments - development on your laptop, a shared staging server, and the live production cluster. Each environment needs different database hosts, log levels, worker counts, and so on. Hardcoding any of those values is a maintenance problem waiting to happen.
+
+A good configuration system does three things: it loads settings from multiple sources in a predictable priority order, it validates values at startup so you fail fast with a clear error rather than mysteriously crashing at runtime, and it exposes a type-safe API so your code never works with raw strings past the configuration layer. The structured-config approach goes one step further by mapping raw key-value pairs into typed C++ structs, which gives you IDE autocomplete and eliminates whole categories of typos.
 
 ### Configuration Sources (Priority Order)
+
+Sources are applied in order from lowest to highest priority, so later sources always override earlier ones. This table summarizes the standard industry convention.
 
 | Source | Priority | Use Case |
 | --- | --- | --- |
@@ -26,8 +30,9 @@
 
 **Answer:**
 
-```cpp
+The `Config` class below follows the layered override pattern precisely. You call `load_defaults()` first to establish safe fallbacks, then load files and environment variables on top. Each later call overwrites any key it finds. The type-safe getters (`get_int`, `get_bool`, `get_string`) parse values at the point of access, and `validate()` enforces business rules before the application starts doing any real work.
 
+```cpp
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -147,15 +152,17 @@ int main(int argc, char* argv[]) {
     auto port = config.get_int("server.port");
     auto workers = config.get_int("server.workers");
 }
-
 ```
+
+The `load_file` function returns silently if the file is missing - that is intentional. Not every environment will have every config file present, and a missing file should just mean "no overrides from this source". A missing required key is a different matter, and `validate()` handles that explicitly.
 
 ### Q2: Environment-specific configuration files
 
 **Answer:**
 
-```cpp
+Here are the four configuration files that match the environment names returned by `get_environment()`. Each one only specifies what is different from the base defaults. The environment is chosen by the `APP_ENV` environment variable.
 
+```cpp
 # === config/base.conf (shared defaults) ===
 server.port=8080
 server.workers=4
@@ -181,11 +188,9 @@ log.level=warn
 db.host=prod-db.internal
 db.name=app_prod
 db.connection_pool=50
-
 ```
 
 ```cpp
-
 // === Environment detection ===
 std::string get_environment() {
     if (const char* env = std::getenv("APP_ENV"))
@@ -196,15 +201,17 @@ std::string get_environment() {
 // Override chain for production:
 // defaults -> base.conf -> production.conf -> APP_SERVER_PORT=9090 -> --server.port=9091
 // Final: port=9091 (CLI wins)
-
 ```
+
+The comment showing the override chain for production is worth reading carefully. You can trace exactly which source wins for any given key, because the priority order is fixed and deterministic.
 
 ### Q3: Structured config with schema validation
 
 **Answer:**
 
-```cpp
+Working directly with string key-value pairs throughout your codebase is fragile - you can misspell a key, get the wrong type, or check for a key that was renamed. Structured config types solve this by mapping the raw config into typed C++ structs as early as possible. From that point on, the rest of the application works with typed fields, not string lookups.
 
+```cpp
 // === Structured config with compile-time schema ===
 struct ServerConfig {
     std::string host = "0.0.0.0";
@@ -261,17 +268,18 @@ struct AppConfig {
             throw std::invalid_argument("Pool size must be positive");
     }
 };
-
 ```
+
+The use of `.transform()` and `.value_or()` on `std::optional` is the modern C++23 way to express "parse this string if it exists, otherwise keep the default". The whole `load()` function is doing one job: translate from the stringly-typed raw config into the type-safe structured form, with no string lookups leaking past this boundary.
 
 ---
 
 ## Notes
 
-- **Priority order** (CLI > env > local file > env file > defaults) is the industry standard
-- Environment variables work well in containers (Docker/Kubernetes)
-- **Never store secrets** in config files — use environment variables or a secrets manager
-- Validate config at startup: fail fast with a clear error rather than crashing at runtime
-- Structured config types (`AppConfig`) give IDE autocomplete and compile-time safety
-- Consider JSON, TOML, or YAML for complex configs (use nlohmann/json, toml++, etc.)
-- For embedded: compile-time `constexpr` config is preferable (zero file I/O overhead)
+- The priority order (CLI > env > local file > env file > defaults) is the industry standard for multi-environment deployments.
+- Environment variables work particularly well in containers, where Docker and Kubernetes inject them without touching the image.
+- Never store secrets in config files - use environment variables or a dedicated secrets manager instead.
+- Validate config at startup and fail fast with a clear error message rather than crashing unexpectedly at runtime.
+- Structured config types like `AppConfig` give you IDE autocomplete and make typos in key names impossible.
+- For complex configurations, JSON, TOML, or YAML are worth considering - use nlohmann/json, toml++, or a YAML library to parse them.
+- For embedded targets, compile-time `constexpr` configuration is usually preferable because it has zero file I/O overhead.

@@ -8,6 +8,8 @@
 
 The **Strangler Fig pattern** incrementally replaces a legacy system by routing new functionality through a modern implementation while keeping the old system running. Named after strangler fig trees that grow around a host tree, it avoids risky "big bang" rewrites. In C++ this applies to migrating from C-style code to modern C++, replacing monoliths with modular architectures, or upgrading from C++98 to C++20.
 
+The reason big bang rewrites fail so often is that you lose the ability to validate your work at every step. You write the new system for months, then flip the switch, and discover thousands of subtle behavioral differences. The Strangler Fig pattern lets you move one feature at a time. The old system keeps running. Every migration step can be independently deployed and rolled back. You never bet the whole business on one release.
+
 ### Migration Strategies Compared
 
 | Strategy | Risk | Duration | Downtime | Legacy Runs? |
@@ -25,8 +27,9 @@ The **Strangler Fig pattern** incrementally replaces a legacy system by routing 
 
 **Answer:**
 
-```cpp
+The facade is the heart of the pattern. All callers use the facade's interface - they never call the legacy or modern code directly. Inside the facade, a set of feature flags controls which path is active for each operation. You migrate one feature at a time by calling `enable_modern`:
 
+```cpp
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -110,15 +113,17 @@ private:
 // Week 3: facade.enable_modern("cancel_order");
 // Week 6: facade.enable_modern("get_order");
 // Week 8: Remove legacy code entirely
-
 ```
+
+The commented timeline at the bottom is not decoration - it is how you should plan and communicate the migration. Each week is an independently deployable change with a clear rollback path.
 
 ### Q2: Implement data migration with dual-write
 
 **Answer:**
 
-```cpp
+Feature routing is only half the problem. You also need the data to follow. Dual-write means every write goes to both systems during a transition period. Initially legacy is the primary (source of truth) and modern is best-effort. Once you have validated the modern store, you flip which one is primary:
 
+```cpp
 // === Dual-write: both systems receive writes during migration ===
 class DualWriteOrderService {
 public:
@@ -207,15 +212,17 @@ public:
                   << " records match\n";
     }
 };
-
 ```
+
+The `MigrationVerifier` is your confidence meter. Running it continuously during the dual-write phase tells you exactly how many records differ between legacy and modern. You do not flip to Phase 2 until that number is consistently zero.
 
 ### Q3: Branch by abstraction for internal module replacement
 
 **Answer:**
 
-```cpp
+When the thing you are replacing is an internal module rather than an external system, branch by abstraction is cleaner than a routing facade. You introduce an interface, wrap the legacy code behind it, build the modern implementation behind the same interface, and then swap them at the factory level. Shadow mode lets you run both side-by-side and compare results before committing:
 
+```cpp
 // === Branch by abstraction: introduce interface, swap implementation ===
 
 // Step 1: Extract interface from legacy code
@@ -272,7 +279,7 @@ public:
     }
 };
 
-// Step 5: Shadow mode — run both, compare results
+// Step 5: Shadow mode - run both, compare results
 class ShadowPaymentProcessor : public IPaymentProcessor {
 public:
     ShadowPaymentProcessor(
@@ -301,17 +308,18 @@ private:
     std::unique_ptr<IPaymentProcessor> primary_;
     std::unique_ptr<IPaymentProcessor> shadow_;
 };
-
 ```
+
+Shadow mode is particularly powerful: the production result always comes from the primary implementation, so customers never see a difference. But the shadow is running in parallel and any divergence gets logged. Once the shadow log is clean over a meaningful sample of real transactions, you know it is safe to make the modern implementation the primary.
 
 ---
 
 ## Notes
 
-- **Never do a big bang rewrite** of a working system — Strangler Fig is always safer
-- The facade is the key abstraction: all consumers use it, unaware of routing
-- **Dual-write** ensures data parity during migration; verify with comparison tools
-- **Shadow mode** runs both implementations side-by-side and compares results before switching
-- Feature flags control the route: percentage rollouts (5% modern → 50% → 100%)
-- Each migration phase should be independently deployable and rollback-safe
-- Keep legacy tests green throughout — they validate that the facade preserves behavior
+- **Never do a big bang rewrite** of a working system - the Strangler Fig pattern is always safer and usually faster overall.
+- The facade is the key abstraction: all consumers use it and are unaware of which implementation is active.
+- **Dual-write** ensures data parity during migration; verify continuously with comparison tools.
+- **Shadow mode** runs both implementations side-by-side and compares results before you commit to the switch.
+- Feature flags control the route: percentage rollouts (5% modern -> 50% -> 100%) let you catch problems early.
+- Each migration phase should be independently deployable and rollback-safe.
+- Keep legacy tests green throughout - they are your behavioral specification for the new implementation.

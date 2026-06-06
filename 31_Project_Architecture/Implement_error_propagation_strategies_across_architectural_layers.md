@@ -8,6 +8,8 @@
 
 **Error propagation** is how errors travel from where they occur (infrastructure) to where they're handled (application/UI layer). Each layer should translate errors into its own vocabulary without leaking implementation details. C++ offers exceptions, error codes, `std::expected` (C++23), and result types for propagation.
 
+Here's the mental model: imagine a three-layer cake. The bottom layer is infrastructure - databases, network calls, file I/O. The middle layer is domain logic - business rules, entities, use cases. The top layer is the application or API - what the user or caller actually sees. An error at the bottom (say, a database timeout) should not propagate as "database timeout" all the way to the user. The domain layer translates it to "User not found" or "Service temporarily unavailable", and the application layer translates that to an HTTP status code. Each layer speaks its own language.
+
 ### Error Propagation Strategies
 
 | Strategy | Performance | Ergonomics | Cross-boundary | Use Case |
@@ -23,10 +25,13 @@
 
 ### Q1: Design layered error types with translation
 
+Each layer of your architecture owns its own error type, and translation functions convert between them at the layer boundaries. The infrastructure layer has `DbError` and `NetworkError` - concrete, technical, specific. The domain layer has `DomainError` - abstract, business-oriented, with no mention of databases or TCP. The application layer has `AppError` - user-facing, with HTTP-style codes.
+
+Notice the translation functions: `translate(DbError, context)` maps every possible database error to the closest matching domain concept. `DbError::ConnectionFailed`, `DbError::Timeout`, and `DbError::QueryFailed` all become `DomainError::Kind::InternalError` because from the domain's perspective, "the database isn't working" is one problem, regardless of the underlying reason.
+
 **Answer:**
 
 ```cpp
-
 #include <expected>
 #include <string>
 #include <variant>
@@ -104,15 +109,19 @@ AppError translate(const DomainError& err) {
     }
     return {500, "Unknown error", ""};
 }
-
 ```
 
+The `AppError::detail` field carries the original error message for developers (logs, debug tooling) while `message` is safe to show to users. This separation is important: you don't want "Database connection refused: host=db01.internal:5432" appearing in a production user interface.
+
 ### Q2: Use std::expected for clean error propagation
+
+`std::expected<T, E>` (C++23) is a value type that holds either a `T` (success) or an `E` (error). It's like a `std::optional<T>` that also carries the reason for absence. The nice part is that the happy path reads exactly like normal code: if everything succeeds, you just dereference the result with `*result` or `result.value()`. Error handling is explicit but not intrusive.
+
+Here you can see all three layers in action. `UserRepository` returns `std::expected<User, DbError>`. `UserService` translates that to `std::expected<User, DomainError>`. `UserHandler` translates to `AppError`. Each layer only deals with its own error vocabulary.
 
 **Answer:**
 
 ```cpp
-
 // === Repository (infrastructure) ===
 class UserRepository {
 public:
@@ -182,15 +191,19 @@ public:
 private:
     UserService service_;
 };
-
 ```
 
+The pattern `if (!result) return std::unexpected(translate(result.error(), ...))` is the idiomatic way to propagate errors with translation. It's more explicit than exception handling but less verbose than traditional error code chains with manual `if (err != OK) return err;` checks at every step.
+
 ### Q3: Implement a Result type with monadic chaining (pre-C++23)
+
+If you're on C++17 or earlier, `std::expected` isn't available. This `Result<T, E>` class is a drop-in replacement built on `std::variant<T, E>`. The really useful part is the monadic interface: `map` transforms the success value, `and_then` chains operations that themselves return `Result`, and `map_error` translates the error type. These let you express a pipeline of operations as a chain of method calls instead of a series of nested `if` checks.
+
+The reason this style trips people up at first: you have to internalize that `and_then` applies its function *only if the result is currently ok*, and passes the error through unchanged if it's already in the error state. Once that clicks, chains like the one in the usage example become easy to read.
 
 **Answer:**
 
 ```cpp
-
 // === Result<T, E> for pre-C++23 ===
 template<typename T, typename E>
 class Result {
@@ -249,17 +262,18 @@ auto process_order(int order_id) {
             return serialize_invoice(inv);
         });
 }
-
 ```
+
+Read that chain left to right: find the order (might fail with `DbError`), translate the error type (now we have `DomainError`), calculate the invoice (might also fail), serialize it. If any step returns an error, all subsequent steps are skipped and the error passes through to the end. The final result is `Result<string, DomainError>` regardless of which step succeeded or failed.
 
 ---
 
 ## Notes
 
-- **Never leak infrastructure errors to the domain**: translate `DbError` -> `DomainError` at the repository boundary
-- **Never leak domain details to users**: translate `DomainError` -> `AppError` at the handler boundary
-- `std::expected<T,E>` (C++23) is the standard approach — use it when available
-- For pre-C++23, use a custom `Result<T,E>` or `tl::expected` library
-- **Exceptions vs expected**: exceptions for truly exceptional cases (out of memory); `expected` for business errors (not found, validation)
-- Monadic chaining (`and_then`, `map`) avoids nested `if` checks
-- Log the original error at the translation boundary for debugging; return a sanitized version upstream
+- **Never leak infrastructure errors to the domain**: translate `DbError` -> `DomainError` at the repository boundary.
+- **Never leak domain details to users**: translate `DomainError` -> `AppError` at the handler boundary.
+- `std::expected<T,E>` (C++23) is the standard approach - use it when available.
+- For pre-C++23, use a custom `Result<T,E>` or `tl::expected` library.
+- **Exceptions vs expected**: exceptions for truly exceptional cases (out of memory); `expected` for business errors (not found, validation).
+- Monadic chaining (`and_then`, `map`) avoids nested `if` checks.
+- Log the original error at the translation boundary for debugging; return a sanitized version upstream.

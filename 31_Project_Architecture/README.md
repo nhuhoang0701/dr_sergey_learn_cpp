@@ -51,13 +51,13 @@ Software architecture patterns, project structure, build organization, module de
 
 ## Notes
 
-- Separate interface from implementation — use abstract classes, Pimpl, or modules
-- Layer your architecture: platform → core → services → application → UI
-- Keep compile-time dependencies minimal — forward-declare types in headers when possible
-- Use dependency injection to make components testable and decoupled
-- The SOLID principles guide class design; GRASP patterns guide responsibility assignment
-- Monorepo vs multirepo is a build/CI decision — use Conan/vcpkg for library management
-- Define clear module boundaries — each library should have a single responsibility
-- Document architectural decisions (ADRs) — future developers need to understand the why
-- Use static libraries for internal code and shared libraries for plugin architectures
-- Configuration should be externalized (files, environment) — not hardcoded in source
+- Separate interface from implementation - use abstract classes, Pimpl, or modules.
+- Layer your architecture: platform -> core -> services -> application -> UI.
+- Keep compile-time dependencies minimal - forward-declare types in headers when possible.
+- Use dependency injection to make components testable and decoupled.
+- The SOLID principles guide class design; GRASP patterns guide responsibility assignment.
+- Monorepo vs multirepo is a build/CI decision - use Conan/vcpkg for library management.
+- Define clear module boundaries - each library should have a single responsibility.
+- Document architectural decisions (ADRs) - future developers need to understand the why.
+- Use static libraries for internal code and shared libraries for plugin architectures.
+- Configuration should be externalized (files, environment) - not hardcoded in source.

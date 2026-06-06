@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**Feature flags** enable or disable functionality at runtime without redeployment. In C++ this supports A/B testing, gradual rollouts, kill switches for problematic features, and trunk-based development where incomplete features are hidden behind flags. Feature flags can be simple booleans, percentage-based rollouts, or user-segment targeted.
+**Feature flags** let you enable or disable functionality at runtime without pushing a new build. That sounds simple, but it unlocks some genuinely powerful workflows: A/B testing, gradual rollouts to a small percentage of users, kill switches you can flip in an emergency, and trunk-based development where half-finished features live behind a flag so they never accidentally reach users.
+
+Feature flags are not just booleans - they can be numeric parameters, string values, or rollout percentages. The table below shows the four main archetypes you will encounter:
 
 ### Feature Flag Types
 
@@ -17,16 +19,19 @@
 | **Ops flag** | Kill switch | Long | `enable_caching` |
 | **Permission flag** | User access control | Permanent | `premium_export` |
 
+The lifetime column matters more than it looks. Short-lived flags should be removed after the rollout completes - leaving them around forever is how you get a codebase full of dead branches nobody understands. We will come back to this in Q3 with a cleanup tracker.
+
 ---
 
 ## Self-Assessment
 
 ### Q1: Implement a feature flag system
 
+The core of any flag system is a thread-safe store that maps names to values. We use `std::variant` so a single store can hold booleans, integers, doubles, or strings. The struct also carries metadata - owner and description - so you can track who is responsible for each flag.
+
 **Answer:**
 
 ```cpp
-
 #include <string>
 #include <unordered_map>
 #include <shared_mutex>
@@ -101,15 +106,17 @@ FeatureFlags& feature_flags() {
     static FeatureFlags instance;
     return instance;
 }
-
 ```
 
+Notice that `std::shared_mutex` is used here instead of a plain `std::mutex`. That choice matters: flag checks happen constantly on every hot code path, but flag updates are rare. A shared mutex lets many threads read simultaneously and only blocks everyone for the infrequent write. That is the right trade-off when reads vastly outnumber writes.
+
 ### Q2: Use feature flags in application code cleanly
+
+The registration step at startup is important. Defining flags with defaults and metadata means the system always has a sane value even before a remote config server responds - and you get the admin dashboard for free.
 
 **Answer:**
 
 ```cpp
-
 // === Registration at startup ===
 void register_flags() {
     auto& ff = feature_flags();
@@ -157,15 +164,17 @@ public:
         return Response::error("Max retries exceeded");
     }
 };
-
 ```
 
+The pattern here is intentional: business logic never hard-codes limits or paths directly. If you need to change retry behavior in a production incident, you update the flag value via your config server and the change takes effect without a rebuild. The `get<int>` call with a fallback also means the feature keeps working even if the flag name is mistyped or missing.
+
 ### Q3: Implement percentage-based rollout and cleanup tracking
+
+Percentage rollouts let you gradually expose a feature to more and more users. The deterministic hashing approach is the important one to understand: by hashing the flag name with the user ID, the same user always ends up in the same bucket. That means a user does not randomly switch between the old and new experience on every page load - they get a consistent treatment throughout the experiment.
 
 **Answer:**
 
 ```cpp
-
 #include <random>
 #include <chrono>
 
@@ -237,17 +246,18 @@ public:
 private:
     std::unordered_map<std::string, StaleFlag> flags_;
 };
-
 ```
+
+The `FlagCleanupTracker` is easy to overlook, but in practice it is one of the most valuable pieces. A flag that was supposed to last two weeks can silently live in a codebase for two years if nobody tracks it. Running `report_stale()` in a CI job or on server startup creates a natural pressure to clean up dead flags before they accumulate.
 
 ---
 
 ## Notes
 
-- **Feature flags are technical debt** — track them and clean up after rollout completes
-- Use `std::shared_mutex` for read-heavy workloads (many flag checks, rare updates)
-- Percentage rollout with **deterministic hashing** ensures the same user always sees the same behavior
-- Keep flag checks cheap: `is_enabled()` should be O(1) with no I/O
-- For remote flag updates, poll a config server periodically (not on every check)
-- Compile-time flags (`if constexpr`) are preferred when you don't need runtime switching
-- Log which path was taken for debugging: `LOG_INFO("Using checkout v" + std::to_string(version))`
+- Feature flags are technical debt - track them and clean up after rollout completes.
+- Use `std::shared_mutex` for read-heavy workloads (many flag checks, rare updates).
+- Percentage rollout with deterministic hashing ensures the same user always sees the same behavior.
+- Keep flag checks cheap: `is_enabled()` should be O(1) with no I/O.
+- For remote flag updates, poll a config server periodically (not on every check).
+- Compile-time flags (`if constexpr`) are preferred when you don't need runtime switching.
+- Log which path was taken for debugging: `LOG_INFO("Using checkout v" + std::to_string(version))`.

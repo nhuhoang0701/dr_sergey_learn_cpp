@@ -6,7 +6,11 @@
 
 ## Topic Overview
 
-**ECS** separates identity (entities), data (components), and behavior (systems). Entities are just IDs. Components are plain data structs stored contiguously in memory. Systems iterate over components matching specific archetypes. This data-oriented design maximizes cache efficiency and enables massive parallelism, making it the dominant pattern in game engines and simulations.
+**ECS** completely separates three concerns that OOP typically mixes together: identity (entities), data (components), and behavior (systems). An entity is nothing but an integer ID. A component is a plain data struct with no methods. A system is a function that iterates over every entity that has a particular combination of components and does something with the data.
+
+The reason this matters for games and simulations is performance. In a traditional OOP game engine, a `GameObject` might be a large heap-allocated object with dozens of fields. The update loop jumps around memory following pointers to scattered objects. CPUs hate that pattern - they load a cache line, use a few bytes, then have to load another one from somewhere completely different. ECS stores all `Position` components in one contiguous array, all `Velocity` components in another, and so on. The movement system walks through two flat arrays in sequence, and the CPU prefetcher is happy. That is the data-oriented design payoff.
+
+Composition is the other big win. In OOP you might have a deep inheritance hierarchy: `MovingObject` extends `GameObject`, `Enemy` extends `MovingObject`, `FlyingEnemy` extends `Enemy`. Adding a "flying" ability to a `Player` gets messy. In ECS, you just attach an `AIController` component to enemies and leave it off the player. Systems that process `AIController` automatically skip the player. There is no hierarchy to untangle.
 
 ### ECS vs Traditional OOP
 
@@ -25,10 +29,11 @@
 
 ### Q1: Implement a basic ECS framework
 
+The framework has three moving parts. The `ComponentPool<T>` stores all components of one type in a contiguous vector and maintains an index from entity ID to position in that vector. The `World` owns all pools and all entity-to-component bitmasks. The bitmask is how `each<Ts...>` efficiently finds entities that have all the required components.
+
 **Answer:**
 
 ```cpp
-
 #include <cstdint>
 #include <vector>
 #include <unordered_map>
@@ -186,15 +191,17 @@ private:
     std::unordered_map<Entity, ComponentMask> masks_;
     std::unordered_map<uint32_t, std::unique_ptr<IComponentPool>> pools_;
 };
-
 ```
 
+The swap-with-last trick in `ComponentPool::remove` is worth pausing on. Erasing from the middle of a vector is O(n) because it shifts everything down. Swapping the target element with the last element and then popping the last is O(1). The trade-off is that the order of components in the array changes, which is fine for ECS because systems iterate all of them regardless of order.
+
 ### Q2: Define components and systems
+
+Components are pure data - no methods, no inheritance, no virtual functions. Systems are plain functions that ask the world to call them for every entity matching a component signature. The separation is strict: the data owns nothing, and the logic knows nothing about individual entities beyond what is in its component slots.
 
 **Answer:**
 
 ```cpp
-
 // === Components: plain data, no behavior ===
 struct Position { float x, y, z; };
 struct Velocity { float dx, dy, dz; };
@@ -261,15 +268,17 @@ void game_loop(World& world, Renderer& renderer) {
         render_system(world, renderer);
     }
 }
-
 ```
 
+Each system only sees the components it asks for. The movement system has no idea that some entities also have `AIController` or `Health`. The render system does not care about physics. This makes adding a new system trivially safe - it cannot accidentally affect code in other systems unless they share a component.
+
 ### Q3: Creating entities by composing components
+
+Entity creation in ECS is just a sequence of component additions. There is no class to inherit from, no constructor hierarchy to satisfy. A player and an enemy differ only in which components they have. A static tree has even fewer components than either one.
 
 **Answer:**
 
 ```cpp
-
 // === Entity creation through composition (no inheritance!) ===
 
 Entity create_player(World& world, float x, float y) {
@@ -279,7 +288,7 @@ Entity create_player(World& world, float x, float y) {
     world.add<Health>(e, {100, 100});
     world.add<Sprite>(e, {TEXTURE_PLAYER, 32, 32});
     world.add<Collider>(e, {16.0f});
-    // No AIController — player is human-controlled
+    // No AIController - player is human-controlled
     return e;
 }
 
@@ -301,7 +310,7 @@ Entity create_projectile(World& world, float x, float y,
     world.add<Velocity>(e, {dx, dy, 0});
     world.add<Sprite>(e, {TEXTURE_BULLET, 8, 8});
     world.add<Collider>(e, {4.0f});
-    // No Health — projectiles are destroyed on collision
+    // No Health - projectiles are destroyed on collision
     return e;
 }
 
@@ -316,17 +325,18 @@ Entity create_tree(World& world, float x, float y) {
 // The movement_system automatically skips trees (no Velocity component)
 // The AI system automatically skips players (no AIController component)
 // Composition > inheritance!
-
 ```
+
+That last comment is the payoff of the whole section. The movement system skips trees for free, the AI system skips players for free. In an OOP hierarchy you would need virtual functions returning false, or abstract methods, or null checks. Here, absence of the component IS the answer, and no explicit code is needed to express it.
 
 ---
 
 ## Notes
 
-- **Components are data only** — no methods, no virtual functions, no inheritance
-- **Systems are functions** — they iterate over matching component sets
-- Contiguous component storage = excellent cache performance (data-oriented design)
-- Popular C++ ECS libraries: **EnTT**, **flecs**, **entityx**
-- Archetype-based ECS (like flecs) stores entities with the same component set together for even better cache performance
-- Systems with disjoint component access can run in parallel (movement || render)
-- ECS scales to millions of entities; OOP inheritance hierarchies don't
+- Components are data only - no methods, no virtual functions, no inheritance.
+- Systems are functions - they iterate over matching component sets.
+- Contiguous component storage = excellent cache performance (data-oriented design).
+- Popular C++ ECS libraries: **EnTT**, **flecs**, **entityx**.
+- Archetype-based ECS (like flecs) stores entities with the same component set together for even better cache performance.
+- Systems with disjoint component access can run in parallel (movement || render).
+- ECS scales to millions of entities; OOP inheritance hierarchies don't.

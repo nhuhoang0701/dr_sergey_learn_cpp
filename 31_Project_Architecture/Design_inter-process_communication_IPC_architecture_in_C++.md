@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-**IPC** enables separate processes to exchange data and coordinate. C++ applications use IPC for multi-process architectures (e.g., Chrome's process-per-tab), daemon/client communication, and distributed systems. The choice of IPC mechanism depends on latency requirements, data volume, and platform constraints.
+**IPC** lets separate processes exchange data and coordinate. You reach for it when you need process isolation - a crash in one process should not take down another - or when you need to spread work across processes with different privilege levels. Chrome's process-per-tab model, daemon/client communication, and any distributed system all rely on some form of IPC.
+
+The choice of mechanism depends on three factors: how low your latency requirement is, how much data you need to move, and which platforms you need to support. Shared memory is the fastest option but requires explicit synchronization. Unix domain sockets are slower but much simpler to use correctly. Named pipes are the most portable. Understanding those tradeoffs is what lets you pick the right tool for each situation.
 
 ### IPC Mechanisms Comparison
 
@@ -28,8 +30,9 @@
 
 **Answer:**
 
-```cpp
+Shared memory is the fastest IPC mechanism because there is no kernel copy - both processes map the same physical pages. The challenge is synchronization: you need to ensure the reader does not see a partial write. The ring buffer below uses a lock-free SPSC (single-producer, single-consumer) design with carefully chosen memory orderings. The `write_pos` and `read_pos` atomics are cache-line aligned to prevent false sharing.
 
+```cpp
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -108,15 +111,17 @@ void consumer() {
     close(fd);
     shm_unlink("/my_ipc");
 }
-
 ```
+
+The placement new (`new (buf) SharedBuffer{}`) on the producer side is important. The shared memory region is raw memory - there are no C++ objects in it until you construct one. Without placement new, the atomics in `SharedBuffer` would have indeterminate initial values, which is undefined behavior. The consumer does not call placement new because the producer already initialized the object.
 
 ### Q2: Implement Unix domain socket IPC with message framing
 
 **Answer:**
 
-```cpp
+Sockets are stream-based, which means `recv()` can return fewer bytes than you sent - it does not preserve message boundaries. You must add your own framing. The standard approach is a length prefix: send a 4-byte integer giving the payload size, then the payload. The receiver reads the length first, then reads exactly that many bytes.
 
+```cpp
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -192,15 +197,17 @@ void client() {
     std::cout << "Reply: " << reply << "\n";
     close(fd);
 }
-
 ```
+
+The `unlink(addr.sun_path)` before `bind()` removes any leftover socket file from a previous run. Without that, `bind()` will fail with "address already in use" if the process crashed without cleaning up. The `unlink` at the end of `server()` is the clean shutdown path.
 
 ### Q3: Design a portable IPC abstraction layer
 
 **Answer:**
 
-```cpp
+Different platforms and performance requirements call for different transports, but you do not want your application code to care about which one it is using. The transport abstraction below gives you a single interface for sending and receiving raw bytes, and a `IPCChannel` layer on top that handles message framing. Swapping from Unix sockets to shared memory is then a matter of providing a different `ITransport` implementation.
 
+```cpp
 // === IPC Transport abstraction ===
 class ITransport {
 public:
@@ -251,17 +258,18 @@ std::unique_ptr<ITransport> create_transport(const std::string& type) {
     if (type == "shm")  return std::make_unique<SharedMemoryTransport>();
     throw std::runtime_error("Unknown transport: " + type);
 }
-
 ```
+
+The factory function lets you select the transport from configuration at startup. In production on Linux you might use `"unix"` for local IPC and `"tcp"` for cross-machine communication. In tests you might use a `"shm"` transport backed by in-memory buffers that do not involve the kernel at all. The `IPCChannel` code and all the code above it never changes.
 
 ---
 
 ## Notes
 
-- **Shared memory** = fastest but requires careful synchronization (atomics or semaphores)
-- **Unix domain sockets** = good balance of speed, reliability, and ease of use on Linux/macOS
-- **Named pipes** = simplest cross-platform IPC for simple workflows
-- Always use **message framing** (length prefix) over stream sockets — `recv()` doesn't guarantee message boundaries
-- Clean up IPC resources (`shm_unlink`, `unlink` socket files) on shutdown
-- For structured data across IPC, use protobuf/flatbuffers — not raw struct memcpy (alignment, endianness)
-- Consider `eventfd`/`signalfd` on Linux for lightweight IPC notification without data
+- **Shared memory** is the fastest option but requires careful synchronization using atomics or semaphores.
+- **Unix domain sockets** give a good balance of speed, reliability, and ease of use on Linux and macOS.
+- **Named pipes** are the simplest cross-platform IPC choice for straightforward unidirectional workflows.
+- Always use **message framing** with a length prefix over stream sockets - `recv()` does not guarantee that a single call returns a complete message.
+- Clean up IPC resources at shutdown: call `shm_unlink` for shared memory and `unlink` for socket files.
+- For structured data passed over IPC, use protobuf or FlatBuffers rather than raw struct `memcpy` - alignment and endianness are platform-dependent.
+- On Linux, `eventfd` and `signalfd` are useful for lightweight IPC notification when you need to signal readiness without transferring data.

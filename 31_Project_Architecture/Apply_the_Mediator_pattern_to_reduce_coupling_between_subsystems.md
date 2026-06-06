@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-The **Mediator pattern** centralizes communication between subsystems so they don't reference each other directly. Instead of N×N direct dependencies, each subsystem communicates through a mediator, resulting in N×1 dependencies. This is essential in large C++ projects where subsystems (audio, physics, UI, networking) must interact without tight coupling.
+The **Mediator pattern** centralizes communication between subsystems so they do not reference each other directly. Instead of N×N direct dependencies, each subsystem communicates through a mediator, resulting in N×1 dependencies. This is essential in large C++ projects where subsystems (audio, physics, UI, networking) must interact without tight coupling.
+
+The mental model that helps here: imagine a busy airport. Without a control tower, every pilot would have to talk directly to every other pilot before making a move. With a control tower (the mediator), each pilot only needs one communication channel. The control tower knows about all the planes; the planes know only about the control tower.
 
 ### Direct Coupling vs Mediator
 
@@ -26,8 +28,9 @@ The **Mediator pattern** centralizes communication between subsystems so they do
 
 **Answer:**
 
-```cpp
+The approach here is a type-safe event bus. Each subsystem subscribes to the event types it cares about and publishes the events it produces. Critically, no subsystem holds a reference to any other - they only hold a reference to the mediator:
 
+```cpp
 #include <string>
 #include <unordered_map>
 #include <functional>
@@ -141,15 +144,17 @@ public:
 private:
     Mediator& mediator_;
 };
-
 ```
+
+Notice that `GameLogic` has no idea that `AudioSystem` or `UISystem` exist. It just fires events. The mediator takes care of delivery. You can add a new `ReplaySystem` that records `PlayerDiedEvent` without touching `GameLogic` at all - just subscribe it to the mediator.
 
 ### Q2: Priority-based and filtered event dispatch
 
 **Answer:**
 
-```cpp
+A basic event bus dispatches to all subscribers in registration order. In production systems you often need more control: a security audit handler should run before any business handler, and a VIP notification handler should only fire for certain customers. Here is how to add priority and filtering without breaking the subscriber interface:
 
+```cpp
 // === Advanced mediator with priority and filtering ===
 class PriorityMediator {
 public:
@@ -212,15 +217,17 @@ mediator.subscribe<OrderEvent>(
     /*priority=*/0,
     [](const OrderEvent& e) { return e.customer_tier == "VIP"; }
 );
-
 ```
+
+The priority sort happens at subscription time, so dispatch is just a sequential loop over already-sorted handlers - no overhead per publish call.
 
 ### Q3: Request/response mediator for synchronous operations
 
 **Answer:**
 
-```cpp
+The event bus shown above is fire-and-forget. Sometimes you need a result back - a query, not a notification. The request/response mediator handles exactly that pattern. It is the C++ equivalent of MediatR in the .NET world:
 
+```cpp
 // === Request/Response mediator (like MediatR in .NET) ===
 template<typename TResponse>
 struct IRequest {
@@ -281,16 +288,17 @@ void controller(RequestMediator& mediator) {
     auto user = mediator.send(GetUserRequest{42});
     auto order_id = mediator.send(CreateOrderRequest{42, items});
 }
-
 ```
+
+Each request type carries its response type as an associated typedef. The mediator uses that to cast the return value correctly. The controller never directly references a repository - it only talks to the mediator, keeping its dependencies minimal and testable.
 
 ---
 
 ## Notes
 
-- Mediator eliminates N×N coupling; each subsystem depends only on the mediator + event types
-- The event types (DTOs) act as the **contract** between subsystems
-- Watch for the mediator becoming a "god object" — split into domain-specific mediators if it grows
-- For async systems, the mediator can queue events and dispatch on dedicated threads
-- Testing: subscribe a test handler to verify events are published correctly
-- In-process mediator is synchronous by default; wrap handlers in `std::async` for async dispatch
+- Mediator eliminates N×N coupling; each subsystem depends only on the mediator and the event type definitions.
+- The event types (DTOs) act as the **contract** between subsystems - changing them is the only way to break things.
+- Watch for the mediator becoming a "god object" - if it grows unwieldy, split it into domain-specific mediators.
+- For async systems, the mediator can queue events and dispatch on dedicated threads.
+- Testing is straightforward: subscribe a test handler to the mediator and verify that the expected events are published.
+- An in-process mediator is synchronous by default; wrap handlers in `std::async` for async dispatch if you need it.

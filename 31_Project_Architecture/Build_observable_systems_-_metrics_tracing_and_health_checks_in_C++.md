@@ -8,6 +8,8 @@
 
 **Observability** is the ability to understand a system's internal state from its external outputs. The three pillars are **metrics** (numeric measurements over time), **tracing** (request flow through components), and **logs** (discrete events). **Health checks** report component readiness. Together they enable proactive monitoring, debugging production issues, and capacity planning.
 
+The intuition behind why you need all three: metrics tell you *something is wrong* ("error rate spiked at 14:32"), tracing tells you *where it is wrong* ("the payment service is the bottleneck"), and logs tell you *what exactly happened* ("transaction id X failed because of Y"). Each pillar answers a different question, and you need all of them to be effective.
+
 ### Three Pillars of Observability
 
 | Pillar | Answers | Example | Format |
@@ -25,8 +27,9 @@
 
 **Answer:**
 
-```cpp
+A health check system has three parts: a result type (healthy/degraded/unhealthy), individual check functions that test specific dependencies, and an aggregator that runs all checks and rolls up an overall status. The JSON output is what Kubernetes and load balancers will consume:
 
+```cpp
 #include <string>
 #include <vector>
 #include <functional>
@@ -150,15 +153,17 @@ void setup_health(HealthChecker& hc, Database& db, Cache& cache) {
 // Expose via HTTP:
 // GET /health -> health_checker.check_all().to_json()
 // HTTP 200 = healthy, 503 = unhealthy
-
 ```
+
+The `Degraded` status is the interesting middle ground. A degraded service is still working but something is wrong (cache is down, disk is getting full). Load balancers can still route traffic to it, but you know to investigate. `Unhealthy` means stop routing traffic immediately.
 
 ### Q2: Build an integrated observability facade
 
 **Answer:**
 
-```cpp
+Rather than scattering metric increments and log calls throughout your codebase, a unified `Observability` facade gives you one object to pass around. It automatically attaches the current trace context to log messages, which is what lets you correlate a log entry to the exact distributed trace that generated it:
 
+```cpp
 // === Unified observability interface ===
 class Observability {
 public:
@@ -234,15 +239,17 @@ void handle(Observability& obs, const Request& req) {
         std::chrono::steady_clock::now() - start).count();
     obs.histogram_observe("request_duration_ms", ms);
 }
-
 ```
+
+The histogram bucket sizes (1, 5, 10, 25, ... ms) are chosen to align with common SLA thresholds. When you query P99 latency in Grafana, those buckets determine resolution. Plan them up front.
 
 ### Q3: Kubernetes-ready liveness and readiness probes
 
 **Answer:**
 
-```cpp
+Kubernetes uses three distinct probe types, and understanding the difference matters: a liveness failure causes a pod restart; a readiness failure removes the pod from the load balancer but does not restart it; a startup failure prevents liveness/readiness checks from running until startup completes. Here is how to implement all three:
 
+```cpp
 // === Probe types for container orchestration ===
 class ProbeManager {
 public:
@@ -295,17 +302,18 @@ private:
     std::atomic<bool> deadlocked_{false};
     std::atomic<bool> fatal_error_{false};
 };
-
 ```
+
+The `atomic<bool>` flags are important here because subsystem threads will be calling `set_db_connected` and `set_cache_connected` concurrently with Kubernetes polling the `/health/ready` endpoint. The atomics make those concurrent reads and writes safe without needing a mutex on the hot path.
 
 ---
 
 ## Notes
 
-- **Metrics are cheap** (atomic increments); use them liberally for counters, gauges, histograms
-- **Trace IDs in logs** correlate log entries with distributed traces — essential for debugging
-- Health checks must be **fast** (<1s): don't run expensive queries in health endpoints
-- Kubernetes probes: liveness (restart if dead), readiness (stop traffic if unready), startup (grace period)
-- Use spdlog or similar for structured logging; opentelemetry-cpp for traces/metrics
-- Export metrics in Prometheus exposition format for Grafana dashboards
-- **ScopedTimer** + histogram is the easiest way to instrument latency everywhere
+- **Metrics are cheap** (atomic increments); use them liberally for counters, gauges, and histograms.
+- **Trace IDs in logs** correlate log entries with distributed traces - this is essential for debugging production issues in microservices.
+- Health checks must be **fast** (under 1 second): do not run expensive queries in health endpoints.
+- Kubernetes probes: liveness (restart if dead), readiness (stop traffic if unready), startup (grace period for slow boot).
+- Use spdlog or similar for structured logging; opentelemetry-cpp for traces and metrics.
+- Export metrics in Prometheus exposition format for Grafana dashboards.
+- A **ScopedTimer** combined with a histogram is the easiest way to instrument latency everywhere in your codebase.
