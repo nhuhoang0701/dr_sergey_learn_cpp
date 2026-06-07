@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-AI assistants serve as valuable **design discussion partners** for C++ architecture. They can evaluate multiple design options, analyze trade-offs (performance vs. maintainability, simplicity vs. flexibility), suggest patterns, and identify potential issues. While AI cannot replace experienced architects, it accelerates the exploration phase and helps surface considerations you might miss.
+Good architecture decisions are hard because you're making bets about future requirements, performance characteristics, and team capabilities - all under time pressure. AI assistants serve as valuable **design discussion partners** for C++ architecture. They can evaluate multiple design options, analyze trade-offs (performance vs. maintainability, simplicity vs. flexibility), suggest patterns, and identify potential issues. While AI cannot replace experienced architects, it accelerates the exploration phase and helps surface considerations you might miss. Think of it as a knowledgeable collaborator who has read a lot of papers and textbooks but doesn't know your specific codebase - good for generating options, weak at making context-dependent final calls.
 
 ### AI Architecture Assistance Areas
+
+The key column here is "Best Prompt Strategy" - architecture discussions go badly when the prompt is vague. Concrete constraints (numbers, deadlines, platform details) produce much more useful responses than abstract descriptions.
 
 | Design Activity | AI Strength | Best Prompt Strategy |
 | --- | --- | --- |
@@ -28,8 +30,9 @@ AI assistants serve as valuable **design discussion partners** for C++ architect
 
 **Answer:**
 
-```cpp
+The plugin system prompt below is a good example of what makes architecture prompts work: it specifies four concrete options to compare, and it lists the exact dimensions to analyze (performance overhead, crash isolation, hot-reload feasibility, complexity, cross-platform). Without those specifics, you'd get a generic overview of each pattern rather than a decision-relevant comparison.
 
+```cpp
 === PROMPT ===
 
 "I'm designing a plugin system for a C++ application.
@@ -79,7 +82,7 @@ Option 3: gRPC out-of-process
 + Isolation: full process isolation
 + Cross-platform: excellent (gRPC handles it)
 + Hot-reload: restart plugin process
-- Performance: serialization overhead (~10-50μs per call)
+- Performance: serialization overhead (~10-50us per call)
 - Dependency: heavy (gRPC + protobuf)
 
 Complexity: Medium-High
@@ -98,11 +101,11 @@ RECOMMENDATION for your requirements:
 Option 1 + watchdog for 100K events/sec with partial
 isolation. Full isolation: Option 2 with lock-free
 shared memory queues."
-
 ```
 
-```cpp
+Based on the recommendation, the AI might also sketch out what a hybrid approach looks like in code. This is the implementation that threads the needle between performance (direct function calls via C ABI) and operability (a file-watching reload mechanism).
 
+```cpp
 // The AI might suggest a hybrid approach:
 
 // Plugin interface (C ABI for dlopen compatibility)
@@ -140,15 +143,17 @@ public:
         }
     }
 };
-
 ```
+
+The `reload_if_changed` pattern - check modification time, drain the pipeline, swap the handle - is a common idiom for hot-reload implementations. It's simple enough to reason about and fast enough for most applications.
 
 ### Q2: Trade-off analysis for data structure choices
 
 **Answer:**
 
-```cpp
+Data structure selection is an area where AI is particularly reliable, because the analysis is relatively mechanical: given the access pattern, what are the algorithmic complexities and cache implications? This prompt gives AI exactly the information it needs.
 
+```cpp
 === PROMPT ===
 
 "I need a concurrent data structure for a real-time trading
@@ -158,7 +163,7 @@ system. Requirements:
 - Single consumer thread processes in price-priority order
 - Need fast cancel-by-ID (latency-critical)
 - Memory: up to 1M live orders
-- Latency budget: <1μs for insert, <500ns for cancel
+- Latency budget: <1us for insert, <500ns for cancel
 
 Compare:
 
@@ -170,11 +175,11 @@ Compare:
 
 Analyze: insert/cancel/top complexity, cache behavior,
 and implementation complexity."
-
 ```
 
-```cpp
+The AI's recommendation - the Limit Order Book style - is based on the observation that P (number of distinct price levels) is typically much smaller than N (number of orders), so O(log P) operations outperform O(log N) in practice. The ID-to-iterator index is what makes O(1) cancel possible.
 
+```cpp
 // AI's likely recommendation: Option 5 (Limit Order Book style)
 // Reason: O(1) top, O(1) insert at known price, O(1) cancel with ID map
 
@@ -221,15 +226,17 @@ public:
 // | Cancel    | O(N)     | O(log N)  | O(1)      |
 // | Best      | O(1)     | O(1)      | O(1)      |
 // | Concurrency| Poor    | Good      | Medium    |
-
 ```
+
+The cancel complexity column is the deciding factor here: O(N) for the priority queue is unusable at 100K inserts/sec and a 500ns budget. The ID-to-iterator index in the LOB approach makes cancel O(1) at the cost of extra memory - a trade-off the requirements clearly justify.
 
 ### Q3: Use AI for API design review
 
 **Answer:**
 
-```text
+Having AI review an API before it's published is one of the highest-ROI uses of AI in C++ development, because changing a public API after users depend on it is painful. The prompt asks AI to apply specific lenses (RAII, thread safety, error handling, testability) rather than just "what's wrong with this."
 
+```text
 === PROMPT ===
 
 "Review this C++ API design for a connection pool.
@@ -250,11 +257,11 @@ Consider: RAII, thread safety, error handling,
 testability, and modern C++ practices."
 
 === AI REVIEW ===
-
 ```
 
-```cpp
+The AI identifies five specific issues, each of which represents a real risk in production code. The improved API addresses all of them.
 
+```cpp
 // Issue 1: Raw pointer return - caller might forget to release
 // Issue 2: No RAII - if exception thrown between get/release, leak
 // Issue 3: No error handling for exhausted pool
@@ -316,17 +323,18 @@ public:
         conn->execute("SELECT ...");
     }  // Auto-returned to pool here
 }
-
 ```
+
+The `[[nodiscard]]` on `acquire()` ensures callers can't accidentally ignore the return value. The template parameter `ConnectionT` makes the pool testable with a mock connection type. Both are things you'd miss in a quick first draft but that AI catches systematically.
 
 ---
 
 ## Notes
 
-- **Provide concrete constraints** in prompts (latency targets, memory limits, throughput) not just "make it fast"
-- AI is most useful in the **exploration phase** — narrowing options before detailed design
-- Always **challenge AI's recommendations** — ask "what's the downside?" and "when would this fail?"
-- For data structure selection, include the **access pattern** (read-heavy vs write-heavy, hot path operations)
-- Ask AI to generate **comparison tables** for design options — very effective format
-- AI tends to suggest **over-engineered solutions** — explicitly say "keep it simple" if needed
-- Use AI for **API review before publishing** — it catches usability issues from a fresh perspective
+- **Provide concrete constraints** in prompts - latency targets, memory limits, throughput numbers, not just "make it fast." AI gives qualitatively different recommendations when it has numbers to reason about.
+- AI is most useful in the **exploration phase** - narrowing options before detailed design, not making the final call on something that depends on team familiarity or operational constraints only you know.
+- Always **challenge AI's recommendations** - ask "what's the downside of this?" and "when would this approach fail?" AI tends toward the academically interesting solution, not the operationally simplest one.
+- For data structure selection, include the **access pattern** (read-heavy vs write-heavy, hot path operations) - the right choice depends heavily on what the common case is.
+- Ask AI to generate **comparison tables** for design options - that format forces the analysis to be systematic and side-by-side, which makes the trade-offs visible.
+- AI tends to suggest **over-engineered solutions** - explicitly say "keep it as simple as possible" if you have a modest problem. A simple mutex is sometimes the right answer.
+- Use AI for **API review before publishing** - it catches usability issues from a fresh perspective, especially things like missing RAII, unclear ownership, and testability blockers.

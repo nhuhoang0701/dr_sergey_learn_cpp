@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-GitHub Copilot provides inline code completion, chat-based code generation, and workspace-aware assistance. For C++ specifically, it helps most with **boilerplate** (operators, constructors, serialization), **algorithm implementation**, **test generation**, and **documentation**. Effective use requires understanding its strengths, providing good context through comments and naming, and always verifying the output.
+GitHub Copilot provides inline code completion, chat-based code generation, and workspace-aware assistance. For C++ specifically, it helps most with **boilerplate** (operators, constructors, serialization), **algorithm implementation**, **test generation**, and **documentation**. Effective use requires understanding its strengths, providing good context through comments and naming, and always verifying the output. The key insight is that Copilot reads what's visible in your editor, so the quality of its suggestions is directly tied to the quality of the context you give it.
 
 ### Copilot Effectiveness by C++ Task
+
+The table below gives you a realistic picture of where Copilot is genuinely useful versus where you need to be careful. Notice that the high-effectiveness tasks are all pattern-heavy, while the weak areas involve subtle correctness requirements.
 
 | Task | Effectiveness | Best Practice |
 | --- | --- | --- |
@@ -28,8 +30,9 @@ GitHub Copilot provides inline code completion, chat-based code generation, and 
 
 **Answer:**
 
-```cpp
+The biggest lever you have with Copilot is context quality. A vague function name with no comment gets vague suggestions. A well-named class with descriptive method comments gets suggestions that are already most of the way there. The example below shows both a class declaration designed to guide Copilot and a set of trigger patterns you can use to kick off generation.
 
+```cpp
 // === GOOD: Descriptive names + comments guide Copilot ===
 
 // Thread-safe bounded queue using condition variables.
@@ -97,15 +100,17 @@ TEST(BoundedQueueTest, PushPopSingleItem) {
 // TEST(BoundedQueueTest, PushPopMultipleItems) { ... }
 // TEST(BoundedQueueTest, TryPushWhenFull) { ... }
 // TEST(BoundedQueueTest, TryPopWhenEmpty) { ... }
-
 ```
+
+The TIP about opening the `.cpp` alongside the header is worth emphasizing: Copilot reads all open files in your editor, not just the current one. The more relevant context is visible, the better the suggestions. If you're implementing a method in the `.cpp`, having the `.hpp` open in a side panel significantly improves accuracy.
 
 ### Q2: Copilot Chat for C++ development tasks
 
 **Answer:**
 
-```cpp
+Copilot Chat is a separate surface from inline completion and it's useful for different tasks. The slash commands give you structured actions rather than open-ended generation, and the `@workspace` agent can reason across your whole codebase. The prompts below show how to use each one effectively.
 
+```cpp
 === COPILOT CHAT COMMANDS FOR C++ ===
 
 /explain
@@ -151,15 +156,17 @@ TEST(BoundedQueueTest, PushPopSingleItem) {
 
 "Replace this switch statement with a std::variant
  visitor. Use std::visit with overloaded lambdas."
-
 ```
+
+The `@workspace` prompts are particularly powerful because they answer architectural questions that inline completion can't address. "How does this project handle errors?" is a question that requires reading many files at once - that's exactly what the workspace agent does. Use it when you're new to a codebase or when you want to verify that AI-generated code follows the project's conventions.
 
 ### Q3: C++-specific Copilot tips and configuration
 
 **Answer:**
 
-```cpp
+Copilot's behavior is configurable at both the editor level (VS Code settings) and the project level (the `copilot-instructions.md` file). The project-level instructions are especially valuable for C++ because they let you lock in your C++ standard, naming conventions, and framework choices so you don't have to repeat them in every prompt.
 
+```cpp
 === VS CODE SETTINGS FOR C++ COPILOT ===
 
 // .vscode/settings.json
@@ -222,17 +229,18 @@ TEST(BoundedQueueTest, PushPopSingleItem) {
 
    Press Alt+] to cycle through alternative suggestions.
    Different suggestions may use different algorithms.
-
 ```
+
+The `copilot-instructions.md` approach is worth the one-time setup cost. Once it's in place, every developer on the team gets suggestions that match the project's conventions - no more arguing in code review about whether to use `std::string_view` or `const std::string&`.
 
 ---
 
 ## Notes
 
-- Copilot works best when **surrounding code** provides clear patterns to follow
-- **Open related files** (header + implementation + test) for best context
-- Use **copilot-instructions.md** to enforce project-wide C++ conventions
-- Always verify concurrent code, template metaprogramming, and platform-specific code
-- **Comment-driven development**: write the comment, let Copilot write the code
-- Copilot Chat `/explain` is excellent for understanding unfamiliar C++ codebases
-- For complex algorithms, describe the approach in comments before letting Copilot implement
+- Copilot works best when surrounding code provides clear patterns to follow - the more consistent your codebase, the better the suggestions.
+- Open related files (header + implementation + test) for best context - Copilot reads everything that's open in your editor.
+- Use `copilot-instructions.md` to enforce project-wide C++ conventions so you get consistent suggestions without repeating yourself in every prompt.
+- Always verify concurrent code, template metaprogramming, and platform-specific code - these are Copilot's weak spots.
+- Comment-driven development is effective: write the comment describing what you want, then let Copilot write the code under it.
+- Copilot Chat `/explain` is excellent for understanding unfamiliar C++ codebases - select any confusing code block and ask.
+- For complex algorithms, describe the approach in comments before letting Copilot implement - this anchors the suggestion to your intended strategy rather than the most common pattern Copilot has seen.

@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-C++ requires significant **boilerplate code**: special member functions, comparison operators, serialization, stream operators, hash functions, and swap specializations. AI excels at generating this code because it follows mechanical patterns. The key is specifying exactly what you need and the coding style/conventions to follow.
+C++ makes you write a lot of code that follows mechanical patterns and serves a supporting role: special member functions, comparison operators, serialization, stream operators, hash functions, swap specializations. It is correct and necessary, but it is not where the interesting design decisions live, and getting it wrong has real consequences (a move constructor that forgets to null the source pointer, a copy assignment that does not handle self-assignment).
+
+AI is well-suited to generating this category of code because the patterns are consistent and the rules are well-defined. The key to getting good output is to specify exactly what you need and, if you have a coding style, to show the AI an example from your codebase rather than describing the style in words. The table below tells you where to trust the output and where to double-check carefully.
 
 ### Boilerplate Types and AI Generation Quality
 
@@ -29,18 +31,19 @@ C++ requires significant **boilerplate code**: special member functions, compari
 
 **Answer:**
 
-```cpp
+The most error-prone part of Rule of Five generation is the copy constructor when the class has a `unique_ptr` member - a deep copy requires `std::make_unique<T>(*other.ptr_)`, and the AI needs to know that you want a deep copy rather than a shallow one. Be explicit in your prompt:
 
+```cpp
 === PROMPT ===
 
 "Generate the Rule of Five, operator==, operator<=>,
 operator<<, and std::hash specialization for this class.
 Use C++20 features. Follow Google Style Guide."
-
 ```
 
-```cpp
+Starting from an input class with a `unique_ptr` member that needs deep copying, the AI generates all the required boilerplate. Notice the copy constructor's deep copy of `address_` and the `swap` helper that the copy assignment relies on:
 
+```cpp
 // Input class:
 class Employee {
     std::string name_;
@@ -139,21 +142,21 @@ struct std::hash<Employee> {
     size_t operator()(const Employee& e) const noexcept {
         size_t h = std::hash<int>{}(e.id());
         h ^= std::hash<std::string>{}(e.name()) + 0x9e3779b9
-
              + (h << 6) + (h >> 2);
-
         return h;
     }
 };
-
 ```
+
+One thing to verify in AI-generated Rule of Five code: the move constructor is `= default` here, which is correct because all members (`string`, `vector`, `unique_ptr`) have their own move operations. If the class had raw pointers or non-RAII handles, `= default` would be wrong and you would need a hand-written move.
 
 ### Q2: Generate serialization code
 
 **Answer:**
 
-```cpp
+Serialization code is mechanical but has real correctness requirements: optional fields need explicit null-checking, enums need a string map, variants need type tagging, and missing fields should use sensible defaults rather than silently corrupting your struct. Specifying all of these in the prompt prevents the AI from picking a behavior you do not want:
 
+```cpp
 === PROMPT ===
 
 "Generate nlohmann::json serialization (to_json/from_json)
@@ -163,11 +166,11 @@ for this class hierarchy. Handle:
 - Enum serialization as strings
 - Variant fields
 - Null/missing field handling with defaults"
-
 ```
 
-```cpp
+The code below shows what AI-generated serialization looks like for a struct with all four cases. The variant serialization is the most interesting part - it uses `std::visit` with `if constexpr` to dispatch on the active type:
 
+```cpp
 enum class Priority { Low, Medium, High, Critical };
 
 struct Task {
@@ -246,25 +249,27 @@ inline void from_json(const nlohmann::json& j, Task& t) {
             t.reference = j["reference"]["value"].get<std::string>();
     }
 }
-
 ```
+
+After reviewing AI-generated serialization code, specifically check that every field in the struct has a corresponding serialization path - omitted fields are a common AI error. Also check null handling in `from_json`: the `.at()` vs `.value()` choice determines whether a missing field throws or uses a default.
 
 ### Q3: Generate builder pattern and factory boilerplate
 
 **Answer:**
 
-```cpp
+The builder pattern is one of the cases where AI consistently produces clean output because the structure is entirely mechanical: one setter per field, method chaining by returning `*this`, and a `build()` method that validates and returns the final object. Using `std::expected` in `build()` gives you a way to report validation failures without exceptions:
 
+```cpp
 === PROMPT ===
 
 "Generate a fluent Builder pattern for this config class.
 Use method chaining, validate on build(), return
 std::expected<Config, std::string> from build()."
-
 ```
 
-```cpp
+Here is the AI-generated builder for a server configuration struct with TLS support. Notice that the `enable_tls` method sets three fields atomically - this is the right design because you never want TLS enabled without a cert path:
 
+```cpp
 // === AI-generated builder ===
 struct ServerConfig {
     std::string host;
@@ -329,17 +334,18 @@ if (!config) {
     std::cerr << "Config error: " << config.error() << '\n';
     return 1;
 }
-
 ```
+
+The builder call site reads almost like prose, which is the whole point. The `build()` validation catches configuration errors at the point where the config object is created, not later when a connection attempt fails with a cryptic error.
 
 ---
 
 ## Notes
 
-- Always specify **which C++ standard** and **coding style** in the prompt
-- For `operator<=>`, tell AI whether you need **strong, weak, or partial** ordering
-- AI-generated `std::hash` may have poor distribution — review for hash quality
-- For serialization, explicitly mention **how to handle missing/null fields**
-- **Don't accept unique_ptr copy** in AI output — common AI mistake (unique_ptr is move-only)
-- Ask AI to generate boilerplate for **existing code** by pasting the class definition
-- For large classes, ask AI to generate boilerplate **incrementally** (operators first, then serialization)
+- Always specify **which C++ standard** and **coding style** in the prompt - these determine whether you get `= default`, `noexcept`, and `[[nodiscard]]` annotations.
+- For `operator<=>`, tell AI whether you need **strong, weak, or partial** ordering - the choice affects what operations are defined and how `NaN` values behave.
+- AI-generated `std::hash` may have poor distribution for certain key types - review for hash quality if you are using the type in performance-sensitive hash maps.
+- For serialization, explicitly mention **how to handle missing and null fields** - the AI will pick one behavior by default and it may not be what you want.
+- **Do not accept `unique_ptr` copy** in AI output - this is a common AI mistake because `unique_ptr` is move-only and copy is deleted. If you see `std::unique_ptr` in a copy constructor or copy assignment without `std::make_unique`, the AI got it wrong.
+- Ask AI to generate boilerplate for **existing code** by pasting the class definition; the AI generates code that matches your actual members rather than inventing fields.
+- For large classes, ask AI to generate boilerplate **incrementally** (operators first, then serialization) - doing too much at once degrades quality.

@@ -6,7 +6,11 @@
 
 ## Topic Overview
 
-Effective prompt engineering for C++ requires understanding both LLM capabilities and C++ language complexities. The key is providing **context** (C++ standard version, compiler, platform), **constraints** (no exceptions, embedded target), and **examples** (expected input/output). C++ prompts need more precision than other languages due to undefined behavior, template metaprogramming, and ABI concerns.
+Getting useful C++ code from an LLM is not just about describing what you want - it requires feeding the model the context it needs to produce correct, safe, and idiomatic output. C++ prompts need more precision than prompts for other languages because so much correctness depends on details that are easy to omit: which standard version you are targeting, whether exceptions are enabled, what your memory model expectations are, and what platform you are building for.
+
+The core discipline is providing **context** (C++ standard, compiler, platform), **constraints** (no exceptions, embedded target, no Boost), and **examples** (expected input/output, interface signatures you want the code to fit). Without those anchors, the model will fill in defaults that may not match your environment at all.
+
+The table below illustrates how dramatically prompt quality affects the result. This is not a minor tuning effect - the difference between "Poor" and "Excellent" is often the difference between code that needs to be thrown away and code that is production-ready.
 
 ### Prompt Quality Spectrum
 
@@ -25,8 +29,9 @@ Effective prompt engineering for C++ requires understanding both LLM capabilitie
 
 **Answer:**
 
-```cpp
+A well-structured C++ prompt has six parts: a context block, a task description, constraints, an interface spec, quality requirements, and a verification request. The parts can be short - the context block is often just two or three lines - but omitting any of them usually degrades the output. Here is a full template:
 
+```cpp
 === PROMPT TEMPLATE FOR C++ CODE GENERATION ===
 
 1. CONTEXT BLOCK (always include):
@@ -43,7 +48,6 @@ Effective prompt engineering for C++ requires understanding both LLM capabilitie
 3. CONSTRAINTS:
 
    "- No dynamic allocation after construction
-
     - Must be header-only
     - Use std::atomic with acquire/release memory ordering
     - Power-of-two capacity only (for fast modulo)
@@ -63,7 +67,6 @@ Effective prompt engineering for C++ requires understanding both LLM capabilitie
 5. QUALITY REQUIREMENTS:
 
    "- Include static_assert for power-of-two check
-
     - Add [[nodiscard]] where appropriate
     - Show cache-line padding to prevent false sharing
     - Include a usage example with producer/consumer threads"
@@ -71,16 +74,15 @@ Effective prompt engineering for C++ requires understanding both LLM capabilitie
 6. VERIFICATION:
 
    "Write a GoogleTest fixture that tests:
-
     - Single-threaded push/pop correctness
     - Full buffer returns false on push
     - Empty buffer returns nullopt on pop
     - Concurrent producer/consumer with 1M items"
-
 ```
 
-```cpp
+Beyond the full template, a few prompt patterns are useful to keep in your back pocket for recurring C++ tasks:
 
+```cpp
 === PROMPT PATTERNS FOR COMMON C++ TASKS ===
 
 PATTERN: "Explain then implement"
@@ -97,25 +99,25 @@ PATTERN: "Incremental refinement"
 "I have this basic implementation:
 [paste code]
 Refactor to:
-
 1. Replace raw pointers with unique_ptr
 2. Add move semantics
 3. Make it exception-safe (strong guarantee)
-
 Show each step separately."
 
 PATTERN: "Constrain the output"
 "Generate ONLY the .hpp header. Do not generate main().
 Do not use std::endl (use '\n'). Do not use 'using namespace std'."
-
 ```
+
+The "constrain the output" pattern is often overlooked but very useful. LLMs will add `main()`, `using namespace std`, and `std::endl` by default because those patterns are everywhere in textbook code. Being explicit that you do not want them saves you from editing them out.
 
 ### Q2: C++-specific prompt techniques for complex topics
 
 **Answer:**
 
-```cpp
+Complex C++ topics need more structured prompts because the model needs more guidance about what aspect of the problem matters most. Here are prompts tuned for four particularly tricky areas:
 
+```cpp
 === TEMPLATE METAPROGRAMMING PROMPTS ===
 
 BAD: "Write a compile-time sort"
@@ -163,7 +165,6 @@ Target: process 1M items in <10ms on x86-64 (AVX2 available).
 Current: 45ms for 1M items.
 
 Optimize considering:
-
 1. Cache-friendly data layout (current struct is 96 bytes)
 2. SIMD opportunities (independent per-element ops)
 3. Branch prediction (90% take the if-branch)
@@ -171,15 +172,17 @@ Optimize considering:
 
 Show before/after with expected speedup rationale.
 [paste hot function + data structures]"
-
 ```
+
+The memory model prompt is worth highlighting because this is one of the areas where LLMs are weakest. Asking it to reason about `happens-before` relationships and ARM vs x86 behavior forces it to be explicit about assumptions that are often left implicit in generated code. You may still get wrong answers on subtle memory ordering questions, but asking for the reasoning at least makes the errors visible.
 
 ### Q3: Anti-patterns and verification strategies
 
 **Answer:**
 
-```cpp
+Knowing what not to do in a prompt is just as important as knowing what to include. These anti-patterns consistently produce poor C++ output:
 
+```cpp
 === PROMPT ANTI-PATTERNS TO AVOID ===
 
 1. VAGUE REQUESTS:
@@ -212,30 +215,31 @@ Show before/after with expected speedup rationale.
 
 === VERIFICATION CHECKLIST FOR AI-GENERATED C++ CODE ===
 
-□ Compiles with -Wall -Wextra -Werror -Wpedantic
-□ No undefined behavior (run with ASan, UBSan, TSan)
-□ No memory leaks (run with Valgrind or ASan)
-□ Exception safety guarantees stated and correct
-□ Move semantics correct (no use-after-move)
-□ Thread safety documented and correct
-□ No raw new/delete (uses smart pointers)
-□ RAII for all resources
-□ const-correct (const references, const methods)
-□ No implicit conversions (explicit constructors)
-□ Tests provided and they pass
-□ No 'using namespace std' in headers
-□ Correct include guards or #pragma once
-
+[ ] Compiles with -Wall -Wextra -Werror -Wpedantic
+[ ] No undefined behavior (run with ASan, UBSan, TSan)
+[ ] No memory leaks (run with Valgrind or ASan)
+[ ] Exception safety guarantees stated and correct
+[ ] Move semantics correct (no use-after-move)
+[ ] Thread safety documented and correct
+[ ] No raw new/delete (uses smart pointers)
+[ ] RAII for all resources
+[ ] const-correct (const references, const methods)
+[ ] No implicit conversions (explicit constructors)
+[ ] Tests provided and they pass
+[ ] No 'using namespace std' in headers
+[ ] Correct include guards or #pragma once
 ```
+
+The verification checklist is meant to be applied to every piece of AI-generated code before you merge it. The sanitizer step (`-fsanitize=address,undefined,thread`) is especially important - AI output looks correct at a glance more often than it actually is correct under the sanitizers.
 
 ---
 
 ## Notes
 
-- Always specify the **C++ standard version** — C++17 vs C++20 changes everything
-- Include **compiler and platform** for platform-specific code (MSVC vs GCC vs Clang)
-- For concurrent code, specify **memory model** expectations explicitly
-- Ask the LLM to **explain trade-offs** before implementing — catches design issues early
-- **Iterative refinement** works better than one giant prompt: generate → review → refine
-- Always verify AI output with sanitizers (`-fsanitize=address,undefined,thread`)
-- LLMs are weakest on: template metaprogramming edge cases, memory model subtleties, ABI compatibility
+- Always specify the **C++ standard version** - C++17 vs C++20 changes everything, including which features exist and which idioms are idiomatic.
+- Include **compiler and platform** for platform-specific code; MSVC, GCC, and Clang all have different extension support.
+- For concurrent code, specify **memory model** expectations explicitly - relaxed? acquire/release? sequential consistency?
+- Ask the LLM to **explain trade-offs** before implementing - this surfaces design issues before you are committed to a direction.
+- **Iterative refinement** works better than one giant prompt: generate -> review -> refine on the specific thing that is wrong.
+- Always verify AI output with sanitizers (`-fsanitize=address,undefined,thread`).
+- LLMs are weakest on: template metaprogramming edge cases, memory model subtleties, and ABI compatibility questions.

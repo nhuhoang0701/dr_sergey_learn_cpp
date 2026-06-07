@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-AI-generated C++ code frequently contains subtle bugs that compile and appear to work but have **undefined behavior**, **resource leaks**, **thread-safety issues**, or **incorrect template instantiations**. A disciplined verification pipeline catches these before they reach production. The key insight: AI code is a **first draft** that requires the same rigor as any pull request.
+AI-generated C++ code frequently contains subtle bugs that compile and appear to work but have **undefined behavior**, **resource leaks**, **thread-safety issues**, or **incorrect template instantiations**. The reason this is dangerous is exactly because the code looks fine - it passes a quick read, it compiles cleanly, and it passes basic tests. The bugs only show up under load, with optimizations enabled, or on a different platform. A disciplined verification pipeline catches these before they reach production. The key insight: AI code is a **first draft** that requires the same rigor as any pull request.
 
 ### Common AI-Generated C++ Pitfalls
+
+The table below shows the most common classes of bugs, how often they appear, and which tool catches them. Notice that the "very high" frequency items are all about concurrency - that's the area where AI is most consistently unreliable.
 
 | Pitfall | Frequency | Detection | Example |
 | --- | --- | --- | --- |
@@ -29,8 +31,9 @@ AI-generated C++ code frequently contains subtle bugs that compile and appear to
 
 **Answer:**
 
-```bash
+The pipeline below runs six stages in sequence, each catching different classes of bugs. The key design decision is that sanitizers require separate builds - ASan and TSan cannot run in the same binary, so you need at least two test runs.
 
+```bash
 #!/bin/bash
 # === AI Code Verification Pipeline ===
 
@@ -80,24 +83,26 @@ g++ -std=c++20 --coverage generated_code.cpp test_generated.cpp \
 gcovr --fail-under-branch 80 --fail-under-line 90
 
 echo "=== All checks passed ==="
-
 ```
+
+Stage 3 using `-O1` rather than `-O0` is intentional. Some UB only manifests under optimization - the compiler is allowed to assume UB never happens and eliminate code based on that assumption. Running at `-O0` can hide the bug by disabling the optimization that triggers it.
 
 ### Q2: Spot and fix common AI code bugs
 
 **Answer:**
 
-```cpp
+The five bugs below are the most common patterns you'll see in AI-generated C++ code. Each one compiles without warnings in basic configurations, which is exactly why they're dangerous. Work through each one so you recognize the pattern on sight.
 
+```cpp
 // === BUG 1: Use-after-move (AI frequently generates this) ===
-// BAD - AI generated:
+// BAD:
 void process(std::vector<std::string> items) {
     for (auto& item : items) {
         database.insert(std::move(item));
         logger.log("Inserted: " + item);  // BUG: item is moved-from!
     }
 }
-// FIX:
+// GOOD:
 void process(std::vector<std::string> items) {
     for (auto& item : items) {
         logger.log("Inserting: " + item);  // Log BEFORE move
@@ -107,14 +112,14 @@ void process(std::vector<std::string> items) {
 
 
 // === BUG 2: Dangling reference to temporary ===
-// BAD - AI generated:
+// BAD:
 const std::string& get_name(int id) {
     auto it = cache_.find(id);
     if (it != cache_.end())
         return it->second;
     return "Unknown";  // BUG: dangling ref to temporary!
 }
-// FIX:
+// GOOD:
 std::string get_name(int id) {  // Return by value
     auto it = cache_.find(id);
     if (it != cache_.end())
@@ -124,7 +129,7 @@ std::string get_name(int id) {  // Return by value
 
 
 // === BUG 3: Thread-unsafe singleton ===
-// BAD - AI generated:
+// BAD:
 class Config {
     static Config* instance_;
 public:
@@ -134,7 +139,7 @@ public:
         return *instance_;
     }
 };
-// FIX: Meyer's singleton (thread-safe since C++11)
+// GOOD: Meyer's singleton (thread-safe since C++11)
 class Config {
 public:
     static Config& get() {
@@ -145,13 +150,13 @@ public:
 
 
 // === BUG 4: Exception-unsafe resource acquisition ===
-// BAD - AI generated:
+// BAD:
 void setup() {
     auto* conn = new Connection(host);  // Raw new
     auto* cache = new Cache(conn);      // If throws, conn leaks!
     // ...
 }
-// FIX: RAII
+// GOOD: RAII
 void setup() {
     auto conn = std::make_unique<Connection>(host);
     auto cache = std::make_unique<Cache>(conn.get());
@@ -160,12 +165,12 @@ void setup() {
 
 
 // === BUG 5: Integer overflow in size calculation ===
-// BAD - AI generated:
+// BAD:
 void* allocate_buffer(int width, int height, int channels) {
     int size = width * height * channels;  // BUG: overflow!
     return malloc(size);    // BUG: negative size if overflow
 }
-// FIX:
+// GOOD:
 void* allocate_buffer(size_t width, size_t height, size_t channels) {
     size_t size;
     if (__builtin_mul_overflow(width, height, &size) ||
@@ -174,15 +179,19 @@ void* allocate_buffer(size_t width, size_t height, size_t channels) {
     }
     return malloc(size);
 }
-
 ```
+
+Bug 2 (dangling reference to temporary) is the reason you should almost never return a `const std::string&` from a function that might construct a new string as a fallback. The reference is immediately dangling. The fix is simply to return by value - modern compilers will often elide the copy anyway.
+
+Bug 3 is the classic double-checked locking pattern, which is famously broken without memory barriers. Meyer's singleton (a function-local static) is the correct C++11 idiom: the standard guarantees that local statics are initialized exactly once, thread-safely, the first time control reaches them.
 
 ### Q3: Automated verification with CI integration
 
 **Answer:**
 
-```yaml
+The CI workflow below runs the same verification stages as the manual pipeline but in GitHub Actions, which means every pull request gets checked automatically. The important detail is that ASan+UBSan and TSan are separate jobs because they cannot coexist in the same binary.
 
+```yaml
 # === .github/workflows/verify-ai-code.yml ===
 name: Verify AI-Generated Code
 on: [pull_request]
@@ -237,11 +246,11 @@ jobs:
           cmake --build build-cov
           ctest --test-dir build-cov
           gcovr --fail-under-branch 80 --fail-under-line 90
-
 ```
 
-```cpp
+In addition to runtime checks, you can add compile-time guards to your codebase that catch entire categories of AI mistakes before they even reach the test stage. The helpers below use concepts and `static_assert` to reject code that doesn't meet your type requirements.
 
+```cpp
 // === Compile-time verification helpers ===
 // Add to your codebase to catch AI mistakes at compile time:
 
@@ -268,17 +277,18 @@ class ResourceWrapper {
     static_assert(std::is_nothrow_move_constructible_v<T>,
         "Resource types must be nothrow-moveable");
 };
-
 ```
+
+The `DECLARE_MOVE_ONLY` macro is particularly useful as a defense against AI code that accidentally introduces a copy constructor where only move was intended. If AI generates a copy operation for a type that manages a unique resource, the macro turns it into a compile error immediately.
 
 ---
 
 ## Notes
 
-- **Every AI-generated line** should be treated as untested code from a junior developer
-- The most dangerous bugs are those that **compile and work in simple tests** but fail under load
-- **Sanitizers are non-negotiable**: ASan + UBSan + TSan catch 90% of AI-generated bugs
-- **Static analysis** (clang-tidy) catches style issues and common patterns like missing `const`
-- Use-after-move and dangling references are the **most common AI mistakes** in C++
-- AI often generates **C-with-classes** instead of modern C++ — review for RAII, smart pointers
-- Add compile-time checks (concepts, static_assert) to catch categories of bugs automatically
+- Treat every AI-generated line as untested code from a junior developer - review it with the same scrutiny you'd apply to any pull request.
+- The most dangerous bugs are those that compile and work in simple tests but fail under load, with optimizations, or on a different architecture.
+- Sanitizers are non-negotiable: ASan + UBSan + TSan catch the vast majority of AI-generated bugs that testing alone misses.
+- Static analysis (clang-tidy) catches style issues and common patterns like missing `const`, `[[nodiscard]]`, and obvious resource leaks.
+- Use-after-move and dangling references are the most common AI mistakes in C++ - train yourself to spot the pattern.
+- AI often generates C-with-classes instead of modern C++ - review specifically for RAII, smart pointers, and exception safety.
+- Add compile-time checks (concepts, `static_assert`) to catch categories of bugs automatically before they reach the test stage.

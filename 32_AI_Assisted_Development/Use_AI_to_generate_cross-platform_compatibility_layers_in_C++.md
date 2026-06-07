@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-Writing cross-platform C++ code requires handling OS-specific APIs for file systems, networking, threading, process management, and GUI. AI assistants can generate **abstraction layers** that wrap platform-specific APIs behind a unified interface, generate platform detection macros, and translate between Windows/Linux/macOS APIs.
+Writing cross-platform C++ code means dealing with the fact that Windows, Linux, and macOS have completely different native APIs for almost everything interesting - file systems, networking, threads, process management, shared libraries, and more. The standard library covers a lot of this ground nowadays, but there are always gaps. AI assistants are genuinely useful here: they can generate **abstraction layers** that wrap platform-specific APIs behind a unified interface, produce platform detection macros, and translate between Windows and POSIX APIs. The key insight is that the structure of these wrappers is highly formulaic, which is exactly the kind of code AI handles well.
 
 ### Cross-Platform Areas and AI Assistance
+
+The table below shows where AI is most helpful and where the standard library already does the heavy lifting for you. In general, always reach for the standard library first - `<filesystem>`, `<thread>`, and `<chrono>` exist precisely so you don't have to write platform wrappers yourself.
 
 | Area | Platform Differences | AI Help Level |
 | --- | --- | --- |
@@ -28,19 +30,20 @@ Writing cross-platform C++ code requires handling OS-specific APIs for file syst
 
 **Answer:**
 
-```cpp
+Dynamic library loading is a classic cross-platform headache: POSIX uses `dlopen`/`dlsym`/`dlclose`, while Windows uses `LoadLibrary`/`GetProcAddress`/`FreeLibrary`. The prompt below asks for a RAII wrapper that unifies these behind a clean API.
 
+```cpp
 === PROMPT ===
 
 "Generate a cross-platform dynamic library loader for
 C++17 that works on Windows, Linux, and macOS.
 Wrap dlopen/LoadLibrary, dlsym/GetProcAddress, etc.
 Use RAII. Type-safe function pointer retrieval."
-
 ```
 
-```cpp
+The generated class below is a good example of what AI does well with platform code: it correctly identifies all the symmetric API pairs, wraps them in `#ifdef _WIN32` guards, uses `std::exchange` in the move constructor to safely null out the old handle, and exposes a type-safe `get_function<>` template so you get a compile-time check that you're asking for a function pointer type.
 
+```cpp
 // === AI-generated cross-platform shared library loader ===
 
 #ifdef _WIN32
@@ -138,25 +141,27 @@ private:
 auto lib = SharedLibrary(SharedLibrary::library_name("plugin"));
 auto init = lib.get_function<int(*)(const char*)>("plugin_init");
 int result = init("/path/to/config");
-
 ```
+
+Always test this kind of code on all your target platforms. AI-generated platform code tends to handle the mainstream cases correctly but can miss subtleties like library search paths, symbol visibility flags, or Windows-specific behaviors around `RTLD_GLOBAL` equivalents.
 
 ### Q2: Generate cross-platform memory-mapped file I/O
 
 **Answer:**
 
-```cpp
+Memory-mapped files are another area where Windows and POSIX diverge significantly. Windows requires two separate handles (a file handle and a mapping object), while POSIX uses a single file descriptor and a direct `mmap` call. The prompt below asks AI to handle all three mapping modes - read-only, read-write, and copy-on-write.
 
+```cpp
 === PROMPT ===
 
 "Generate a cross-platform memory-mapped file class
 for C++17. Support: read-only, read-write, and
 copy-on-write modes. RAII with proper cleanup."
-
 ```
 
-```cpp
+Notice how the generated code uses `std::filesystem::path` for the constructor parameter - that handles path encoding differences automatically. The destructor carefully checks each handle before releasing it, which is important because the constructor can fail partway through, leaving only some handles valid.
 
+```cpp
 // === AI-generated memory-mapped file ===
 
 enum class MapMode { ReadOnly, ReadWrite, CopyOnWrite };
@@ -253,15 +258,17 @@ public:
     }
     size_t size() const { return size_; }
 };
-
 ```
+
+The distinction between `MAP_PRIVATE` (copy-on-write) and `MAP_SHARED` (write-through to disk) on the POSIX side is easy to get backwards. The AI got this right here, but it's always worth double-checking when you use this code on a real project.
 
 ### Q3: Platform detection and feature macros
 
 **Answer:**
 
-```cpp
+Before you can write any `#ifdef` logic, you need a reliable set of macros that tell you what platform, compiler, architecture, and C++ standard version you're on. This header centralizes all of that detection in one place, which is much cleaner than scattering raw `#if defined(_WIN32)` checks through your codebase.
 
+```cpp
 === PROMPT ===
 
 "Generate a platform_defs.hpp header with:
@@ -273,11 +280,11 @@ public:
 - Feature macros for SIMD, coroutines, modules
 
 Use standard predefined macros only."
-
 ```
 
-```cpp
+The generated header uses only predefined macros that every conforming compiler provides, so there are no external dependencies. The feature detection section is particularly useful: rather than hard-coding a standard version, you test whether the specific feature you need is actually available - which handles partial implementations and experimental flags correctly.
 
+```cpp
 // === AI-generated platform_defs.hpp ===
 #pragma once
 
@@ -357,17 +364,18 @@ Use standard predefined macros only."
 #if defined(__ARM_NEON)
     #define HAS_NEON 1
 #endif
-
 ```
+
+One thing to watch out for: Clang must be checked before GCC because Clang also defines `__GNUC__` for compatibility. The ordering in the compiler detection block above handles this correctly.
 
 ---
 
 ## Notes
 
-- Prefer **C++ standard library** (`<filesystem>`, `<thread>`, `<chrono>`) over OS-specific APIs when possible
-- AI can translate between **Win32 and POSIX** APIs effectively — paste one platform, ask for the other
-- Always test AI-generated platform code on **all target platforms** — AI often misses subtle differences
-- For networking, consider **Boost.Asio** or **standalone Asio** over raw socket wrappers
-- AI can generate **CMake platform detection** to complement C++ macros
-- Use `std::filesystem::path` for path handling — it handles `/` vs `\\` automatically
-- Ask AI for **CI/CD matrix** configurations to test across platforms
+- Prefer the C++ standard library (`<filesystem>`, `<thread>`, `<chrono>`) over OS-specific APIs whenever possible - you get portability for free and the AI's output will be simpler and more correct.
+- AI can translate between Win32 and POSIX APIs effectively - paste the implementation for one platform and ask for the equivalent on the other.
+- Always test AI-generated platform code on all your target platforms. AI often misses subtle differences like error code conventions, handle lifetime rules, or edge cases in specific OS versions.
+- For networking, consider Boost.Asio or standalone Asio over raw socket wrappers - the portability problem there is genuinely hard, and the library has already solved it.
+- AI can generate CMake platform detection logic to complement C++ macros - useful for selecting platform-specific source files or setting compile flags.
+- Use `std::filesystem::path` for all path handling - it deals with `/` vs `\\` automatically and handles Unicode paths correctly on Windows.
+- Ask AI for CI/CD matrix configurations to test across platforms - getting the GitHub Actions matrix right for Windows/Linux/macOS is tedious to write by hand.

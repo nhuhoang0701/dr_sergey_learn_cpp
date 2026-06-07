@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-AI excels at generating **comprehensive test suites** from C++ code. Given a class or function, it can identify test scenarios including edge cases, error paths, and boundary conditions that developers might miss. The key is providing the right prompts: specify the testing framework, what to test, and the level of coverage expected.
+Writing tests is important but genuinely tedious, and it's one of the best uses of AI in a C++ workflow. Given a class or function, AI can identify test scenarios - including edge cases, error paths, and boundary conditions - that developers often miss when they're mentally close to the implementation. The key to getting good results is specificity in your prompt: tell the AI which framework you're using, what aspects of the code to focus on, and what coverage level you want.
 
 ### AI Test Generation Effectiveness
+
+Not all test types are created equal. AI excels at structured, predictable test patterns but struggles anywhere human judgment about concurrent behavior or system context is required.
 
 | Test Type | AI Quality | Human Review Needed |
 | --- | --- | --- |
@@ -28,8 +30,9 @@ AI excels at generating **comprehensive test suites** from C++ code. Given a cla
 
 **Answer:**
 
-```cpp
+The prompt below asks for a `TEST_F` fixture-based suite, which is the right choice when multiple tests share setup logic. Notice that it explicitly lists the categories to cover - without that list, AI tends to generate only happy-path tests.
 
+```cpp
 === PROMPT ===
 
 "Generate GoogleTest unit tests for this C++ class.
@@ -43,11 +46,11 @@ Cover:
 
 Use TEST_F with a fixture for setup/teardown.
 Each test should be independent and self-documenting.
-
 ```
 
-```cpp
+Here's the class interface being tested, followed by the AI-generated suite. The fixture creates a fresh buffer for each test, which is what makes the tests independent - no test depends on state left by a previous one.
 
+```cpp
 // === The class to test ===
 template<typename T>
 class RingBuffer {
@@ -148,25 +151,27 @@ TEST_F(RingBufferTest, PushMoveOnly) {
     ASSERT_NE(val, std::nullopt);
     EXPECT_EQ(**val, 42);
 }
-
 ```
+
+The `WrapAround` test is the most interesting one here - a ring buffer's whole purpose is that it wraps around correctly, and that's easy to miss if you only test with a fresh empty buffer. Always check that AI includes this kind of state-transition test, not just isolated single-operation tests.
 
 ### Q2: Generate test fixtures with mock objects
 
 **Answer:**
 
-```cpp
+When the class under test has dependencies (database, email service, HTTP client), you need mocks to test it in isolation. AI can generate both the mock classes and the tests, as long as you include the interface definitions in the prompt. Without those interfaces, AI has to guess and will usually guess wrong.
 
+```cpp
 === PROMPT ===
 
 "Generate GoogleTest + GoogleMock tests for OrderService.
 Mock out the database and email dependencies.
 Test each method with success and failure scenarios."
-
 ```
 
-```cpp
+The interfaces to mock come first, then the generated mocks and fixture. Notice that the fixture creates fresh mock instances in `SetUp()` - this ensures each test starts with a clean mock that has no preloaded expectations from a previous test.
 
+```cpp
 // === Interfaces to mock ===
 class IOrderRepository {
 public:
@@ -256,15 +261,17 @@ TEST_F(OrderServiceTest, CancelOrder_EmailFailure_StillCancels) {
     auto result = service_->cancel_order("ORD-001");
     EXPECT_TRUE(result);  // Order still cancelled despite email failure
 }
-
 ```
+
+The last test - `CancelOrder_EmailFailure_StillCancels` - is the kind of test that's easy to forget but important to have. It documents a specific design decision: a failed email notification should not roll back the cancellation. AI generates this kind of scenario reliably when you ask for "failure scenarios" in the prompt.
 
 ### Q3: Generate edge case and boundary tests
 
 **Answer:**
 
-```cpp
+Edge case tests are where AI really earns its keep. When you're writing `find_median` you're thinking about the algorithm, not about whether `INT_MIN` and `INT_MAX` in the same vector will overflow during averaging. AI thinks about these systematically.
 
+```cpp
 === PROMPT ===
 
 "For this function, generate tests for ALL edge cases:
@@ -275,11 +282,11 @@ TEST_F(OrderServiceTest, CancelOrder_EmailFailure_StillCancels) {
 - Duplicate values
 - Already sorted / reverse sorted
 - Large input (performance sanity check)
-
 ```
 
-```cpp
+Here's the function being tested and the AI-generated suite. The performance test at the end is especially useful - it acts as a smoke test that the implementation isn't accidentally O(n^2).
 
+```cpp
 // Function to test:
 int find_median(std::vector<int>& data);
 
@@ -352,17 +359,18 @@ TEST(FindMedianTest, LargeInput_Performance) {
     EXPECT_EQ(result, 499'999);
     EXPECT_LT(ms, 1000);  // Should complete in <1s
 }
-
 ```
+
+Always review the expected values in AI-generated tests. The AI may assert the correct behavior for a function it imagines you're writing, but if your `find_median` uses a different rounding convention for even-count vectors, some assertions will be wrong even though the implementation is correct. The tests document a contract; make sure you agree with that contract before you commit to it.
 
 ---
 
 ## Notes
 
-- **Prompt with the class interface** (not just the name) for best results
-- Ask AI to generate tests **before** implementation (TDD workflow)
-- AI excels at **edge cases** — it systematically considers empty, single, boundary, overflow
-- **Mock tests** need interface definitions — include them in the prompt
-- Always **review AI-generated test assertions** — they may assert the wrong expected value
-- Use **parameterized tests** (`TEST_P`) for data-driven testing of multiple inputs
-- AI is weak at **concurrency tests** — it often generates tests that pass by luck
+- Prompt with the class interface, not just the class name - AI needs the method signatures to generate accurate tests.
+- Ask AI to generate tests before you write the implementation (TDD workflow) - the tests then constrain what the implementation needs to do, which often clarifies the design.
+- AI excels at edge cases - it systematically considers empty, single element, boundary, and overflow scenarios that are easy to overlook.
+- Mock tests need interface definitions included in the prompt - without them, AI has to invent the interface and will likely get it wrong.
+- Always review AI-generated test assertions - they may assert the wrong expected value based on an assumption about your function's behavior.
+- Use parameterized tests (`TEST_P`) for data-driven testing of multiple inputs - ask AI to generate a `INSTANTIATE_TEST_SUITE_P` block alongside the test body.
+- AI is weak at concurrency tests - it often generates tests that pass by luck rather than correctly synchronizing. Write those by hand.

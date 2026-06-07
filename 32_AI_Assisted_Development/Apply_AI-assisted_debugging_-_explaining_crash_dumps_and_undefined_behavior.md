@@ -6,7 +6,9 @@
 
 ## Topic Overview
 
-AI assistants excel at analyzing **crash dumps**, **sanitizer output**, **core dumps**, and **undefined behavior reports**. They can decode symbol names, explain stack traces, identify root causes from ASan/UBSan/TSan output, and suggest fixes. This turns hours of debugging into minutes, especially for complex issues like memory corruption, data races, and subtle UB.
+Debugging in C++ often involves reading output that is genuinely hostile to humans - mangled symbol names, stack addresses with no context, sanitizer reports full of cross-referencing stack traces, and UBSan messages that cite the standard without explaining what that means for your code. AI assistants are surprisingly good at exactly this work. They can analyze **crash dumps**, **sanitizer output**, **core dumps**, and **undefined behavior reports**, decode mangled names, trace the execution path from a stack trace, identify root causes from ASan/UBSan/TSan output, and suggest concrete fixes. What used to take hours of documentation hunting and mental stack-trace tracing can often be diagnosed in minutes.
+
+The table below shows where AI debugging assistance is strongest. The key insight is that AI is excellent when there is structured output to read (sanitizer reports are almost like a formatted description of the bug) but weaker when you need to reason about timing (heisenbugs) or when you lack symbol information (optimized builds).
 
 ### AI Debugging Assistance Effectiveness
 
@@ -28,8 +30,11 @@ AI assistants excel at analyzing **crash dumps**, **sanitizer output**, **core d
 
 **Answer:**
 
-```text
+The most important thing to understand about using AI for sanitizer analysis is that you should paste the **full report** - both the error and the allocation/deallocation stack traces. The AI needs to correlate all three: where memory was allocated, where it was freed, and where it was accessed again. With all three in hand, it can reconstruct the lifetime story that led to the bug.
 
+Here is an example prompt and what good AI analysis looks like in response:
+
+```text
 === PROMPT: ASan heap-use-after-free ===
 
 "Explain this AddressSanitizer report and suggest a fix:
@@ -78,18 +83,16 @@ Config is destroyed before Logger."
 Fix options:
 
 1. Ensure Logger is destroyed BEFORE Config (reverse declaration
-
    order, or use explicit init/shutdown)
-
 2. Logger stores a copy of log_path, not a reference
 3. Use shared_ptr<Config> so Config outlives Logger
 
 Recommended fix (option 1 - RAII ordering):"
-
 ```
 
-```cpp
+Once the AI identifies the root cause - Config is destroyed while Logger still holds a reference to one of its strings - the fix becomes obvious. Here is the before and after:
 
+```cpp
 // BAD: Config destroyed before Logger
 int main() {
     Config config("app.conf");     // Constructed first
@@ -104,15 +107,19 @@ int main() {
     Logger logger(config);  // Logger holds shared_ptr
     // Config outlives Logger
 }
-
 ```
+
+The use-after-free evaporates because `shared_ptr` keeps `Config` alive for as long as anyone holds a reference to it. The reason this bug is so easy to miss in the first place is that the two objects are in different parts of the code - nothing at the call site signals that a lifetime dependency was created.
 
 ### Q2: Use AI to explain complex UB scenarios
 
 **Answer:**
 
-```cpp
+Signed integer overflow is one of the most dangerous categories of undefined behavior precisely because it often *appears* to work correctly in debug builds. The compiler is allowed to assume it never happens, and at `-O3` it uses that assumption to transform code in ways that can completely change behavior. Explaining why this is UB and why optimization level matters is exactly where AI adds value - it can cite the standard clause and walk through the compiler's reasoning.
 
+The prompt pattern here is to paste both the UBSan report and the code, and ask specifically why the behavior differs between optimization levels:
+
+```cpp
 === PROMPT: Explain this UBSan report ===
 
 "This code produces different results with -O0 vs -O3.
@@ -123,11 +130,11 @@ runtime error: signed integer overflow: 2147483647 + 1
 cannot be represented in type 'int'
     #0 in compute_checksum(int const*, unsigned long)
       (/app/src/checksum.cpp:12)"
-
 ```
 
-```cpp
+Here is the problematic code, the AI's explanation, and two concrete fixes:
 
+```cpp
 // The problematic code:
 int compute_checksum(const int* data, size_t len) {
     int sum = 0;
@@ -171,15 +178,19 @@ std::optional<int> compute_checksum_checked(
     }
     return sum;
 }
-
 ```
+
+The reason this trips people up is that x86 integer arithmetic wraps at the hardware level, so the "broken" behavior at `-O0` actually produces the result you expect. The code passes all its tests with debug builds and then silently breaks in production. UBSan exists specifically to catch this class of bug before you ship it.
 
 ### Q3: Use AI to analyze ThreadSanitizer data race reports
 
 **Answer:**
 
-```text
+TSan reports are structured around showing you two conflicting accesses: the write and the read (or write and write) that happened concurrently without synchronization. AI is well-suited to interpreting these because once it identifies the two accesses it can reason about what synchronization mechanism is missing and present multiple fix options with different performance trade-offs.
 
+Here is the kind of TSan report you would paste and what a useful AI response looks like:
+
+```text
 === PROMPT: TSan data race report ===
 
 "Explain this ThreadSanitizer report and show the fix:
@@ -199,11 +210,11 @@ WARNING: ThreadSanitizer: data race (pid=1234)
 
   Thread T2 is the request handling thread.
   Thread T1 is the monitoring/reporting thread."
-
 ```
 
-```cpp
+The problematic code and three fix options follow - notice how the AI suggests different synchronization strategies depending on how much contention you expect:
 
+```cpp
 // The problematic code:
 class RequestHandler {
     struct Stats {
@@ -284,17 +295,18 @@ public:
         return snap ? *snap : Stats{};
     }
 };
-
 ```
+
+Fix 1 is always correct and easy to understand - start here. Fix 2 is better if the monitoring thread reads stats frequently and you want to avoid blocking the handler thread. Fix 3 eliminates contention entirely by separating the write path from the read path, at the cost of some complexity.
 
 ---
 
 ## Notes
 
-- When pasting sanitizer output, **include the full report** — AI needs both the error and the allocation/free stack traces
-- For crash dumps, provide the **source code context** around the failing function
-- AI is especially good at **decoding mangled C++ names** in stack traces
-- Always **reproduce with a debug build** first (`-g -O0`) for accurate line numbers
-- TSan reports show the **two conflicting accesses** — AI explains the race condition and synchronization needed
-- For intermittent bugs, ask AI to suggest **instrumentation** (logging, assertions) to catch the issue
-- Combine AI analysis with sanitizers: AI explains, sanitizer proves
+- When pasting sanitizer output, **include the full report** - AI needs both the error and the allocation/free stack traces to reconstruct the lifetime story.
+- For crash dumps, provide the **source code context** around the failing function so the AI can connect addresses to variable names.
+- AI is especially good at **decoding mangled C++ names** in stack traces - just paste the raw output and it will demangle for you.
+- Always **reproduce with a debug build** first (`-g -O0`) for accurate line numbers before analyzing the report.
+- TSan reports show the **two conflicting accesses** - AI explains the race condition and what synchronization is missing.
+- For intermittent bugs, ask AI to suggest **instrumentation** (logging, assertions) to catch the issue reproducibly.
+- Combine AI analysis with sanitizers: AI explains the report, the sanitizer proves the bug is real.

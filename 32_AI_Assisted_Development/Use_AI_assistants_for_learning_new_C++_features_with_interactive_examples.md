@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-AI assistants are **exceptional learning tools** for new C++ features. They can explain concepts progressively (simple → advanced), generate runnable examples, create exercises with solutions, compare old vs. new approaches, and answer follow-up questions instantly. This creates a personalized, interactive learning experience far more effective than reading documentation alone.
+If you've ever tried to learn a new C++ feature from the standard's wording or from cppreference, you know how long it can take to get from "I've read the definition" to "I actually understand this." AI assistants short-circuit that process dramatically. They can explain concepts progressively (simple -> advanced), generate runnable examples, create exercises with solutions, compare old vs. new approaches, and answer follow-up questions instantly. This creates a personalized, interactive learning experience that's far more effective than reading documentation alone - because you can ask exactly the question that's confusing you rather than hunting for a tutorial that happens to address your specific stumbling point.
 
 ### Effective Learning Prompts
+
+The right prompt structure matters a lot here. Here are the patterns that reliably produce useful responses.
 
 | Learning Goal | Prompt Pattern | Example |
 | --- | --- | --- |
@@ -27,8 +29,9 @@ AI assistants are **exceptional learning tools** for new C++ features. They can 
 
 **Answer:**
 
-```cpp
+The "progressive steps" prompt pattern is one of the best for learning. By asking the AI to structure the explanation from motivation -> basics -> advanced -> exercises, you get a complete learning arc rather than a reference dump.
 
+```cpp
 === PROMPT ===
 
 "Teach me C++20 concepts in 4 progressive steps:
@@ -44,11 +47,11 @@ For each step, give a compilable example and an exercise."
 === AI RESPONSE (Step 1: Motivation) ===
 
 "Concepts replace SFINAE-based constraints. Here's why:"
-
 ```
 
-```cpp
+The contrast here is genuinely striking. The SFINAE version achieves the same constraint but produces error messages that are pages long. The concepts version produces an error that tells you exactly which constraint failed and why.
 
+```cpp
 // BEFORE (C++17 SFINAE): Cryptic error messages
 template<typename T,
     typename = std::enable_if_t<
@@ -70,17 +73,15 @@ process(3.14);  // Error: constraints not satisfied:
 
 // Exercise: Write a concept 'Printable' that requires
 // T to have operator<< with std::ostream.
-
 ```
 
 ```cpp
-
 === AI RESPONSE (Step 2: Basic syntax) ===
-
 ```
 
-```cpp
+There are three syntactically distinct ways to apply a concept constraint to a template, and all three mean the same thing for single-concept cases. The choice between them is mostly stylistic.
 
+```cpp
 // Three ways to constrain templates:
 
 // Way 1: requires clause
@@ -110,24 +111,24 @@ void compute(Numeric auto x) {
 // - begin() and end() methods
 // - a value_type alias
 // - a size() method returning a size_t-like type
-
 ```
 
 ### Q2: Compare old vs new approaches
 
 **Answer:**
 
-```cpp
+Asking for multiple before/after comparisons in a single prompt is efficient for building a broad sense of how C++20 improves on C++17. Including "when to still use the old way" is important - AI that only shows the new way can give you the impression that everything should always be upgraded, which isn't true.
 
+```cpp
 === PROMPT ===
 
 "Show me 5 common C++ patterns that are better in C++20.
 For each: old way, new way, and when to still use the old way."
-
 ```
 
-```cpp
+Here are four of the five patterns, with honest notes about when the older approach is still appropriate.
 
+```cpp
 // === 1. Iteration: for loop vs ranges ===
 
 // Old: manual iterator loop
@@ -201,25 +202,27 @@ std::string serialize(const T& val) {
     else
         static_assert(false, "No serialization for T");
 }
-
 ```
+
+The `serialize` example in pattern 4 is worth studying. The `requires { val.to_string(); }` inline requires expression is doing ad-hoc concept checking without needing a named concept - very useful for one-off constraints.
 
 ### Q3: Practice with exercises
 
 **Answer:**
 
-```cpp
+Asking for progressive exercises with solutions is one of the most effective ways to solidify understanding of a hard feature. Coroutines are a good candidate for this because they have a lot of moving parts (`promise_type`, `co_yield`, handles, suspension) that take practice to connect together.
 
+```cpp
 === PROMPT ===
 
 "Give me 3 progressive exercises on C++20 coroutines.
 For each: problem statement, hints, and full solution.
 Difficulty: beginner, intermediate, advanced."
-
 ```
 
-```cpp
+Here's the beginner exercise. The reason coroutines are tricky at first is that the machinery (the `Generator` type with its `promise_type`) is completely separate from the coroutine body (the `fibonacci` function). Once you see how they connect, the rest makes sense.
 
+```cpp
 // === Exercise 1 (Beginner): Simple generator ===
 // Problem: Write a generator that yields Fibonacci numbers.
 // Hint: You need a Generator<T> type with promise_type.
@@ -282,17 +285,18 @@ for (int i = 0; i < 10 && fib.next(); ++i) {
     std::cout << fib.value() << ' ';
 }
 // Output: 0 1 1 2 3 5 8 13 21 34
-
 ```
+
+The `co_yield a` line is the heart of it: every time the caller calls `fib.next()`, the coroutine resumes from just after the last `co_yield`, calculates the next value, and suspends again. The generator never runs past where the caller is ready to consume.
 
 ---
 
 ## Notes
 
-- **"Explain like I know C++17 but not C++20"** is an effective prompt for learning new features
-- Ask for **compilable examples** — AI sometimes generates code that doesn't actually compile
-- Use AI for **"what's new in C++23"** summaries with code examples for each feature
-- **Follow-up questions** are powerful: "What happens if I remove the `const`?" "Why is this `noexcept`?"
-- Ask AI to **generate Compiler Explorer links** for trying code instantly
-- AI is excellent at **explaining error messages** from new features like concepts and coroutines
-- For deep learning, ask AI to **explain the standard wording** for a specific feature
+- **"Explain like I know C++17 but not C++20"** is an effective prompt for learning new features - it tells the AI exactly what background to assume rather than starting from scratch or using vocabulary you don't know yet.
+- Ask for **compilable examples** - AI sometimes generates code that doesn't actually compile, especially for newer features with finicky syntax like coroutines and modules. Always verify in a compiler.
+- Use AI for **"what's new in C++23"** summaries with code examples for each feature - this is a fast way to survey what's available before diving into the ones that matter for your work.
+- **Follow-up questions** are where AI learning really shines: "What happens if I remove the `const`?", "Why is this `noexcept`?", "What's the compile error if I use this with a `float`?" You can iterate much faster than with documentation.
+- Ask AI to **generate Compiler Explorer links** for trying code instantly - some AI tools can produce godbolt.org links with the code pre-filled.
+- AI is excellent at **explaining error messages** from new features like concepts and coroutines, which produce novel error formats that you won't have seen before.
+- For deep learning, ask AI to **explain the standard wording** for a specific feature - having the precise formulation alongside a plain-language explanation is the best of both worlds.

@@ -6,21 +6,19 @@
 
 ## Topic Overview
 
-AI assistants can generate **property-based tests** (tests that verify invariants over random inputs) and **fuzz testing harnesses** (for libFuzzer, AFL, or Honggfuzz). These are high-value and tedious to write manually. AI can identify the right properties to test, generate corpus seeds, write coverage-guided fuzz targets, and create structure-aware fuzzers.
+Writing fuzz harnesses and property-based tests by hand is tedious work - you need to think carefully about what invariants your code should satisfy, how to express them as assertions, and how to give the fuzzer enough structural guidance to explore interesting inputs. AI assistants can generate **property-based tests** (tests that verify invariants over random inputs) and **fuzz testing harnesses** (for libFuzzer, AFL, or Honggfuzz). These are high-value and tedious to write manually. AI can identify the right properties to test, generate corpus seeds, write coverage-guided fuzz targets, and create structure-aware fuzzers. What would normally take an afternoon to set up can be sketched out in minutes with a well-formed prompt.
 
 ### Fuzz Target Generation Workflow
 
-```cpp
+Here's the overall pipeline: you describe your API and invariants, the AI generates the harness, and then libFuzzer takes over and mutates inputs looking for crashes.
 
+```cpp
 Source Code --> Prompt AI --> Fuzz Harness --> libFuzzer --> Crashes
      |               |              |              |            |
      v               v              v              v            v
   API surface    Identify       LLVMFuzzer    Coverage-    Triage &
-
   + invariants   attack         TestOneInput  guided       fix bugs
-
                  surface                      mutation
-
 ```
 
 ---
@@ -31,8 +29,9 @@ Source Code --> Prompt AI --> Fuzz Harness --> libFuzzer --> Crashes
 
 **Answer:**
 
-```cpp
+The key to a good fuzzing prompt is telling the AI specifically what kinds of bad inputs you're worried about. Vague prompts produce generic harnesses; specific prompts produce harnesses that actually exercise the risky paths.
 
+```cpp
 === PROMPT ===
 
 "Generate a libFuzzer harness for this JSON parser.
@@ -44,11 +43,11 @@ Target:
 - Memory safety (buffer overruns in string parsing)
 
 Include a seed corpus and fuzzing dictionary."
-
 ```
 
-```cpp
+The AI generates a harness around the parser's public API. Notice the round-trip property check inside - if parsing succeeds, we serialize and re-parse, asserting the results match. That single assertion catches a whole class of bugs where parsing and serialization aren't inverses of each other.
 
+```cpp
 // === Target: a simple JSON parser ===
 class JsonParser {
 public:
@@ -90,7 +89,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 // 7. corpus/array:            [1,"two",null]
 // 8. corpus/object:           {"key":"value","n":42}
 // 9. corpus/nested:           {"a":{"b":{"c":[1,2,3]}}}
-// 10. corpus/unicode:         "\u0041\u00e9\u4e16\u754c"
+// 10. corpus/unicode:         "Aé世界"
 
 // === Fuzzing dictionary (json.dict) ===
 // Save as json.dict, run with: ./json_fuzz -dict=json.dict corpus/
@@ -109,15 +108,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 // "\\u0000"        # null byte in string
 // "\\n"
 // "\\t"
-
 ```
+
+The seed corpus and dictionary together give libFuzzer a head start - it doesn't have to discover from random bytes that `{` and `"` are meaningful characters. This dramatically speeds up coverage.
 
 ### Q2: Generate property-based tests
 
 **Answer:**
 
-```cpp
+Property-based testing is about expressing the mathematical invariants your data structure should always satisfy, then letting a framework like RapidCheck throw thousands of random inputs at those invariants. The hard part is identifying the right properties. This is where AI is genuinely useful - it tends to suggest the classic set (insert/find, commutativity, sorted order, idempotency) that catch real bugs.
 
+```cpp
 === PROMPT ===
 
 "Generate property-based tests for a C++ BTree<K,V>
@@ -129,11 +130,11 @@ Properties to verify:
 3. Iteration produces sorted order
 4. Remove + find returns empty
 5. Insert order doesn't affect final tree content"
-
 ```
 
-```cpp
+Each `RC_GTEST_PROP` is a property that gets checked against hundreds of randomly generated inputs. If RapidCheck finds a failing case, it automatically shrinks the input to the minimal example that reproduces the failure - which is a huge help for debugging.
 
+```cpp
 #include <rapidcheck.h>
 
 // Property 1: Insert then find always succeeds
@@ -210,15 +211,17 @@ RC_GTEST_PROP(BTreeProperties, RemoveThenFindFails,
     tree.remove(to_remove);
     RC_ASSERT(!tree.find(to_remove).has_value());
 }
-
 ```
+
+The `RC_PRE` macro is a precondition - it tells RapidCheck to skip test cases where the precondition doesn't hold, rather than fail on them.
 
 ### Q3: Structure-aware fuzzing with AI
 
 **Answer:**
 
-```cpp
+Random byte mutation is fine for simple formats, but for structured binary protocols it's mostly wasted effort - random bytes will fail the magic-number check immediately and the fuzzer never reaches the interesting parsing logic. A structure-aware fuzzer knows what the format looks like and produces mutations that are structurally plausible.
 
+```cpp
 === PROMPT ===
 
 "Generate a structure-aware fuzzer for a protocol buffer
@@ -231,11 +234,11 @@ The protocol handles:
 
 The fuzzer should mutate the structure intelligently,
 not just random bytes."
-
 ```
 
-```cpp
+The custom mutator intercepts libFuzzer's mutation step and replaces it with targeted edits that stay within the structural grammar of the protocol. Each `case` targets a different potential bug class.
 
+```cpp
 // === AI-generated structure-aware fuzzer ===
 
 #include <cstdint>
@@ -309,17 +312,18 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     }
     return 0;
 }
-
 ```
+
+Case 2 (mismatched `payload_len`) and case 3 (truncation mid-record) are particularly valuable - those are the conditions most likely to expose length-check bugs or buffer overreads in the parser.
 
 ---
 
 ## Notes
 
-- AI can generate **seed corpora** that cover diverse input patterns — always ask for them
-- For property-based testing, AI excels at identifying the **right properties** (commutativity, idempotency, round-trip)
-- **Structure-aware fuzzers** are much more effective than random byte mutation for protocols
-- Always enable sanitizers when fuzzing: `-fsanitize=fuzzer,address,undefined`
-- Ask AI to generate a **CMakeLists.txt** for the fuzz target with correct sanitizer flags
-- RapidCheck generators for custom types can be AI-generated: `rc::gen::build<MyType>(...)`
-- Run fuzz tests in CI with a **time budget** (e.g., 60 seconds) per target
+- AI can generate **seed corpora** that cover diverse input patterns - always ask for them, because a good initial corpus makes fuzzing orders of magnitude more effective.
+- For property-based testing, AI excels at identifying the **right properties** to check: commutativity, idempotency, round-trip, and invariant preservation are the classic ones worth starting from.
+- **Structure-aware fuzzers** are much more effective than random byte mutation for protocols - the investment in a custom mutator pays off quickly in coverage.
+- Always enable sanitizers when fuzzing: `-fsanitize=fuzzer,address,undefined` - without them, many memory bugs will silently pass.
+- Ask AI to generate a **CMakeLists.txt** for the fuzz target with correct sanitizer flags, since the build configuration for fuzzing has non-obvious requirements.
+- RapidCheck generators for custom types can be AI-generated: `rc::gen::build<MyType>(...)` - this is the main thing that makes property tests for domain types feasible.
+- Run fuzz tests in CI with a **time budget** (e.g., 60 seconds) per target to catch regressions without blocking the build indefinitely.

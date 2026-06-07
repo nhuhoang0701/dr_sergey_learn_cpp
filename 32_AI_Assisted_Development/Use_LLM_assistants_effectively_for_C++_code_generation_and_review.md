@@ -6,9 +6,11 @@
 
 ## Topic Overview
 
-LLM assistants can dramatically accelerate C++ development when used strategically. They excel at **boilerplate generation**, **code review**, **explaining complex code**, and **exploring design alternatives**. They struggle with **subtle UB**, **complex template errors**, **memory model correctness**, and **ABI compatibility**. Knowing when to trust and when to verify is the key skill.
+LLM assistants can dramatically accelerate C++ development when used strategically. They excel at **boilerplate generation**, **code review**, **explaining complex code**, and **exploring design alternatives**. They struggle with **subtle undefined behavior**, **complex template errors**, **memory model correctness**, and **ABI compatibility**. Knowing when to trust and when to verify is the key skill - and the default posture should always be "verify, then trust" rather than the other way around.
 
 ### LLM Strengths and Weaknesses for C++
+
+The trust levels below are about how much scrutiny to apply, not whether to use the output at all. Even "High" trust means you still read the code before you ship it.
 
 | Task | LLM Effectiveness | Trust Level |
 | --- | --- | --- |
@@ -29,8 +31,9 @@ LLM assistants can dramatically accelerate C++ development when used strategical
 
 **Answer:**
 
-```cpp
+The most important thing to understand about LLM code generation is that the workflow matters as much as the prompt. A single "write me X" prompt gives you one shot at a correct result. A structured generate-review-refine loop catches problems before they compound. The three workflows below are the ones that produce reliable results in practice.
 
+```cpp
 === WORKFLOW 1: GENERATE + REVIEW + REFINE ===
 
 Step 1 - Generate with constraints:
@@ -73,11 +76,13 @@ Step 3 - Address findings:
    - works with move-only types
 
    Then implement CircularBuffer to pass these tests."
-
 ```
 
-```cpp
+Workflow 2 is underused. Asking LLMs to reason about design tradeoffs before writing code produces better implementations because the model is thinking about the problem constraints, not just the first pattern that matches "concurrent map." You also end up with the reasoning documented in the conversation, which helps with code review later.
 
+The following code review example shows how to use an LLM to spot real bugs in existing code. The `SessionManager` below has subtle issues that are worth walking through explicitly.
+
+```cpp
 // === Code review prompt that catches real bugs ===
 // Given this code, ask the LLM:
 
@@ -119,15 +124,17 @@ public:
 // 3. Consider shared_mutex for read-heavy workload
 // 4. remove_expired() could be called from a background thread
 //    on a snapshot to reduce lock contention
-
 ```
+
+A good LLM will identify all four issues above. Issue 1 is the most important: `remove_expired()` holds the mutex while potentially doing slow work inside `expired()`. If `expired()` involves any I/O or blocking, every other thread that needs `mtx_` is stuck. The fix is to collect keys to remove while holding the lock, then do the expensive check without the lock, or to work on a snapshot.
 
 ### Q2: Code review with LLMs - what to check
 
 **Answer:**
 
-```text
+Unstructured review prompts get unstructured results. The prompt template below forces the LLM to check specific categories, rate severity, and show fixes - which gives you something actionable rather than a list of general observations.
 
+```text
 === STRUCTURED CODE REVIEW PROMPT ===
 
 "Review this C++ code for the following categories.
@@ -178,15 +185,17 @@ and show the fix:
 - Any ABI break if this is a public library?
 
 [paste diff]"
-
 ```
+
+The differential review prompt is worth highlighting separately. When reviewing a pull request, you want the LLM focused on what changed, not re-reviewing stable code. Pasting the diff rather than the full file also keeps the context window focused on what matters.
 
 ### Q3: Knowing when NOT to trust LLM output
 
 **Answer:**
 
-```cpp
+There are five areas where LLM output is consistently unreliable for C++. The reason is that these areas require reasoning about subtle invariants and platform-specific behavior that LLMs have seen inconsistently in training data. The rule is simple: generate freely, but always run the verification step before trusting the output in these categories.
 
+```cpp
 === HIGH-RISK AREAS: ALWAYS VERIFY MANUALLY ===
 
 1. LOCK-FREE / ATOMIC CODE:
@@ -224,22 +233,23 @@ and show the fix:
 
 === VERIFICATION PIPELINE ===
 
-Generate → Compile (-Wall -Wextra -Werror)
-        → Static analysis (clang-tidy, cppcheck)
-        → Sanitizers (ASan + UBSan + TSan)
-        → Unit tests (generated or manual)
-        → Code review (human for high-risk areas)
-
+Generate -> Compile (-Wall -Wextra -Werror)
+         -> Static analysis (clang-tidy, cppcheck)
+         -> Sanitizers (ASan + UBSan + TSan)
+         -> Unit tests (generated or manual)
+         -> Code review (human for high-risk areas)
 ```
+
+The memory ordering point deserves a special note. x86 has a relatively strong memory model where many `memory_order_relaxed` bugs go undetected in testing because the hardware enforces stronger ordering than the C++ standard requires. When you run the same code on ARM, the weaker hardware memory model exposes the latent bug. This is one reason "tested on my machine" is not sufficient for lock-free code.
 
 ---
 
 ## Notes
 
-- Use LLMs for the **first draft**, not the **final version** — always review and test
-- **Explain-then-implement** prompts produce better results than direct "write X" prompts
-- For complex code, **generate tests first** then implementation — tests constrain the LLM
-- LLMs are excellent at **code explanation** — use them to understand unfamiliar codebases
-- Always verify with **sanitizers** (`-fsanitize=address,undefined,thread`)
-- **Few-shot examples** from your codebase teach style better than verbal descriptions
-- The best use of LLMs is **pair programming**: you design, LLM implements, you verify
+- Use LLMs for the first draft, not the final version - always review and test before committing.
+- "Explain-then-implement" prompts produce better results than direct "write X" prompts - the explanation phase forces the model to reason about your specific constraints.
+- For complex code, generate tests first then implementation - the tests constrain the LLM to a specific contract and make it much harder to generate plausible-but-wrong code.
+- LLMs are excellent at code explanation - use them to understand unfamiliar codebases quickly.
+- Always verify with sanitizers (`-fsanitize=address,undefined,thread`) - they catch entire categories of AI-generated bugs that unit tests miss.
+- Few-shot examples from your codebase teach style better than verbal descriptions - paste two examples of how your code does something, then ask for a third.
+- The best use of LLMs is pair programming: you design, LLM implements, you verify.
