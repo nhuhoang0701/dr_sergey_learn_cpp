@@ -10,7 +10,9 @@
 
 Symbol visibility controls which symbols in a shared library are accessible to external users and which remain internal. By default, GCC exports **all** symbols from a shared library, creating a bloated dynamic symbol table that slows down load time, increases memory usage, and exposes implementation details that could break if users depend on them. Controlling visibility is essential for professional library development.
 
-On Linux/macOS, the primary mechanisms are `__attribute__((visibility("default")))` for exported symbols and `-fvisibility=hidden` to hide everything by default. On Windows, `__declspec(dllexport)` and `__declspec(dllimport)` serve a similar purpose — but Windows hides symbols by default, the opposite of Unix. A cross-platform library needs a unified export macro that handles both worlds.
+On Linux/macOS, the primary mechanisms are `__attribute__((visibility("default")))` for exported symbols and `-fvisibility=hidden` to hide everything by default. On Windows, `__declspec(dllexport)` and `__declspec(dllimport)` serve a similar purpose - but Windows hides symbols by default, the opposite of Unix. A cross-platform library needs a unified export macro that handles both worlds.
+
+Here is a summary of the four visibility levels available on GCC/Clang and what each one does:
 
 | Visibility Level | GCC/Clang Attribute              | Effect                                        |
 | --- | --- | --- |
@@ -19,20 +21,20 @@ On Linux/macOS, the primary mechanisms are `__attribute__((visibility("default")
 | `internal`      | `visibility("internal")`        | Like hidden + cannot be called even via pointer from outside (rare) |
 | `protected`     | `visibility("protected")`       | Exported but cannot be preempted by another DSO |
 
+To make the practical impact concrete, here is what the symbol count and load performance typically look like once you apply `-fvisibility=hidden` and annotate your public API:
+
 ```cpp
-
-Typical symbol counts for a large library:
-
-  Default visibility (all exported):    ~12,000 symbols
-  With -fvisibility=hidden + macros:    ~800 symbols
-
-  Load time improvement:  ~40% faster
-  Library size reduction: ~15-20%
-  Fewer ODR violation risks across DSOs
-
+// Typical symbol counts for a large library:
+//
+//   Default visibility (all exported):    ~12,000 symbols
+//   With -fvisibility=hidden + macros:    ~800 symbols
+//
+//   Load time improvement:  ~40% faster
+//   Library size reduction: ~15-20%
+//   Fewer ODR violation risks across DSOs
 ```
 
-Beyond performance, hidden visibility also prevents **symbol interposition** — where a user accidentally defines a function with the same name as an internal library function, causing the linker to redirect calls. This is a real source of hard-to-diagnose bugs. With hidden visibility, internal symbols cannot be interposed.
+Those numbers are not just aesthetics. Fewer exported symbols mean the dynamic linker has less work to do at startup, and it means fewer opportunities for **symbol interposition** - a subtle bug where a user accidentally defines a function with the same name as an internal library function, causing the linker to redirect calls. With hidden visibility, internal symbols cannot be interposed.
 
 ---
 
@@ -40,8 +42,9 @@ Beyond performance, hidden visibility also prevents **symbol interposition** —
 
 ### Q1: Build a cross-platform export macro system and apply it to a library API
 
-```cpp
+A real library needs to compile correctly on both Windows (where you use `__declspec`) and Linux/macOS (where you use GCC/Clang visibility attributes). The standard approach is a single `export.h` header that detects the platform and defines consistent macros. Here is how that looks in practice:
 
+```cpp
 // === mylib/export.h ===
 #ifndef MYLIB_EXPORT_H
 #define MYLIB_EXPORT_H
@@ -90,7 +93,7 @@ Beyond performance, hidden visibility also prevents **symbol interposition** —
 
 namespace mylib {
 
-// Entire class exported — all members accessible
+// Entire class exported - all members accessible
 class MYLIB_API Logger {
 public:
     enum class Level { Debug, Info, Warning, Error };
@@ -101,31 +104,33 @@ public:
     void log(Level level, const char* message);
     void set_level(Level min_level);
 
-    // Static factory — also exported because class is MYLIB_API
+    // Static factory - also exported because class is MYLIB_API
     static Logger& instance();
 
 private:
-    struct Impl;           // Pimpl — internal layout hidden from users
+    struct Impl;           // Pimpl - internal layout hidden from users
     Impl* impl_;
 };
 
-// Free function — explicitly exported
+// Free function - explicitly exported
 MYLIB_API void configure_logging(const char* config_path);
 
-// Internal helper — hidden even on non-Windows platforms
+// Internal helper - hidden even on non-Windows platforms
 MYLIB_HIDDEN void internal_log_rotate();
 
 // Deprecated but still exported for backward compat
 MYLIB_DEPRECATED_API void init_logging();
 
 }  // namespace mylib
-
 ```
+
+The key idea is that `MYLIB_BUILDING_DLL` is defined only when compiling the library itself (you set it in your CMake or build system). When users include the header, that macro is not defined and `MYLIB_API` expands to `dllimport` on Windows or `visibility("default")` on Unix - both meaning "this symbol lives in the shared library, please import it."
 
 ### Q2: Use version scripts on Linux to precisely control which symbols are exported, including versioned symbol sets
 
-```cpp
+Version scripts give you even finer control than visibility attributes - you can match symbol patterns, assign symbols to named version nodes, and have multiple implementations of the same function coexist in one `.so`. This is the mechanism glibc uses to maintain backward compatibility across decades.
 
+```cpp
 // === Build command ===
 // g++ -shared -fvisibility=hidden -Wl,--version-script=mylib.map \
 //     -o libmylib.so.2.0.0 mylib.cpp
@@ -159,7 +164,7 @@ MYLIB_2.0 {
 } MYLIB_1.0;  # Inherits from 1.0
 */
 
-// === mylib.cpp — implementation with .symver directives ===
+// === mylib.cpp - implementation with .symver directives ===
 #include <cstdio>
 
 namespace mylib {
@@ -195,18 +200,20 @@ __asm__(".symver configure_logging_v2,_ZN5mylib19configure_loggingEPKc@@MYLIB_2.
 //
 // $ readelf -s --wide libmylib.so | grep GLOBAL | wc -l
 // 12   (instead of hundreds with default visibility)
-
 ```
+
+Notice that `@@` marks the default version (used by newly compiled code) while `@` marks a compat version (used by old binaries). Both functions live side by side in the same `.so`, and the linker picks the right one based on what was recorded at link time.
 
 ### Q3: Diagnose and fix common visibility-related issues: typeinfo across DSO boundaries, template instantiation, and vtable emission
 
-```cpp
+Visibility mistakes rarely cause linker errors - they cause subtle runtime failures like `dynamic_cast` returning null, or two DSOs silently using different copies of the same class. Here are the three most common traps and their fixes:
 
+```cpp
 #include <cstdio>
 #include <typeinfo>
 #include <stdexcept>
 
-// === Problem 1: typeinfo not exported → dynamic_cast fails ===
+// === Problem 1: typeinfo not exported -> dynamic_cast fails ===
 
 // BAD: class hidden by -fvisibility=hidden
 // If a plugin tries dynamic_cast<Base*>(ptr), it fails because
@@ -224,13 +231,13 @@ public:
     virtual ~Base_Fixed() = default;
     virtual void work() = 0;
 };
-// Now both DSOs reference the same typeinfo → dynamic_cast works
+// Now both DSOs reference the same typeinfo -> dynamic_cast works
 
 
 // === Problem 2: Template instantiation in headers ===
 
 // With -fvisibility=hidden, template instantiations in different
-// DSOs get separate copies with hidden visibility → ODR violation
+// DSOs get separate copies with hidden visibility -> ODR violation
 
 template <typename T>
 class MYLIB_HIDDEN Stack {  // hidden by default
@@ -258,16 +265,16 @@ template class MYLIB_API Stack<double>;
 
 // GCC emits the vtable in the TU that defines the first
 // non-inline virtual function. If ALL virtuals are inline,
-// vtable is emitted in every TU → weak symbol.
+// vtable is emitted in every TU -> weak symbol.
 // With -fvisibility=hidden, each DSO gets its own vtable copy!
 
 class MYLIB_API Interface {
 public:
     virtual ~Interface() = default;
-    virtual void method() = 0;          // pure virtual — no definition
+    virtual void method() = 0;          // pure virtual - no definition
     virtual void another() { /* inline */ }
 };
-// WARNING: No non-inline virtual → vtable emitted as weak in every TU
+// WARNING: No non-inline virtual -> vtable emitted as weak in every TU
 
 // FIX: Provide at least one non-inline virtual function defined in the .cpp
 // This anchors the vtable to a single TU in the library.
@@ -278,24 +285,25 @@ public:
     virtual void another() { /* inline ok now */ }
 };
 // In .cpp: Interface_Fixed::~Interface_Fixed() = default;
-// Vtable and typeinfo emitted once → correct visibility
+// Vtable and typeinfo emitted once -> correct visibility
 
 
 int main() {
     std::printf("Visibility examples compiled successfully\n");
     return 0;
 }
-
 ```
+
+The destructor anchoring trick in Problem 3 is easy to forget. The reason this trips people up is that pure-virtual classes often have nothing obvious to put out of line. The destructor is the natural choice - just declare it in the header and define it as `= default` in the `.cpp` file. That is enough to anchor the vtable.
 
 ---
 
 ## Notes
 
-- **Always compile shared libraries with `-fvisibility=hidden`** — then explicitly export only the public API with `MYLIB_API`.
-- On Windows, symbols are **hidden by default** — the inverse of Unix. `__declspec(dllexport)` makes Windows behave like Unix's `visibility("default")`.
-- The **vtable and typeinfo** must be exported for any class used with `dynamic_cast` or `typeid` across DSO boundaries — missing this causes subtle runtime failures, not linker errors.
-- Template instantiations with hidden visibility in different DSOs violate ODR — use **explicit instantiation with export macros** to prevent this.
-- Anchor the vtable by having **at least one non-inline virtual function** defined in a `.cpp` file — this prevents duplicate vtable emission across translation units.
-- Use `nm -D` (dynamic symbols) to audit your library's actual exports — aim to export only what's in your public headers.
-- Version scripts (`-Wl,--version-script=`) provide **finer control** than visibility attributes — they can match patterns, version symbols, and even strip specific internal symbols.
+- Always compile shared libraries with `-fvisibility=hidden` and then explicitly export only the public API with `MYLIB_API`. This is the single most impactful thing you can do for load time and ODR safety.
+- On Windows, symbols are hidden by default - the inverse of Unix. `__declspec(dllexport)` makes Windows behave like Unix's `visibility("default")`.
+- The vtable and typeinfo must be exported for any class used with `dynamic_cast` or `typeid` across DSO boundaries - missing this causes subtle runtime failures, not linker errors.
+- Template instantiations with hidden visibility in different DSOs violate ODR - use explicit instantiation with export macros to prevent this.
+- Anchor the vtable by having at least one non-inline virtual function defined in a `.cpp` file - this prevents duplicate vtable emission across translation units.
+- Use `nm -D` (dynamic symbols) to audit your library's actual exports - aim to export only what's in your public headers.
+- Version scripts (`-Wl,--version-script=`) provide finer control than visibility attributes alone - they can match patterns, version symbols, and strip specific internal symbols.

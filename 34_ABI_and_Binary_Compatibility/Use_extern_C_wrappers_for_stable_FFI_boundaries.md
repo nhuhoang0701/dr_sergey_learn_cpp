@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-`extern "C"` is the fundamental mechanism for creating stable Foreign Function Interface (FFI) boundaries in C++. It disables C++ name mangling, uses C calling conventions, and produces symbols that any language can call — Python (via ctypes/cffi), Rust (via FFI), Java (via JNI), C#, Go, and of course C itself. For any library intended to be consumed across language boundaries or across different C++ compilers, an `extern "C"` wrapper layer is essential.
+`extern "C"` is the fundamental mechanism for creating stable Foreign Function Interface (FFI) boundaries in C++. It disables C++ name mangling, uses C calling conventions, and produces symbols that any language can call - Python (via ctypes/cffi), Rust (via FFI), Java (via JNI), C#, Go, and of course C itself. For any library intended to be consumed across language boundaries or across different C++ compilers, an `extern "C"` wrapper layer is essential.
 
 The C ABI is the **universal interop standard** of systems programming. Unlike C++ ABI (which varies between compilers and even compiler versions), the C ABI on a given platform is stable, well-documented, and universally supported. Every operating system API (POSIX, Win32, Linux syscalls) uses C ABI. Building your library's public interface on top of C ABI guarantees maximum compatibility.
 
@@ -22,13 +22,13 @@ The C ABI is the **universal interop standard** of systems programming. Unlike C
 | Cross-compiler compat     | Not guaranteed               | Guaranteed on same platform |
 | Cross-language compat     | Almost impossible             | Universal                   |
 
-The key constraints of `extern "C"` boundaries:
+Here are the non-negotiable constraints you have to work within at an `extern "C"` boundary. Each one exists for a concrete reason:
 
-1. **No name mangling** — function names are literal symbols.
-2. **No overloading** — each function name must be unique.
-3. **No exceptions across boundary** — must catch and convert to error codes.
-4. **No C++ types in signatures** — use opaque pointers, plain C types, or POD structs.
-5. **No RTTI or virtual dispatch** — handled internally, exposed as function pointers if needed.
+1. **No name mangling** - function names are literal symbols.
+2. **No overloading** - each function name must be unique.
+3. **No exceptions across boundary** - must catch and convert to error codes.
+4. **No C++ types in signatures** - use opaque pointers, plain C types, or POD structs.
+5. **No RTTI or virtual dispatch** - handled internally, exposed as function pointers if needed.
 
 ---
 
@@ -36,8 +36,9 @@ The key constraints of `extern "C"` boundaries:
 
 ### Q1: Design a complete extern "C" wrapper for a C++ library with opaque handle types and proper lifecycle management
 
-```cpp
+The pattern here is: keep all C++ objects completely hidden behind an opaque `typedef struct X* handle` type. Callers never see the real type, so you can change the internals without touching the public API. Every function that could throw must wrap in a try/catch and return an error code - nothing escapes. Let's walk through a database connection library as the example.
 
+```cpp
 // === database.h (C++ internal implementation) ===
 #include <string>
 #include <vector>
@@ -62,7 +63,7 @@ public:
 
     std::vector<std::string> query(const std::string& sql) {
         if (!connected_) throw std::runtime_error("not connected");
-        // Simplified — real implementation would return rows
+        // Simplified - real implementation would return rows
         return {"row1", "row2", "row3"};
     }
 
@@ -79,7 +80,7 @@ private:
 }  // namespace db
 
 
-// === database_c_api.h (PUBLIC C HEADER — ships to all FFI consumers) ===
+// === database_c_api.h (PUBLIC C HEADER - ships to all FFI consumers) ===
 #ifndef DATABASE_C_API_H
 #define DATABASE_C_API_H
 
@@ -90,10 +91,10 @@ private:
 extern "C" {
 #endif
 
-// Opaque handle — hides C++ internals completely
+// Opaque handle - hides C++ internals completely
 typedef struct db_connection_t* db_connection_handle;
 
-// Error codes — stable, well-defined contract
+// Error codes - stable, well-defined contract
 typedef enum {
     DB_OK              = 0,
     DB_ERR_NULL_PARAM  = -1,
@@ -112,7 +113,7 @@ db_error_t db_connect(db_connection_handle handle);
 db_error_t db_disconnect(db_connection_handle handle);
 int        db_is_connected(db_connection_handle handle);
 
-// Query — caller provides buffer, library fills it
+// Query - caller provides buffer, library fills it
 db_error_t db_execute(db_connection_handle handle, const char* sql,
                       int* out_rows_affected);
 
@@ -125,7 +126,7 @@ db_error_t db_result_get_string(db_result_handle result, int column,
                                 const char** out_value);
 db_error_t db_result_destroy(db_result_handle result);
 
-// Last error message — thread-safe via thread-local storage
+// Last error message - thread-safe via thread-local storage
 const char* db_last_error();
 
 #ifdef __cplusplus
@@ -259,13 +260,15 @@ const char* db_last_error() {
 }
 
 }  // extern "C"
-
 ```
+
+Notice that every fallible function ends in a `catch (const std::exception& e)` net. A C caller has no exception handling machinery - if a C++ exception propagates through an `extern "C"` frame the behavior is undefined on every platform, and in practice it usually crashes the process. The thread-local error buffer gives callers a way to get a human-readable message after any failure, which mirrors the `errno`/`strerror` pattern from the C standard library.
 
 ### Q2: Implement callback patterns across FFI boundaries with proper exception safety and lifetime management
 
-```cpp
+Passing callbacks across language boundaries adds another layer of complexity: the callback is foreign code that could do anything, including re-entering your library. The safe approach is to copy the subscriber list under a lock, release the lock, then invoke the callbacks without holding the lock. That way a callback that unregisters itself (or registers a new callback) doesn't deadlock.
 
+```cpp
 #include <cstdio>
 #include <cstring>
 #include <functional>
@@ -368,7 +371,7 @@ int event_system_fire(event_system_handle sys, const event_t* event) {
     std::vector<size_t> to_remove;
     for (size_t i = 0; i < snapshot.size(); ++i) {
         if (snapshot[i].type == event->type) {
-            // CRITICAL: callback is foreign code — must not let
+            // CRITICAL: callback is foreign code - must not let
             // exceptions propagate from C callback
             int result = snapshot[i].callback(event, snapshot[i].user_data);
             if (result != 0) {
@@ -383,9 +386,7 @@ int event_system_fire(event_system_handle sys, const event_t* event) {
         for (auto it = to_remove.rbegin(); it != to_remove.rend(); ++it) {
             if (*it < sys->subs.size()) {
                 sys->subs.erase(sys->subs.begin()
-
                     + static_cast<std::ptrdiff_t>(*it));
-
             }
         }
     }
@@ -419,13 +420,15 @@ int main() {
     event_system_destroy(sys);
     return 0;
 }
-
 ```
+
+The `void* user_data` parameter on the callback is mandatory in a well-designed C API. Without it, the caller has no way to pass context to the callback without global state - and global state makes thread safety a nightmare.
 
 ### Q3: Handle thread safety at FFI boundaries and document the threading contract for your C API
 
-```cpp
+Documenting the threading model is just as important as implementing it. A C consumer in Python or Rust cannot inspect your header to figure out which functions are thread-safe - you have to tell them explicitly. The pattern below uses a reader-writer lock for the cache data and atomic counters for the statistics, giving you concurrent reads without sacrificing write correctness.
 
+```cpp
 #include <cstdio>
 #include <atomic>
 #include <mutex>
@@ -450,7 +453,7 @@ extern "C" {
 
 typedef struct cache_t* cache_handle;
 
-// NOT thread-safe — call from single thread during initialization
+// NOT thread-safe - call from single thread during initialization
 int  cache_create(int max_entries, cache_handle* out);
 void cache_destroy(cache_handle c);
 
@@ -554,7 +557,7 @@ int cache_remove(cache_handle c, const char* key) {
 
 int cache_stats(cache_handle c, cache_stats_t* out) {
     if (!c || !out) return -1;
-    // All reads are atomic — no lock needed
+    // All reads are atomic - no lock needed
     out->hits = c->hits.load(std::memory_order_relaxed);
     out->misses = c->misses.load(std::memory_order_relaxed);
     out->evictions = c->evictions.load(std::memory_order_relaxed);
@@ -587,17 +590,18 @@ int main() {
     cache_destroy(c);
     return 0;
 }
-
 ```
+
+The `cache_stats` function is worth noting: the hit/miss/eviction counters use `memory_order_relaxed` atomics because slightly stale statistics are acceptable, but `current_size` takes a shared lock because an inconsistent size count would be actively misleading.
 
 ---
 
 ## Notes
 
-- **Never let C++ exceptions cross `extern "C"` boundaries** — this is undefined behavior on every platform. Catch all exceptions and convert to error codes.
-- Use **opaque handles** (`typedef struct X* handle_type`) instead of `void*` — this gives type safety even in C and prevents accidentally passing wrong handle types.
+- **Never let C++ exceptions cross `extern "C"` boundaries** - this is undefined behavior on every platform. Catch all exceptions and convert to error codes.
+- Use **opaque handles** (`typedef struct X* handle_type`) instead of `void*` - this gives type safety even in C and prevents accidentally passing wrong handle types.
 - **Thread-local storage** for error messages (`thread_local char[]`) is the standard pattern for providing detailed error information without thread-safety issues (see `errno`, `strerror`).
-- Callbacks across FFI must use **C calling convention** (`__cdecl` on Windows) — never pass `std::function` or lambda captures across the boundary.
-- Always include a **void* user_data** parameter in callback signatures — this allows callers to pass context without global state.
-- Document **thread-safety guarantees** for every function in your C API — consumers in other languages cannot inspect your implementation.
+- Callbacks across FFI must use **C calling convention** (`__cdecl` on Windows) - never pass `std::function` or lambda captures across the boundary.
+- Always include a **void* user_data** parameter in callback signatures - this allows callers to pass context without global state.
+- Document **thread-safety guarantees** for every function in your C API - consumers in other languages cannot inspect your implementation.
 - The **create/destroy** pattern maps naturally to RAII in C++ consumers and resource management in any other language.

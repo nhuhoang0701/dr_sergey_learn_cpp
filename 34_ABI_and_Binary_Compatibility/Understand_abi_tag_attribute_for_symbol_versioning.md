@@ -8,9 +8,11 @@
 
 ## Topic Overview
 
-The `[[gnu::abi_tag]]` attribute (also written as `__attribute__((abi_tag(...)))`) is GCC's mechanism for changing the mangled name of a symbol without changing its source-level name. It was introduced specifically to solve the `std::string` ABI transition problem in GCC 5, where the implementation changed from COW (copy-on-write) to SSO (small string optimization). Symbols tagged with `abi_tag("cxx11")` get a different mangled name than untagged symbols, causing link failures when mixing old and new binaries — the desired behavior.
+The `[[gnu::abi_tag]]` attribute (also written as `__attribute__((abi_tag(...)))`) is GCC's mechanism for changing the mangled name of a symbol without changing its source-level name. It was introduced specifically to solve the `std::string` ABI transition problem in GCC 5, where the implementation changed from COW (copy-on-write) to SSO (small string optimization). Symbols tagged with `abi_tag("cxx11")` get a different mangled name than untagged symbols, causing link failures when mixing old and new binaries - the desired behavior. A loud linker error is infinitely better than silent memory corruption at runtime.
 
-The attribute can be applied to classes, functions, and variables. When applied to a class, it affects the mangling of every symbol that uses that class in its signature. This is how GCC automatically detects when code compiled with the old `std::string` is mixed with code compiled with the new `std::string` — they have different abi_tags and thus different mangled names.
+The attribute can be applied to classes, functions, and variables. When applied to a class, it affects the mangling of every symbol that uses that class in its signature. This is how GCC automatically detects when code compiled with the old `std::string` is mixed with code compiled with the new `std::string` - they have different abi_tags and thus different mangled names.
+
+If the table feels like a lot, the core message is simple: adding `abi_tag("cxx11")` turns a short mangled name into a long one that includes `__cxx11`, and that difference makes the linker reject mismatched objects instead of silently proceeding.
 
 | Element                      | Without abi_tag             | With `abi_tag("cxx11")`     |
 | --- | --- | --- |
@@ -19,8 +21,9 @@ The attribute can be applied to classes, functions, and variables. When applied 
 | Runtime behavior             | COW semantics               | SSO semantics               |
 | Mixing old+new objects       | Silent corruption           | Linker error                |
 
-```cpp
+The snippet below shows exactly how the tag propagates through the mangled name - notice that the `__cxx11` qualifier shows up not just on the class itself but on every function that takes it as a parameter.
 
+```cpp
 How abi_tag propagates through mangling:
 
   namespace std {
@@ -36,7 +39,6 @@ How abi_tag propagates through mangling:
 
   // Without abi_tag:
   // _Z7processSs  (abbreviated form for std::string)
-
 ```
 
 The abi_tag mechanism is distinct from inline namespaces, though they are often used together. Inline namespaces change mangling by adding a namespace qualifier, while abi_tag adds a special `B<tag>` markup to the mangled name that can apply to individual entities without nesting in a namespace.
@@ -47,8 +49,9 @@ The abi_tag mechanism is distinct from inline namespaces, though they are often 
 
 ### Q1: Apply abi_tag to your own library types to create tagged symbol versions that detect ABI mismatches at link time
 
-```cpp
+Here we build a `SmallString` class whose layout changed between versions (v1 was heap-only, v2 adds an SSO buffer). Applying `[[gnu::abi_tag("sso")]]` to the class makes every function that mentions `SmallString` in its signature carry the tag in its mangled name. If anyone compiles against the v1 header and tries to link with the v2 library, the linker will refuse rather than silently corrupt memory.
 
+```cpp
 #include <cstdio>
 #include <cstring>
 #include <cstddef>
@@ -147,13 +150,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice the `^^^^` markers in the comments - the `B3sso` tag appears on every function that touches the tagged type, not just on the class itself. That's the transitivity rule in action.
 
 ### Q2: Understand how GCC's cxx11 abi_tag works with std::string and diagnose common dual-ABI issues
 
-```cpp
+This is the scenario most Linux developers actually encounter in practice. You have a pre-GCC-5 library sitting on the system, and you're compiling with a modern GCC. If your code passes `std::string` across that library boundary, the linker will complain about an unresolved symbol because the two sides are looking for different mangled names. The code below shows how to check which ABI is active and how to reason about the size difference, which is a dead giveaway when you need to diagnose this at runtime.
 
+```cpp
 #include <string>
 #include <cstdio>
 
@@ -185,7 +190,7 @@ std::string transform(const std::string& input) {
 // If B calls A's function that takes std::string:
 //   B looks for: _Z4funcB5cxx11RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
 //   A exports:   _Z4funcRKSs
-//   → LINKER ERROR (safe failure)
+//   -> LINKER ERROR (safe failure)
 //
 // Workarounds:
 // 1. Recompile A with new GCC (best solution)
@@ -255,13 +260,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `sizeof(std::string)` check is the simplest sanity test you can do: 32 bytes means new ABI, 8 bytes means old. A 4x size difference makes it obvious why naively mixing the two would corrupt memory immediately.
 
 ### Q3: Build a library that uses abi_tag to provide both old and new implementations simultaneously
 
-```cpp
+The idea here is that during a major library transition, you can keep the old implementation alive and accessible via a non-inline namespace, while the new tagged implementation becomes the default. The `abi_tag` on the v2 `Encoder` ensures that any code compiled against the new header will link only to the new symbols, while old pre-existing binaries continue to find the old untagged symbols. Both live in the same `.so`.
 
+```cpp
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -373,8 +380,8 @@ private:
     char* buffer_;
     int capacity_;
     int size_;
-    int flags_;       // new field — sizeof changed!
-    // Layout and alignment are different from v1 → ABI break
+    int flags_;       // new field - sizeof changed!
+    // Layout and alignment are different from v1 -> ABI break
 };
 
 }  // namespace v2_impl
@@ -395,7 +402,7 @@ namespace legacy {
 // Function signatures include the abi_tag through the type
 void process_data(Encoder& enc, const char* input) {
     // If Encoder has [[gnu::abi_tag("simd")]], this function's
-    // mangled name includes the tag → incompatible with v1 callers
+    // mangled name includes the tag -> incompatible with v1 callers
     enc.encode(input, static_cast<int>(std::strlen(input)));
     std::printf("Encoded %d bytes (aligned=%d)\n",
                 enc.size(), enc.alignment());
@@ -416,17 +423,18 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `codec::legacy::Encoder` at the bottom is the migration path: old code that was already compiled against v1 keeps working, while new code gets the tagged v2 symbols. Only when you drop the `legacy` namespace entirely do you cut support for the old ABI.
 
 ---
 
 ## Notes
 
-- `[[gnu::abi_tag("tag")]]` modifies the **mangled symbol name** by inserting `B<len><tag>` — any function using the tagged type gets the tag transitively.
-- The `_GLIBCXX_USE_CXX11_ABI` macro controls whether libstdc++ uses the `abi_tag("cxx11")`-tagged implementations — set to 0 to link with pre-GCC5 libraries.
+- `[[gnu::abi_tag("tag")]]` modifies the **mangled symbol name** by inserting `B<len><tag>` - any function using the tagged type gets the tag transitively.
+- The `_GLIBCXX_USE_CXX11_ABI` macro controls whether libstdc++ uses the `abi_tag("cxx11")`-tagged implementations - set to 0 to link with pre-GCC5 libraries.
 - abi_tag is **transitive**: if a function's parameter or return type has an abi_tag, the function itself gets tagged in its mangled name.
 - Multiple abi_tags can be applied to a single entity: `[[gnu::abi_tag("v2", "experimental")]]`.
-- abi_tag is a **GCC/Clang extension** — MSVC does not support it. Cross-platform code should guard with `#if __has_cpp_attribute(gnu::abi_tag)`.
-- The demangled form shows tags as `[abi:tagname]`, e.g., `mylib::SmallString[abi:sso]` — look for these in `nm -C` output to diagnose link errors.
-- `sizeof(std::string)` is 32 bytes with cxx11 ABI (SSO) vs 8 bytes with old ABI (COW) — a dramatic difference that makes mixing catastrophic.
+- abi_tag is a **GCC/Clang extension** - MSVC does not support it. Cross-platform code should guard with `#if __has_cpp_attribute(gnu::abi_tag)`.
+- The demangled form shows tags as `[abi:tagname]`, e.g., `mylib::SmallString[abi:sso]` - look for these in `nm -C` output to diagnose link errors.
+- `sizeof(std::string)` is 32 bytes with cxx11 ABI (SSO) vs 8 bytes with old ABI (COW) - a dramatic difference that makes mixing catastrophic.

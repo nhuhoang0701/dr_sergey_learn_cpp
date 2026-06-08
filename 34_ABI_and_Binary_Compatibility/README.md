@@ -1,6 +1,6 @@
 # ABI & Binary Compatibility
 
-Understanding and managing Application Binary Interface stability: Itanium/MSVC ABI layout, symbol visibility, shared library versioning, ABI-stable interface design, and binary compatibility across compiler versions.
+ABI (Application Binary Interface) is the contract that governs how compiled code communicates at the machine level - calling conventions, vtable layout, name mangling, struct padding, exception unwinding. When that contract is broken, you get link errors, crashes, or silent wrong-behavior at runtime. This section covers everything you need to reason about ABI stability, control it deliberately, and avoid the classic pitfalls.
 
 **Topics:** 10
 
@@ -19,13 +19,13 @@ Understanding and managing Application Binary Interface stability: Itanium/MSVC 
 
 ## Notes
 
-- ABI defines how code interacts at binary level: calling conventions, vtable layout, name mangling
-- The Itanium ABI is used by GCC and Clang on most platforms; MSVC has its own ABI
-- Changing virtual function order, adding virtual functions, or modifying class layout breaks ABI
-- Inline namespaces allow ABI versioning — std::string changed ABI between libstdc++ versions
-- Pimpl idiom preserves ABI — adding private members doesn't change class size visible to users
-- extern "C" functions have stable ABI — use them for plugin interfaces and FFI boundaries
-- std::function and std::any provide ABI-stable type erasure for library boundaries
-- Symbol visibility (__attribute__((visibility("default")))) controls what's exported from shared libraries
-- Mixing different C++ standard library versions (libstdc++ vs libc++) in one process is dangerous
-- Use -fvisibility=hidden and explicit exports to minimize ABI surface area
+- ABI defines how code interacts at the binary level: calling conventions, vtable layout, and name mangling are all part of the contract.
+- The Itanium ABI is used by GCC and Clang on most platforms; MSVC has its own distinct ABI with different vtable and virtual-inheritance layouts.
+- Changing virtual function order, adding virtual functions, or modifying class layout breaks ABI and will cause silent mismatches or crashes in already-compiled code.
+- Inline namespaces allow ABI versioning - `std::string` changed its ABI between libstdc++ versions using exactly this mechanism.
+- The Pimpl idiom preserves ABI because adding private members only changes the hidden `Impl` struct, not the class size visible to users.
+- `extern "C"` functions have a stable, name-mangling-free ABI - use them for plugin interfaces and FFI boundaries.
+- `std::function` and `std::any` provide ABI-stable type erasure that is useful at library boundaries.
+- Symbol visibility (`__attribute__((visibility("default")))`) controls what gets exported from a shared library and directly affects load time and ODR safety.
+- Mixing different C++ standard library versions (libstdc++ vs libc++) in one process is dangerous and almost always leads to subtle corruption.
+- Use `-fvisibility=hidden` and explicit export macros to minimize your ABI surface area - smaller is safer.

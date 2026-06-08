@@ -8,9 +8,11 @@
 
 ## Topic Overview
 
-The Itanium C++ ABI is the de facto standard ABI used by GCC, Clang, and most non-MSVC compilers on Linux, macOS, and many other platforms. It defines the binary layout of vtables, RTTI structures, exception handling tables, and name mangling — ensuring that object files compiled by different conforming compilers can link together. Understanding this ABI is critical when building shared libraries, debugging corrupted vtables, or performing binary analysis.
+The Itanium C++ ABI is the de facto standard ABI used by GCC, Clang, and most non-MSVC compilers on Linux, macOS, and many other platforms. It defines the binary layout of vtables, RTTI structures, exception handling tables, and name mangling - ensuring that object files compiled by different conforming compilers can link together. Understanding this ABI is critical when building shared libraries, debugging corrupted vtables, or performing binary analysis.
 
-A vtable in the Itanium ABI is not simply an array of function pointers. Each vtable contains an **offset-to-top** value (used for `dynamic_cast` and virtual base adjustments), a **pointer to the typeinfo object**, followed by the virtual function pointers in declaration order. When a class has multiple bases, secondary vtables are emitted for each base subobject, forming a **vtable group**. The primary base class shares the primary vtable, while secondary bases get their own vtable entries with thunks to adjust the `this` pointer.
+Here is the part that surprises people: a vtable in the Itanium ABI is not simply an array of function pointers. Each vtable contains an **offset-to-top** value (used for `dynamic_cast` and virtual base adjustments), a **pointer to the typeinfo object**, and then the virtual function pointers in declaration order. When a class has multiple bases, secondary vtables are emitted for each base subobject, forming a **vtable group**. The primary base class shares the primary vtable, while secondary bases get their own vtable entries with thunks to adjust the `this` pointer.
+
+If the table below feels like a lot, just remember: the vtable slots at negative indices are metadata, and the non-negative indices are the actual function pointers.
 
 | Vtable Component         | Offset (slots) | Purpose                                      |
 | --- | --- | --- |
@@ -20,7 +22,7 @@ A vtable in the Itanium ABI is not simply an array of function pointers. Each vt
 | virtual function ptr [1] | 1               | Second virtual function                       |
 | ...                      | ...             | Continues for all virtual functions            |
 
-RTTI structures follow a specific hierarchy: `__class_type_info` for classes without bases, `__si_class_type_info` for single non-virtual public inheritance, and `__vmi_class_type_info` for everything else (multiple or virtual inheritance). Each includes the mangled name and base class descriptors with offset/flag fields.
+RTTI structures follow a specific hierarchy: `__class_type_info` for classes without bases, `__si_class_type_info` for single non-virtual public inheritance, and `__vmi_class_type_info` for everything else (multiple or virtual inheritance). Each includes the mangled name and base class descriptors with offset/flag fields. The reason this matters in practice is that `dynamic_cast` and `typeid` both walk these structures at runtime, so their correctness depends on the whole chain being consistent.
 
 Exception handling uses a two-phase model: phase 1 searches for a handler (personality routine + LSDA), phase 2 performs the actual unwinding. The Language-Specific Data Area (LSDA) encodes call-site ranges, action tables linking to type filters, and cleanup actions. The `.gcc_except_table` section holds this data, while `.eh_frame` holds the CFI (Call Frame Information) for stack unwinding.
 
@@ -30,8 +32,9 @@ Exception handling uses a two-phase model: phase 1 searches for a handler (perso
 
 ### Q1: Given a diamond inheritance hierarchy, predict the vtable group layout including offset-to-top and thunks
 
-```cpp
+Diamond inheritance is one of the harder layout scenarios to reason about, because virtual bases mean the compiler has to place the shared `Base` subobject in exactly one location and give every path to it a way to find it. The `offset-to-top` field is the key - each subobject's vtable records how far back you have to go to reach the start of the complete object, so `dynamic_cast` can reconstruct the full picture. Let's look at how this plays out in code.
 
+```cpp
 #include <cstdio>
 #include <cstdint>
 
@@ -65,7 +68,7 @@ void inspect_layout() {
     // The vptr is typically the first member of the object
     auto obj_addr = reinterpret_cast<std::uintptr_t>(&d);
 
-    // Primary vtable (Left subobject) — first pointer in Diamond
+    // Primary vtable (Left subobject) - first pointer in Diamond
     auto primary_vptr = *reinterpret_cast<std::uintptr_t*>(obj_addr);
 
     // Read offset-to-top: located at vptr[-2] (in pointer-sized units)
@@ -77,26 +80,26 @@ void inspect_layout() {
 
     // Call through base pointer to verify thunk dispatch
     Base* bp = &d;
-    bp->identify();  // Should print "Diamond" — possibly through thunk
+    bp->identify();  // Should print "Diamond" - possibly through thunk
 
     Left* lp = &d;
     lp->left_func(); // "Diamond::left"
 
     Right* rp = &d;
-    rp->right_func(); // "Diamond::right" — uses secondary vtable + thunk
+    rp->right_func(); // "Diamond::right" - uses secondary vtable + thunk
 }
 
 int main() {
     inspect_layout();
     return 0;
 }
-
 ```
+
+Notice that when you call through a `Right*`, the compiler uses the secondary vtable and a thunk to adjust `this` before jumping to the real `Diamond::right_func` implementation. That adjustment is what the `offset-to-top` makes possible.
 
 **Expected Layout (Itanium ABI, 64-bit):**
 
 ```cpp
-
 Diamond object layout:
   [Left  vptr]         -> primary vtable (offset-to-top = 0)
   [left_data]
@@ -106,13 +109,13 @@ Diamond object layout:
   [padding]
   [Base  vptr]         -> virtual base vtable (offset-to-top = -offset to Diamond start)
   [base_data]
-
 ```
 
 ### Q2: Examine the RTTI structure generated for a class with virtual multiple inheritance and verify typeinfo chaining
 
-```cpp
+RTTI is what powers `dynamic_cast` and `typeid` at runtime. For a class like `Duck` that inherits from multiple bases, the ABI generates a `__vmi_class_type_info` structure that lists every base along with its offset and flags. When you attempt a cross-cast (say, going from an `Animal*` to a `Swimmable*`), the runtime walks this structure to find the right offset. The key insight is that `typeinfo` objects have identity - two references to `typeid(Duck)` must compare equal, which requires both to point to the same address. That guarantee breaks if you use `-fvisibility=hidden` carelessly across shared library boundaries.
 
+```cpp
 #include <typeinfo>
 #include <cstdio>
 #include <cxxabi.h>  // GCC/Clang extension
@@ -176,13 +179,13 @@ int main() {
     inspect_rtti();
     return 0;
 }
-
 ```
 
 ### Q3: Decode the LSDA (Language-Specific Data Area) for a function with multiple catch handlers and understand exception dispatch
 
-```cpp
+The LSDA is the data structure the runtime reads to figure out which catch handler - if any - matches a thrown exception. The reason this trips people up is that the type matching does not happen in simple top-to-bottom order in the source; it uses a pre-built action table that encodes the type filters in reverse order from how the type table is indexed. Phase 1 reads the LSDA to decide whether this stack frame can handle the exception; phase 2 actually runs the landing pad code. The comment block inside the code shows the conceptual layout the compiler generates for this exact function.
 
+```cpp
 #include <cstdio>
 #include <stdexcept>
 #include <typeinfo>
@@ -254,28 +257,27 @@ int main() {
     }
     return 0;
 }
-
 ```
+
+Watch what happens: even though `TimeoutError` derives from `NetworkError`, the runtime correctly dispatches to the most-derived handler first, because the action table checks `TimeoutError` before `NetworkError`. If you ever see a base-class handler catching a derived exception unexpectedly, the issue is usually in the catch ordering in source, not in the LSDA itself.
 
 **Output:**
 
 ```text
-
 Request type 1: Generic: std::bad_alloc
 Request type 2: Timeout: timeout
 Request type 3: Network: connection refused
 Request type 4: Generic: generic
-
 ```
 
 ---
 
 ## Notes
 
-- The **offset-to-top** field is critical for `dynamic_cast` — it tells the runtime where the complete object starts relative to the current subobject.
-- Itanium ABI guarantees **typeinfo uniqueness by address** for types with default visibility — this breaks if `-fvisibility=hidden` is used across shared library boundaries.
-- Virtual thunks adjust the `this` pointer using the **vcall offset** stored in the vtable, not a fixed offset — this handles virtual inheritance correctly.
-- The LSDA type filter table is indexed in **reverse order** — filter index 1 corresponds to the last entry in the type table.
+- The **offset-to-top** field is critical for `dynamic_cast` - it tells the runtime where the complete object starts relative to the current subobject.
+- Itanium ABI guarantees **typeinfo uniqueness by address** for types with default visibility - this breaks if `-fvisibility=hidden` is used across shared library boundaries.
+- Virtual thunks adjust the `this` pointer using the **vcall offset** stored in the vtable, not a fixed offset - this handles virtual inheritance correctly.
+- The LSDA type filter table is indexed in **reverse order** - filter index 1 corresponds to the last entry in the type table.
 - Exception handling has two phases: phase 1 (search) calls `__gxx_personality_v0` with `_UA_SEARCH_PHASE`, phase 2 (cleanup) calls it with `_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME`.
 - When debugging vtable corruption, compare the vtable pointer against `nm -C library.so | grep "vtable for ClassName"` to find the expected address.
 - Adding a virtual function to a base class **shifts all subsequent vtable entries**, breaking ABI for all derived classes in other translation units.

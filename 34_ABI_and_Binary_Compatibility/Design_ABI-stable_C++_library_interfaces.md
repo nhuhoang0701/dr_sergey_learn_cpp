@@ -8,7 +8,9 @@
 
 ## Topic Overview
 
-Designing an ABI-stable library interface means creating a public API that can evolve — adding features, fixing bugs, changing internal implementation — without requiring users to recompile their applications. This is the gold standard for shared libraries distributed as binaries (system libraries, commercial SDKs, plugin systems). Achieving ABI stability in C++ requires deliberate architectural decisions because the language's compilation model naturally couples binary layout to header declarations.
+Designing an ABI-stable library interface means creating a public API that can evolve - adding features, fixing bugs, changing internal implementation - without requiring users to recompile their applications. This is the gold standard for shared libraries distributed as binaries (system libraries, commercial SDKs, plugin systems). Achieving ABI stability in C++ requires deliberate architectural decisions because the language's compilation model naturally couples binary layout to header declarations.
+
+The reason this is hard in C++ is that a header file is not just documentation - it drives code generation. The moment a user includes your header, the compiler uses it to decide `sizeof`, member offsets, vtable layout, and calling conventions for your types. If you ship a new version of the library and change anything the header describes, every binary that included the old header is now broken.
 
 The core techniques for ABI stability are:
 
@@ -20,18 +22,16 @@ The core techniques for ABI stability are:
 | **Versioned structs**  | Size field in struct for forward compat      | Manual version checking            |
 | **Inline namespace**   | Mangle versions into symbol names           | Detects mismatch, doesn't prevent  |
 
-The decision tree for choosing a technique depends on your constraints:
+If you are not sure which technique to choose, this decision tree helps:
 
 ```cpp
-
-Need cross-language interop? ──YES──► C wrapper layer + opaque handles
-         │ NO
-Plugin architecture? ──YES──► Abstract interface + factory
-         │ NO
-Single implementation? ──YES──► Pimpl idiom
-         │ NO
-Need maximum performance? ──YES──► Versioned struct + C API
-
+// Need cross-language interop? --YES--> C wrapper layer + opaque handles
+//          | NO
+// Plugin architecture? --YES--> Abstract interface + factory
+//          | NO
+// Single implementation? --YES--> Pimpl idiom
+//          | NO
+// Need maximum performance? --YES--> Versioned struct + C API
 ```
 
 The most robust libraries combine multiple techniques: an internal C++ implementation using Pimpl, a public C++ interface using abstract classes, and a C wrapper layer for FFI consumers. Qt, gRPC, and SQLite are excellent examples of these patterns in production.
@@ -42,9 +42,10 @@ The most robust libraries combine multiple techniques: an internal C++ implement
 
 ### Q1: Implement a full Pimpl-based library class that can safely evolve across versions without ABI breaks
 
-```cpp
+The key insight of Pimpl is that the class visible to users contains exactly one data member - a pointer to a hidden `Impl` struct. The size of a pointer never changes, so `sizeof(ComputeEngine)` is frozen at eight bytes on 64-bit regardless of what you add to the implementation. Here is the full pattern applied to a real-looking library class:
 
-// === mathlib/engine.h (PUBLIC HEADER — ships to users) ===
+```cpp
+// === mathlib/engine.h (PUBLIC HEADER - ships to users) ===
 #pragma once
 #include <memory>
 
@@ -73,7 +74,7 @@ public:
     ComputeEngine(const ComputeEngine&) = delete;
     ComputeEngine& operator=(const ComputeEngine&) = delete;
 
-    // Public API — adding new methods is ABI-safe
+    // Public API - adding new methods is ABI-safe
     void set_precision(int digits);
     double compute(double a, double b, int operation);
 
@@ -86,17 +87,17 @@ public:
     void reset();
 
 private:
-    // This is the ONLY data member — sizeof never changes
+    // This is the ONLY data member - sizeof never changes
     struct Impl;
     std::unique_ptr<Impl> impl_;
     // sizeof(ComputeEngine) = sizeof(unique_ptr<Impl>) = 8 bytes (64-bit)
-    // This is FROZEN — it will never change regardless of internal evolution
+    // This is FROZEN - it will never change regardless of internal evolution
 };
 
 }  // namespace mathlib
 
 
-// === mathlib/engine.cpp (INTERNAL — never shipped to users) ===
+// === mathlib/engine.cpp (INTERNAL - never shipped to users) ===
 // #include "engine.h"
 #include <vector>
 #include <string>
@@ -171,13 +172,15 @@ void ComputeEngine::reset() {
 }
 
 }  // namespace mathlib
-
 ```
+
+Notice that the destructor must be defined in the `.cpp` file even if it is `= default`. If you default it in the header, the compiler tries to generate it there, but `Impl` is incomplete at that point and `unique_ptr`'s destructor fails. Moving the destructor definition to the `.cpp` is not optional with Pimpl.
 
 ### Q2: Design a plugin system using abstract interfaces with factory registration that maintains ABI stability
 
-```cpp
+Abstract interfaces work differently from Pimpl. Instead of hiding data, you expose only pure-virtual methods and ship a factory function. Plugins implement the interface, and the host loads them without knowing or caring about the concrete type. The tricky part is versioning: once you publish an interface, you can never reorder or remove virtual methods - you can only append.
 
+```cpp
 #include <cstdio>
 #include <memory>
 #include <cstring>
@@ -199,12 +202,12 @@ public:
     virtual int process(const void* input, int input_size,
                         void* output, int output_capacity) = 0;
 
-    // v1.1: added at END — ABI-safe for host built with v1.1+
+    // v1.1: added at END - ABI-safe for host built with v1.1+
     // Plugins built against v1.0 will have garbage here!
     // Solution: query interface pattern (see below)
 };
 
-// ABI version negotiation — critical for safety
+// ABI version negotiation - critical for safety
 struct PluginInfo {
     int struct_size;          // = sizeof(PluginInfo), for forward compat
     int abi_version;          // incrementing ABI version number
@@ -213,7 +216,7 @@ struct PluginInfo {
     const char* author;
 };
 
-// C ABI entry points — every plugin exports these
+// C ABI entry points - every plugin exports these
 extern "C" {
     typedef IPlugin* (*CreatePluginFn)();
     typedef void (*DestroyPluginFn)(IPlugin*);
@@ -235,7 +238,7 @@ public:
     virtual void* query_interface(InterfaceId id) = 0;
 };
 
-// Extended interface — only available from v1.1 plugins
+// Extended interface - only available from v1.1 plugins
 class IBatchPlugin {
 public:
     virtual ~IBatchPlugin() = default;
@@ -297,13 +300,15 @@ extern "C" {
         return &info;
     }
 }
-
 ```
+
+The `query_interface` pattern is COM-inspired and solves the "can't add virtuals to a frozen interface" problem. The host calls `query_interface(InterfaceId::IBatchPlugin)` and checks for null - if null, the plugin is old and doesn't support batch processing; if non-null, it does. No vtable ordering is disturbed.
 
 ### Q3: Implement the versioned struct pattern for C-compatible configuration structures that can grow over time
 
-```cpp
+This pattern is used by Vulkan, Win32 API, and DirectX. The idea is to put a `struct_size` field first. Old callers set it to the size they know about; new library code checks the size before touching any field to determine which version of the struct it received. No version enum, no separate version parameter - the struct carries its own version as its size.
 
+```cpp
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -314,7 +319,7 @@ extern "C" {
 
 struct EngineConfig {
     // v1.0 fields (NEVER reorder or remove)
-    std::uint32_t struct_size;      // MUST be first — set to sizeof(EngineConfig)
+    std::uint32_t struct_size;      // MUST be first - set to sizeof(EngineConfig)
     std::uint32_t flags;
     std::uint32_t max_threads;
     std::uint32_t queue_depth;
@@ -332,18 +337,18 @@ struct EngineConfig {
 #define CONFIG_HAS_FIELD(cfg, field) \
     ((cfg)->struct_size >= offsetof(EngineConfig, field) + sizeof((cfg)->field))
 
-// Library-side initialization — handles any version of the struct
+// Library-side initialization - handles any version of the struct
 int engine_init(const EngineConfig* cfg) {
     if (!cfg || cfg->struct_size < 16) {
         std::fprintf(stderr, "Invalid config: too small\n");
         return -1;
     }
 
-    // v1.0 fields — always present
+    // v1.0 fields - always present
     std::printf("flags: 0x%x, threads: %u, queue: %u\n",
                 cfg->flags, cfg->max_threads, cfg->queue_depth);
 
-    // v1.1 fields — check before accessing
+    // v1.1 fields - check before accessing
     if (CONFIG_HAS_FIELD(cfg, timeout_ms)) {
         std::printf("timeout: %u ms, retries: %u\n",
                     cfg->timeout_ms, cfg->retry_count);
@@ -351,7 +356,7 @@ int engine_init(const EngineConfig* cfg) {
         std::printf("Using default timeout (no v1.1 fields)\n");
     }
 
-    // v1.2 fields — check before accessing
+    // v1.2 fields - check before accessing
     if (CONFIG_HAS_FIELD(cfg, max_memory_bytes)) {
         std::printf("max memory: %llu bytes\n",
                     static_cast<unsigned long long>(cfg->max_memory_bytes));
@@ -366,7 +371,7 @@ int engine_init(const EngineConfig* cfg) {
 }
 
 int main() {
-    // Modern caller (v1.2) — fills everything
+    // Modern caller (v1.2) - fills everything
     EngineConfig cfg{};
     cfg.struct_size = sizeof(EngineConfig);
     cfg.flags = 0x01;
@@ -393,17 +398,18 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `CONFIG_HAS_FIELD` macro calculates whether the struct is large enough to contain a given field by comparing `struct_size` against the field's offset plus its own size. A v1.0 caller sets `struct_size = 16` and the library gracefully falls back to defaults for anything it does not know about. Both the old caller and the new library can upgrade independently.
 
 ---
 
 ## Notes
 
-- **Pimpl** is the simplest ABI stability technique — it guarantees `sizeof(Class)` never changes because the only member is a pointer to the hidden implementation.
-- **Abstract interfaces** work well for plugin systems but require careful vtable management — never reorder or remove virtual functions, only append.
-- The **versioned struct** pattern (used by Vulkan, Win32, DirectX) puts `struct_size` as the first field to enable forward and backward compatibility.
-- Always provide **factory functions** (not constructors) in the public API — `create_widget()` instead of `new Widget()` — so the library controls allocation and can return different implementations.
-- **COM's `QueryInterface`** pattern solves the "can't add virtuals" problem by allowing clients to discover extended interfaces at runtime.
-- Combine techniques: use Pimpl for classes, C wrapper for FFI, and inline namespaces for version detection — defense in depth.
+- Pimpl is the simplest ABI stability technique - it guarantees `sizeof(Class)` never changes because the only member is a pointer to the hidden implementation.
+- Abstract interfaces work well for plugin systems but require careful vtable management - never reorder or remove virtual functions, only append.
+- The versioned struct pattern (used by Vulkan, Win32, DirectX) puts `struct_size` as the first field to enable forward and backward compatibility.
+- Always provide factory functions (not constructors) in the public API - `create_widget()` instead of `new Widget()` - so the library controls allocation and can return different implementations.
+- COM's `QueryInterface` pattern solves the "can't add virtuals" problem by allowing clients to discover extended interfaces at runtime.
+- Combine techniques: use Pimpl for classes, C wrapper for FFI, and inline namespaces for version detection - defense in depth.
 - Test ABI stability with `abi-compliance-checker` or `abidiff` in CI to catch accidental breaks before release.

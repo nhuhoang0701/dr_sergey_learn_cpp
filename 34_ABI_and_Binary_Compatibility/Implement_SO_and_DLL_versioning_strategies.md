@@ -8,24 +8,22 @@
 
 ## Topic Overview
 
-Shared library versioning is the mechanism that allows multiple incompatible versions of a library to coexist on a system, and ensures that applications link against the correct version. On Linux, this is handled through the **soname** convention and symbolic links. On Windows, DLL versioning uses a combination of file naming, embedded version resources, and SxS (Side-by-Side) assemblies. Getting versioning right prevents "DLL hell" and "dependency hell" — two of the most notorious deployment problems in software engineering.
+Shared library versioning is the mechanism that allows multiple incompatible versions of a library to coexist on a system, and ensures that applications link against the correct version. On Linux, this is handled through the **soname** convention and symbolic links. On Windows, DLL versioning uses a combination of file naming, embedded version resources, and SxS (Side-by-Side) assemblies. Getting versioning right prevents "DLL hell" and "dependency hell" - two of the most notorious deployment problems in software engineering.
 
-The Linux soname convention uses a three-part version number embedded in the library filename:
+The Linux soname convention uses a three-part version number embedded in the library filename. Here is how the parts map to the actual files and symlinks on disk:
 
 ```cpp
-
-libmylib.so.2.4.1
-  │         │ │ │
-  │         │ │ └── patch: bug fixes, fully compatible
-  │         │ └──── minor: new features, backward compatible
-  │         └────── major: ABI-breaking changes
-  │
-  └── "real name" on disk
-
-Symbolic links:
-  libmylib.so       → libmylib.so.2.4.1  (linker name, used by -lmylib)
-  libmylib.so.2     → libmylib.so.2.4.1  (soname, embedded in ELF)
-
+// libmylib.so.2.4.1
+//   |         | | |
+//   |         | | +-- patch: bug fixes, fully compatible
+//   |         | +---- minor: new features, backward compatible
+//   |         +------ major: ABI-breaking changes
+//   |
+//   +-- "real name" on disk
+//
+// Symbolic links:
+//   libmylib.so       -> libmylib.so.2.4.1  (linker name, used by -lmylib)
+//   libmylib.so.2     -> libmylib.so.2.4.1  (soname, embedded in ELF)
 ```
 
 | Version Component | When to Bump | ABI Impact                              |
@@ -34,7 +32,7 @@ Symbolic links:
 | Minor (x.4.x)    | New symbols  | Old binaries CAN use new (subset)       |
 | Patch (x.x.1)    | Bug fix only | Fully interchangeable                   |
 
-On Windows, there is no equivalent of soname — DLL resolution uses the **search path** (application directory, system directories, PATH). This means version conflicts are resolved by which DLL is found first, not by embedded metadata. The modern solution is SxS manifests or simply shipping DLLs alongside the application. Version information is embedded in the PE resource section via `.rc` files.
+On Windows, there is no equivalent of soname - DLL resolution uses the **search path** (application directory, system directories, PATH). This means version conflicts are resolved by which DLL is found first, not by embedded metadata. The modern solution is SxS manifests or simply shipping DLLs alongside the application. Version information is embedded in the PE resource section via `.rc` files.
 
 ---
 
@@ -42,8 +40,9 @@ On Windows, there is no equivalent of soname — DLL resolution uses the **searc
 
 ### Q1: Build a shared library with proper soname versioning using CMake and verify the runtime linking behavior
 
-```cpp
+CMake handles soname automatically once you set the `VERSION` and `SOVERSION` properties on a library target. Here is a complete setup that produces the correct three-symlink structure:
 
+```cpp
 // === CMakeLists.txt ===
 /*
 cmake_minimum_required(VERSION 3.16)
@@ -130,13 +129,11 @@ MYLIB_API void set_precision(int digits) {
 }
 
 }
-
 ```
 
-**Verification commands:**
+After building, use these shell commands to verify that the soname is correctly embedded and that the symlinks are in place:
 
 ```bash
-
 # After building:
 $ ls -la build/
 # libmylib.so -> libmylib.so.2        (linker name symlink)
@@ -154,13 +151,15 @@ $ readelf -d myapp | grep NEEDED
 
 # At runtime, ld.so searches for libmylib.so.2
 # which is a symlink to whichever 2.x.y is installed
-
 ```
+
+Notice that the application records `libmylib.so.2` (the soname), not `libmylib.so.2.4.1`. This is the whole point: you can replace `libmylib.so.2.4.1` with `libmylib.so.2.5.0` and update the `libmylib.so.2` symlink, and all existing binaries automatically use the new version without relinking.
 
 ### Q2: Implement Linux symbol versioning with `.symver` to maintain multiple function implementations in a single shared library
 
-```cpp
+Sometimes you ship a new version of a library where a function's semantics change in a way that is not safe for old binaries - for example, returning a heap-allocated string that the caller must free. You cannot silently update the function because old callers will not free it. Symbol versioning lets you keep both implementations in the same `.so` and the linker wires each binary to the right one:
 
+```cpp
 #include <cstdio>
 #include <cstring>
 
@@ -224,13 +223,15 @@ MYLIB_2.0 {
 // An app linked against the old .so calls process_string@MYLIB_1.0
 // An app linked against the new .so calls process_string@@MYLIB_2.0
 // Both versions coexist in the same shared library!
-
 ```
+
+The `@@` double-at marks the default version, meaning any new binary linking against this library gets `process_string_v2`. The single `@` marks the compatibility version: an old binary that originally linked against the MYLIB_1.0 version of the symbol continues to call `process_string_v1` forever. This is exactly how glibc has maintained backward compatibility since the 1990s.
 
 ### Q3: Implement Windows DLL versioning with version resources, delay-load, and runtime version checks
 
-```cpp
+Windows does not have a soname, so version management is done differently. You embed version metadata into the DLL via a `.rc` resource file, and consumer code reads it back at runtime using the `version.lib` API. Delay-loading lets you check the version before committing to using the DLL:
 
+```cpp
 // === mylib.rc (Windows Resource File) ===
 /*
 #include <winver.h>
@@ -331,17 +332,18 @@ int main() {
     return 0;
 }
 #endif
-
 ```
+
+The delay-load approach is particularly useful for optional features: link with `/DELAYLOAD:mylib_ext.dll`, check the version before the first call, and gracefully skip functionality if the DLL is absent or incompatible. Without delay-load, a missing DLL causes immediate startup failure even if you never needed it.
 
 ---
 
 ## Notes
 
-- The **soname** (e.g., `libfoo.so.2`) is embedded in the ELF library and recorded by applications at link time — the dynamic linker resolves it at runtime via symlinks.
-- Bump **major version** (soname) only for ABI-breaking changes; keep minor/patch for backward-compatible additions and fixes.
+- The **soname** (e.g., `libfoo.so.2`) is embedded in the ELF library and recorded by applications at link time - the dynamic linker resolves it at runtime via symlinks.
+- Bump the major version (soname) only for ABI-breaking changes; keep minor/patch for backward-compatible additions and fixes.
 - Use `ldconfig` after installing a new `.so` to update the shared library cache and create soname symlinks.
-- On macOS, the equivalent of soname is **install_name** — set via `-install_name @rpath/libfoo.2.dylib` and managed with `install_name_tool`.
-- Windows has no soname equivalent — DLL resolution depends on **search order** (application dir → system dir → PATH), making "DLL hell" a real problem.
-- `.symver` directives allow **multiple implementations** of the same function in one `.so`, selected by the version tag recorded at link time — this is how glibc maintains backward compatibility for decades.
-- Always embed **version resources** in Windows DLLs (`.rc` file) — this enables runtime version checking and is visible in file properties.
+- On macOS, the equivalent of soname is **install_name** - set via `-install_name @rpath/libfoo.2.dylib` and managed with `install_name_tool`.
+- Windows has no soname equivalent - DLL resolution depends on search order (application dir -> system dir -> PATH), making "DLL hell" a real problem.
+- `.symver` directives allow multiple implementations of the same function in one `.so`, selected by the version tag recorded at link time - this is how glibc maintains backward compatibility for decades.
+- Always embed version resources in Windows DLLs (`.rc` file) - this enables runtime version checking and is visible in file properties.

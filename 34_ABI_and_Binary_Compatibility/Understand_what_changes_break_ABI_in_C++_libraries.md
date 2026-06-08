@@ -8,11 +8,13 @@
 
 ## Topic Overview
 
-ABI (Application Binary Interface) compatibility determines whether a new version of a shared library can replace an old one without recompiling dependent applications. Breaking ABI means that existing binaries will malfunction — crashing, corrupting memory, or producing wrong results — even though the source code compiles cleanly. Every C++ library maintainer must know exactly which code changes are ABI-safe and which are not.
+ABI (Application Binary Interface) compatibility determines whether a new version of a shared library can replace an old one without recompiling dependent applications. Breaking ABI means that existing binaries will malfunction - crashing, corrupting memory, or producing wrong results - even though the source code compiles cleanly. Every C++ library maintainer must know exactly which code changes are ABI-safe and which are not.
 
-The fundamental principle: anything that changes the **size, layout, or mangled name** of a type, function, or vtable is an ABI break. This includes surprisingly innocent-looking changes like adding a private data member (changes `sizeof`), adding a virtual function (changes vtable layout), or changing a `constexpr` function to non-`constexpr` (may change calling convention).
+The fundamental principle is this: anything that changes the **size, layout, or mangled name** of a type, function, or vtable is an ABI break. This includes surprisingly innocent-looking changes like adding a private data member (changes `sizeof`), adding a virtual function (changes vtable layout), or changing a `constexpr` function to non-`constexpr` (may change calling convention). The reason this trips people up is that "private" in C++ means hidden from the user's *source* - it does not mean hidden from the *binary layout*. If you add a private field, the compiler has to make the object bigger, and every piece of code that was compiled against the old header will now be using the wrong `sizeof`.
 
-### ABI-Breaking Changes — Complete Matrix
+### ABI-Breaking Changes - Complete Matrix
+
+If the table feels like a lot to absorb, focus on the pattern: anything that touches size, field positions, vtable order, or name encoding is a break. Adding new things that don't disturb existing positions is generally safe.
 
 | Change                                        | Breaks ABI? | Why                                          |
 | --- | :---: | --- |
@@ -32,13 +34,13 @@ The fundamental principle: anything that changes the **size, layout, or mangled 
 | Change function return type                   | **YES**     | Changes mangled name and calling convention   |
 | Change function parameter types               | **YES**     | Changes mangled name                          |
 | Change template parameter                     | **YES**     | Changes mangled name (different instantiation)|
-| Add new enum value (at end)                   | **No**      | Existing values unchanged                     |
-| Add new non-virtual function                  | **No**      | No layout change, new symbol only             |
-| Add new static member                         | **No**      | No layout change                              |
-| Add new overload                              | **No**      | New mangled name, existing unchanged          |
-| Add default argument                          | **No**      | Resolved at compile time, not in binary       |
-| Change function implementation                | **No**      | Same symbol, different code                   |
-| Add new class/struct                          | **No**      | New symbols only                              |
+| Add new enum value (at end)                   | No          | Existing values unchanged                     |
+| Add new non-virtual function                  | No          | No layout change, new symbol only             |
+| Add new static member                         | No          | No layout change                              |
+| Add new overload                              | No          | New mangled name, existing unchanged          |
+| Add default argument                          | No          | Resolved at compile time, not in binary       |
+| Change function implementation                | No          | Same symbol, different code                   |
+| Add new class/struct                          | No          | New symbols only                              |
 
 Changes that are **conditionally ABI-breaking** require special attention: making a previously non-inline function inline (removes the out-of-line definition), changing exception specification (affects mangling in C++17), or modifying alignment attributes.
 
@@ -48,8 +50,9 @@ Changes that are **conditionally ABI-breaking** require special attention: makin
 
 ### Q1: Identify all ABI-breaking changes in a proposed library update and classify their severity
 
-```cpp
+Here we compare an imaginary imaging library at v1.0 against a proposed v1.1 update. Read both class definitions carefully and try to spot each break before looking at the analysis table below.
 
+```cpp
 // === Library v1.0 (currently shipped) ===
 
 namespace imglib {
@@ -84,7 +87,7 @@ void save_image(const Image& img, const char* path, PixelFormat fmt);
 }  // namespace imglib
 
 
-// === Proposed Library v1.1 — REVIEW FOR ABI BREAKS ===
+// === Proposed Library v1.1 - REVIEW FOR ABI BREAKS ===
 
 namespace imglib {
 
@@ -94,20 +97,20 @@ public:
     virtual ~Image();
 
     virtual void render() const;
-    virtual void rotate(double angle);     // [1] NEW virtual — ABI BREAK!
+    virtual void rotate(double angle);     // [1] NEW virtual - ABI BREAK!
     virtual void resize(int w, int h);     // shifted vtable slot!
 
     int width() const;
     int height() const;
     const unsigned char* data() const;
-    std::size_t data_size() const;         // [2] OK — new non-virtual
+    std::size_t data_size() const;         // [2] OK - new non-virtual
 
 private:
     int width_;
     int height_;
     unsigned char* data_;
-    std::size_t data_size_;                // [3] NEW member — ABI BREAK!
-    PixelFormat format_;                   // [4] NEW member — ABI BREAK!
+    std::size_t data_size_;                // [3] NEW member - ABI BREAK!
+    PixelFormat format_;                   // [4] NEW member - ABI BREAK!
     // sizeof(Image) changed: 24 -> 40
 };
 
@@ -115,24 +118,24 @@ enum class PixelFormat : uint32_t {        // [5] specified underlying type
     RGB,                                   //     ABI BREAK if previously defaulted!
     RGBA,
     Grayscale,
-    BGR,                                   // [6] New value at end — OK
-    BGRA                                   // [7] New value at end — OK
+    BGR,                                   // [6] New value at end - OK
+    BGRA                                   // [7] New value at end - OK
 };
 
 void save_image(const Image& img, const char* path, PixelFormat fmt);
-// [8] OK — same signature, same mangled name
+// [8] OK - same signature, same mangled name
 
 bool load_image(const char* path, Image& img);
-// [9] OK — entirely new function
+// [9] OK - entirely new function
 
 }
-
 ```
+
+The virtual function insertion at [1] is especially dangerous because it doesn't just add a new slot - it shunts `resize` down by one position. Any derived class compiled against v1.0 that overrides `resize` will now override the wrong slot at runtime.
 
 **Analysis:**
 
 ```cpp
-
 | # | Change                         | ABI-Breaking? | Impact Level |
 | --- | --- | :---: | :---: |
 | 1 | Added virtual `rotate()`       | YES           | CRITICAL     |
@@ -144,19 +147,19 @@ bool load_image(const char* path, Image& img);
 | 7 | New enum value BGRA            | No            | Safe         |
 | 8 | Unchanged function             | No            | Safe         |
 | 9 | New function                   | No            | Safe         |
-
 ```
 
 ### Q2: Design a class that can safely evolve without ABI breaks using the Pimpl pattern and reserved vtable slots
 
-```cpp
+The Pimpl pattern (pointer to implementation) is the classic solution here. By hiding all data members behind a pointer to an opaque type, `sizeof(Image)` stays constant no matter how much the implementation changes. The pointer is always pointer-sized, and that's the only thing the ABI sees. Virtual reserved slots let you plan for future polymorphism without committing to names yet.
 
+```cpp
 #include <memory>
 #include <cstdio>
 
 namespace imglib {
 
-// Forward declaration only — implementation hidden
+// Forward declaration only - implementation hidden
 struct ImageImpl;
 
 class Image {
@@ -164,7 +167,7 @@ public:
     Image(int w, int h);
     ~Image();
 
-    // Non-virtual public API — adding new methods is ABI-safe
+    // Non-virtual public API - adding new methods is ABI-safe
     int width() const;
     int height() const;
     const unsigned char* data() const;
@@ -227,13 +230,15 @@ void Image::reserved_virtual_2() {}
 void Image::reserved_virtual_3() {}
 
 }  // namespace imglib
-
 ```
+
+Notice that `ImageImpl` can grow without limit in future versions and none of that growth is visible to the caller - from the binary perspective, `Image` is always just a vptr plus a pointer.
 
 ### Q3: Write a test that detects accidental ABI breaks by verifying class layout invariants at compile time
 
-```cpp
+`static_assert` with `sizeof`, `alignof`, and `offsetof` is the simplest and most effective ABI tripwire you can add to a library. These assertions compile to zero runtime cost and fire the moment someone accidentally changes the layout. Think of them as a contract: "if any of these asserts fail, someone needs to bump the soname and update the changelog."
 
+```cpp
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -253,7 +258,7 @@ struct NetworkPacket {
 // === Compile-time ABI checks ===
 // These static_asserts fire instantly if someone changes the layout
 
-// Size check — catches added/removed members
+// Size check - catches added/removed members
 static_assert(sizeof(NetworkPacket) == 24,
     "ABI BREAK: NetworkPacket size changed! Update version.");
 
@@ -261,7 +266,7 @@ static_assert(sizeof(NetworkPacket) == 24,
 static_assert(alignof(NetworkPacket) == 8,
     "ABI BREAK: NetworkPacket alignment changed!");
 
-// Individual member offset checks — catches reordering
+// Individual member offset checks - catches reordering
 static_assert(offsetof(NetworkPacket, magic) == 0,
     "ABI BREAK: 'magic' offset changed!");
 static_assert(offsetof(NetworkPacket, version) == 4,
@@ -275,7 +280,7 @@ static_assert(offsetof(NetworkPacket, payload_len) == 16,
 static_assert(offsetof(NetworkPacket, checksum) == 20,
     "ABI BREAK: 'checksum' offset changed!");
 
-// Triviality checks — ABI-relevant for parameter passing
+// Triviality checks - ABI-relevant for parameter passing
 static_assert(std::is_trivially_copyable_v<NetworkPacket>,
     "ABI BREAK: NetworkPacket must be trivially copyable for memcpy/send!");
 static_assert(std::is_standard_layout_v<NetworkPacket>,
@@ -301,21 +306,22 @@ ASSERT_ABI_STABLE(Config, 24, 8);
 }  // namespace mylib
 
 int main() {
-    // Layout checks passed — binary is ABI-compatible
+    // Layout checks passed - binary is ABI-compatible
     mylib::NetworkPacket pkt{};
     pkt.magic = 0xFEEDFACE;
     return 0;
 }
-
 ```
+
+The `ASSERT_ABI_STABLE` macro at the bottom is a nice convenience - you can drop it on any type you want to protect and get both a size and alignment check with one line.
 
 ---
 
 ## Notes
 
-- **Adding a private data member** is an ABI break — even though it's invisible to users, it changes `sizeof` and all offset calculations.
+- **Adding a private data member** is an ABI break - even though it's invisible to users, it changes `sizeof` and all offset calculations.
 - **Adding a virtual function at the end** shifts secondary vtable entries for derived classes compiled against the old layout.
-- The safest library interface uses **Pimpl + non-virtual functions + extern "C"** — this combination is almost immune to ABI breaks.
+- The safest library interface uses **Pimpl + non-virtual functions + extern "C"** - this combination is almost immune to ABI breaks.
 - Use `static_assert` on `sizeof`, `alignof`, and `offsetof` to create compile-time **ABI tripwires** that catch accidental breaks immediately.
 - When you must break ABI: **bump the soname** (e.g., `libfoo.so.2`), update inline namespace version, and document the break in changelog.
 - KDE and Qt maintain detailed **ABI compatibility policies** that serve as excellent references for library authors.
