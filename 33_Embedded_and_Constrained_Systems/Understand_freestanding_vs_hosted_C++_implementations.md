@@ -2,13 +2,13 @@
 
 **Category:** Embedded & Constrained Systems  
 **Standard:** C++23 (P1642R11, P2338R4)  
-**Reference:** https://en.cppreference.com/w/cpp/freestanding  
+**Reference:** <https://en.cppreference.com/w/cpp/freestanding>  
 
 ---
 
 ## Topic Overview
 
-The C++ standard defines two kinds of implementations: **hosted** and **freestanding**. A hosted implementation provides the full standard library with OS-level services — file I/O, threading, networking, dynamic memory. A freestanding implementation provides only a minimal subset of headers and makes no assumptions about an underlying operating system. Every embedded firmware, kernel module, bootloader, or hypervisor targets a freestanding environment at some level.
+The C++ standard defines two kinds of implementations: **hosted** and **freestanding**. A hosted implementation provides the full standard library with OS-level services - file I/O, threading, networking, dynamic memory. A freestanding implementation provides only a minimal subset of headers and makes no assumptions about an underlying operating system. Every embedded firmware, kernel module, bootloader, or hypervisor targets a freestanding environment at some level.
 
 Understanding the boundary matters because code that accidentally depends on hosted facilities will fail to link or behave unpredictably on bare-metal targets. Senior engineers must know exactly which headers and utilities are available freestanding, and how to structure libraries that work across both worlds.
 
@@ -22,10 +22,11 @@ Understanding the boundary matters because code that accidentally depends on hos
 | Program startup | Runtime calls `main()` after full init | Platform-specific (reset vector, `_start`) |
 | Exceptions/RTTI | Available by default | Often disabled (`-fno-exceptions`) |
 
-C++23 significantly expanded the freestanding header set via **P1642R11** and **P2338R4**. Previously freestanding was limited to `<cstddef>`, `<cstdlib>` (partial), `<cstdint>`, `<type_traits>`, `<limits>`, `<new>`, `<initializer_list>`, and a few more. C++23 adds freestanding-compatible portions of `<optional>`, `<variant>`, `<expected>`, `<string_view>`, `<span>`, `<array>`, `<ranges>`, `<functional>`, `<tuple>`, `<utility>`, and `<bit>`. Headers and entities are annotated with the `// freestanding` comment or the `[[__gnu__::__always_inline__]]`-style markers in implementations.
+C++23 significantly expanded the freestanding header set via **P1642R11** and **P2338R4**. Previously freestanding was limited to `<cstddef>`, `<cstdlib>` (partial), `<cstdint>`, `<type_traits>`, `<limits>`, `<new>`, `<initializer_list>`, and a few more. C++23 adds freestanding-compatible portions of `<optional>`, `<variant>`, `<expected>`, `<string_view>`, `<span>`, `<array>`, `<ranges>`, `<functional>`, `<tuple>`, `<utility>`, and `<bit>`. This is a big deal - it means you can write expressive, modern C++ on bare metal without pulling in any OS-dependent headers.
+
+Here is how to visualize the spectrum from fully freestanding to fully hosted:
 
 ```cpp
-
 ┌──────────────────────────────────────────────────────┐
 │              C++ Implementation Spectrum              │
 ├──────────────┬───────────────────┬───────────────────┤
@@ -39,7 +40,6 @@ C++23 significantly expanded the freestanding header set via **P1642R11** and **
 │ <span>       │                   │ + <regex>         │
 │ <expected>   │                   │ + <networking>    │
 └──────────────┴───────────────────┴───────────────────┘
-
 ```
 
 ---
@@ -48,9 +48,10 @@ C++23 significantly expanded the freestanding header set via **P1642R11** and **
 
 ### Q1: Write a compile-time check that detects whether you are in a freestanding environment, and conditionally provide a logging facility that works in both modes
 
-```cpp
+The key macro here is `__STDC_HOSTED__` - it is 1 for hosted, 0 for freestanding, and it is guaranteed by both the C and C++ standards. You can use it to gate any hosted-only code at the preprocessor level.
 
-// platform_log.h — Works in both freestanding and hosted
+```cpp
+// platform_log.h - Works in both freestanding and hosted
 #pragma once
 
 #include <cstdint>
@@ -101,14 +102,16 @@ inline void log(const char* msg) {
 
 // Usage in any translation unit:
 // platform::log<platform::Severity::Error>("Sensor timeout");
-
 ```
+
+The `if constexpr` on the severity filter means debug-level logging compiles away entirely in release builds - no runtime check, no code generated at all.
 
 ### Q2: Demonstrate which C++23 freestanding utilities you can use to build a safe register-access wrapper without any hosted headers
 
-```cpp
+One of the practical benefits of C++23's expanded freestanding support is that you can now use `std::expected` for error handling and `std::span` for buffer views - both without any hosted dependency. This example builds a full register-access abstraction using only freestanding headers:
 
-// register_access.h — Pure freestanding C++23
+```cpp
+// register_access.h - Pure freestanding C++23
 #pragma once
 
 // All of these are freestanding in C++23
@@ -197,15 +200,17 @@ inline bool spi_is_busy() {
 }
 
 } // namespace hw
-
 ```
+
+Notice that `std::expected` gives you the same expressiveness as exceptions - callers must explicitly handle the error case - without any of the exception table overhead. This is a pattern that will become increasingly common as C++23 compilers mature.
 
 ### Q3: Write a CMake toolchain file and C++ source that compiles for both freestanding (ARM Cortex-M) and hosted (x86-64 Linux) from the same codebase
 
-```cmake
+The key to dual-target code is keeping all hosted-only code behind `#if __STDC_HOSTED__` guards. The core application logic - data structures, algorithms, state machines - should live in files that include only freestanding headers.
 
+```cmake
 # toolchain-arm-none-eabi.cmake
-set(CMAKE_SYSTEM_NAME Generic)       # No OS → freestanding
+set(CMAKE_SYSTEM_NAME Generic)       # No OS -> freestanding
 set(CMAKE_SYSTEM_PROCESSOR arm)
 
 set(CMAKE_C_COMPILER   arm-none-eabi-gcc)
@@ -223,12 +228,10 @@ set(CMAKE_CXX_FLAGS_INIT "${COMMON_FLAGS}")
 
 set(CMAKE_EXE_LINKER_FLAGS_INIT "-T ${CMAKE_SOURCE_DIR}/linker.ld \
     -nostartfiles -Wl,--gc-sections")
-
 ```
 
 ```cpp
-
-// main.cpp — Dual-target source
+// main.cpp - Dual-target source
 #include <cstdint>
 #include <type_traits>
 
@@ -240,8 +243,8 @@ set(CMAKE_EXE_LINKER_FLAGS_INIT "-T ${CMAKE_SOURCE_DIR}/linker.ld \
 namespace app {
 
 struct SensorReading {
-    std::int16_t temperature_centi;  // °C × 100
-    std::uint16_t humidity_pct_x10;  // %RH × 10
+    std::int16_t temperature_centi;  // degrees C x 100
+    std::uint16_t humidity_pct_x10;  // %RH x 10
     std::uint32_t timestamp_ms;
 };
 static_assert(std::is_trivially_copyable_v<SensorReading>,
@@ -281,17 +284,15 @@ int main() {
 extern "C" [[noreturn]] void app_main() {
     app::store_reading({2350, 655, 0});
     while (true) {
-        // Main loop — read sensors, store, sleep
+        // Main loop - read sensors, store, sleep
         asm volatile("wfi");  // Wait For Interrupt
     }
 }
 #endif
-
 ```
 
 ```cmake
-
-# CMakeLists.txt — Build for either target
+# CMakeLists.txt - Build for either target
 cmake_minimum_required(VERSION 3.25)
 project(sensor_fw LANGUAGES CXX)
 
@@ -308,17 +309,16 @@ else()
     message(STATUS "Building hosted for ${CMAKE_HOST_SYSTEM_PROCESSOR}")
     target_compile_options(sensor_app PRIVATE -O2 -Wall -Wextra)
 endif()
-
 ```
 
 ---
 
 ## Notes
 
-- `__STDC_HOSTED__` is the **only** portable macro to detect freestanding vs hosted at the preprocessor level; it is mandated by the C and C++ standards.
-- C++23 freestanding additions (`<optional>`, `<expected>`, `<span>`, `<string_view>`, `<variant>`, `<tuple>`, `<ranges>`, `<functional>`, `<bit>`, `<array>`) do **not** include their throwing members — `.value()` on `optional`/`expected` is **not** freestanding because it would throw.
+- `__STDC_HOSTED__` is the **only** portable macro to detect freestanding vs hosted at the preprocessor level; it is mandated by both the C and C++ standards.
+- C++23 freestanding additions (`<optional>`, `<expected>`, `<span>`, `<string_view>`, `<variant>`, `<tuple>`, `<ranges>`, `<functional>`, `<bit>`, `<array>`) do **not** include their throwing members - `.value()` on `optional`/`expected` is **not** freestanding because it would throw.
 - GCC uses `-ffreestanding` to set `__STDC_HOSTED__` to 0; Clang does the same. MSVC does not natively support freestanding.
 - When writing code for both modes, put all hosted-only code behind `#if __STDC_HOSTED__` guards and keep the core logic header-only with freestanding headers.
-- Freestanding does **not** guarantee `operator new`/`operator delete` — any dynamic allocation must be user-supplied.
+- Freestanding does **not** guarantee `operator new`/`operator delete` - any dynamic allocation must be user-supplied.
 - ARM CMSIS headers and vendor HALs are C headers; wrap with `extern "C"` and validate they compile under `-ffreestanding -std=c++23`.
 - Always `static_assert` layout-critical types with `is_trivially_copyable_v` and `is_standard_layout_v` for DMA and hardware buffer compatibility.

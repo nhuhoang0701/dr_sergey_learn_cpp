@@ -10,20 +10,21 @@
 
 ### Why Power Management Matters
 
-Battery-powered and energy-harvesting devices must minimize power consumption. Modern MCUs provide multiple low-power modes that trade off wake-up latency for power savings:
+Battery-powered and energy-harvesting devices must minimize power consumption. Modern MCUs provide multiple low-power modes that trade off wake-up latency for power savings. The further down the table you go, the less the MCU draws - but the longer it takes to wake up and the less state it retains.
 
 | Mode | Cortex-M | Power | Wake-up | What's preserved |
 | --- | --- | --- | --- | --- |
-| **Run** | Normal | ~10–50 mA | — | Everything |
-| **Sleep** | WFI/WFE | ~1–10 mA | μs | CPU state, RAM, peripherals |
-| **Deep Sleep** | STOP | ~10–100 μA | ms | RAM, RTC, wake-up pins |
-| **Standby** | STANDBY | ~1–5 μA | ms–s | RTC, backup registers only |
+| **Run** | Normal | ~10-50 mA | - | Everything |
+| **Sleep** | WFI/WFE | ~1-10 mA | µs | CPU state, RAM, peripherals |
+| **Deep Sleep** | STOP | ~10-100 µA | ms | RAM, RTC, wake-up pins |
+| **Standby** | STANDBY | ~1-5 µA | ms-s | RTC, backup registers only |
 | **Shutdown** | SHUTDOWN | ~100 nA | s | Nothing (cold boot) |
 
 ### Register-Level Power Control in C++
 
-```cpp
+The `PowerManager` class maps each logical power mode to the correct register writes and ARM intrinsics. The key register is the System Control Register (SCR) in the ARM System Control Block - specifically the `SLEEPDEEP` bit, which tells the processor whether `WFI` should enter normal sleep or deep sleep. Notice that `Standby` and `Shutdown` are marked `[[noreturn]]` in practice because the device resets on wake - execution never returns to the call site.
 
+```cpp
 #include <cstdint>
 
 // ARM Cortex-M System Control Block
@@ -51,7 +52,7 @@ public:
         case PowerMode::Sleep:
             scb::SCR_REG() &= ~static_cast<uint32_t>(scb::SCR::SLEEPDEEP);
             __DSB();
-            __WFI();  // Wait For Interrupt — CPU sleeps, wakes on any interrupt
+            __WFI();  // Wait For Interrupt - CPU sleeps, wakes on any interrupt
             break;
 
         case PowerMode::DeepSleep:
@@ -68,7 +69,7 @@ public:
             configure_standby_mode();
             __DSB();
             __WFI();
-            // Never returns — device resets on wake
+            // Never returns - device resets on wake
             __builtin_unreachable();
 
         case PowerMode::Shutdown:
@@ -101,15 +102,15 @@ private:
     static void configure_shutdown_mode();
     static void restore_clocks();
 };
-
 ```
+
+The `__DSB()` before `__WFI()` is important - it's a Data Synchronization Barrier that ensures all pending memory writes complete before the CPU enters sleep. Without it, a peripheral write that hasn't propagated yet could behave unpredictably when the CPU wakes up.
 
 ### RAII Wake Lock
 
-Prevent the system from entering deep sleep while a critical operation is in progress:
+The wake-lock pattern solves a real problem: how do you prevent the idle task from entering deep sleep while a UART transmission is still in progress? The answer is a reference-counted lock. Any code that needs peripherals to stay active acquires a `WakeLock` on entry. The idle task checks the count before deciding how deep to sleep. RAII ensures the lock is always released when the scope exits, even on early returns.
 
 ```cpp
-
 #include <atomic>
 #include <cstdint>
 
@@ -150,13 +151,15 @@ void idle_task() {
         }
     }
 }
-
 ```
+
+If `transmit_data` is called from multiple concurrent tasks, the count correctly reflects that multiple operations are in flight - deep sleep only becomes legal when all of them have released their locks.
 
 ### Peripheral Power Gating with RAII
 
-```cpp
+Every peripheral has a clock gate in the RCC (Reset and Clock Control) registers. Leaving a peripheral's clock enabled when you're not using it wastes power continuously. The `PeripheralPowerGuard` template turns this into a scoped operation: the constructor enables the clock and initializes the peripheral, the destructor deinitializes and disables the clock. You can't forget the shutdown step because the compiler enforces it.
 
+```cpp
 template<typename Peripheral>
 class PeripheralPowerGuard {
 public:
@@ -188,13 +191,13 @@ uint16_t read_battery_voltage() {
     return value;
     // ~PeripheralPowerGuard powers off ADC automatically
 }
-
 ```
 
 ### RTC Wake-Up Timer
 
-```cpp
+For periodic low-power sensing, you don't want the CPU to stay awake between measurements - you want it to enter deep sleep and have the RTC (Real-Time Clock) wake it up on a schedule. The RTC keeps running in all low-power modes except Shutdown, drawing only a few microamps. The pattern is: do work, schedule the next wake-up, enter deep sleep, repeat.
 
+```cpp
 #include <chrono>
 
 class RTCWakeup {
@@ -236,8 +239,9 @@ void low_power_sensor_loop() {
         // Execution resumes here after RTC wake-up interrupt
     }
 }
-
 ```
+
+The comment "Execution resumes here" is the key thing to understand. After a Sleep or DeepSleep entry via `WFI`, the CPU resumes execution at the instruction immediately following `WFI` once an interrupt fires. For Standby and Shutdown the device resets instead, so those modes are only used when you don't need to preserve any runtime state.
 
 ---
 
@@ -252,22 +256,22 @@ In practice, `WFI` is used for idle-loop sleeping, while `WFE` is used in multi-
 
 ### Q2: Why use the wake-lock pattern
 
-Without wake locks, entering deep sleep during an active UART transmission would corrupt the output (the peripheral clock is gated). The wake-lock pattern ensures:
+Without wake locks, entering deep sleep during an active UART transmission would corrupt the output because the peripheral clock gets gated off mid-transfer. The wake-lock pattern ensures:
 
-- Any code that needs peripherals active holds a `WakeLock`
-- The idle task only enters deep sleep when the lock count is zero
-- RAII ensures the lock is always released, even if an operation fails or returns early
+- Any code that needs peripherals active holds a `WakeLock`.
+- The idle task only enters deep sleep when the lock count is zero.
+- RAII ensures the lock is always released, even if an operation fails or returns early.
 
 ### Q3: Why use RAII for peripheral power gating
 
-Without RAII, you might forget to disable the ADC clock after reading, wasting ~1 mA continuously. With `PeripheralPowerGuard<ADCPeripheral>`, the destructor guarantees the peripheral is powered off when the scope exits — whether by normal return, early return, or (if exceptions are enabled) exception.
+Without RAII, you might forget to disable the ADC clock after reading, wasting ~1 mA continuously. With `PeripheralPowerGuard<ADCPeripheral>`, the destructor guarantees the peripheral is powered off when the scope exits - whether by normal return, early return, or (if exceptions are enabled) exception. You get the correct behavior automatically, with no discipline required at the call site.
 
 ---
 
 ## Notes
 
-- Measure actual current draw with an oscilloscope/current probe — datasheet values are typical, not guaranteed
-- Always disable debug interfaces (SWD/JTAG) in production builds — they prevent deep sleep
-- Test wake-up paths thoroughly — bugs in low-power code are hard to debug
-- Use `__DSB()` (Data Synchronization Barrier) before `__WFI()` to ensure all memory writes complete
-- Consider brown-out detection and voltage supervision for ultra-low-power designs
+- Measure actual current draw with an oscilloscope/current probe - datasheet values are typical, not guaranteed.
+- Always disable debug interfaces (SWD/JTAG) in production builds - they prevent deep sleep on most MCUs.
+- Test wake-up paths thoroughly - bugs in low-power code are hard to debug because the system is asleep when the problem occurs.
+- Use `__DSB()` (Data Synchronization Barrier) before `__WFI()` to ensure all memory writes complete before the CPU sleeps.
+- Consider brown-out detection and voltage supervision for ultra-low-power designs.

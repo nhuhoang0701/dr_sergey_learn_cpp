@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Interrupt Service Routines (ISRs) run in a radically constrained context. On Cortex-M, an ISR preempts the main code (or a lower-priority ISR) at any instruction boundary. Inside an ISR you **cannot** use heap allocation, mutexes, blocking calls, or any function with unbounded execution time. You have microseconds — sometimes nanoseconds — before you must return. Violating these constraints causes priority inversion, stack overflow, missed deadlines, or outright hardware faults.
+Interrupt Service Routines (ISRs) run in a radically constrained context. On Cortex-M, an ISR preempts the main code (or a lower-priority ISR) at any instruction boundary. Inside an ISR you **cannot** use heap allocation, mutexes, blocking calls, or any function with unbounded execution time. You have microseconds - sometimes nanoseconds - before you must return. Violating these constraints causes priority inversion, stack overflow, missed deadlines, or outright hardware faults.
 
 C++ adds specific dangers: virtual function calls through vtables add indirection overhead; `std::function` may allocate; template instantiations can silently pull in large code; and `std::mutex` / `std::lock_guard` will deadlock if called from an ISR that interrupted the lock holder.
 
@@ -22,29 +22,29 @@ C++ adds specific dangers: virtual function calls through vtables add indirectio
 | C++ features | Enum class, `static_assert`, `constexpr`, templates | Exceptions, RTTI, iostream |
 | FPU | Depends on lazy stacking config | Unguarded FPU use without stacking |
 
-```cpp
+The diagram below shows what actually happens at the hardware level when an interrupt fires. The processor automatically saves eight registers onto the stack, runs your ISR, then restores them and resumes exactly where it left off. Your ISR code runs between those two hardware-managed stack frames.
 
+```text
 ISR Execution Model (Cortex-M):
 
 Main Thread              ISR (higher priority)
-    │                         │
-    ├─ instruction N          │
-    ├─ instruction N+1        │
-    │   ← HW interrupt ──────┤
-    │   (context saved        ├─ ISR prologue
-    │    to stack:            ├─ read HW register
-    │    R0-R3, R12, LR,     ├─ set flag / enqueue
-    │    PC, xPSR)            ├─ clear interrupt
-    │                         ├─ ISR epilogue
-    │   ← context restored ───┤
-    ├─ instruction N+2        │
-    │   (resumes exactly      │
-    │    where preempted)     │
-    └─────────────────────────┘
-
+    |                         |
+    +- instruction N          |
+    +- instruction N+1        |
+    |   <- HW interrupt ------+
+    |   (context saved        +- ISR prologue
+    |    to stack:            +- read HW register
+    |    R0-R3, R12, LR,     +- set flag / enqueue
+    |    PC, xPSR)            +- clear interrupt
+    |                         +- ISR epilogue
+    |   <- context restored ---+
+    +- instruction N+2        |
+    |   (resumes exactly      |
+    |    where preempted)     |
+    +-------------------------+
 ```
 
-The fundamental ISR pattern is: **acknowledge the interrupt, capture minimal data, signal the main loop, and return**. This is the "deferred processing" or "bottom-half" pattern. The ISR is the "top half" — it sets a flag or enqueues data. The main loop (or an RTOS task) is the "bottom half" — it processes the data with full C++ capabilities.
+The fundamental ISR pattern is: **acknowledge the interrupt, capture minimal data, signal the main loop, and return**. This is the "deferred processing" or "bottom-half" pattern. The ISR is the "top half" - it sets a flag or enqueues data. The main loop (or an RTOS task) is the "bottom half" - it processes the data with full C++ capabilities.
 
 ---
 
@@ -52,9 +52,10 @@ The fundamental ISR pattern is: **acknowledge the interrupt, capture minimal dat
 
 ### Q1: Implement a lock-free, ISR-safe SPSC (Single-Producer Single-Consumer) ring buffer using `std::atomic` with correct memory ordering for Cortex-M
 
-```cpp
+The reason this trips people up is the memory ordering. On a single-core Cortex-M, interrupt entry and exit act as full memory barriers - but if you ever port to a dual-core device or want portable code, `acquire`/`release` ordering is the right choice. The producer (ISR) owns the write index, the consumer (main loop) owns the read index, and neither side needs to do a heavyweight CAS because only one producer and one consumer ever exist.
 
-// isr_ringbuf.h — Lock-free SPSC ring buffer for ISR → main communication
+```cpp
+// isr_ringbuf.h - Lock-free SPSC ring buffer for ISR -> main communication
 #pragma once
 
 #include <cstdint>
@@ -66,7 +67,7 @@ The fundamental ISR pattern is: **acknowledge the interrupt, capture minimal dat
 
 namespace isr {
 
-// T must be trivially copyable — no constructors/destructors to worry about
+// T must be trivially copyable - no constructors/destructors to worry about
 // N must be power of 2 for efficient modulo via bitmask
 template <typename T, std::size_t N>
 class SpscRingBuffer {
@@ -98,10 +99,10 @@ public:
 
         // Full when write is one slot behind read
         if (((w + 1) & MASK) == r) {
-            return false;  // Buffer full — drop or handle overflow
+            return false;  // Buffer full - drop or handle overflow
         }
 
-        buffer_[w] = item;  // Trivial copy — safe in ISR
+        buffer_[w] = item;  // Trivial copy - safe in ISR
 
         write_idx_.store((w + 1) & MASK, std::memory_order_release);
         return true;
@@ -144,10 +145,10 @@ struct AdcSample {
 };
 static_assert(std::is_trivially_copyable_v<AdcSample>);
 
-// Global ring buffer — ISR writes, main loop reads
+// Global ring buffer - ISR writes, main loop reads
 inline SpscRingBuffer<AdcSample, 64> g_adc_fifo;
 
-// ISR handler — kept minimal
+// ISR handler - kept minimal
 extern "C" void ADC_IRQHandler() {
     // Read HW registers
     volatile auto* adc_dr   = reinterpret_cast<volatile std::uint32_t*>(0x4001'204C);
@@ -167,14 +168,16 @@ extern "C" void ADC_IRQHandler() {
 }
 
 } // namespace isr
-
 ```
+
+Notice that `try_push` uses `release` when storing the updated write index. That store is the "handshake" that makes the written data visible to the consumer. The consumer does an `acquire` load on the write index, which synchronizes with that release store - ensuring the buffer contents are visible before the index change is seen. Without that pairing, the consumer could read a stale buffer slot.
 
 ### Q2: Design a type-safe hardware register abstraction using `volatile` correctly, ensuring the compiler does not optimize away reads/writes to memory-mapped I/O
 
-```cpp
+The C++20 version below uses concepts (`requires`) to gate access policies, which gives cleaner error messages than `static_assert`. The pattern is the same as the template approach: wrap a raw `volatile` pointer in a class that only exposes operations consistent with the register's access policy. Every method compiles down to a single load or store instruction.
 
-// hw_register.h — Volatile-correct register access patterns
+```cpp
+// hw_register.h - Volatile-correct register access patterns
 #pragma once
 
 #include <cstdint>
@@ -193,37 +196,37 @@ template <std::uintptr_t Addr, typename Policy = ReadWrite,
 class Register {
     static_assert(std::is_unsigned_v<RegType>, "Register type must be unsigned");
 
-    // The volatile pointer — critical for MMIO correctness
+    // The volatile pointer - critical for MMIO correctness
     static auto ptr() {
         return reinterpret_cast<volatile RegType*>(Addr);
     }
 
 public:
-    // Read — available for ReadOnly and ReadWrite
+    // Read - available for ReadOnly and ReadWrite
     [[nodiscard]]
     static RegType read()
         requires (std::is_same_v<Policy, ReadOnly> ||
                   std::is_same_v<Policy, ReadWrite>)
     {
-        return *ptr();  // volatile read — never optimized away
+        return *ptr();  // volatile read - never optimized away
     }
 
-    // Write — available for WriteOnly and ReadWrite
+    // Write - available for WriteOnly and ReadWrite
     static void write(RegType val)
         requires (std::is_same_v<Policy, WriteOnly> ||
                   std::is_same_v<Policy, ReadWrite>)
     {
-        *ptr() = val;   // volatile write — never optimized away
+        *ptr() = val;   // volatile write - never optimized away
     }
 
-    // Set bits (read-modify-write) — ReadWrite only
+    // Set bits (read-modify-write) - ReadWrite only
     static void set_bits(RegType mask)
         requires std::is_same_v<Policy, ReadWrite>
     {
         *ptr() |= mask;
     }
 
-    // Clear bits — ReadWrite only
+    // Clear bits - ReadWrite only
     static void clear_bits(RegType mask)
         requires std::is_same_v<Policy, ReadWrite>
     {
@@ -271,7 +274,7 @@ namespace uart1 {
     constexpr std::uint32_t SR_RXNE = 1u << 5;  // RX not empty
     constexpr std::uint32_t SR_TC   = 1u << 6;  // TX complete
 
-    // ISR-safe transmit — bounded, no allocation
+    // ISR-safe transmit - bounded, no allocation
     inline bool try_send_byte(std::uint8_t byte) {
         if (SR::read() & SR_TXE) {
             DR::write(byte);
@@ -290,14 +293,16 @@ namespace uart1 {
 }
 
 } // namespace hw
-
 ```
+
+`try_send_byte` and `try_recv_byte` are the kind of functions you'd call directly from an ISR. They're bounded (a single register read, a conditional, an optional write), they don't allocate, and they can't throw. That's the ISR contract: do the minimum work, return promptly.
 
 ### Q3: Implement the deferred processing pattern (top-half/bottom-half) using atomic flags and a priority-aware event queue that is safe to call from nested ISRs
 
-```cpp
+The top-half/bottom-half split is the most important architectural pattern for ISR-to-task communication. The ISR (top half) does the absolute minimum - acknowledge the hardware and set a flag. The main loop (bottom half) processes everything. The `EventFlags` class uses `fetch_or` for setting flags, which is lock-free on Cortex-M for 32-bit types and safe even from nested ISRs. The `EventDispatcher` then processes pending events in priority order from the main loop.
 
-// deferred_processing.h — ISR-safe event dispatch
+```cpp
+// deferred_processing.h - ISR-safe event dispatch
 #pragma once
 
 #include <cstdint>
@@ -307,7 +312,7 @@ namespace uart1 {
 
 namespace isr {
 
-// Event types — kept as a bitfield for O(1) pending check
+// Event types - kept as a bitfield for O(1) pending check
 enum class Event : std::uint32_t {
     None        = 0,
     AdcComplete = 1u << 0,
@@ -341,20 +346,20 @@ class EventFlags {
     std::atomic<std::uint32_t> flags_{0};
 
 public:
-    // Called from ISR — O(1), lock-free, safe in nested ISR
+    // Called from ISR - O(1), lock-free, safe in nested ISR
     void set(Event e) {
         flags_.fetch_or(static_cast<std::uint32_t>(e),
                         std::memory_order_release);
     }
 
-    // Called from main loop — atomically read and clear all flags
+    // Called from main loop - atomically read and clear all flags
     [[nodiscard]]
     Event consume_all() {
         return static_cast<Event>(
             flags_.exchange(0, std::memory_order_acq_rel));
     }
 
-    // Called from main loop — atomically consume specific flags
+    // Called from main loop - atomically consume specific flags
     [[nodiscard]]
     bool consume(Event e) {
         auto expected = flags_.load(std::memory_order_relaxed);
@@ -377,7 +382,7 @@ public:
 };
 
 // ---------- Handler Table ----------
-// Static dispatch — no virtual calls, no std::function, no allocation
+// Static dispatch - no virtual calls, no std::function, no allocation
 
 using EventHandler = void(*)(void* context);
 
@@ -394,7 +399,7 @@ class EventDispatcher {
     std::array<HandlerEntry, MAX_EVENTS> handlers_{};
 
     static constexpr unsigned event_index(Event e) {
-        // Find bit position — assumes single-bit Event values
+        // Find bit position - assumes single-bit Event values
         auto val = static_cast<std::uint32_t>(e);
         unsigned idx = 0;
         while (val >>= 1) ++idx;
@@ -411,12 +416,12 @@ public:
         }
     }
 
-    // Called from ISR — just set the flag
+    // Called from ISR - just set the flag
     void signal(Event e) {
         flags_.set(e);
     }
 
-    // Called from main loop — dispatch pending events by priority
+    // Called from main loop - dispatch pending events by priority
     void process() {
         auto pending = flags_.consume_all();
         if (pending == Event::None) return;
@@ -478,17 +483,18 @@ extern "C" void USART1_IRQHandler() {
 }
 
 } // namespace isr
-
 ```
+
+The handler table uses raw function pointers and a `void*` context rather than `std::function`. The reason: `std::function` may allocate on the heap internally (for large callables), which is forbidden in ISR-reachable code. Raw function pointers are always one word, always lock-free, and the `void*` context covers the same use cases with no overhead.
 
 ---
 
 ## Notes
 
-- `std::atomic::fetch_or` (C++11) is **lock-free on Cortex-M** for 32-bit types — it compiles to `LDREX`/`STREX` which are safe even in nested ISRs.
-- `volatile` is for **hardware registers** — it guarantees the compiler performs the read/write. It does **not** guarantee atomicity or ordering between cores. Use `std::atomic` for shared data between ISR and main.
+- `std::atomic::fetch_or` (C++11) is **lock-free on Cortex-M** for 32-bit types - it compiles to `LDREX`/`STREX` which are safe even in nested ISRs.
+- `volatile` is for **hardware registers** - it guarantees the compiler performs the read/write. It does **not** guarantee atomicity or ordering between cores. Use `std::atomic` for shared data between ISR and main.
 - On Cortex-M, interrupt entry/exit acts as a **compiler barrier** (but not a hardware memory barrier on multi-core). Single-core Cortex-M0/M3/M4 can use `memory_order_relaxed` safely for ISR communication, but `acquire`/`release` is preferred for portability.
-- Never use `std::mutex` or `std::lock_guard` in any code path reachable from an ISR — these are blocking primitives that will deadlock.
-- The "critical section" pattern on Cortex-M is `__disable_irq()` / `__enable_irq()` (CPSID/CPSIE instructions). Use sparingly — it increases interrupt latency for **all** peripherals.
-- MISRA C++ 2023 Rule 6.8.1 requires that ISR functions have `extern "C"` linkage — the vector table expects C calling convention.
+- Never use `std::mutex` or `std::lock_guard` in any code path reachable from an ISR - these are blocking primitives that will deadlock.
+- The "critical section" pattern on Cortex-M is `__disable_irq()` / `__enable_irq()` (CPSID/CPSIE instructions). Use sparingly - it increases interrupt latency for **all** peripherals.
+- MISRA C++ 2023 Rule 6.8.1 requires that ISR functions have `extern "C"` linkage - the vector table expects C calling convention.
 - FPU registers (S0-S15) are lazily stacked on Cortex-M4F by default. If your ISR uses `float`, ensure lazy stacking is enabled in the FPCCR register, or manually save/restore FPU context.

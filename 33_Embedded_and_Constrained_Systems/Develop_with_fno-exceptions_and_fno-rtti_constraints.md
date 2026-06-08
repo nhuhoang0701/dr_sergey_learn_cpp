@@ -8,36 +8,36 @@
 
 ## Topic Overview
 
-In embedded and safety-critical systems, compiling with `-fno-exceptions` and `-fno-rtti` is standard practice. Exceptions introduce hidden control flow, non-deterministic unwinding costs, and significant binary size overhead from unwind tables (`.eh_frame`, `.gcc_except_table`). RTTI adds `type_info` objects, vtable pointers to `type_info`, and the `dynamic_cast` / `typeid` machinery — all of which bloat ROM and RAM.
+In embedded and safety-critical systems, compiling with `-fno-exceptions` and `-fno-rtti` is standard practice. Exceptions introduce hidden control flow, non-deterministic unwinding costs, and significant binary size overhead from unwind tables (`.eh_frame`, `.gcc_except_table`). RTTI adds `type_info` objects, vtable pointers to `type_info`, and the `dynamic_cast` / `typeid` machinery - all of which bloat ROM and RAM.
 
 Disabling these features is not merely a build flag; it fundamentally changes how you write C++. Any code that uses `throw`, `try`/`catch`, `dynamic_cast`, or `typeid` will fail to compile. Standard library facilities that rely on exceptions (`std::vector::at()`, `std::stoi()`, `std::any`) become unavailable or must be replaced. This forces a discipline of explicit error handling that, when done well, produces more predictable and auditable code.
 
 | Feature Disabled | Compiler Flag | Binary Size Impact | What Breaks |
 | --- | --- | --- | --- |
-| Exceptions | `-fno-exceptions` | 10–30% ROM reduction | `throw`, `try`/`catch`, `.at()`, `std::stoi`, `std::any` |
-| RTTI | `-fno-rtti` | 5–15% ROM reduction | `dynamic_cast`, `typeid`, `std::any`, `std::function` (some impl) |
-| Both combined | Both flags | 15–40% ROM reduction | All of the above; must audit all dependencies |
+| Exceptions | `-fno-exceptions` | 10-30% ROM reduction | `throw`, `try`/`catch`, `.at()`, `std::stoi`, `std::any` |
+| RTTI | `-fno-rtti` | 5-15% ROM reduction | `dynamic_cast`, `typeid`, `std::any`, `std::function` (some impl) |
+| Both combined | Both flags | 15-40% ROM reduction | All of the above; must audit all dependencies |
 
-```cpp
+Here is what the binary size difference looks like in practice on a typical Cortex-M4 project. The unwind tables and exception tables disappear entirely, and the code section shrinks because the compiler no longer needs to generate cleanup paths.
 
+```text
 Binary Layout Comparison (typical Cortex-M4 firmware):
 
 With exceptions + RTTI:          Without:
-┌────────────────────┐           ┌────────────────────┐
-│ .text (code)  120K │           │ .text (code)   95K │
-│ .rodata        25K │           │ .rodata        18K │
-│ .eh_frame      18K │           │ (removed)       0K │
-│ .gcc_except     8K │           │ (removed)       0K │
-│ .data           4K │           │ .data           4K │
-│ .bss           12K │           │ .bss           12K │
-├────────────────────┤           ├────────────────────┤
-│ TOTAL:        187K │           │ TOTAL:        129K │
-└────────────────────┘           └────────────────────┘
++--------------------+           +--------------------+
+| .text (code)  120K |           | .text (code)   95K |
+| .rodata        25K |           | .rodata        18K |
+| .eh_frame      18K |           | (removed)       0K |
+| .gcc_except     8K |           | (removed)       0K |
+| .data           4K |           | .data           4K |
+| .bss           12K |           | .bss           12K |
++--------------------+           +--------------------+
+| TOTAL:        187K |           | TOTAL:        129K |
++--------------------+           +--------------------+
                                    ~31% smaller
-
 ```
 
-The C++23 `<expected>` header provides the standard replacement for exception-based error propagation. For C++17 targets, libraries like `tl::expected` or Boost.Outcome fill the gap. The key insight is that `-fno-exceptions` does **not** prevent you from using most of modern C++ — it requires you to be deliberate about error paths.
+The C++23 `<expected>` header provides the standard replacement for exception-based error propagation. For C++17 targets, libraries like `tl::expected` or Boost.Outcome fill the gap. The key insight is that `-fno-exceptions` does **not** prevent you from using most of modern C++ - it requires you to be deliberate about error paths.
 
 ---
 
@@ -45,9 +45,10 @@ The C++23 `<expected>` header provides the standard replacement for exception-ba
 
 ### Q1: Implement a complete error-handling framework suitable for `-fno-exceptions` firmware, using `std::expected` (C++23) with monadic chaining
 
-```cpp
+The biggest mental shift when moving to `-fno-exceptions` is that every function that can fail must say so in its return type. `std::expected<T, E>` is the standard tool for this: it either holds a `T` (success) or an `E` (error), and callers are forced to inspect which they got. The `and_then` method lets you chain operations together - if any step returns an error, the chain short-circuits and propagates it, giving you something close to Rust's `?` operator.
 
-// error_framework.h — No-exceptions error handling
+```cpp
+// error_framework.h - No-exceptions error handling
 #pragma once
 
 #include <cstdint>
@@ -69,7 +70,7 @@ enum class Error : std::uint8_t {
     OutOfMemory     = 7,
 };
 
-// Result alias — the standard pattern
+// Result alias - the standard pattern
 template <typename T>
 using Result = std::expected<T, Error>;
 
@@ -134,7 +135,7 @@ inline VoidResult init_sensor(const SensorConfig& cfg) {
 inline Result<RawSample> read_raw() {
     volatile auto* data = reinterpret_cast<volatile std::uint32_t*>(0x4002'0004);
     volatile auto* status = reinterpret_cast<volatile std::uint32_t*>(0x4002'0008);
-    
+
     for (int i = 0; i < 1000; ++i) {
         if (*status & 1u) {
             return RawSample{
@@ -156,7 +157,7 @@ inline Result<CalibratedSample> calibrate(RawSample raw) {
     };
 }
 
-// Monadic chaining — the whole pipeline with no exceptions
+// Monadic chaining - the whole pipeline with no exceptions
 inline Result<CalibratedSample> get_calibrated_reading(SensorConfig cfg) {
     return validate_config(cfg)
         .and_then([](SensorConfig c) -> Result<SensorConfig> {
@@ -169,14 +170,16 @@ inline Result<CalibratedSample> get_calibrated_reading(SensorConfig cfg) {
 }
 
 } // namespace fw
-
 ```
+
+The `get_calibrated_reading` function at the bottom shows the payoff. If `validate_config` fails, the whole chain returns immediately with that error - `init_sensor`, `read_raw`, and `calibrate` never run. Each step is type-checked, each error is explicit in the return type, and none of this requires exceptions.
 
 ### Q2: Show how to replace `dynamic_cast` with a compile-time safe alternative under `-fno-rtti`, using CRTP-based type tagging
 
-```cpp
+`dynamic_cast` requires RTTI to work - it queries the `type_info` object attached to each polymorphic class at runtime. Under `-fno-rtti` it simply won't compile. The replacement is to embed a type tag manually: each concrete class gets a unique `TypeId` value stored in the base class, and the `as<Derived>()` template checks that tag before doing a `static_cast`. The check is a single integer comparison - cheaper than `dynamic_cast` in almost every case.
 
-// type_tag.h — RTTI replacement for embedded polymorphism
+```cpp
+// type_tag.h - RTTI replacement for embedded polymorphism
 #pragma once
 
 #include <cstdint>
@@ -184,7 +187,7 @@ inline Result<CalibratedSample> get_calibrated_reading(SensorConfig cfg) {
 
 namespace fw {
 
-// Type ID registry — each concrete type gets a unique constexpr ID
+// Type ID registry - each concrete type gets a unique constexpr ID
 enum class TypeId : std::uint16_t {
     Unknown     = 0,
     UartDriver  = 1,
@@ -199,7 +202,7 @@ public:
     constexpr explicit DriverBase(TypeId id) : type_id_(id) {}
     virtual ~DriverBase() = default;
 
-    // Replacement for dynamic_cast — no RTTI needed
+    // Replacement for dynamic_cast - no RTTI needed
     [[nodiscard]] constexpr TypeId type_id() const { return type_id_; }
 
     template <typename Derived>
@@ -260,7 +263,7 @@ public:
 // ---------- Usage without dynamic_cast or typeid ----------
 
 inline void configure_driver(DriverBase* drv) {
-    // Safe downcast — equivalent to dynamic_cast but no RTTI
+    // Safe downcast - equivalent to dynamic_cast but no RTTI
     if (auto* uart = drv->as<UartDriver>()) {
         // UART-specific configuration
         if (uart->baud() > 115200) {
@@ -275,14 +278,16 @@ inline void configure_driver(DriverBase* drv) {
 }
 
 } // namespace fw
-
 ```
+
+The CRTP mixin `DriverCRTP` is the piece that makes this ergonomic. Every new driver type inherits from it with its own `TypeId`, and the `static_type_id` constant is automatically available for the `as<>()` check. You don't have to remember to call a registration function or initialize anything - the type tag is set in the constructor and it's always correct.
 
 ### Q3: Measure and compare binary sizes with and without exceptions/RTTI using a build script, and show how to audit third-party libraries for hidden exception usage
 
-```cpp
+Even after you compile your own code with `-fno-exceptions`, a third-party library you link against might quietly pull exception machinery back in. The audit approach below works at two levels: compile-time poisoning (replace the ABI symbols with traps so any TU that references them causes a link error) and post-build inspection (scan object files with `nm` to find the offending symbols).
 
-// audit_exceptions.cpp — Compile-time and link-time detection
+```cpp
+// audit_exceptions.cpp - Compile-time and link-time detection
 // of hidden exception/RTTI usage in dependencies
 
 // 1. Compile-time: poison the exception ABI symbols
@@ -301,12 +306,12 @@ extern "C" {
     [[gnu::used]] void _Unwind_Resume() {
         __builtin_trap();
     }
-    // operator new throwing version — replace with trap
+    // operator new throwing version - replace with trap
     // (keeps non-throwing placement new available)
 }
 
 namespace __cxxabiv1 {
-    // RTTI support functions — poison them
+    // RTTI support functions - poison them
     [[gnu::used]] void __dynamic_cast() { __builtin_trap(); }
 }
 
@@ -318,7 +323,7 @@ namespace __cxxabiv1 {
 
 namespace audit {
 
-// Linker symbols — defined in linker script
+// Linker symbols - defined in linker script
 extern "C" {
     extern std::uint8_t __eh_frame_start[];
     extern std::uint8_t __eh_frame_end[];
@@ -355,13 +360,13 @@ inline BinaryAudit check_exception_overhead() {
 }
 
 } // namespace audit
-
 ```
 
-```bash
+The shell script below ties it together - it builds four variants and reports section sizes side-by-side, then scans all object files for the telltale ABI symbols that indicate hidden exception use.
 
+```bash
 #!/bin/bash
-# measure_binary.sh — Compare binary sizes with/without exceptions and RTTI
+# measure_binary.sh - Compare binary sizes with/without exceptions and RTTI
 
 PROJECT_DIR="$(dirname "$0")"
 SRC="$PROJECT_DIR/main.cpp"
@@ -407,7 +412,6 @@ for obj in "$PROJECT_DIR"/build/*.o; do
         echo "$syms"
     fi
 done
-
 ```
 
 ---
@@ -416,8 +420,8 @@ done
 
 - `-fno-exceptions` causes `throw` expressions to call `std::abort()` in GCC/Clang (or `std::terminate()` depending on the implementation). Never rely on this as an error handling path.
 - `std::function` in libstdc++ uses RTTI internally. Under `-fno-rtti`, use function pointers, `etl::delegate`, or a hand-rolled type-erased callable.
-- `std::any` requires both RTTI and exceptions — it is completely unusable under these flags. Use `std::variant` instead.
+- `std::any` requires both RTTI and exceptions - it is completely unusable under these flags. Use `std::variant` instead.
 - When using third-party libraries (FreeRTOS C++ wrappers, ETL, etc.), always verify they build cleanly with both flags. Run `nm -C library.a | grep __cxa_throw` to detect hidden exception usage.
 - The `noexcept` specifier still compiles under `-fno-exceptions` and is useful for optimizer hints and `std::is_nothrow_*` trait checks.
 - AUTOSAR C++14 Rule A15-0-1 mandates `-fno-exceptions` for all safety-critical code (ASIL-B and above).
-- Binary size reduction from disabling exceptions varies dramatically by codebase: template-heavy code sees 20–30% reduction; C-like code sees 5–10%.
+- Binary size reduction from disabling exceptions varies dramatically by codebase: template-heavy code sees 20-30% reduction; C-like code sees 5-10%.

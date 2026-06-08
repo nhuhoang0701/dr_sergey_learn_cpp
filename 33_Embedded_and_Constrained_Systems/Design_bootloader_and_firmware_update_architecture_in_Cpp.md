@@ -2,7 +2,7 @@
 
 **Category:** Embedded & Constrained Systems  
 **Standard:** C++17  
-**Reference:** —  
+**Reference:** -  
 
 ---
 
@@ -14,10 +14,11 @@ A bootloader is the first code that runs on a microcontroller. It initializes mi
 
 ### Two-Stage Boot Architecture
 
-```cpp
+The memory map below shows a typical arrangement. The bootloader lives at the very start of flash and never gets updated in the field - it is your root of trust. Everything below it in flash is fair game for updates.
 
+```text
 +==================+  0x0800_0000  Flash start
-|   Bootloader     |  (16–64 KB, never updated in the field)
+|   Bootloader     |  (16-64 KB, never updated in the field)
 |   - HW init      |
 |   - Image verify  |
 |   - Jump to app   |
@@ -30,15 +31,13 @@ A bootloader is the first code that runs on a microcontroller. It initializes mi
 +==================+  0x0807_F000  Persistent config / flags
 |   Update flags   |
 +==================+
-
 ```
 
 ### Image Header
 
-Every firmware image starts with a fixed-size header the bootloader can inspect:
+Every firmware image starts with a fixed-size header the bootloader can inspect. Making the size a `static_assert` is important - if you ever accidentally add a field and shift the layout, the build breaks immediately rather than silently corrupting the flash write.
 
 ```cpp
-
 #include <cstdint>
 #include <array>
 
@@ -53,13 +52,13 @@ struct ImageHeader {
     std::array<uint8_t, 32> reserved;
 };
 static_assert(sizeof(ImageHeader) == 120, "Header must be fixed size");
-
 ```
 
 ### Bootloader Main Logic
 
-```cpp
+The boot flow validates the primary slot, falls back to the secondary slot if validation fails, and drops into DFU recovery mode only if both are invalid. The `jump_to_app` function has to do some low-level ARM work: it reads the vector table to get the initial stack pointer and reset handler address, then sets up the processor registers and hands off execution.
 
+```cpp
 #include <cstdint>
 
 // Memory-mapped flash regions
@@ -144,12 +143,13 @@ using EntryPoint = void(*)();
         jump_to_app(hdr);
     }
 
-    // Both slots invalid — enter DFU recovery mode
+    // Both slots invalid - enter DFU recovery mode
     enter_dfu_mode();
     __builtin_unreachable();
 }
-
 ```
+
+Notice the `boot_attempts` counter. This is the rollback mechanism: if the new firmware crashes immediately on every boot, the watchdog fires, the counter increments, and after three tries the bootloader gives up on the new slot and falls back to the old one.
 
 ### A/B Update Strategy
 
@@ -162,21 +162,22 @@ The **A/B (ping-pong) scheme** is the safest approach:
 5. If the new application runs successfully, it clears `update_pending` and resets `boot_attempts`.
 6. If it crashes (watchdog reset), `boot_attempts` increments. After 3 failures, bootloader falls back.
 
-```cpp
+The application calls `confirm_boot` after its own startup checks pass - that's the "commit" that tells the bootloader the new firmware is good.
 
+```cpp
 // Called from the application after successful startup
 void confirm_boot() {
     auto* flags = reinterpret_cast<volatile UpdateFlags*>(FLAGS_ADDR);
     flags->update_pending = 0;
     flags->boot_attempts  = 0;
 }
-
 ```
 
 ### Flash Programming RAII Wrapper
 
-```cpp
+Flash programming has strict rules: unlock before write, erase before write, re-lock when done. The RAII wrapper makes it impossible to forget the lock - the destructor always fires, even if an error causes an early return.
 
+```cpp
 class FlashWriter {
     uintptr_t base_;
     size_t    offset_ = 0;
@@ -213,13 +214,13 @@ public:
 
     [[nodiscard]] size_t bytes_written() const { return offset_; }
 };
-
 ```
 
 ### Secure Boot Considerations
 
-```cpp
+For devices where firmware tampering is a concern, you embed the signing public key in the bootloader (in read-only flash) and verify an Ed25519 or ECDSA signature over the image body before booting. An attacker can write any bytes they like to the application slot - they can't produce a valid signature without the private key.
 
+```cpp
 #include <array>
 
 // Public key embedded in bootloader (read-only flash, not updateable)
@@ -237,7 +238,6 @@ inline constexpr std::array<uint8_t, 32> SIGNING_PUBLIC_KEY = {
         SIGNING_PUBLIC_KEY.data()
     );
 }
-
 ```
 
 ---
@@ -246,61 +246,61 @@ inline constexpr std::array<uint8_t, 32> SIGNING_PUBLIC_KEY = {
 
 ### Q1: Why is A/B update safer than in-place update
 
-**In-place update** overwrites the running firmware. If power is lost mid-write, or the new image is corrupt, the device is **bricked** — there is no valid image to fall back to.
+**In-place update** overwrites the running firmware. If power is lost mid-write, or the new image is corrupt, the device is **bricked** - there is no valid image to fall back to.
 
 **A/B update** writes to the inactive slot while the current slot remains untouched. If the new image fails validation or crashes at runtime, the bootloader can fall back to the old image. The device is **never bricked** as long as at least one slot contains a valid image.
 
 Key advantages:
 
-- **Atomic updates** — the slot switch is a single flag write
-- **Rollback** — automatic fallback after N failed boot attempts
-- **No downtime** — the device runs the old firmware until the new one is confirmed
-- Trade-off: requires 2× the flash for application storage
+- **Atomic updates** - the slot switch is a single flag write.
+- **Rollback** - automatic fallback after N failed boot attempts.
+- **No downtime** - the device runs the old firmware until the new one is confirmed.
+- Trade-off: requires 2x the flash for application storage.
 
 ### Q2: How do you prevent a corrupt update from being booted
 
-```cpp
+You layer multiple checks in the bootloader. Each layer catches a different failure mode: the magic number quickly rejects erased or random flash, the size check prevents reading beyond allocated flash, the CRC catches incomplete writes and bit rot, and the cryptographic signature catches deliberate tampering.
 
+```cpp
 // Multi-layer validation in the bootloader:
 [[nodiscard]] bool validate_image_full(const ImageHeader* hdr) {
-    // 1. Magic number check — fast reject of erased/random flash
+    // 1. Magic number check - fast reject of erased/random flash
     if (hdr->magic != 0xDEADBEEF) return false;
 
-    // 2. Size sanity — prevent reading beyond flash
+    // 2. Size sanity - prevent reading beyond flash
     if (hdr->image_size > MAX_IMAGE_SIZE) return false;
 
-    // 3. CRC-32 integrity — catches bit rot and incomplete writes
+    // 3. CRC-32 integrity - catches bit rot and incomplete writes
     auto body = reinterpret_cast<const uint8_t*>(hdr) + sizeof(ImageHeader);
     if (crc32(body, hdr->image_size) != hdr->crc32) return false;
 
-    // 4. Cryptographic signature — catches tampering
+    // 4. Cryptographic signature - catches tampering
     if (!verify_signature(hdr)) return false;
 
-    // 5. Version monotonicity — prevent rollback attacks
+    // 5. Version monotonicity - prevent rollback attacks
     auto* current = get_header(get_running_slot());
     if (hdr->version <= current->version) return false;
 
     return true;
 }
-
 ```
 
 ### Q3: Show proper flash write RAII that handles errors and power loss
 
 The `FlashWriter` class above demonstrates this. Key points:
 
-- **Constructor**: stores base address, no side effects
-- **`erase()`**: unlocks flash, erases sectors, returns false on failure
-- **`write()`**: writes data sequentially, tracks offset
-- **Destructor**: always re-locks flash (RAII guarantee)
-- Power loss during write: the `update_pending` flag is only set **after** the complete image is written and validated, so a partial write is simply ignored on next boot
+- **Constructor**: stores base address, no side effects.
+- **`erase()`**: unlocks flash, erases sectors, returns false on failure.
+- **`write()`**: writes data sequentially, tracks offset.
+- **Destructor**: always re-locks flash (RAII guarantee).
+- Power loss during write: the `update_pending` flag is only set **after** the complete image is written and validated, so a partial write is simply ignored on next boot.
 
 ---
 
 ## Notes
 
-- Never update the bootloader itself in the field — it is the root of trust
-- Use hardware watchdog to detect application hangs and trigger rollback
-- Store update flags in a separate flash sector with wear leveling
-- Consider encrypted firmware images if IP protection is needed
-- Test the rollback path as thoroughly as the happy path
+- Never update the bootloader itself in the field - it is the root of trust.
+- Use hardware watchdog to detect application hangs and trigger rollback.
+- Store update flags in a separate flash sector with wear leveling.
+- Consider encrypted firmware images if IP protection is needed.
+- Test the rollback path as thoroughly as the happy path.

@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-Many embedded targets (Cortex-M0, M0+, some RISC-V RV32I) lack a hardware FPU, making software floating-point emulation 10–100× slower than integer operations. Fixed-point arithmetic maps real numbers onto integers by reserving a compile-time-fixed number of fractional bits. A Q16.16 format, for example, uses 16 integer bits and 16 fractional bits in a 32-bit word, giving a resolution of ~0.0000153 and a range of ±32767.
+Many embedded targets (Cortex-M0, M0+, some RISC-V RV32I) lack a hardware FPU, making software floating-point emulation 10-100x slower than integer operations. Fixed-point arithmetic maps real numbers onto integers by reserving a compile-time-fixed number of fractional bits. A Q16.16 format, for example, uses 16 integer bits and 16 fractional bits in a 32-bit word, giving a resolution of ~0.0000153 and a range of ±32767.
 
 The key design decisions are: (1) choosing the Q format (QM.N where M = integer bits, N = fractional bits), (2) handling intermediate widths to prevent overflow during multiply/accumulate, and (3) providing rounding and saturation policies. A well-designed C++ template encodes all of this at compile time with zero runtime overhead.
 
@@ -17,21 +17,21 @@ The key design decisions are: (1) choosing the Q format (QM.N where M = integer 
 | Q1.15     | 16-bit  | [-1, +0.99997]      | 3.05e-5         | Audio DSP coefficients      |
 | Q16.16    | 32-bit  | [-32768, +32767.99] | 1.53e-5         | Sensor fusion, PID control  |
 | Q8.24     | 32-bit  | [-128, +127.999]    | 5.96e-8         | High-precision control      |
-| Q32.32    | 64-bit  | [-2³¹, +2³¹-1]     | 2.33e-10        | Navigation, financial calc  |
+| Q32.32    | 64-bit  | [-2^31, +2^31-1]    | 2.33e-10        | Navigation, financial calc  |
 
-```cpp
+Here is what a Q16.16 value looks like inside a 32-bit word. The raw integer value 245760 represents 3.75 because 245760 / 65536 = 3.75. That division is the conceptual mapping - in practice you never actually divide, you just shift.
 
+```text
   32-bit word (Q16.16):
-  ┌──────────────────────┬──────────────────────┐
-  │   Integer part (16)  │ Fractional part (16)  │
-  │  sign + 15 bits      │  16 bits              │
-  └──────────────────────┴──────────────────────┘
+  +----------------------+----------------------+
+  |   Integer part (16)  | Fractional part (16)  |
+  |  sign + 15 bits      |  16 bits              |
+  +----------------------+----------------------+
   Value = raw_integer / 2^16
   3.75  = 245760 / 65536 = 0x0003_C000
-
 ```
 
-Overflow during multiplication is the primary hazard. Multiplying two Q16.16 numbers produces a Q32.32 intermediate in 64 bits, which must be shifted right by N before truncating back to 32 bits. Failing to widen before the multiply silently causes catastrophic precision loss.
+Overflow during multiplication is the primary hazard. Multiplying two Q16.16 numbers produces a Q32.32 intermediate in 64 bits, which must be shifted right by N before truncating back to 32 bits. The reason this trips people up is that if you forget to widen before the multiply and do it in 32 bits, you silently lose the upper bits and get catastrophically wrong results with no warning from the compiler.
 
 ---
 
@@ -39,8 +39,9 @@ Overflow during multiplication is the primary hazard. Multiplying two Q16.16 num
 
 ### Q1: Design a type-safe fixed-point template that prevents accidental mixing of incompatible Q formats at compile time
 
-```cpp
+The template below uses the type system to make mixing Q formats a compile error. A `Q16_16` and a `Q8_24` are different types, so you can't accidentally add them - you have to explicitly convert first. The private `RawTag` constructor prevents anyone from accidentally constructing a fixed-point value from a raw integer without going through the named factory functions like `from_int` or `from_double`.
 
+```cpp
 #include <cstdint>
 #include <type_traits>
 #include <limits>
@@ -141,13 +142,15 @@ using Q1_15  = FixedPoint<std::int16_t, 15>;
 static_assert(Q16_16::from_double(3.75).raw() == 245760);
 static_assert((Q16_16::from_double(2.5) * Q16_16::from_double(1.5)).raw() ==
               Q16_16::from_double(3.75).raw());
-
 ```
+
+The `static_assert` checks at the bottom are your sanity check that the arithmetic is correct. If the multiplication implementation ever produces the wrong shift or rounding, the build breaks. These run entirely at compile time - zero cost.
 
 ### Q2: Implement a fixed-point PID controller suitable for a bare-metal control loop with no FPU
 
-```cpp
+A PID controller is the canonical use case for fixed-point on MCUs without an FPU. The implementation below is entirely in Q16.16 integer arithmetic. Every operation - multiply, add, clamp - resolves to a handful of integer instructions. On a Cortex-M0 running at 48 MHz, this loop can easily run at 10 kHz where the floating-point equivalent (in software emulation) might only manage 1 kHz.
 
+```cpp
 #include <cstdint>
 
 using FP = FixedPoint<std::int32_t, 16>;  // Q16.16
@@ -182,9 +185,8 @@ FP pid_update(const PidGains& gains, PidState& state,
     FP derivative = error - state.prev_error;
     state.prev_error = error;
 
-    // PID output: u = Kp*e + Ki*∫e + Kd*de/dt
+    // PID output: u = Kp*e + Ki*integral(e) + Kd*de/dt
     FP output = gains.kp * error
-
               + gains.ki * state.integral
               + gains.kd * derivative;
 
@@ -195,7 +197,7 @@ FP pid_update(const PidGains& gains, PidState& state,
 }
 
 // Example initialization at 1kHz sample rate
-// Kp=2.5, Ki=0.01, Kd=0.8 — all embedded in Q16.16
+// Kp=2.5, Ki=0.01, Kd=0.8 - all embedded in Q16.16
 PidGains make_motor_gains() noexcept {
     return PidGains{
         .kp = FP::from_double(2.5),
@@ -206,13 +208,15 @@ PidGains make_motor_gains() noexcept {
         .output_max = FP::from_int(1000),
     };
 }
-
 ```
+
+The gain constants (`from_double(2.5)`, etc.) are evaluated entirely at compile time - `from_double` is `constexpr` and the `double` values are compile-time constants. At runtime, the gains are just fixed integer values embedded in flash. There's no floating-point involved at runtime whatsoever.
 
 ### Q3: How do you convert between fixed-point formats of different precision safely at compile time
 
-```cpp
+Format conversions are where fixed-point code gets error-prone. If you have a high-precision Q8.24 value from a sensor and need to feed it into a Q16.16 PID controller, you need to shift right by 8. But shifting right loses precision, and if the value is too large for the target range it must saturate rather than wrap. The `fixed_convert` function below resolves the shift direction and amount entirely at compile time using `if constexpr`.
 
+```cpp
 #include <cstdint>
 #include <type_traits>
 
@@ -248,36 +252,36 @@ constexpr To fixed_convert(From value) noexcept {
 void sensor_pipeline() noexcept {
     Q8_24 high_precision = Q8_24::from_double(3.14159265);
 
-    // Compile-time resolved shift: 24 → 16, shifts right by 8
+    // Compile-time resolved shift: 24 -> 16, shifts right by 8
     Q16_16 control_value = fixed_convert<Q16_16>(high_precision);
 
     // Verify precision is maintained within Q16.16 resolution
-    // 3.14159265 → Q8.24 raw: 52707178
-    // → Q16.16 raw: 205887 → 3.14158630... (error < 2^-16)
+    // 3.14159265 -> Q8.24 raw: 52707178
+    // -> Q16.16 raw: 205887 -> 3.14158630... (error < 2^-16)
 
     // Reverse: widen for accumulation
     Q8_24 accumulated = fixed_convert<Q8_24>(control_value);
     (void)accumulated;
 }
-
-// Compile-time conversion table
-// | From    | To      | Shift | Direction      | Precision Impact        |
-// |---------|---------|-------|----------------|-------------------------|
-// | Q8.24   | Q16.16  |  -8   | Right shift 8  | Loses 8 bits of frac    |
-// | Q16.16  | Q8.24   |  +8   | Left shift 8   | No loss, range narrows  |
-// | Q1.15   | Q16.16  |  +1   | Left shift 1   | No loss, range widens   |
-// | Q16.16  | Q1.15   | -1    | Right shift 1  | Slight frac loss, clamp |
-
 ```
+
+The conversion table below shows what happens for common format pairs. Widening (increasing precision) is lossless - you just shift left and the value is exact. Narrowing (decreasing precision) loses fractional bits, but the round-to-nearest step in `fixed_convert` halves the average error compared to truncation.
+
+| From    | To      | Shift | Direction      | Precision Impact        |
+|---------|---------|-------|----------------|-------------------------|
+| Q8.24   | Q16.16  |  -8   | Right shift 8  | Loses 8 bits of frac    |
+| Q16.16  | Q8.24   |  +8   | Left shift 8   | No loss, range narrows  |
+| Q1.15   | Q16.16  |  +1   | Left shift 1   | No loss, range widens   |
+| Q16.16  | Q1.15   |  -1   | Right shift 1  | Slight frac loss, clamp |
 
 ---
 
 ## Notes
 
-- Always use double-width intermediates for multiplication: Q16.16 × Q16.16 needs a 64-bit intermediate
-- Round-to-nearest (add `1 << (N-1)` before shifting) halves the average error vs truncation
-- Saturation arithmetic prevents silent wrap-around; on Cortex-M, `__SSAT` and `__USAT` intrinsics do this in one cycle
-- `constexpr` fixed-point lets you compute lookup tables (sin, cos, sqrt) entirely at compile time
-- For division-heavy code, consider reciprocal multiplication: precompute `1/x` in Q format and multiply
-- Profile the generated assembly: a well-optimized Q16.16 multiply on Cortex-M4 should be 2–3 instructions (`SMULL` + shift)
-- Avoid mixing Q formats implicitly — the type system should enforce explicit conversion at every boundary
+- Always use double-width intermediates for multiplication: Q16.16 x Q16.16 needs a 64-bit intermediate.
+- Round-to-nearest (add `1 << (N-1)` before shifting) halves the average error vs truncation.
+- Saturation arithmetic prevents silent wrap-around; on Cortex-M, `__SSAT` and `__USAT` intrinsics do this in one cycle.
+- `constexpr` fixed-point lets you compute lookup tables (sin, cos, sqrt) entirely at compile time.
+- For division-heavy code, consider reciprocal multiplication: precompute `1/x` in Q format and multiply.
+- Profile the generated assembly: a well-optimized Q16.16 multiply on Cortex-M4 should be 2-3 instructions (`SMULL` + shift).
+- Avoid mixing Q formats implicitly - the type system should enforce explicit conversion at every boundary.

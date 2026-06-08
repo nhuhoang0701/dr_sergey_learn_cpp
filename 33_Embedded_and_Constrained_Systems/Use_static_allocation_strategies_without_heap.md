@@ -2,7 +2,7 @@
 
 **Category:** Embedded & Constrained Systems  
 **Standard:** C++17 / C++20  
-**Reference:** https://www.etlcpp.com/  
+**Reference:** <https://www.etlcpp.com/>  
 
 ---
 
@@ -21,10 +21,11 @@ Modern C++ is **not** synonymous with heap allocation. With placement `new`, `st
 | Static pool allocator | Fixed-size blocks from static array | Yes | No (same-size blocks) | Yes |
 | `etl::vector<T,N>` | Stack-based vector with max capacity | Yes | No | Yes |
 | `std::pmr` with monotonic | Bump allocator over static buffer | Yes (until exhaustion) | No (no dealloc) | Buffer: yes |
-| `std::vector<T>` | Heap | **No** | **Yes** | **No** |
+| `std::vector<T>` | Heap | No | Yes | No |
+
+The diagram below makes the contrast concrete. Notice that the no-heap program has its worst case known at compile/link time: either everything fits or the linker refuses to build.
 
 ```cpp
-
 Memory Model Comparison:
 
 Heap-based program:                No-heap program:
@@ -46,7 +47,6 @@ Heap-based program:                No-heap program:
 └─────────────────────┘           └─────────────────────┘
   Risk: OOM at runtime              Guarantee: all fits or
   after weeks of uptime             won't compile/link
-
 ```
 
 To enforce no-heap at the toolchain level, provide stubs for `_sbrk`, `operator new`, and `malloc` that trap, and use linker flags like `-Wl,--wrap=malloc` to intercept any accidental heap usage.
@@ -57,9 +57,10 @@ To enforce no-heap at the toolchain level, provide stubs for `_sbrk`, `operator 
 
 ### Q1: Implement a compile-time-sized, type-safe static memory pool allocator that supports allocation and deallocation in O(1) with no heap usage
 
-```cpp
+A fixed-block pool works by maintaining a free list embedded directly in the unused slots. When a slot is free, its storage holds the index of the next free slot. When it is occupied, that same storage holds the live object. This gives O(1) alloc and free with no additional memory overhead.
 
-// static_pool.h — Fixed-block static memory pool
+```cpp
+// static_pool.h - Fixed-block static memory pool
 #pragma once
 
 #include <cstdint>
@@ -92,7 +93,7 @@ class StaticPool {
     std::size_t used_count_ = 0;
 
 public:
-    // Initialize free list — must be called before first use
+    // Initialize free list - must be called before first use
     // (or use constexpr constructor for trivial T)
     void init() {
         for (std::size_t i = 0; i < N - 1; ++i) {
@@ -118,7 +119,7 @@ public:
         return ::new (pool_[idx].storage) T(static_cast<Args&&>(args)...);
     }
 
-    // Deallocate — destroy T and return slot to free list
+    // Deallocate - destroy T and return slot to free list
     void deallocate(T* ptr) {
         if (!ptr) return;
 
@@ -126,7 +127,7 @@ public:
         auto* slot_ptr = reinterpret_cast<Slot*>(ptr);
         auto idx = static_cast<std::size_t>(slot_ptr - pool_.data());
 
-        if (idx >= N) return;  // Invalid pointer — defensive
+        if (idx >= N) return;  // Invalid pointer - defensive
 
         // Destroy the object
         ptr->~T();
@@ -151,13 +152,13 @@ struct TcpConnection {
     std::uint8_t  state;
     std::uint8_t  retries;
 
-    // Non-trivial constructor — pool handles it
+    // Non-trivial constructor - pool handles it
     TcpConnection(std::uint32_t ip, std::uint16_t rport, std::uint16_t lport)
         : remote_ip(ip), remote_port(rport), local_port(lport),
           state(0), retries(0) {}
 };
 
-// Static pool for max 32 simultaneous TCP connections — zero heap
+// Static pool for max 32 simultaneous TCP connections - zero heap
 inline StaticPool<TcpConnection, 32> g_conn_pool;
 
 inline TcpConnection* accept_connection(std::uint32_t ip, std::uint16_t port) {
@@ -169,14 +170,14 @@ inline void close_connection(TcpConnection* conn) {
 }
 
 } // namespace mem
-
 ```
 
 ### Q2: Show how to use `std::pmr::monotonic_buffer_resource` over a static buffer to get STL-compatible containers without heap allocation
 
-```cpp
+The `std::pmr` (polymorphic memory resource) machinery lets standard containers like `std::pmr::vector` use any backing allocator you provide. The key is passing `std::pmr::null_memory_resource()` as the upstream - this means the allocator will fail (throw or abort) rather than silently falling back to the heap when the static buffer runs out.
 
-// pmr_static.h — PMR containers on static memory
+```cpp
+// pmr_static.h - PMR containers on static memory
 #pragma once
 
 #include <cstdint>
@@ -189,14 +190,14 @@ inline void close_connection(TcpConnection* conn) {
 namespace mem {
 
 // ---------- Static buffer for PMR ----------
-// All PMR allocations come from this fixed buffer — no heap.
+// All PMR allocations come from this fixed buffer - no heap.
 
 class StaticBufferResource {
-    // 4 KB static buffer — adjust per application
+    // 4 KB static buffer - adjust per application
     static constexpr std::size_t BUFFER_SIZE = 4096;
     alignas(std::max_align_t) std::uint8_t buffer_[BUFFER_SIZE]{};
 
-    // null_memory_resource as upstream → allocation fails instead of heap fallback
+    // null_memory_resource as upstream -> allocation fails instead of heap fallback
     std::pmr::monotonic_buffer_resource resource_{
         buffer_, BUFFER_SIZE,
         std::pmr::null_memory_resource()  // CRITICAL: no heap fallback!
@@ -215,10 +216,10 @@ public:
 // ---------- Usage: PMR containers with zero heap ----------
 
 inline void process_sensor_data() {
-    // Static buffer resource — lives for scope duration or longer
+    // Static buffer resource - lives for scope duration or longer
     StaticBufferResource mem_resource;
 
-    // PMR vector — allocates from static buffer, NOT heap
+    // PMR vector - allocates from static buffer, NOT heap
     std::pmr::vector<std::uint16_t> readings(mem_resource.get());
     readings.reserve(128);  // One allocation from static buffer
 
@@ -227,7 +228,7 @@ inline void process_sensor_data() {
         readings.push_back(static_cast<std::uint16_t>(i * 33));
     }
 
-    // PMR string — also from static buffer
+    // PMR string - also from static buffer
     std::pmr::string status(mem_resource.get());
     status = "Sensor OK: ";
     // append does NOT go to heap
@@ -270,13 +271,13 @@ class ScopedArena {
 
 public:
     std::pmr::memory_resource* get() { return &resource_; }
-    // Destructor releases all — O(1), no per-object dealloc
+    // Destructor releases all - O(1), no per-object dealloc
 };
 
 inline void handle_command(const std::uint8_t* data, std::size_t len) {
     ScopedArena arena;
 
-    // Temporary containers — all memory freed when arena dies
+    // Temporary containers - all memory freed when arena dies
     std::pmr::vector<std::uint8_t> decoded(arena.get());
     decoded.assign(data, data + len);
 
@@ -288,14 +289,16 @@ inline void handle_command(const std::uint8_t* data, std::size_t len) {
 }
 
 } // namespace mem
-
 ```
+
+The scoped arena pattern is particularly powerful for message-parsing or frame-processing loops: allocate freely during the function, then free everything in one O(1) operation when the arena goes out of scope.
 
 ### Q3: Implement a no-heap firmware using ETL (Embedded Template Library) containers and demonstrate how to trap any accidental heap usage at link time
 
-```cpp
+ETL gives you drop-in replacements for STL containers - same API, but with a compile-time maximum capacity baked into the type. The `etl::delegate` replacement for `std::function` is particularly important because `std::function` can heap-allocate for larger callables.
 
-// etl_firmware.h — Complete no-heap firmware patterns using ETL
+```cpp
+// etl_firmware.h - Complete no-heap firmware patterns using ETL
 #pragma once
 
 // ETL: drop-in replacements for STL containers with static max capacity
@@ -316,30 +319,30 @@ namespace fw {
 
 // ---------- ETL containers: STL API, static allocation ----------
 
-// etl::vector<T, N> — max N elements, stored inline (no heap)
+// etl::vector<T, N> - max N elements, stored inline (no heap)
 struct SensorReading {
     std::uint16_t sensor_id;
     float         value;
     std::uint32_t timestamp_ms;
 };
 
-// Max 64 readings — all in BSS, zero heap
+// Max 64 readings - all in BSS, zero heap
 etl::vector<SensorReading, 64> g_readings;
 
-// etl::string<N> — fixed-capacity string
+// etl::string<N> - fixed-capacity string
 etl::string<128> g_device_name{"Sensor-Node-042"};
 
-// etl::map<K, V, N> — static red-black tree
+// etl::map<K, V, N> - static red-black tree
 etl::map<std::uint16_t, float, 16> g_calibration_table;
 
-// etl::queue<T, N> — static FIFO
+// etl::queue<T, N> - static FIFO
 struct Command {
     std::uint8_t  opcode;
     std::uint32_t param;
 };
 etl::queue<Command, 32> g_command_queue;
 
-// ---------- etl::delegate — replaces std::function (no heap!) ----------
+// ---------- etl::delegate - replaces std::function (no heap!) ----------
 // std::function can heap-allocate for large callables. etl::delegate never does.
 
 class MotorController {
@@ -354,14 +357,14 @@ using SpeedCallback = etl::delegate<void(std::uint8_t)>;
 inline void register_callback_example() {
     MotorController motor;
 
-    // Bind member function — no heap, no std::function
+    // Bind member function - no heap, no std::function
     SpeedCallback cb = SpeedCallback::create<
         MotorController, &MotorController::set_speed>(motor);
 
     cb(128);  // Calls motor.set_speed(128)
 }
 
-// ---------- etl::pool — object pool (like our StaticPool) ----------
+// ---------- etl::pool - object pool (like our StaticPool) ----------
 
 struct Packet {
     std::uint8_t  data[256];
@@ -369,7 +372,7 @@ struct Packet {
     std::uint8_t  priority;
 };
 
-// Pool of 16 packets — no heap
+// Pool of 16 packets - no heap
 etl::pool<Packet, 16> g_packet_pool;
 
 inline Packet* alloc_packet() {
@@ -414,12 +417,12 @@ inline void firmware_main_loop() {
 }
 
 } // namespace fw
-
 ```
 
-```cpp
+Link this file with every firmware build - any accidental `new`, `delete`, or `malloc` call will hit a breakpoint during testing rather than failing silently in production:
 
-// heap_trap.cpp — Link-time enforcement of no-heap policy
+```cpp
+// heap_trap.cpp - Link-time enforcement of no-heap policy
 // Compile and link this file with every firmware build.
 
 #include <cstddef>
@@ -488,18 +491,19 @@ void* _sbrk(int) {
 }
 
 } // extern "C"
-
 ```
+
+The breakpoint numbers make it easy to see in a debugger exactly which allocation function was called, which helps you track down the offending code path quickly.
 
 ---
 
 ## Notes
 
 - ETL (`etlcpp.com`) is the de facto standard for no-heap C++ on embedded. It mirrors the STL API but all containers have a compile-time maximum capacity. It requires no RTTI and no exceptions.
-- `std::pmr::monotonic_buffer_resource` with `null_memory_resource()` upstream is the **correct** way to use PMR without heap — omitting the upstream parameter defaults to `get_default_resource()` which **is the heap**.
-- Placement `new` (`::new (buffer) T(args...)`) is freestanding and never allocates — it constructs an object at the provided address. Always pair with explicit destructor call (`obj->~T()`).
-- `std::optional<T>` and `std::variant<Ts...>` store their payloads inline — they are inherently no-heap and safe for embedded.
+- `std::pmr::monotonic_buffer_resource` with `null_memory_resource()` upstream is the **correct** way to use PMR without heap - omitting the upstream parameter defaults to `get_default_resource()` which **is the heap**.
+- Placement `new` (`::new (buffer) T(args...)`) is freestanding and never allocates - it constructs an object at the provided address. Always pair with explicit destructor call (`obj->~T()`).
+- `std::optional<T>` and `std::variant<Ts...>` store their payloads inline - they are inherently no-heap and safe for embedded.
 - The heap trap file (`heap_trap.cpp`) should be included in every firmware build. Any accidental heap usage will trigger a breakpoint during testing, not a silent failure in production.
 - For `std::pmr`, the `monotonic_buffer_resource` is ideal for "allocate many, free all at once" patterns (message parsing, frame processing). For general-purpose alloc/free, use `std::pmr::unsynchronized_pool_resource` over a static buffer.
-- Stack usage analysis is critical when avoiding the heap — all "dynamic" storage moves to the stack. Use `-fstack-usage` (GCC) and static analysis tools to verify stack depth.
+- Stack usage analysis is critical when avoiding the heap - all "dynamic" storage moves to the stack. Use `-fstack-usage` (GCC) and static analysis tools to verify stack depth.
 - `etl::delegate` is a non-allocating replacement for `std::function`. It stores the callable inline (up to ~2 pointers) and never heap-allocates.

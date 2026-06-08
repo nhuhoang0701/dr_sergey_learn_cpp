@@ -27,13 +27,13 @@ C++ development for bare-metal, RTOS, and resource-constrained environments: fre
 
 ## Notes
 
-- Embedded C++ often prohibits dynamic allocation — use std::array, stack buffers, and placement new
-- -fno-exceptions and -fno-rtti reduce binary size and overhead in constrained environments
-- Volatile-qualified peripheral registers must be accessed through olatile pointers — but volatile is not atomic
-- Real-time systems require deterministic timing — avoid allocations, exceptions, and unbounded loops
-- Interrupt-safe programming needs olatile and atomic operations — regular variables may be optimized away
-- Static analysis and MISRA C++ compliance are common requirements in safety-critical embedded
-- constexpr computing moves work to compile time — ideal for lookup tables and CRC generation
-- Bit manipulation and register maps benefit from strongly-typed wrapper classes
-- Memory-mapped I/O requires specific alignment and access size — use einterpret_cast carefully
-- Cross-compilation toolchains (ARM GCC, IAR, Keil) have different standard library support
+- Embedded C++ often prohibits dynamic allocation - use `std::array`, stack buffers, and placement new instead of `new`/`delete`.
+- `-fno-exceptions` and `-fno-rtti` reduce binary size and overhead significantly in constrained environments.
+- `volatile`-qualified peripheral registers must be accessed through `volatile` pointers - but `volatile` is not atomic and does not replace synchronization.
+- Real-time systems require deterministic timing - avoid allocations, exceptions, and unbounded loops in time-critical paths.
+- Interrupt-safe programming needs `volatile` and atomic operations - regular variables may be optimized away by the compiler across an ISR boundary.
+- Static analysis and MISRA C++ compliance are common requirements in safety-critical embedded development.
+- `constexpr` computing moves work to compile time - ideal for lookup tables, CRC generation, and configuration constants.
+- Bit manipulation and register maps benefit from strongly-typed wrapper classes that prevent accidental register misuse.
+- Memory-mapped I/O requires specific alignment and access size - use `reinterpret_cast` carefully and only where justified by a documented deviation.
+- Cross-compilation toolchains (ARM GCC, IAR, Keil) have different standard library support - always verify which headers are available in your freestanding environment.

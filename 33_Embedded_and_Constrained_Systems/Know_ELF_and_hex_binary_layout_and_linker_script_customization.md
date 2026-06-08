@@ -10,7 +10,9 @@
 
 ### Why Linker Scripts Matter for Embedded C++
 
-On a desktop, the OS loads your program into virtual memory and you never think about addresses. On bare-metal embedded systems, **you** control exactly where every byte of code and data lives in physical flash and RAM. The linker script defines:
+On a desktop, the OS loads your program into virtual memory and you never think about addresses. On bare-metal embedded systems, **you** control exactly where every byte of code and data lives in physical flash and RAM. The linker script is the document that defines all of that layout.
+
+Here is what a linker script controls:
 
 - Where code (`.text`) lives in flash
 - Where initialized data (`.data`) lives in RAM (but is stored in flash and copied at startup)
@@ -19,9 +21,11 @@ On a desktop, the OS loads your program into virtual memory and you never think 
 - Interrupt vector table placement
 - Special sections for DMA buffers, backup RAM, etc.
 
+If you get the linker script wrong, your firmware may seem to build fine but fail in subtle ways at runtime - globals may be zero instead of initialized, C++ constructors may never run, or the stack may corrupt memory. It is worth understanding this thoroughly.
+
 ### ELF File Structure
 
-The compiler produces **ELF** (Executable and Linkable Format) files. Key sections:
+The compiler produces **ELF** (Executable and Linkable Format) files. Each section of the ELF holds a different category of content, and the linker script decides where each section ends up in the final binary.
 
 | Section | Contents | Resides in |
 | --- | --- | --- |
@@ -33,27 +37,30 @@ The compiler produces **ELF** (Executable and Linkable Format) files. Key sectio
 | `.fini_array` | C++ global destructor pointers | Flash |
 | `.ARM.exidx` | Exception unwind tables (if exceptions enabled) | Flash |
 
+Notice the `.init_array` entry - that is the table the startup code walks to call your C++ global constructors. If the linker script does not include it, or the startup code never calls it, your global objects will not be initialized.
+
 ### A Complete Linker Script for Cortex-M
 
-```ld
+Here is a full, annotated linker script for an STM32F411 (512 KB flash, 128 KB RAM). Read through it and notice how each section is placed and how symbols like `_sidata`, `_sdata`, and `_edata` are defined - the startup code uses those exact symbols to know what to copy.
 
-/* STM32F411 — 512 KB flash, 128 KB RAM */
+```ld
+/* STM32F411 - 512 KB flash, 128 KB RAM */
 MEMORY
 {
     FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 512K
     RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 128K
 }
 
-/* Entry point — the Reset_Handler from startup code */
+/* Entry point - the Reset_Handler from startup code */
 ENTRY(Reset_Handler)
 
-/* Minimum stack and heap sizes — linker error if they don't fit */
+/* Minimum stack and heap sizes - linker error if they don't fit */
 _Min_Stack_Size = 0x1000;  /* 4 KB */
 _Min_Heap_Size  = 0x0;     /* No heap in most embedded */
 
 SECTIONS
 {
-    /* Interrupt vector table — must be at flash start */
+    /* Interrupt vector table - must be at flash start */
     .isr_vector : {
         . = ALIGN(4);
         KEEP(*(.isr_vector))
@@ -113,7 +120,7 @@ SECTIONS
     /* Used by startup code to initialize .data */
     _sidata = LOADADDR(.data);
 
-    /* Initialized data — stored in flash, copied to RAM at startup */
+    /* Initialized data - stored in flash, copied to RAM at startup */
     .data : {
         . = ALIGN(4);
         _sdata = .;
@@ -156,15 +163,15 @@ SECTIONS
     /* Verify everything fits */
     ASSERT((_estack <= ORIGIN(RAM) + LENGTH(RAM)), "RAM overflow!")
 }
-
 ```
 
-### Startup Code — Initializing C++ from Bare Metal
+The `>RAM AT> FLASH` on the `.data` section is one of the most important lines in the whole script. It says: the virtual address (where the CPU sees this at runtime) is in RAM, but the load address (where the data is physically stored in flash) is in FLASH. The startup code then copies from `_sidata` in flash to `_sdata`..`_edata` in RAM before `main()` runs.
 
-The startup code (`Reset_Handler`) must initialize `.data`, `.bss`, and call C++ global constructors before `main()`:
+### Startup Code - Initializing C++ from Bare Metal
+
+The `Reset_Handler` is the first code that runs after a reset. Before `main()` can be called, it has to do three things: copy `.data`, zero `.bss`, and call C++ global constructors. Here is what that looks like in C++:
 
 ```cpp
-
 extern "C" {
 
 // Symbols defined in linker script
@@ -201,18 +208,20 @@ void Reset_Handler() {
     // 4. Call main
     main();
 
-    // 5. Should never return — halt if it does
+    // 5. Should never return - halt if it does
     while (true) { __WFI(); }
 }
 
 } // extern "C"
-
 ```
+
+Step 3 is the C++-specific part. Without that loop, any global object with a non-trivial constructor will never be initialized, and you will spend a long time hunting a bug that only shows up in specific execution paths.
 
 ### Custom Sections for DMA and Special Memory
 
-```cpp
+Sometimes you need a buffer at a specific memory address - for example, a DMA buffer that the hardware expects at a particular alignment. You can use a GCC attribute to place a variable in a custom section, and then map that section in the linker script.
 
+```cpp
 // Place a buffer in a specific RAM region for DMA
 __attribute__((section(".dma_buffer")))
 alignas(32) uint8_t dma_rx_buffer[1024];
@@ -222,13 +231,15 @@ alignas(32) uint8_t dma_rx_buffer[1024];
 //     . = ALIGN(32);
 //     *(.dma_buffer)
 // } >RAM
-
 ```
+
+The `NOLOAD` attribute tells the linker this section takes up space in RAM but has no initial data in flash - no copy is needed at startup.
 
 ### Inspecting the Binary
 
-```bash
+These tools are your best friends for checking that the linker script did what you intended. Run `arm-none-eabi-size` first - it gives you the fast summary. Then use `objdump` to dig deeper.
 
+```bash
 # Show section sizes
 arm-none-eabi-size -A firmware.elf
 
@@ -246,17 +257,16 @@ arm-none-eabi-objcopy -O ihex firmware.elf firmware.hex
 
 # Show symbol table sorted by size
 arm-none-eabi-nm --size-sort -S firmware.elf
-
 ```
+
+The last command - sorting symbols by size - is extremely useful when you are trying to shrink a firmware that is too big for your flash. It tells you immediately which functions and globals are eating the most space.
 
 ### Intel HEX Format
 
-The `.hex` file is a text representation of binary data with addresses. Each line:
+The `.hex` file is a text representation of binary data with addresses. Each line follows this pattern:
 
 ```cpp
-
 :LLAAAATT[DD...]CC
-
 ```
 
 - `LL` = byte count
@@ -264,6 +274,8 @@ The `.hex` file is a text representation of binary data with addresses. Each lin
 - `TT` = record type (00=data, 01=EOF, 04=extended address)
 - `DD` = data bytes
 - `CC` = checksum
+
+You do not usually need to read HEX files by hand, but knowing the format helps when a flash tool reports a checksum error or an address conflict.
 
 ---
 
@@ -273,45 +285,43 @@ The `.hex` file is a text representation of binary data with addresses. Each lin
 
 Initialized globals like `int x = 42;` must have their initial values stored somewhere non-volatile (flash), but at runtime they must be writable (RAM). The linker script specifies:
 
-- **VMA (Virtual Memory Address)**: `>RAM` — where the CPU accesses `x` at runtime
-- **LMA (Load Memory Address)**: `AT> FLASH` — where the initial values are stored
+- **VMA (Virtual Memory Address)**: `>RAM` - where the CPU accesses `x` at runtime
+- **LMA (Load Memory Address)**: `AT> FLASH` - where the initial values are stored
 
 The startup code (`Reset_Handler`) copies from LMA to VMA before `main()` runs. The symbols `_sidata`, `_sdata`, `_edata` delimit the source and destination of this copy.
 
 ### Q2: What happens if you forget to call `__init_array` constructors
 
-Global C++ objects (static variables with constructors) will **not be initialized**. Their memory in `.bss` will be zero or contain whatever `.data` provides, but the constructor side effects — opening files, configuring peripherals, registering callbacks — will not execute. This leads to subtle bugs where code "works" on the debugger (which may auto-initialize) but fails on the real target.
+Global C++ objects (static variables with constructors) will **not be initialized**. Their memory in `.bss` will be zero or contain whatever `.data` provides, but the constructor side effects - opening files, configuring peripherals, registering callbacks - will not execute. This leads to subtle bugs where code "works" on the debugger (which may auto-initialize) but fails on the real target.
 
 ### Q3: How do you verify that your firmware fits in flash
 
-```bash
+Run `arm-none-eabi-size` and add the `text` and `data` columns together - that is your flash usage. The `data` and `bss` columns together give you RAM usage.
 
+```bash
 # Quick size summary
 arm-none-eabi-size firmware.elf
 #   text    data     bss     dec     hex filename
 #  48320    1024    8192   57536    e100 firmware.elf
 # text + data = flash usage (49344 bytes)
 # data + bss  = RAM usage (9216 bytes)
-
 ```
 
 The linker script `ASSERT` validates at link time. You can also add CI checks:
 
 ```bash
-
 # Fail if flash usage exceeds 480 KB (leaving 32 KB for bootloader)
 max_flash=491520
 actual=$(arm-none-eabi-size -B firmware.elf | tail -1 | awk '{print $1+$2}')
 [ "$actual" -le "$max_flash" ] || exit 1
-
 ```
 
 ---
 
 ## Notes
 
-- Use `KEEP()` for sections the linker might discard (vector table, constructor arrays)
-- `NOLOAD` sections occupy no flash space — useful for DMA buffers and stack
-- Use `ALIGN(4)` for ARM, `ALIGN(2)` for 16-bit architectures
-- Enable `-Wl,--print-memory-usage` in GCC to see flash/RAM usage at link time
-- Use `arm-none-eabi-nm --size-sort` to find the largest symbols when optimizing size
+- Use `KEEP()` for sections the linker might discard (vector table, constructor arrays).
+- `NOLOAD` sections occupy no flash space - useful for DMA buffers and stack.
+- Use `ALIGN(4)` for ARM, `ALIGN(2)` for 16-bit architectures.
+- Enable `-Wl,--print-memory-usage` in GCC to see flash/RAM usage at link time.
+- Use `arm-none-eabi-nm --size-sort` to find the largest symbols when optimizing size.

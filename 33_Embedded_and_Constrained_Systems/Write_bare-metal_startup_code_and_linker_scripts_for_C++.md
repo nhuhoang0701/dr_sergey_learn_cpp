@@ -2,15 +2,15 @@
 
 **Category:** Embedded & Constrained Systems  
 **Standard:** C++17 / C++23, ARM Architecture Reference  
-**Reference:** https://developer.arm.com/documentation/dui0474/m/  
+**Reference:** <https://developer.arm.com/documentation/dui0474/m/>  
 
 ---
 
 ## Topic Overview
 
-On a hosted system, the C/C++ runtime (crt0, crti, crtn) handles everything before `main()`: zeroing `.bss`, copying `.data` from flash to SRAM, calling global constructors, and setting up the stack. On bare-metal, **you** are responsible for all of this. A single mistake — forgetting to call static constructors, placing the stack at the wrong address, or misconfiguring the linker script sections — causes silent corruption that is extraordinarily difficult to debug.
+On a hosted system, the C/C++ runtime (crt0, crti, crtn) handles everything before `main()`: zeroing `.bss`, copying `.data` from flash to SRAM, calling global constructors, and setting up the stack. On bare-metal, **you** are responsible for all of this. A single mistake - forgetting to call static constructors, placing the stack at the wrong address, or misconfiguring the linker script sections - causes silent corruption that is extraordinarily difficult to debug.
 
-For C++ specifically, the startup sequence must include the **static initialization** phase: calling all functions registered in the `.init_array` section. These are the constructors of global/namespace-scope objects and `__attribute__((constructor))` functions. Missing this step means every global object with a non-trivial constructor is in an undefined state.
+For C++ specifically, the startup sequence must include the **static initialization** phase: calling all functions registered in the `.init_array` section. These are the constructors of global/namespace-scope objects and `__attribute__((constructor))` functions. Missing this step means every global object with a non-trivial constructor is in an undefined state - and the resulting bugs are notoriously hard to reproduce because the symptom often appears far from the root cause.
 
 | Startup Phase | Responsibility | What Happens |
 | --- | --- | --- |
@@ -22,8 +22,9 @@ For C++ specifically, the startup sequence must include the **static initializat
 | `.init_array` calls | Startup code | Call all C++ global constructors |
 | `main()` / `app_main()` | Application | User code begins |
 
-```cpp
+Here is how the flash and SRAM are laid out after linking:
 
+```cpp
 Flash Memory Layout (Cortex-M):
 
 Address     Section         Content
@@ -37,13 +38,12 @@ SRAM Layout:
 0x2000_0000 .data (VMA)     Initialized globals (destination)
 0x200A_AAAA .bss            Zero-initialized globals
 0x200B_BBBB                 Heap (grows up)
-    ...                     ← gap →
+    ...                     <- gap ->
 0x2001_FFF0                 Stack (grows down)
 0x2002_0000                 End of SRAM (128 KB)
-
 ```
 
-The linker script is the blueprint that assigns these sections to physical addresses. It must define symbols that the startup code references (`_sidata`, `_sdata`, `_edata`, `_sbss`, `_ebss`, `__init_array_start`, `__init_array_end`) to perform the copy and zero operations.
+The linker script is the blueprint that assigns these sections to physical addresses. It must define symbols that the startup code references (`_sidata`, `_sdata`, `_edata`, `_sbss`, `_ebss`, `__init_array_start`, `__init_array_end`) to perform the copy and zero operations. If those symbols are missing or wrong, the startup code writes to the wrong addresses and your firmware corrupts memory silently.
 
 ---
 
@@ -51,9 +51,10 @@ The linker script is the blueprint that assigns these sections to physical addre
 
 ### Q1: Write a complete linker script for an STM32F4 (1 MB flash, 128 KB SRAM) that properly handles C++ static initialization, stack, and heap
 
-```ld
+Walk through this script section by section. Notice how each region serves a specific purpose, and pay special attention to the `.init_array` section - that is where the C++ constructor pointers live, and `KEEP()` is essential there because the linker's dead-code elimination would otherwise discard those pointers as "unreferenced."
 
-/* stm32f4.ld — Linker script for STM32F407 with C++ support */
+```ld
+/* stm32f4.ld - Linker script for STM32F407 with C++ support */
 
 /* Memory regions */
 MEMORY
@@ -63,7 +64,7 @@ MEMORY
     CCM   (rw)  : ORIGIN = 0x10000000, LENGTH = 64K    /* Core-Coupled Memory */
 }
 
-/* Entry point — Reset_Handler in startup code */
+/* Entry point - Reset_Handler in startup code */
 ENTRY(Reset_Handler)
 
 /* Stack and heap sizes */
@@ -137,7 +138,7 @@ SECTIONS
         PROVIDE_HIDDEN(__exidx_end = .);
     } > FLASH
 
-    /* --- Initialized data (flash → SRAM copy) --- */
+    /* --- Initialized data (flash -> SRAM copy) --- */
     _sidata = LOADADDR(.data);   /* Source address in flash */
 
     .data :
@@ -195,14 +196,14 @@ SECTIONS
         libgcc.a(*)
     }
 }
-
 ```
 
 ### Q2: Write the C++ startup code (Reset_Handler) that correctly initializes .data, .bss, the FPU, and calls all C++ global constructors before entering main
 
-```cpp
+The startup code references those linker-script symbols by declaring them as `extern` variables. The `Reset_Handler` must be in `extern "C"` because the vector table stores its address as a raw function pointer - no C++ name mangling allowed.
 
-// startup.cpp — Bare-metal C++ startup for Cortex-M4F
+```cpp
+// startup.cpp - Bare-metal C++ startup for Cortex-M4F
 #include <cstdint>
 #include <cstddef>
 
@@ -230,7 +231,7 @@ extern "C" [[noreturn]] void app_main();
 
 // ---------- FPU Enable (Cortex-M4F) ----------
 static void enable_fpu() {
-    // CPACR at 0xE000'ED88 — set CP10 and CP11 to full access
+    // CPACR at 0xE000'ED88 - set CP10 and CP11 to full access
     volatile auto* cpacr =
         reinterpret_cast<volatile std::uint32_t*>(0xE000'ED88);
     *cpacr |= (0xFu << 20);  // CP10 + CP11 = full access
@@ -290,7 +291,7 @@ extern "C" void Default_Handler() {
     while (true) { asm volatile("bkpt #0"); }
 }
 
-// Weak aliases — user overrides specific handlers
+// Weak aliases - user overrides specific handlers
 #define WEAK_ALIAS __attribute__((weak, alias("Default_Handler")))
 
 extern "C" {
@@ -321,14 +322,16 @@ const std::uintptr_t vector_table[] = {
     reinterpret_cast<std::uintptr_t>(SysTick_Handler),    // 15
     // IRQ 0-239 would follow for specific STM32 peripherals...
 };
-
 ```
+
+The `enable_fpu()` call must come before `init_data()` if any global constructor uses floating point. The `dsb`/`isb` barrier instructions ensure the CPACR write has propagated before the pipeline executes any FP instruction.
 
 ### Q3: Demonstrate the static initialization order fiasco and how to prevent it in bare-metal C++ using constinit, Nifty Counter, and placement new
 
-```cpp
+The static initialization order fiasco is when object A's constructor runs before object B's, but A's constructor calls B - and B is not initialized yet. On hosted systems this is a known pitfall; on bare-metal it is especially insidious because the crash happens before `main()` starts, often with no stack trace.
 
-// init_order.cpp — Static initialization pitfalls and solutions
+```cpp
+// init_order.cpp - Static initialization pitfalls and solutions
 #include <cstdint>
 #include <new>          // placement new (freestanding)
 #include <type_traits>
@@ -353,10 +356,10 @@ struct Sensor {
     }
 };
 
-// If Sensor's TU is initialized before Logger's TU → undefined behavior
+// If Sensor's TU is initialized before Logger's TU -> undefined behavior
 
 // ======================================================
-// SOLUTION 1: constinit (C++20) — guarantee constant initialization
+// SOLUTION 1: constinit (C++20) - guarantee constant initialization
 // ======================================================
 struct SafeCounter {
     std::uint32_t value;
@@ -382,7 +385,7 @@ struct NiftyLogger {
     void log(const char* msg);
 };
 
-// Storage declared in header — all TUs share one definition
+// Storage declared in header - all TUs share one definition
 extern NiftyLogger& g_logger;
 
 struct NiftyLoggerInit {
@@ -396,7 +399,7 @@ static NiftyLoggerInit nifty_logger_init_obj;
 
 // logger_nifty.cpp (implementation)
 namespace {
-    // Raw storage — no constructor called at file scope
+    // Raw storage - no constructor called at file scope
     alignas(NiftyLogger) std::uint8_t logger_storage[sizeof(NiftyLogger)];
     std::uint32_t nifty_counter = 0;
 }
@@ -405,7 +408,7 @@ NiftyLogger& g_logger = *reinterpret_cast<NiftyLogger*>(logger_storage);
 
 NiftyLoggerInit::NiftyLoggerInit() {
     if (nifty_counter++ == 0) {
-        // First TU to initialize — construct the logger
+        // First TU to initialize - construct the logger
         ::new (logger_storage) NiftyLogger{};
         g_logger.init();
     }
@@ -428,7 +431,7 @@ class ManualInit {
     bool initialized_ = false;
 
 public:
-    // No constructor, no destructor — trivial lifetime
+    // No constructor, no destructor - trivial lifetime
     template <typename... Args>
     void construct(Args&&... args) {
         ::new (storage_) T(static_cast<Args&&>(args)...);
@@ -447,7 +450,7 @@ public:
     [[nodiscard]] bool is_initialized() const { return initialized_; }
 };
 
-// Global objects — no constructors called at static init time
+// Global objects - no constructors called at static init time
 ManualInit<Logger> g_lazy_logger;
 ManualInit<Sensor> g_lazy_sensor;
 
@@ -457,20 +460,21 @@ void system_init() {
     g_lazy_logger.construct();
     g_lazy_logger.get().init();
 
-    // 2. Sensor second — logger is guaranteed ready
+    // 2. Sensor second - logger is guaranteed ready
     g_lazy_sensor.construct(g_lazy_logger.get());
 }
-
 ```
+
+Solution 3 is the recommended approach for embedded: call `system_init()` explicitly from your `Reset_Handler` or early in `main()`, in whatever order the dependencies require. There is no hidden ordering, no surprise, and no risk of the wrong thing running first.
 
 ---
 
 ## Notes
 
-- The `KEEP()` directive in the linker script is **essential** for `.init_array` — without it, `--gc-sections` will discard constructor pointers as "unreferenced" and global objects will never be constructed.
+- The `KEEP()` directive in the linker script is **essential** for `.init_array` - without it, `--gc-sections` will discard constructor pointers as "unreferenced" and global objects will never be constructed.
 - `SORT(.init_array.*)` ensures constructors with explicit `__attribute__((init_priority(N)))` are called in the correct order.
-- On Cortex-M, the initial stack pointer is loaded from vector table offset 0 by hardware. The `Reset_Handler` does **not** need to set SP — but it must be correct in the vector table.
-- Never use `__libc_init_array()` from newlib in production — it pulls in malloc and other dependencies. Write your own `.init_array` loop.
-- `constinit` (C++20) **guarantees** constant initialization. If the initializer is not a constant expression, the program is ill-formed — this is a compile-time safety net.
+- On Cortex-M, the initial stack pointer is loaded from vector table offset 0 by hardware. The `Reset_Handler` does **not** need to set SP - but it must be correct in the vector table.
+- Never use `__libc_init_array()` from newlib in production - it pulls in `malloc` and other dependencies. Write your own `.init_array` loop instead.
+- `constinit` (C++20) **guarantees** constant initialization. If the initializer is not a constant expression, the program is ill-formed - this is a compile-time safety net.
 - On Cortex-M4F, the FPU **must** be enabled before any function that uses `float`/`double`. If the startup code itself uses floating-point (even implicitly via a global constructor), enable FPU first.
 - The `.data` LMA/VMA split (`> SRAM AT> FLASH`) is the most common linker script mistake: omit `AT> FLASH` and your initialized globals will be zero (or random) after reset.

@@ -2,15 +2,17 @@
 
 **Category:** Embedded & Constrained Systems  
 **Standard:** MISRA C++ 2023, AUTOSAR C++ 14 (R22-11)  
-**Reference:** https://misra.org.uk/misra-c-plus-plus-2023/  
+**Reference:** <https://misra.org.uk/misra-c-plus-plus-2023/>  
 
 ---
 
 ## Topic Overview
 
-**MISRA C++ 2023** and **AUTOSAR C++ 14** are the two dominant coding standards for safety-critical C++ in automotive, aerospace, medical devices, and industrial control. They constrain C++ usage to a deterministic, analyzable, and safe subset — banning features that introduce undefined behavior, implementation-defined behavior, non-deterministic execution, or code that is difficult for static analysis tools to reason about.
+**MISRA C++ 2023** and **AUTOSAR C++ 14** are the two dominant coding standards for safety-critical C++ in automotive, aerospace, medical devices, and industrial control. They constrain C++ usage to a deterministic, analyzable, and safe subset - banning features that introduce undefined behavior, implementation-defined behavior, non-deterministic execution, or code that is difficult for static analysis tools to reason about.
 
-MISRA C++ 2023 is the latest revision, fully targeting **C++17** (with guidance on C++20/23 features). It replaces the outdated MISRA C++ 2008 which only covered C++03. AUTOSAR C++ 14 (Adaptive Platform, Release 22-11) targets **C++14** and is widely used in automotive ECU development. There is significant overlap, but key differences exist.
+MISRA C++ 2023 is the latest revision, fully targeting **C++17** (with guidance on C++20/23 features). It replaces the outdated MISRA C++ 2008 which only covered C++03. AUTOSAR C++ 14 (Adaptive Platform, Release 22-11) targets **C++14** and is widely used in automotive ECU development. There is significant overlap between the two standards, but key differences exist - particularly in rule count, classification, and how strictly dynamic memory is treated.
+
+Here is a quick comparison of the two standards side by side:
 
 | Aspect | MISRA C++ 2023 | AUTOSAR C++ 14 |
 | --- | --- | --- |
@@ -31,8 +33,9 @@ MISRA C++ 2023 is the latest revision, fully targeting **C++17** (with guidance 
 | Raw pointer arithmetic | Banned (use `span`, `array`) | Restricted |
 | Compliance tool examples | Polyspace, PC-lint, LDRA, Parasoft | Same + AUTOSAR-specific checks |
 
-```cpp
+The safety integrity level (SIL or ASIL) of your system determines how strictly you must apply these standards. A quality management (QM) component has no hard requirement; an ASIL-D component requires full compliance, formal verification, and tool qualification. This table shows how that maps across three major industry standards:
 
+```cpp
 Safety Integrity Levels and Standard Applicability:
 
 ISO 26262 (Automotive):
@@ -50,10 +53,9 @@ IEC 61508 (Industrial):
   SIL 1-2: Recommended  │  SIL 3-4: Mandatory + tool qualification
 DO-178C (Aerospace):
   DAL-E: Advisory  │  DAL-A: Full compliance + MC/DC coverage
-
 ```
 
-Both standards require **static analysis tool qualification** — the tools must themselves be validated to the appropriate safety standard. A "clean" PC-lint or Polyspace run against MISRA C++ 2023 rules is a common certification requirement. Deviations from rules must be formally documented with a rationale, approved by the safety manager, and traceable.
+Both standards require **static analysis tool qualification** - the tools must themselves be validated to the appropriate safety standard. A "clean" PC-lint or Polyspace run against MISRA C++ 2023 rules is a common certification requirement. Deviations from rules must be formally documented with a rationale, approved by the safety manager, and traceable. You cannot just suppress a warning and move on - the process exists to create an audit trail.
 
 ---
 
@@ -61,9 +63,10 @@ Both standards require **static analysis tool qualification** — the tools must
 
 ### Q1: Demonstrate the top 10 most impactful MISRA C++ 2023 rules with code examples showing violations and compliant alternatives
 
-```cpp
+These are the rules you will encounter most often in real safety-critical codebases. Each one is shown with a non-compliant pattern and the compliant replacement.
 
-// misra_top10.cpp — Key MISRA C++ 2023 rules with examples
+```cpp
+// misra_top10.cpp - Key MISRA C++ 2023 rules with examples
 #include <cstdint>
 #include <array>
 #include <span>
@@ -75,7 +78,7 @@ Both standards require **static analysis tool qualification** — the tools must
 // ================================================================
 void rule_0_1_2() {
     // NON-COMPLIANT:
-    // int x = compute();   // x assigned but never read → dead store
+    // int x = compute();   // x assigned but never read -> dead store
 
     // COMPLIANT:
     [[maybe_unused]] int debug_val = 42;  // Explicitly mark if intentional
@@ -186,7 +189,7 @@ void process() {
     struct Cleanup {
         ~Cleanup() { /* release resources */ }
     } guard;
-    // ... if error, just return — destructor handles cleanup
+    // ... if error, just return - destructor handles cleanup
 }
 
 // ================================================================
@@ -209,14 +212,14 @@ std::array<Sensor, 32> sensor_array{};  // static allocation
 // printf("value: %d", x);  // type-unsafe, locale-dependent
 
 // COMPLIANT: Use hardware-specific logging (UART, SWO, etc.)
-
 ```
 
 ### Q2: Write a complete AUTOSAR C++ 14 compliant driver class that demonstrates rule-conforming patterns for resource management, error handling, and type safety
 
-```cpp
+The key insight here is that AUTOSAR bans exceptions, so every function that can fail must communicate that failure through its return type. Notice how `[[nodiscard]]` enforces that callers check the returned `Status` - ignoring errors is not allowed.
 
-// autosar_driver.h — AUTOSAR C++ 14 compliant peripheral driver
+```cpp
+// autosar_driver.h - AUTOSAR C++ 14 compliant peripheral driver
 // Conformance: AUTOSAR C++ 14 Rules checked via clang-tidy + Parasoft
 #pragma once
 
@@ -227,10 +230,10 @@ std::array<Sensor, 32> sensor_array{};  // static allocation
 
 namespace driver {
 
-// A18-1-1: C-style arrays shall not be used → use std::array
+// A18-1-1: C-style arrays shall not be used -> use std::array
 // A0-4-2: Type std::uint*_t aliases shall be used instead of basic types
 
-// Error type: A15-0-1 exceptions banned → use error codes
+// Error type: A15-0-1 exceptions banned -> use error codes
 enum class Status : std::uint8_t {
     kOk              = 0U,
     kNotInitialized  = 1U,
@@ -243,7 +246,7 @@ enum class Status : std::uint8_t {
 // A7-1-5: auto shall not be used for fundamental types
 // A7-2-1: enum underlying type shall be specified
 
-// Configuration struct — trivially copyable for safety
+// Configuration struct - trivially copyable for safety
 struct AdcConfig {
     std::uint8_t  channel;       // 0-15
     std::uint16_t sample_cycles; // ADC clock cycles per sample
@@ -251,7 +254,7 @@ struct AdcConfig {
 };
 
 // A12-1-1: Constructors shall initialize all non-static members
-// A12-8-1: Move/copy not declared → Rule of Zero
+// A12-8-1: Move/copy not declared -> Rule of Zero
 static_assert(std::is_trivially_copyable_v<AdcConfig>,
               "AdcConfig must be trivially copyable");
 
@@ -263,13 +266,13 @@ namespace adc_constants {
     constexpr std::uintptr_t kAdcBaseAddr    = 0x4001'2000U;
 }
 
-// Driver class — AUTOSAR compliant
+// Driver class - AUTOSAR compliant
 class AdcDriver final {  // A12-1-6: Class shall be final or have virtual dtor
 public:
     // A12-1-1: All members initialized
     AdcDriver() = default;
 
-    // A15-5-1: Class shall not propagate exceptions → noexcept on all
+    // A15-5-1: Class shall not propagate exceptions -> noexcept on all
     // A13-2-1: Assignment operator shall return reference
     AdcDriver(const AdcDriver&)            = delete;  // A12-8-4: No copy for HW driver
     AdcDriver& operator=(const AdcDriver&) = delete;
@@ -279,7 +282,7 @@ public:
     // A8-4-2: [in] params by const ref, [out] by pointer
     [[nodiscard]]
     Status init(const AdcConfig& config) noexcept {
-        // A5-1-1: No magic numbers — use named constants
+        // A5-1-1: No magic numbers - use named constants
         if (config.channel > adc_constants::kMaxChannel) {
             return Status::kInvalidParam;
         }
@@ -370,13 +373,13 @@ private:
 // A7-1-1: constexpr where possible
 
 } // namespace driver
-
 ```
 
 ### Q3: Set up a static analysis pipeline that checks both MISRA C++ 2023 and AUTOSAR C++ 14 rules using open-source and commercial tools
 
-```yaml
+Static analysis is not optional for safety-critical code - it is a certification requirement. Here is a CI pipeline that runs three tools: `cppcheck` for MISRA rules, `clang-tidy` for AUTOSAR-aligned checks, and PC-lint Plus for full commercial coverage.
 
+```yaml
 # .github/workflows/misra-compliance.yml
 # CI pipeline for MISRA C++ 2023 + AUTOSAR C++ 14 static analysis
 
@@ -467,12 +470,12 @@ jobs:
             std_c++17.lnt \
             -i src/ \
             src/*.cpp
-
 ```
 
-```ini
+The `.clang-tidy` configuration file controls which checks run and what naming conventions are enforced. This file captures the AUTOSAR A2-10-1 naming convention (classes in CamelCase, members with `_` suffix, constants prefixed with `k`):
 
-# .clang-tidy — AUTOSAR/MISRA profile
+```ini
+# .clang-tidy - AUTOSAR/MISRA profile
 ---
 Checks: >
   -*,
@@ -543,12 +546,12 @@ CheckOptions:
 
 FormatStyle: file
 HeaderFilterRegex: 'src/.*\.h(pp)?$'
-
 ```
 
-```cpp
+You can also add compile-time compliance assertions that catch common violations at build time, before the static analysis tool even runs:
 
-// compliance_report.h — Generate rule compliance summary at build time
+```cpp
+// compliance_report.h - Generate rule compliance summary at build time
 #pragma once
 
 // Compile-time compliance assertions
@@ -585,17 +588,16 @@ constexpr bool is_safe_aggregate_v =
                   "MISRA/AUTOSAR: " #T " must be trivially copyable and standard layout")
 
 } // namespace compliance
-
 ```
 
 ---
 
 ## Notes
 
-- **MISRA C++ 2023** is a complete rewrite — it does **not** just add rules to MISRA C++ 2008. Code compliant with 2008 may violate 2023 rules. A full re-audit is required when upgrading.
+- **MISRA C++ 2023** is a complete rewrite - it does **not** just add rules to MISRA C++ 2008. Code compliant with 2008 may violate 2023 rules. A full re-audit is required when upgrading.
 - AUTOSAR C++ 14 is maintained by the AUTOSAR consortium and freely downloadable (unlike MISRA which requires a license purchase).
 - Both standards require a **deviation process**: if you must violate a rule (e.g., `reinterpret_cast` for MMIO), you document the deviation with: rule number, rationale, scope, reviewer approval, and traceability ID.
 - `clang-tidy` covers ~60% of AUTOSAR/MISRA rules via `cert-*`, `cppcoreguidelines-*`, `bugprone-*`, and `hicpp-*` checks. For full coverage, commercial tools (Polyspace, PC-lint Plus, LDRA, Parasoft, QA-C++) are needed.
-- MISRA 2023 **permits** `constexpr`, `consteval`, `if constexpr`, `auto`, lambdas, templates, `std::optional`, `std::variant`, `std::array`, `std::span`, and structured bindings — it is far more modern-C++-friendly than MISRA 2008 was.
+- MISRA 2023 **permits** `constexpr`, `consteval`, `if constexpr`, `auto`, lambdas, templates, `std::optional`, `std::variant`, `std::array`, `std::span`, and structured bindings - it is far more modern-C++-friendly than MISRA 2008 was.
 - MISRA 2023 **bans**: exceptions, RTTI, `goto`, `union` (except tagged), C-style casts, `reinterpret_cast` (with deviation), `#define` function-like macros, `malloc`/`free`, `new`/`delete`, `setjmp`/`longjmp`, `signal`, and recursion.
-- Every project should generate a **Guideline Compliance Summary (GCS)** — a document listing each rule, its compliance status (compliant / deviation / not applicable), and evidence. This is a formal audit artifact for ISO 26262 / IEC 61508 certification.
+- Every project should generate a **Guideline Compliance Summary (GCS)** - a document listing each rule, its compliance status (compliant / deviation / not applicable), and evidence. This is a formal audit artifact for ISO 26262 / IEC 61508 certification.
