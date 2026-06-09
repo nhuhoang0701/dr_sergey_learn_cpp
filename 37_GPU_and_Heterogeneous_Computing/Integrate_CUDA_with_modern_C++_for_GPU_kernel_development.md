@@ -8,11 +8,13 @@
 
 ## Topic Overview
 
-CUDA remains the dominant GPU programming model for NVIDIA hardware, and modern CUDA (12.x) embraces C++17 and partial C++20 support in device code. This means senior developers can leverage `constexpr`, structured bindings, `std::optional`, `if constexpr`, and class template argument deduction (CTAD) directly inside `__device__` and `__global__` functions, producing cleaner and safer kernel code than the C-style CUDA of earlier eras.
+CUDA remains the dominant GPU programming model for NVIDIA hardware, and modern CUDA (12.x) embraces C++17 and partial C++20 support in device code. This means you can leverage `constexpr`, structured bindings, `std::optional`, `if constexpr`, and class template argument deduction (CTAD) directly inside `__device__` and `__global__` functions, producing cleaner and safer kernel code than the C-style CUDA of earlier eras. If you've been avoiding these features in kernel code because "CUDA doesn't support C++17", that excuse is now outdated.
 
-Unified Memory (`cudaMallocManaged`) simplifies the programming model by providing a single pointer space accessible from both host and device, with the CUDA runtime handling page migration. However, expert-level usage demands understanding of prefetching (`cudaMemPrefetchAsync`), memory advise hints (`cudaMemAdvise`), and the performance implications of on-demand page faulting versus explicit transfers.
+Unified Memory (`cudaMallocManaged`) simplifies the programming model by providing a single pointer space accessible from both host and device, with the CUDA runtime handling page migration. However, expert-level usage demands understanding of prefetching (`cudaMemPrefetchAsync`), memory advise hints (`cudaMemAdvise`), and the performance implications of on-demand page faulting versus explicit transfers. The short version: unified memory is great for prototyping; use prefetching before you ship.
 
-Error handling in CUDA has traditionally relied on checking `cudaError_t` return codes—a pattern that is fragile and verbose. Modern C++ RAII wrappers around CUDA resources (streams, events, device memory) ensure deterministic cleanup and can throw exceptions on error, integrating naturally with C++ exception-based control flow on the host side.
+Error handling in CUDA has traditionally relied on checking `cudaError_t` return codes - a pattern that is fragile and verbose. Modern C++ RAII wrappers around CUDA resources (streams, events, device memory) ensure deterministic cleanup and can throw exceptions on error, integrating naturally with C++ exception-based control flow on the host side. The shift from raw error codes to RAII is one of the most impactful things you can do to make CUDA code maintainable.
+
+The table below shows how far things have come. If you're writing new code today, target the right column:
 
 | Feature               | CUDA C (Legacy)           | Modern CUDA C++ (12.x)            |
 | --- | --- | --- |
@@ -29,8 +31,9 @@ Error handling in CUDA has traditionally relied on checking `cudaError_t` return
 
 ### Q1: Write a CUDA kernel using C++17 features (constexpr, if constexpr) and wrap device memory in an RAII class
 
-```cpp
+This example shows two things at once: a proper RAII device buffer that throws on allocation failure (so you can't accidentally use a null pointer), and a templated kernel that uses `if constexpr` to select between operations at compile time rather than branching at runtime. Notice that `constexpr` works inside device code just as you'd expect.
 
+```cpp
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <stdexcept>
@@ -116,13 +119,15 @@ int main() {
     printf("result[0] = %f\n", hc[0]);  // 2*1+2 = 4
     return 0;
 }
-
 ```
+
+Because `da`, `db`, and `dc` are stack objects, the device memory is automatically freed when `main` returns - even if an exception is thrown. The `if constexpr` in the kernel generates zero branch instructions at runtime; the compiler emits only the path you selected at instantiation time.
 
 ### Q2: Implement CUDA Unified Memory with prefetching and memory advise hints, and compare latency
 
-```cpp
+The performance difference between cold unified memory and prefetched unified memory can be dramatic - often a 10-15x gap. This benchmark makes that concrete. The reason the cold case is slow is that every page fault triggers a CPU-GPU round trip to migrate that page; prefetching batches all migrations before the kernel starts.
 
+```cpp
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <chrono>
@@ -191,13 +196,15 @@ int main() {
  With prefetch                    0.820 ms
  ReadMostly + prefetch            0.790 ms
 */
-
 ```
+
+The `cudaMemAdvise(ReadMostly)` hint tells the runtime it can create read-only replicas of the data on the device, which helps if multiple devices or the CPU also need to read the same data. For this single-GPU case the improvement over plain prefetch is marginal, but it's good habit to set the hint correctly.
 
 ### Q3: Build an RAII-based CUDA stream manager and overlap kernel execution with async memory transfers
 
-```cpp
+This is the pattern you'll use for production GPU code: pinned host memory plus multiple streams, with each stream handling H2D transfer, kernel, and D2H transfer for its chunk independently. The streams run concurrently, so the GPU's copy engine and compute engine can work at the same time on different chunks.
 
+```cpp
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdio>
@@ -293,16 +300,17 @@ int main() {
    Stream 2:           [H2D][Kernel][D2H]
    Stream 3:                [H2D][Kernel][D2H]
 */
-
 ```
+
+The critical requirement for async transfers is pinned host memory - `cudaMemcpyAsync` with pageable memory silently falls back to synchronous behavior, which defeats the entire purpose. The RAII `CudaStream` and `CudaEvent` wrappers mean you don't need to track `cudaStreamDestroy` calls manually - they clean up when the objects go out of scope.
 
 ---
 
 ## Notes
 
 - CUDA 12.x supports C++17 fully and C++20 partially in device code; check `__CUDACC_VER_MAJOR__` for feature gates.
-- Always use pinned memory (`cudaMallocHost`) for async transfers — pageable memory silently falls back to synchronous copy.
+- Always use pinned memory (`cudaMallocHost`) for async transfers - pageable memory silently falls back to synchronous copy.
 - RAII wrappers for streams, events, and device memory eliminate entire classes of resource leak bugs.
-- `cudaMemPrefetchAsync` can reduce first-touch latency by 10–15× compared to on-demand page faulting.
+- `cudaMemPrefetchAsync` can reduce first-touch latency by 10-15x compared to on-demand page faulting.
 - Compile with `nvcc -std=c++17 --expt-relaxed-constexpr` for maximum C++ feature availability in device code.
-- Profile with `nsys` (Nsight Systems) to verify overlap correctness — visual timeline reveals serialization bugs instantly.
+- Profile with `nsys` (Nsight Systems) to verify overlap correctness - visual timeline reveals serialization bugs instantly.

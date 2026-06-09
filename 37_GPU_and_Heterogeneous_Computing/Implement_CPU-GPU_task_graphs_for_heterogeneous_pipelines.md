@@ -10,25 +10,26 @@
 
 ### The Problem: Launch Overhead
 
-Individual kernel launches have overhead (~5-20 µs each on CUDA). For pipelines with many small kernels, launch overhead dominates:
+Individual kernel launches have overhead (~5-20 µs each on CUDA). For pipelines with many small kernels, this launch overhead dominates execution time - the GPU spends more time waiting for the next command than actually computing. The contrast looks like this:
 
 ```cpp
-
 Traditional approach (serial launches):
 CPU: [launch A][wait][launch B][wait][launch C][wait][launch D]
 GPU: [idle][A][idle][B][idle][C][idle][D]
-     ← wasted time: kernel launch overhead + synchronization
+     <- wasted time: kernel launch overhead + synchronization
 
 Task graph approach:
 CPU: [define graph][launch graph]
-GPU: [A → B → C → D]  ← minimal idle time, pipelined
-
+GPU: [A -> B -> C -> D]  <- minimal idle time, pipelined
 ```
 
-### CUDA Graphs — Hardware-Accelerated Task Graphs
+With a task graph, you define the entire workflow once, hand it to the driver as a unit, and then fire it off with a single launch command. The driver knows all the dependencies upfront and can optimize scheduling internally.
+
+### CUDA Graphs - Hardware-Accelerated Task Graphs
+
+CUDA's stream capture API lets you record a sequence of operations - including kernels, memory copies, and synchronization - by running them normally on a stream while capture mode is active. The result is a graph object that can be launched repeatedly with very low overhead. Here is the pattern:
 
 ```cpp
-
 #include <cuda_runtime.h>
 
 void build_and_run_graph() {
@@ -64,13 +65,15 @@ void build_and_run_graph() {
     cudaGraphDestroy(graph);
     cudaStreamDestroy(stream);
 }
-
 ```
+
+The instantiation step is where the driver does its optimization work - it validates the graph structure and may reorder or merge operations. You pay that cost once, then amortize it across all subsequent launches.
 
 ### Explicit Graph Construction with Dependencies
 
-```cpp
+Stream capture is convenient but limited to linear or simple fork-join patterns. When you need more complex dependency structures - like two independent branches that both depend on a shared predecessor - explicit construction gives you full control. You add nodes and then declare which nodes must complete before each node starts:
 
+```cpp
 void build_explicit_graph() {
     cudaGraph_t graph;
     cudaGraphCreate(&graph, 0);
@@ -105,7 +108,7 @@ void build_explicit_graph() {
     // Graph structure:
     //      A
     //     / \
-    //    B   C    ← B and C run in parallel
+    //    B   C    <- B and C run in parallel
     //     \ /
     //      D
 
@@ -113,15 +116,15 @@ void build_explicit_graph() {
     cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0);
     cudaGraphLaunch(instance, stream);
 }
-
 ```
+
+Notice that B and C can execute in parallel because neither depends on the other - only both depend on A. The driver handles that overlap automatically once you've declared the dependency edges.
 
 ### C++ Task Graph with CPU+GPU Nodes
 
-Using a framework like **Taskflow** for heterogeneous CPU-GPU pipelines:
+CUDA graphs only cover GPU-side operations. For heterogeneous pipelines that mix CPU work (file I/O, decompression, analysis) with GPU compute, a framework like **Taskflow** lets you express both kinds of tasks in a single dependency graph. This is where you get true CPU/GPU overlap without managing threads and streams manually:
 
 ```cpp
-
 #include <taskflow/taskflow.hpp>
 #include <taskflow/cuda/cudaflow.hpp>
 
@@ -151,19 +154,21 @@ void heterogeneous_pipeline() {
         analyze_results(host_result);
     }).name("CPU: Analyze");
 
-    // Dependencies: load → gpu_process → analyze
+    // Dependencies: load -> gpu_process -> analyze
     load.precede(gpu_process);
     gpu_process.precede(analyze);
 
     executor.run(taskflow).wait();
 }
-
 ```
+
+The `precede` calls build the dependency graph. Taskflow's executor then runs tasks as soon as their dependencies are satisfied, on whatever CPU threads are available, while the GPU tasks are dispatched to their streams.
 
 ### Pipelined Multi-Frame Processing
 
-```cpp
+Double-buffering (or the more general "pipeline with N lines") is a classic technique for keeping both CPU and GPU busy simultaneously. While the GPU processes frame N, the CPU loads frame N+1 into the other buffer. Taskflow's pipeline API makes this pattern clean:
 
+```cpp
 void pipelined_processing() {
     tf::Executor executor;
     tf::Taskflow taskflow;
@@ -196,15 +201,17 @@ void pipelined_processing() {
     // Timeline:
     // Line 0: [Load F0][Process F0][Save F0]         [Load F2][Process F2][Save F2]
     // Line 1:          [Load F1]   [Process F1][Save F1]         [Load F3] ...
-    //                  ← overlapped execution →
+    //                  <- overlapped execution ->
 }
-
 ```
+
+The key insight here is that CPU and GPU are separate hardware units that can genuinely work at the same time. A pipeline fills both processors' idle time. Without double-buffering, the GPU sits idle while the CPU loads the next frame, and the CPU sits idle while the GPU computes. With it, you get near-full utilization of both.
 
 ### Graph Update Without Rebuild
 
-```cpp
+One of the practical advantages of CUDA graphs is that you can update kernel parameters between launches without destroying and rebuilding the graph. This is useful when you have a fixed computation structure but varying input data (different pointers, different constants each frame):
 
+```cpp
 // Update kernel parameters without destroying/recreating the graph
 void update_graph_iteration(cudaGraphExec_t instance,
                             cudaGraphNode_t kernel_node,
@@ -213,7 +220,6 @@ void update_graph_iteration(cudaGraphExec_t instance,
     cudaGraphExecKernelNodeSetParams(instance, kernel_node, &params);
     // Updated parameters take effect on next launch — no rebuild overhead
 }
-
 ```
 
 ---
@@ -226,18 +232,18 @@ Individual kernel launches require CPU-GPU communication each time (~5-20 µs pe
 
 ### Q2: When should you use stream capture vs explicit graph construction
 
-**Stream capture** (`cudaStreamBeginCapture`) is simpler — you write normal CUDA code and it records the operations. Good for straightforward linear pipelines. **Explicit construction** (`cudaGraphAddKernelNode`) gives more control — you can create complex DAGs with branches and joins that are hard to express with stream ordering. Use explicit construction when you need fork-join parallelism or conditional nodes.
+**Stream capture** (`cudaStreamBeginCapture`) is simpler - you write normal CUDA code and it records the operations. Good for straightforward linear pipelines. **Explicit construction** (`cudaGraphAddKernelNode`) gives more control - you can create complex DAGs with branches and joins that are hard to express with stream ordering. Use explicit construction when you need fork-join parallelism or conditional nodes.
 
 ### Q3: How does a heterogeneous pipeline overlap CPU and GPU work
 
-Using double-buffering or multi-line pipelines: while the GPU processes frame N, the CPU loads frame N+1 and saves frame N-1. A task graph framework (like Taskflow) manages dependencies automatically. The key insight: CPU and GPU are separate hardware that can work simultaneously — the pipeline fills both processors' idle time.
+Using double-buffering or multi-line pipelines: while the GPU processes frame N, the CPU loads frame N+1 and saves frame N-1. A task graph framework (like Taskflow) manages dependencies automatically. The key insight: CPU and GPU are separate hardware that can work simultaneously - the pipeline fills both processors' idle time.
 
 ---
 
 ## Notes
 
-- CUDA Graphs have an instantiation cost — amortized over many launches
-- Use `cudaGraphExecUpdate` to modify a graph without full re-instantiation
-- Conditional nodes (CUDA 12+) allow dynamic graph behavior
-- Taskflow is header-only and supports CUDA, SYCL, and CPU tasks
-- Profile with `nsys` to verify that graph launches have lower overhead
+- CUDA Graphs have an instantiation cost - amortize it over many launches.
+- Use `cudaGraphExecUpdate` to modify a graph without full re-instantiation.
+- Conditional nodes (CUDA 12+) allow dynamic graph behavior.
+- Taskflow is header-only and supports CUDA, SYCL, and CPU tasks.
+- Profile with `nsys` to verify that graph launches have lower overhead than individual launches.

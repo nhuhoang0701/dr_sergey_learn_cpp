@@ -22,13 +22,13 @@ C++ for GPU and accelerator programming: CUDA, SYCL/oneAPI, OpenCL, std::executi
 
 ## Notes
 
-- CUDA extends C++ for GPU programming — kernel functions run on thousands of GPU threads simultaneously
-- SYCL provides standard C++ heterogeneous computing — single-source GPU code without language extensions
-- GPU memory management (device vs host) is the primary complexity — use unified memory for prototyping
-- Occupancy optimization (balancing threads, registers, shared memory) is key to GPU performance
-- std::execution (C++26) aims to unify CPU and GPU execution under one programming model
-- GPU workloads suit data-parallel operations — matrix math, image processing, simulations
-- Memory coalescing (adjacent threads accessing adjacent memory) is critical for GPU throughput
-- Shared memory is fast but limited (~48KB per block) — use it for data reuse within thread blocks
-- Vulkan Compute and OpenCL are cross-vendor GPU compute APIs — less C++-friendly than CUDA/SYCL
-- Profile GPU code with NSight (NVIDIA) or RGP (AMD) — bottlenecks differ from CPU code
+- CUDA extends C++ for GPU programming - kernel functions run on thousands of GPU threads simultaneously.
+- SYCL provides standard C++ heterogeneous computing - single-source GPU code without language extensions.
+- GPU memory management (device vs host) is the primary complexity - use unified memory for prototyping, but understand its performance cost before shipping.
+- Occupancy optimization (balancing threads, registers, shared memory) is key to GPU performance - more threads isn't always better.
+- std::execution (C++26) aims to unify CPU and GPU execution under one programming model, letting you swap schedulers rather than rewrite algorithms.
+- GPU workloads suit data-parallel operations - matrix math, image processing, simulations. If your problem isn't data-parallel, GPU gains can be minimal.
+- Memory coalescing (adjacent threads accessing adjacent memory) is critical for GPU throughput - this is why data layout decisions matter so much on the GPU.
+- Shared memory is fast but limited (~48KB per block) - use it for data reuse within thread blocks, and treat it like a programmer-managed cache.
+- Vulkan Compute and OpenCL are cross-vendor GPU compute APIs - less C++-friendly than CUDA/SYCL, but vendor-neutral.
+- Profile GPU code with NSight (NVIDIA) or RGP (AMD) - GPU bottlenecks differ from CPU code, and intuition from CPU profiling rarely transfers.

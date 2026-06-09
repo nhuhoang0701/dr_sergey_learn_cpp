@@ -8,30 +8,32 @@
 
 ## Topic Overview
 
-P2300 (`std::execution`, formerly "Senders/Receivers") introduces a structured, composable framework for asynchronous and parallel work in C++. Its key abstraction—schedulers, senders, and receivers—naturally extends to GPU offloading: a GPU scheduler creates senders that represent work to be executed on a GPU, and `when_all` / `then` combinators compose mixed CPU/GPU pipelines without manual synchronization.
+P2300 (`std::execution`, formerly "Senders/Receivers") introduces a structured, composable framework for asynchronous and parallel work in C++. The core idea is that you describe *what* work needs to happen and *what it depends on*, and the framework takes care of the scheduling and synchronization. Its key abstractions - schedulers, senders, and receivers - naturally extend to GPU offloading: a GPU scheduler creates senders that represent work to be executed on a GPU, and `when_all` / `then` combinators let you compose mixed CPU/GPU pipelines without manual synchronization.
 
-NVIDIA's `nvexec` library (part of stdexec, the reference implementation) provides GPU schedulers backed by CUDA streams. A `nvexec::stream_scheduler` submits senders to a CUDA stream, enabling kernels expressed as lambdas to be composed into sender chains. The runtime manages memory transfers and synchronization, abstracting away `cudaMemcpyAsync` and `cudaStreamSynchronize`. This lets developers write heterogeneous pipelines that read like sequential code but execute concurrently across CPU and GPU.
+NVIDIA's `nvexec` library (part of stdexec, the reference implementation) provides GPU schedulers backed by CUDA streams. A `nvexec::stream_scheduler` submits senders to a CUDA stream, enabling kernels expressed as lambdas to be composed into sender chains. The runtime manages memory transfers and synchronization, abstracting away `cudaMemcpyAsync` and `cudaStreamSynchronize`. This lets you write heterogeneous pipelines that read like sequential code but execute concurrently across CPU and GPU.
 
-The critical insight is that `std::execution` separates **what** to compute from **where** to compute it. The same sender chain can target different schedulers (thread pool, GPU, FPGA) without changing business logic—a powerful separation of concerns for large-scale heterogeneous applications.
+The critical insight is that `std::execution` separates **what** to compute from **where** to compute it. The same sender chain can target different schedulers (thread pool, GPU, FPGA) without changing the business logic - a powerful separation of concerns for large-scale heterogeneous applications. You can also test your GPU pipeline on the CPU simply by swapping the scheduler.
+
+Here is a diagram showing how a mixed CPU/GPU pipeline fits together with the sender/receiver model:
 
 ```cpp
-
 Sender/Receiver Pipeline with GPU:
 
   schedule(cpu_sched)           schedule(gpu_sched)
-       │                              │
-       ▼                              ▼
+       |                              |
+       v                              v
   then(prepare_data)            then(gpu_kernel)
-       │                              │
-       └──────── when_all ────────────┘
-                    │
-                    ▼
+       |                              |
+       +--------- when_all -----------+
+                    |
+                    v
               then(postprocess)
-                    │
-                    ▼
+                    |
+                    v
               sync_wait(result)
-
 ```
+
+Each concept in this model maps to something concrete on both CPU and GPU. The table below shows how the same abstractions apply in both contexts - this mapping is what makes the programming model portable:
 
 | Concept        | Role in CPU context      | Role in GPU context                |
 | --- | --- | --- |
@@ -48,8 +50,9 @@ Sender/Receiver Pipeline with GPU:
 
 ### Q1: Write a basic stdexec pipeline that schedules work on a GPU using nvexec::stream_scheduler
 
-```cpp
+The simplest possible GPU sender chain looks like this. Notice how you build up the work description first, and only actually execute it at `sync_wait` - there's no manual stream management in sight.
 
+```cpp
 // Requires: stdexec + nvexec (NVIDIA's std::execution GPU backend)
 // Build: nvcc -std=c++20 -I<stdexec>/include -I<nvexec>/include
 
@@ -80,13 +83,15 @@ int main() {
     printf("Result: %d\n", result);  // 84
     return 0;
 }
-
 ```
+
+The two `then` continuations both run on the GPU because they are downstream of `schedule(gpu_sched)`. The `sync_wait` at the end is the only place the host blocks - everything above it is lazy description, not execution.
 
 ### Q2: Compose a mixed CPU/GPU pipeline using when_all to join heterogeneous tasks and transfer between schedulers
 
-```cpp
+This example shows the real power of the model: you can have a CPU preprocessing task and a GPU warmup task running concurrently, then merge their results - all without a single mutex or condition variable.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <exec/static_thread_pool.hpp>
 #include <nvexec/stream_context.cuh>
@@ -158,13 +163,15 @@ int main() {
 
     return 0;
 }
-
 ```
+
+`when_all` waits for both branches to finish before the final `then` runs. The framework handles the synchronization internally - you just declare the dependency.
 
 ### Q3: Implement a bulk GPU operation using stdexec::bulk with a GPU scheduler, equivalent to a CUDA parallel_for
 
-```cpp
+`bulk` is how you express data-parallel work in the sender model. The `nvexec` backend maps it directly to a CUDA kernel launch, choosing appropriate grid and block dimensions for you.
 
+```cpp
 #include <stdexec/execution.hpp>
 #include <nvexec/stream_context.cuh>
 #include <cstdio>
@@ -217,29 +224,30 @@ int main() {
 /*
  Execution model mapping:
 
- stdexec concept  │  CUDA equivalent
- ─────────────────┼───────────────────
- schedule(gpu)    │  Select CUDA stream
- bulk(N, fn)      │  kernel<<<...>>>(fn) with N threads
- then(fn)         │  Subsequent kernel or host callback
- when_all(a, b)   │  cudaStreamWaitEvent across streams
- sync_wait(s)     │  cudaStreamSynchronize
+ stdexec concept  |  CUDA equivalent
+ -----------------+-------------------
+ schedule(gpu)    |  Select CUDA stream
+ bulk(N, fn)      |  kernel<<<...>>>(fn) with N threads
+ then(fn)         |  Subsequent kernel or host callback
+ when_all(a, b)   |  cudaStreamWaitEvent across streams
+ sync_wait(s)     |  cudaStreamSynchronize
 
  Key advantage: Composability.
  A bulk sender can be a node in a larger DAG that includes
  CPU tasks, I/O, and multiple GPU devices — all expressed
  as a single sender expression.
 */
-
 ```
+
+The mapping comment in the code is worth reading carefully - it makes the equivalence between the high-level sender API and the underlying CUDA primitives explicit. When you understand that mapping, you understand what the framework is saving you from writing.
 
 ---
 
 ## Notes
 
 - `stdexec` (P2300) is targeting C++26; use the reference implementation at `github.com/NVIDIA/stdexec` today.
-- `nvexec::stream_scheduler` maps sender operations to CUDA stream operations — `then` chains kernels, `when_all` inserts stream events.
-- `bulk(N, fn)` on a GPU scheduler launches a CUDA kernel with N logical threads — the runtime selects grid/block dimensions.
-- `transfer(scheduler)` moves a sender's continuation to a different execution context — use it to bounce between CPU and GPU.
-- Error propagation through `set_error` channel replaces manual `cudaGetLastError()` checks — errors flow through the sender chain.
+- `nvexec::stream_scheduler` maps sender operations to CUDA stream operations - `then` chains kernels, `when_all` inserts stream events.
+- `bulk(N, fn)` on a GPU scheduler launches a CUDA kernel with N logical threads - the runtime selects grid/block dimensions.
+- `transfer(scheduler)` moves a sender's continuation to a different execution context - use it to bounce between CPU and GPU.
+- Error propagation through `set_error` channel replaces manual `cudaGetLastError()` checks - errors flow through the sender chain automatically.
 - The separation of scheduling policy from algorithm logic makes GPU code testable on CPU by swapping the scheduler.

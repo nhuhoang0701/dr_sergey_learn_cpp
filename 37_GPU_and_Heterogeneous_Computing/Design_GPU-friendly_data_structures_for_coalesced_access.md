@@ -8,29 +8,31 @@
 
 ## Topic Overview
 
-GPU performance depends critically on memory access patterns. A warp of 32 threads issues memory transactions collectively—when consecutive threads access consecutive memory addresses (coalesced access), the hardware can merge requests into a single wide transaction (128 bytes on modern NVIDIA GPUs). Non-coalesced access wastes bandwidth, requiring multiple transactions to serve the same warp, degrading throughput by up to 32×.
+GPU performance depends critically on memory access patterns. A warp of 32 threads issues memory transactions collectively - when consecutive threads access consecutive memory addresses (coalesced access), the hardware can merge requests into a single wide transaction (128 bytes on modern NVIDIA GPUs). Non-coalesced access wastes bandwidth, requiring multiple transactions to serve the same warp, degrading throughput by up to 32x.
 
-The most impactful design decision is choosing between Array-of-Structures (AoS) and Structure-of-Arrays (SoA) layouts. AoS is natural in CPU-centric C++ (a `std::vector<Particle>` where each Particle has `x, y, z, mass`), but on a GPU, when a kernel accesses only the `x` field, AoS forces loading all fields of adjacent particles, wasting 75% of bandwidth. SoA stores each field in a separate contiguous array, so accessing `x` across threads is perfectly coalesced.
+The most impactful design decision you'll make is choosing between Array-of-Structures (AoS) and Structure-of-Arrays (SoA) layouts. AoS is natural in CPU-centric C++ (a `std::vector<Particle>` where each Particle has `x, y, z, mass`), but on a GPU, when a kernel accesses only the `x` field, AoS forces loading all fields of adjacent particles, wasting 75% of bandwidth. SoA stores each field in a separate contiguous array, so accessing `x` across threads is perfectly coalesced. The reason this trips people up is that AoS feels more natural to write, but it fights the GPU's memory system at every turn.
 
 Shared memory (scratchpad) serves as a programmer-managed L1 cache. Tiling algorithms load a tile of global memory into shared memory cooperatively, then perform computations on the fast shared memory. This is essential for non-trivial access patterns like matrix transpose, stencil computation, and reduction.
 
-```cpp
+The diagram below shows concretely why AoS hurts. Each `[...]` block is one particle's worth of data. When thread 0 wants `x₀` and thread 1 wants `x₁`, those values are four floats apart in AoS - requiring four separate memory transactions where one would suffice in SoA:
 
+```cpp
 AoS vs SoA Memory Layout:
 
-AoS:  [x₀ y₀ z₀ m₀] [x₁ y₁ z₁ m₁] [x₂ y₂ z₂ m₂] ...
-       Thread 0 reads ──────┘ Thread 1 reads ──────┘
-       → Stride-4 access = 4 transactions per warp
+AoS:  [x0 y0 z0 m0] [x1 y1 z1 m1] [x2 y2 z2 m2] ...
+       Thread 0 reads ------+  Thread 1 reads ------+
+       -> Stride-4 access = 4 transactions per warp
 
-SoA:  [x₀ x₁ x₂ x₃ ... x₃₁] [y₀ y₁ ... y₃₁] [z₀ z₁ ...] [m₀ m₁ ...]
-       Thread 0───┘ Thread 1──┘
-       → Consecutive access = 1 transaction per warp (coalesced)
-
+SoA:  [x0 x1 x2 x3 ... x31] [y0 y1 ... y31] [z0 z1 ...] [m0 m1 ...]
+       Thread 0--+  Thread 1--+
+       -> Consecutive access = 1 transaction per warp (coalesced)
 ```
+
+Here is a summary of how the major layout strategies compare. If the table feels like a lot, the short version is: SoA wins on the GPU, AoS wins for developer ergonomics, and AoSoA is the compromise that gets you close to SoA performance without throwing away locality entirely.
 
 | Layout | Coalescing  | Cache efficiency | CPU ergonomics | GPU performance |
 | --- | --- | --- | --- | --- |
-| AoS    | Poor        | Loads unused fields | Natural (OOP)   | 3–10× slower   |
+| AoS    | Poor        | Loads unused fields | Natural (OOP)   | 3-10x slower   |
 | SoA    | Perfect     | Only needed fields  | Verbose         | Optimal         |
 | AoSoA  | Good        | Warp-width tiles    | Moderate        | Near-optimal    |
 | Hybrid | Depends     | Grouped by access   | Moderate        | Good if tuned   |
@@ -41,8 +43,9 @@ SoA:  [x₀ x₁ x₂ x₃ ... x₃₁] [y₀ y₁ ... y₃₁] [z₀ z₁ ...] 
 
 ### Q1: Implement a particle simulation kernel using both AoS and SoA layouts and measure the performance difference
 
-```cpp
+This benchmark makes the performance difference tangible. Run both kernels on 4M particles for 100 iterations and watch the numbers. The CUDA event timing gives you GPU-only time, which is exactly what you want here.
 
+```cpp
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
@@ -153,13 +156,15 @@ int main() {
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return 0;
 }
-
 ```
+
+The SoA speedup is typically in the 3-10x range depending on GPU generation. The `__restrict__` qualifiers on the SoA kernel parameters are also doing real work here - they tell the compiler that no two pointers alias each other, enabling additional load/store optimizations.
 
 ### Q2: Implement a shared memory tiled matrix transpose that eliminates bank conflicts
 
-```cpp
+Matrix transpose is the canonical example of a kernel that needs shared memory. The naive approach writes to global memory in a strided, non-coalesced pattern. The tiled version loads a tile into shared memory with coalesced reads, then writes it out in transposed order with coalesced writes - fast in both directions. The tricky part is the bank conflict, which the `+1` padding trick solves.
 
+```cpp
 #include <cuda_runtime.h>
 #include <cstdio>
 
@@ -187,7 +192,7 @@ __global__ void transpose_tiled(float* out, const float* in,
     int x = bx + threadIdx.x;
     int y = by + threadIdx.y;
 
-    // Coalesced read from global → shared
+    // Coalesced read from global -> shared
     if (y < rows && x < cols)
         tile[threadIdx.y][threadIdx.x] = in[y * cols + x];
     __syncthreads();
@@ -196,7 +201,7 @@ __global__ void transpose_tiled(float* out, const float* in,
     int tx = by + threadIdx.x;  // Swapped block offsets
     int ty = bx + threadIdx.y;
 
-    // Coalesced write from shared → global
+    // Coalesced write from shared -> global
     if (ty < cols && tx < rows)
         out[ty * rows + tx] = tile[threadIdx.x][threadIdx.y];
 }
@@ -258,13 +263,15 @@ int main() {
     cudaEventDestroy(start); cudaEventDestroy(stop);
     return 0;
 }
-
 ```
+
+The bank conflict explanation in the comment is the key piece of intuition here. Shared memory is divided into 32 banks, and threads in the same warp that access the same bank must serialize. Without the `+1` padding, reading a column of the tile causes all 32 threads to hit the same bank - a 32-way serialization that completely defeats the purpose of using shared memory.
 
 ### Q3: Implement the AoSoA (Array-of-Structures-of-Arrays) hybrid layout optimized for warp-width access
 
-```cpp
+AoSoA is the best-of-both-worlds layout when you need multiple fields per particle in the same kernel. It groups particles into tiles of exactly warp size (32), and within each tile uses SoA ordering. That gives you coalesced access across a warp's threads (they hit consecutive addresses within the tile) while keeping all fields of the same warp's particles physically close together.
 
+```cpp
 #include <cuda_runtime.h>
 #include <cstdio>
 #include <cstdlib>
@@ -290,7 +297,6 @@ struct ParticleTile {
 __global__ void update_aosoa(ParticleTile* tiles, int n_tiles,
                               float dt) {
     int tile_idx = blockIdx.x * blockDim.x / WARP_SIZE
-
                    + threadIdx.x / WARP_SIZE;
 
     int lane = threadIdx.x % WARP_SIZE;  // Lane within warp
@@ -335,13 +341,10 @@ int main() {
 
     /*
      AoSoA advantages:
-     ┌──────────────────────────────────────────────┐
-     │ Layout          │ Coalescing │ Locality       │
-     ├──────────────────┼────────────┼────────────────┤
-     │ AoS             │ Poor       │ All fields     │
-     │ SoA             │ Perfect    │ One field only  │
-     │ AoSoA (warp=32) │ Perfect    │ All fields     │
-     └──────────────────┴────────────┴────────────────┘
+     Layout          | Coalescing | Locality
+     AoS             | Poor       | All fields
+     SoA             | Perfect    | One field only
+     AoSoA (warp=32) | Perfect    | All fields
 
      AoSoA gives coalescing (within tile, stride=1)
      AND locality (all fields of a warp in ~768 bytes,
@@ -353,16 +356,17 @@ int main() {
     cudaEventDestroy(stop);
     return 0;
 }
-
 ```
+
+The table in the comment sums up the tradeoff nicely. Full SoA gives perfect coalescing but poor locality when you need multiple fields - you load from six separate regions of memory. AoSoA keeps all six fields for one warp's worth of particles in 768 bytes, so they likely all fit in L1 cache together, while still giving you stride-1 access within each field array.
 
 ---
 
 ## Notes
 
 - `__restrict__` on kernel pointer parameters enables the compiler to assume no aliasing, unlocking load/store reordering and vectorization.
-- Shared memory bank conflict padding (`[TILE][TILE+1]`) is the canonical trick—never use `[TILE][TILE]` for 2D shared memory with column access.
-- AoSoA layout is ideal when kernels access multiple fields per particle — it combines SoA coalescing with AoS locality.
+- Shared memory bank conflict padding (`[TILE][TILE+1]`) is the canonical trick - never use `[TILE][TILE]` for 2D shared memory with column access.
+- AoSoA layout is ideal when kernels access multiple fields per particle - it combines SoA coalescing with AoS locality.
 - Use `nvprof` / `ncu` metrics `l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum` and `_st.sum` to quantify coalescing efficiency.
 - Align allocations to 128 bytes (`cudaMalloc` does this automatically) to ensure transaction alignment.
 - For sparse access patterns, consider texture memory or `__ldg()` intrinsic for read-only data that benefits from the texture cache.

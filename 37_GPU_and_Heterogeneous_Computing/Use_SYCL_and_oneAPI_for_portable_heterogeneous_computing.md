@@ -2,28 +2,31 @@
 
 **Category:** GPU & Heterogeneous Computing  
 **Standard:** SYCL 2020 / C++17  
-**Reference:** https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html  
+**Reference:** <https://registry.khronos.org/SYCL/specs/sycl-2020/html/sycl-2020.html>  
 
 ---
 
 ## Topic Overview
 
-SYCL is a Khronos open standard that enables single-source heterogeneous programming in pure C++. Unlike CUDA, SYCL is vendor-neutral—targeting Intel, NVIDIA, AMD, and FPGA backends through implementations such as Intel DPC++ (oneAPI), AdaptiveCpp (formerly hipSYCL), and ComputeCpp. Kernels are expressed as C++ lambdas or function objects submitted to a `sycl::queue`, making the programming model natural for modern C++ developers.
+SYCL is a Khronos open standard that enables single-source heterogeneous programming in pure C++. Unlike CUDA, SYCL is vendor-neutral - targeting Intel, NVIDIA, AMD, and FPGA backends through implementations such as Intel DPC++ (oneAPI), AdaptiveCpp (formerly hipSYCL), and ComputeCpp. Kernels are expressed as C++ lambdas or function objects submitted to a `sycl::queue`, making the programming model natural for modern C++ developers.
+
+The "single-source" part is worth emphasizing: unlike OpenCL where your kernel is a separate string or file, SYCL lets you write both your host code and your device code in the same C++ source file. The compiler splits it at build time and generates the right code for each target. This makes it much easier to share type definitions, constants, and utility functions between host and device.
 
 The SYCL 2020 specification introduces Unified Shared Memory (USM) as an alternative to the buffer/accessor model, group algorithms for collective operations, and sub-groups for warp/wavefront-level programming. These features bring SYCL close to CUDA in expressiveness while maintaining portability. The oneAPI ecosystem layers on top of SYCL with domain libraries (oneMKL, oneDNN, oneTBB) for a full heterogeneous platform.
 
-| Aspect                | CUDA                    | SYCL 2020                          |
+| Aspect | CUDA | SYCL 2020 |
 | --- | --- | --- |
-| Vendor lock-in        | NVIDIA only             | Portable (Intel, NVIDIA, AMD, FPGA) |
-| Kernel syntax         | `__global__` functions  | C++ lambdas/functors                 |
-| Memory model          | Explicit + Unified      | Buffer/Accessor + USM                |
-| Compiler              | nvcc                    | DPC++, AdaptiveCpp, ComputeCpp       |
-| Sub-group / warp      | Warp intrinsics         | `sycl::sub_group` API               |
-| Collective operations | Cooperative Groups      | Group algorithms (`reduce`, `scan`)  |
-| Ecosystem libraries   | cuBLAS, cuDNN, Thrust   | oneMKL, oneDNN, oneTBB              |
+| Vendor lock-in | NVIDIA only | Portable (Intel, NVIDIA, AMD, FPGA) |
+| Kernel syntax | `__global__` functions | C++ lambdas/functors |
+| Memory model | Explicit + Unified | Buffer/Accessor + USM |
+| Compiler | nvcc | DPC++, AdaptiveCpp, ComputeCpp |
+| Sub-group / warp | Warp intrinsics | `sycl::sub_group` API |
+| Collective operations | Cooperative Groups | Group algorithms (`reduce`, `scan`) |
+| Ecosystem libraries | cuBLAS, cuDNN, Thrust | oneMKL, oneDNN, oneTBB |
+
+Here's the layered architecture showing how a single SYCL application reaches different hardware backends:
 
 ```cpp
-
 ┌──────────────────────────────────────┐
 │           SYCL Application           │
 │  (Single-source C++17 with lambdas)  │
@@ -35,7 +38,6 @@ The SYCL 2020 specification introduces Unified Shared Memory (USM) as an alterna
 ├─────────┼──────────┼─────────────────┤
 │  Any GPU │ Intel GPU│  NVIDIA GPU     │
 └─────────┴──────────┴─────────────────┘
-
 ```
 
 ---
@@ -44,8 +46,11 @@ The SYCL 2020 specification introduces Unified Shared Memory (USM) as an alterna
 
 ### Q1: Write a SYCL 2020 program using buffer/accessor model to perform a vector addition on any available device
 
-```cpp
+The buffer/accessor model is SYCL's original programming interface. You wrap your host data in `sycl::buffer` objects, then request access to them inside a kernel submission. The key idea is that the runtime tracks data dependencies automatically - if two kernels both use the same buffer, the runtime schedules them in the correct order without you having to manage that explicitly.
 
+Notice the async exception handler passed to `sycl::queue`. Device-side errors in SYCL are asynchronous - if you don't provide a handler, they get silently dropped.
+
+```cpp
 #include <sycl/sycl.hpp>
 #include <iostream>
 #include <vector>
@@ -78,7 +83,7 @@ int main() {
         sycl::buffer<float> buf_c(c.data(), sycl::range<1>(N));
 
         q.submit([&](sycl::handler& h) {
-            // Accessors define data dependencies — runtime builds DAG
+            // Accessors define data dependencies -- runtime builds DAG
             auto acc_a = buf_a.get_access<sycl::access::mode::read>(h);
             auto acc_b = buf_b.get_access<sycl::access::mode::read>(h);
             auto acc_c = buf_c.get_access<sycl::access::mode::write>(h);
@@ -97,13 +102,15 @@ int main() {
 
 // Compile: icpx -fsycl -fsycl-targets=nvptx64-nvidia-cuda vec_add.cpp
 //     or: icpx -fsycl vec_add.cpp    (Intel GPU / CPU fallback)
-
 ```
+
+The closing brace of the inner scope is doing real work here: when the buffers go out of scope, SYCL synchronizes and writes the results back to the host vectors. This is implicit and easy to miss when reading the code - if you move that scope boundary, you change when the data is available.
 
 ### Q2: Implement a matrix transpose using SYCL nd_range, local memory, and sub-group operations
 
-```cpp
+This example demonstrates `nd_range` (the SYCL equivalent of CUDA's grid/block launch) and `local_accessor` (shared memory). The tiling technique is the same as in CUDA - load a tile from global into local memory with coalesced reads, then write it transposed with coalesced writes. Without the tile, the writes would be strided and much slower.
 
+```cpp
 #include <sycl/sycl.hpp>
 #include <vector>
 #include <iostream>
@@ -116,7 +123,7 @@ void transpose(sycl::queue& q, const float* in, float* out,
     sycl::range<2> local(TILE, TILE);
 
     q.submit([&](sycl::handler& h) {
-        // Local (shared) memory tile — avoids uncoalesced global writes
+        // Local (shared) memory tile -- avoids uncoalesced global writes
         sycl::local_accessor<float, 2> tile({TILE, TILE}, h);
 
         h.parallel_for(
@@ -167,13 +174,17 @@ int main() {
     sycl::free(out, q);
     return 0;
 }
-
 ```
+
+The `item.barrier(...)` is the SYCL equivalent of `__syncthreads()`. All work-items in the work-group must reach it before any of them continue past it - this ensures every thread has finished writing its element into the local tile before any thread reads from it.
 
 ### Q3: Compare SYCL group algorithms (reduce, scan) with manual implementations and show sub-group usage
 
-```cpp
+SYCL 2020 introduced built-in group algorithms that express collective operations at multiple granularities. The key insight is that `reduce_over_group` on a sub-group maps directly to warp shuffle instructions on NVIDIA hardware and wavefront operations on AMD - without any shared memory, and without you writing any architecture-specific intrinsics.
 
+This is the SYCL equivalent of CUDA Cooperative Groups' `cg::reduce()`. If you write it this way, the same source code generates efficient shuffle instructions on NVIDIA and efficient wavefront operations on AMD.
+
+```cpp
 #include <sycl/sycl.hpp>
 #include <iostream>
 #include <vector>
@@ -254,18 +265,19 @@ int main() {
  │  │ (32 items)│ │ (32 items)│    │(32 items)│ │
  │  └──────────┘ └──────────┘     └────────┘  │
  └────────────────────────────────────────────┘
- Sub-group ≈ warp (NVIDIA) / wavefront (AMD)
+ Sub-group = warp (NVIDIA) / wavefront (AMD)
 */
-
 ```
+
+The sub-group size query at the end is a practical necessity. Sub-groups are 32 items on NVIDIA, 64 on most AMD GPUs, and may be smaller on Intel integrated graphics. If your algorithm assumes a fixed sub-group size, you need to query and verify at runtime.
 
 ---
 
 ## Notes
 
-- SYCL 2020 buffer/accessor model builds an implicit DAG — the runtime schedules data movement and kernel ordering automatically.
-- USM (`malloc_shared`, `malloc_device`, `malloc_host`) provides a CUDA-like explicit pointer model for developers who prefer direct control.
-- Sub-groups map to hardware warps (NVIDIA, 32) or wavefronts (AMD, 64) — use `sycl::sub_group` for vendor-portable warp-level programming.
+- SYCL 2020 buffer/accessor model builds an implicit DAG - the runtime schedules data movement and kernel ordering automatically, which is convenient but can make performance harder to reason about.
+- USM (`malloc_shared`, `malloc_device`, `malloc_host`) provides a CUDA-like explicit pointer model for developers who prefer direct control over data placement.
+- Sub-groups map to hardware warps (NVIDIA, 32) or wavefronts (AMD, 64) - use `sycl::sub_group` for vendor-portable warp-level programming without writing platform-specific intrinsics.
 - DPC++ (Intel) supports NVIDIA GPUs via the CUDA backend plugin: compile with `-fsycl-targets=nvptx64-nvidia-cuda`.
-- Always attach an async exception handler to `sycl::queue` — uncaught device errors are silently lost otherwise.
-- Group algorithms (`reduce_over_group`, `inclusive_scan_over_group`) replace manual shared-memory reductions with single function calls.
+- Always attach an async exception handler to `sycl::queue` - uncaught device errors are silently lost otherwise, and debugging GPU errors without this is extremely painful.
+- Group algorithms (`reduce_over_group`, `inclusive_scan_over_group`) replace manual shared-memory reductions with single function calls that the compiler lowers to optimal hardware instructions.
