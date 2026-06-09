@@ -2,7 +2,7 @@
 
 **Category:** Undefined Behavior Deep Dive  
 **Standard:** C++11 / C++14 / C++17 / C++20  
-**Reference:** [cppreference – Order of evaluation](https://en.cppreference.com/w/cpp/language/eval_order)  
+**Reference:** [cppreference - Order of evaluation](https://en.cppreference.com/w/cpp/language/eval_order)  
 
 ---
 
@@ -10,42 +10,40 @@
 
 Evaluation order and sequencing rules determine **when side effects are visible** during expression evaluation. Violations of these rules are a major source of undefined behavior. The rules evolved significantly: C++03 used "sequence points," C++11 introduced "sequenced-before" as a partial order, and C++17 strengthened guarantees for several common patterns.
 
+Here is how the model evolved across standards:
+
 | Era | Model | Key Change |
 | --- | --- | --- |
-| **C++03** | Sequence points | Between full expressions, at `&&`, `||`, `,`, `?:` |
+| **C++03** | Sequence points | Between full expressions, at &&, \|\|, comma, ?: |
 | **C++11** | Sequenced-before (partial order) | Formalized as a relation; added for overloaded operators |
 | **C++14** | (Same as C++11) | Minor clarifications |
 | **C++17** | Strengthened guarantees | Postfix expressions, assignment, `<<`/`>>` chaining |
 | **C++20** | (Same as C++17 for evaluation) | Additional `<=>` sequencing |
 
-Before C++17, expressions like `f(a(), b())` where `a()` and `b()` modify shared state were hazardous: the arguments could be evaluated in any order, and interleaving was allowed. C++17 fixed several patterns:
+Before C++17, expressions like `f(a(), b())` where `a()` and `b()` modify shared state were hazardous: the arguments could be evaluated in any order, and interleaving was allowed. C++17 fixed several patterns. The critical distinction is between **unsequenced** (may interleave, UB if modifying same scalar), **indeterminately sequenced** (one completes before the other, but order unspecified), and **sequenced-before** (guaranteed order). Here is a summary of what C++17 nailed down:
 
 ```cpp
-
 C++17 Sequencing Guarantees:
 
-1. a.b           → a is evaluated before b
-2. a->b          → a is evaluated before b  
-3. a->*b         → a is evaluated before b
-4. a(b1,b2,b3)   → a is evaluated before b1,b2,b3
+1. a.b           -> a is evaluated before b
+2. a->b          -> a is evaluated before b
+3. a->*b         -> a is evaluated before b
+4. a(b1,b2,b3)   -> a is evaluated before b1,b2,b3
 
                     but b1,b2,b3 are indeterminately sequenced
 
-5. b op= a       → a is evaluated before b (right-to-left)
-6. a[b]          → a is evaluated before b
-7. a << b        → a is evaluated before b (left-to-right)
-8. a >> b        → a is evaluated before b (left-to-right)
+5. b op= a       -> a is evaluated before b (right-to-left)
+6. a[b]          -> a is evaluated before b
+7. a << b        -> a is evaluated before b (left-to-right)
+8. a >> b        -> a is evaluated before b (left-to-right)
 
 Still UNSPECIFIED (C++17+):
 
 - Order among function arguments: f(a(), b(), c())
 
-  → a(), b(), c() fully evaluated before each other starts
-  → but we don't know WHICH comes first
-
+  -> a(), b(), c() fully evaluated before each other starts
+  -> but we don't know WHICH comes first
 ```
-
-The critical distinction is between **unsequenced** (may interleave, UB if modifying same scalar), **indeterminately sequenced** (one completes before the other, but order unspecified), and **sequenced-before** (guaranteed order).
 
 ---
 
@@ -53,8 +51,9 @@ The critical distinction is between **unsequenced** (may interleave, UB if modif
 
 ### Q1: Identify which expressions are UB, unspecified, or well-defined
 
-```cpp
+Let's walk through a set of classic examples and see how each one is classified. Some of these changed behavior between C++14 and C++17, which is exactly the kind of thing that bites you on old codebases:
 
+```cpp
 #include <cstdio>
 #include <iostream>
 #include <map>
@@ -70,8 +69,8 @@ void sequencing_examples() {
 
     // --- Example 1: Classic UB (pre-C++17) ---
     // i = i++ + ++i;
-    // C++03/11/14: UB — two unsequenced modifications of i
-    // C++17: STILL UB — + does not sequence its operands
+    // C++03/11/14: UB - two unsequenced modifications of i
+    // C++17: STILL UB - + does not sequence its operands
 
     // --- Example 2: Well-defined since C++17 ---
     i = 0;
@@ -87,7 +86,7 @@ void sequencing_examples() {
     // C++17: guaranteed left-to-right: prints "1 2 3"
     // Pre-C++17: unspecified order, could print any permutation
 
-    // --- Example 4: Function arguments — indeterminately sequenced ---
+    // --- Example 4: Function arguments - indeterminately sequenced ---
     global = 0;
     auto f = [](int a, int b, int c) {
         std::printf("f(%d, %d, %d)\n", a, b, c);
@@ -95,15 +94,15 @@ void sequencing_examples() {
     f(inc(), inc(), inc());
     // C++17: each inc() completes before the next starts,
     // but the ORDER is unspecified. Could be (1,2,3) or (3,2,1) etc.
-    // NOT UB — just unspecified.
+    // NOT UB - just unspecified.
 
-    // --- Example 5: Map insertion — well-defined since C++17 ---
+    // --- Example 5: Map insertion - well-defined since C++17 ---
     std::map<int, int> m;
     i = 0;
     m[++i] = ++i;
     // C++17: right side (++i) evaluated before left side (m[++i])
     //        because op= sequences right before left.
-    //        So: ++i → i=1 (value 1), then m[++i] → m[2] = 1
+    //        So: ++i -> i=1 (value 1), then m[++i] -> m[2] = 1
     // Pre-C++17: UB (two unsequenced modifications of i)
     std::printf("Ex5: m[2] = %d (expected 1)\n", m[2]);
 }
@@ -111,10 +110,9 @@ void sequencing_examples() {
 int main() {
     sequencing_examples();
 }
-
 ```
 
-**Answer:**
+Here is the bottom line for each expression:
 
 | Expression | Pre-C++17 | C++17+ |
 | --- | --- | --- |
@@ -128,8 +126,9 @@ int main() {
 
 ### Q2: Show how C++17 fixed the "make_unique swap" idiom
 
-```cpp
+This is a real-world case where sequencing rules had practical safety consequences. Before C++17, passing raw `new` expressions as function arguments could lead to memory leaks if an exception was thrown mid-evaluation. C++17's "indeterminately sequenced" guarantee - where each argument evaluates fully before the next starts - closed that gap:
 
+```cpp
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
@@ -151,7 +150,7 @@ void register_loggers_old(Logger* a, Logger* b) {
 }
 
 // f(new A, new B) pre-C++17:
-// Possible evaluation: new A → new B (throws) → A leaks!
+// Possible evaluation: new A -> new B (throws) -> A leaks!
 // Because arguments could be: alloc A, alloc B, construct A, construct B
 // If construct B throws after alloc A, A leaks.
 
@@ -215,17 +214,17 @@ int main() {
     demonstrate_c17_safety();
     builder_demo();
 }
-
 ```
 
-**Answer:** C++17 guarantees that function arguments are **indeterminately sequenced** (each fully evaluated before the next), eliminating the interleaving that caused resource leaks with `new`. Combined with `std::make_unique`, this provides exception-safe argument evaluation. Chained method calls like `a.b().c()` are guaranteed left-to-right.
+C++17 guarantees that function arguments are **indeterminately sequenced** (each fully evaluated before the next), eliminating the interleaving that caused resource leaks with `new`. Combined with `std::make_unique`, this provides exception-safe argument evaluation. Chained method calls like `a.b().c()` are guaranteed left-to-right.
 
 ---
 
 ### Q3: Remaining UB and unspecified behavior in C++20/23
 
-```cpp
+Even after C++17's improvements, there is still plenty of room to go wrong. This example catalogues what is still unspecified or UB, alongside the operators that have always had well-defined sequencing:
 
+```cpp
 #include <cstdio>
 #include <functional>
 #include <iostream>
@@ -242,7 +241,7 @@ void still_unspecified() {
         std::printf("f(%d, %d, %d)\n", a, b, c);
     };
     f(next(), next(), next());
-    // Indeterminately sequenced — any permutation of (1,2,3)
+    // Indeterminately sequenced - any permutation of (1,2,3)
 
     // 2. Order of evaluation in aggregate initialization
     struct S { int a, b, c; };
@@ -302,17 +301,16 @@ int main() {
     still_unspecified();
     still_ub();
 }
-
 ```
 
-**Answer:** Even in C++23, the order of function argument evaluation is unspecified, and modifying the same scalar in two unsequenced operands of arithmetic operators is still UB. Braced-init-lists are left-to-right since C++17. Logical operators, comma, and ternary have always sequenced their operands.
+Even in C++23, the order of function argument evaluation is unspecified, and modifying the same scalar in two unsequenced operands of arithmetic operators is still UB. Braced-init-lists are left-to-right since C++17. Logical operators, comma, and ternary have always sequenced their operands.
 
 ---
 
 ## Notes
 
 - **C++17 was the watershed:** it fixed `<<`/`>>` chaining, assignment order, postfix expression evaluation, and function argument interleaving.
-- The `i = ++i + 1` idiom went from UB to well-defined in C++17—but relying on this is poor style. Use separate statements.
+- The `i = ++i + 1` idiom went from UB to well-defined in C++17 - but relying on this is poor style. Use separate statements.
 - Function argument evaluation order is **intentionally** left unspecified to allow compiler optimization (register allocation, instruction scheduling).
 - `-Wsequence-point` (GCC) and `-Wunsequenced` (Clang) warn about modifications to the same variable in unsequenced operations.
 - When in doubt, extract expressions with side effects into named temporaries. This eliminates all sequencing concerns and improves readability.

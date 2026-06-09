@@ -1,6 +1,6 @@
 # Undefined Behavior Deep Dive
 
-Comprehensive understanding of undefined, unspecified, and implementation-defined behavior in C++: UB catalog, compiler exploitation of UB, strict aliasing, pointer provenance, sequencing rules, and detection tooling.
+This folder digs into one of the most important and most misunderstood corners of C++: behavior the standard simply does not define. Understanding UB is not just academic - it is the difference between code that works reliably and code that works until you change the optimization level or the compiler version.
 
 **Topics:** 14
 
@@ -23,13 +23,13 @@ Comprehensive understanding of undefined, unspecified, and implementation-define
 
 ## Notes
 
-- Signed integer overflow is UB — compilers exploit this for optimization (e.g., assuming i + 1 > i)
-- Null pointer dereference is UB — the compiler may optimize away null checks that follow dereference
-- Use-after-free, double-free, and buffer overflow are UB — sanitizers (ASan) catch these at runtime
-- Strict aliasing violations (type-punning through incompatible pointers) are UB — use std::bit_cast
+- Signed integer overflow is UB - compilers exploit this for optimization (e.g., assuming i + 1 > i)
+- Null pointer dereference is UB - the compiler may optimize away null checks that follow a dereference
+- Use-after-free, double-free, and buffer overflow are UB - sanitizers (ASan) catch these at runtime
+- Strict aliasing violations (type-punning through incompatible pointers) are UB - use std::bit_cast
 - Accessing an uninitialized variable of any type (except unsigned char) is UB
-- Data races on non-atomic shared variables are UB — even a single concurrent read/write pair
-- Infinite loops without side effects are UB in C++11+ — the compiler may remove them
-- Shifting a signed value by its bit-width or more is UB — also shifting into the sign bit (pre-C++20)
-- UB can manifest as "working correctly" — then break silently with a different compiler or optimization level
+- Data races on non-atomic shared variables are UB - even a single concurrent read/write pair counts
+- Infinite loops without side effects are UB in C++11+ - the compiler may remove them entirely
+- Shifting a signed value by its bit-width or more is UB - also shifting into the sign bit (pre-C++20)
+- UB can manifest as "working correctly" - then break silently with a different compiler or optimization level
 - -fsanitize=undefined is the single best tool for detecting UB during development

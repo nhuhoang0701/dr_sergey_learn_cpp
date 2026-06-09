@@ -10,38 +10,35 @@
 
 No single tool catches all undefined behavior. Effective UB detection requires layering **runtime sanitizers** (which catch UB during execution) with **static analyzers** (which catch UB at compile time) and **compiler warnings** (which catch common patterns). Each tool covers a different subset of UB categories.
 
+Here is a quick reference for what each tool does and what it costs:
+
 | Tool | Category | Catches | Overhead | False Positives |
 | --- | --- | --- | --- | --- |
 | **UBSan** | Runtime | Signed overflow, shift UB, null deref, alignment, etc. | 10-30% | Very low |
-| **ASan** | Runtime | Heap/stack buffer overflow, use-after-free, double-free, leaks | 2× slowdown, 2-3× memory | Low |
-| **MSan** | Runtime | Uninitialized memory reads | 2-3× slowdown | Low (but setup-sensitive) |
-| **TSan** | Runtime | Data races, lock-order inversions | 5-15× slowdown, 5-10× memory | Rare |
+| **ASan** | Runtime | Heap/stack buffer overflow, use-after-free, double-free, leaks | 2x slowdown, 2-3x memory | Low |
+| **MSan** | Runtime | Uninitialized memory reads | 2-3x slowdown | Low (but setup-sensitive) |
+| **TSan** | Runtime | Data races, lock-order inversions | 5-15x slowdown, 5-10x memory | Rare |
 | **Clang-Tidy** | Static | Patterns, style, some UB | Compile time | Moderate |
 | **Clang Static Analyzer** | Static | Path-sensitive analysis, memory bugs | Minutes | Moderate |
 | **PVS-Studio** | Static | Deep pattern matching, UB patterns | Minutes | Low-moderate |
 | **Compiler warnings** | Compile | Common mistakes, some UB | Zero | Low |
 
-```cpp
+The coverage map below shows which sanitizer detects which class of bug. A Yes means reliable detection; Partial means sometimes caught; No means not detected:
 
+```cpp
 Detection Coverage Map:
 
                   UBSan  ASan  MSan  TSan  Static
-Signed overflow     ✓     -     -     -     ~
-Null deref          ✓     ✓     -     -     ✓
-OOB access          ~     ✓     -     -     ~
-Use-after-free      -     ✓     -     -     ~
-Uninit read         -     -     ✓     -     ~
-Data race           -     -     -     ✓     ~
-Strict aliasing     -     -     -     -     ~
-Shift UB            ✓     -     -     -     ✓
-Division by zero    ✓     -     -     -     ✓
-Alignment           ✓     -     -     -     ~
-
-✓ = reliably detected
-~ = partially/sometimes detected
-
-- = not detected
-
+Signed overflow   Yes    No    No    No    Partial
+Null deref        Yes    Yes   No    No    Yes
+OOB access        Partial Yes  No    No    Partial
+Use-after-free    No     Yes   No    No    Partial
+Uninit read       No     No    Yes   No    Partial
+Data race         No     No    No    Yes   Partial
+Strict aliasing   No     No    No    No    Partial
+Shift UB          Yes    No    No    No    Yes
+Division by zero  Yes    No    No    No    Yes
+Alignment         Yes    No    No    No    Partial
 ```
 
 The recommended strategy is: **always build with `-Wall -Wextra -Wpedantic`**, run CI with **ASan + UBSan** together, run **TSan** separately (incompatible with ASan), and run **MSan** for code that processes external input. Complement with **Clang-Tidy** in CI and periodic **static analyzer** sweeps.
@@ -52,8 +49,9 @@ The recommended strategy is: **always build with `-Wall -Wextra -Wpedantic`**, r
 
 ### Q1: Set up a complete sanitizer build system with CMake
 
-```cpp
+Setting up sanitizers in CMake is straightforward once you have the option flags right. The key decisions are: make UBSan fatal (not just a warning), and keep sanitizer builds as separate CMake configurations since you cannot mix ASan/TSan/MSan in one binary:
 
+```cpp
 // CMakeLists.txt content (store as CMakeLists.txt):
 /*
 cmake_minimum_required(VERSION 3.20)
@@ -106,7 +104,7 @@ add_executable(myproject main.cpp)
 // Usage:
 // cmake -B build -DENABLE_ASAN=ON -DENABLE_UBSAN=ON
 // cmake --build build
-// ./build/myproject   # Runs with ASan + UBSan active
+// ./build/myproject   // Runs with ASan + UBSan active
 
 // main.cpp: test code with intentional bugs
 #include <cstdio>
@@ -157,17 +155,17 @@ int main() {
     std::printf("All checks passed.\n");
     return 0;
 }
-
 ```
 
-**Answer:** The CMake configuration provides four sanitizer modes that can be independently enabled. ASan and UBSan can be combined; TSan and MSan must run separately. `-fno-sanitize-recover=all` makes UBSan abort on first error (important for CI).
+The CMake configuration provides four sanitizer modes that can be independently enabled. ASan and UBSan can be combined; TSan and MSan must run separately. `-fno-sanitize-recover=all` makes UBSan abort on first error, which is important for CI - without it, UBSan just prints a warning and keeps going, hiding subsequent errors.
 
 ---
 
 ### Q2: Demonstrate each sanitizer catching a specific bug
 
-```cpp
+Here is a single file that contains one representative bug for each sanitizer. The compile flags differ per sanitizer, so read the comments before building each section:
 
+```cpp
 #include <atomic>
 #include <climits>
 #include <cstdio>
@@ -287,17 +285,17 @@ int main() {
 
     std::printf("Done.\n");
 }
-
 ```
 
-**Answer:** Each sanitizer catches a specific category. UBSan catches language-level UB (overflow, shift, alignment). ASan catches memory errors (OOB, UAF, leaks). MSan catches uninitialized reads. TSan catches data races. They cannot all run simultaneously—ASan+UBSan is one build, TSan is another, MSan is a third.
+Each sanitizer catches a specific category. UBSan catches language-level UB (overflow, shift, alignment). ASan catches memory errors (OOB, use-after-free, leaks). MSan catches uninitialized reads. TSan catches data races. They cannot all run simultaneously - ASan+UBSan is one build, TSan is another, MSan is a third.
 
 ---
 
 ### Q3: Integrate sanitizers and static analysis into CI
 
-```cpp
+A complete CI pipeline needs three separate sanitizer jobs because the sanitizers are mutually incompatible. You also need suppression files for known false positives - real-world projects always have a few:
 
+```cpp
 // .github/workflows/sanitizers.yml (GitHub Actions)
 /*
 name: Sanitizer CI
@@ -451,10 +449,9 @@ int main() {
     configure_sanitizers();
     std::printf("Sanitizer CI integration ready.\n");
 }
-
 ```
 
-**Answer:** A complete CI pipeline runs three separate sanitizer builds (ASan+UBSan, TSan, static analysis) because sanitizers are mutually incompatible. Suppression files manage known false positives. Function-level attributes (`no_sanitize`) suppress specific checks for documented acceptable behavior. Environment variables control runtime behavior.
+A complete CI pipeline runs three separate sanitizer builds (ASan+UBSan, TSan, static analysis) because sanitizers are mutually incompatible. Suppression files manage known false positives. Function-level attributes (`no_sanitize`) suppress specific checks for documented acceptable behavior. Environment variables control runtime behavior.
 
 ---
 
@@ -465,5 +462,5 @@ int main() {
 - `-fno-sanitize-recover=all` is critical for CI: without it, UBSan prints a warning and continues, hiding subsequent errors.
 - **`ASAN_OPTIONS=detect_stack_use_after_return=1`** (was opt-in before Clang 16, now default) catches stack-use-after-return bugs at the cost of significant memory overhead.
 - For **Windows/MSVC**, ASan is supported (`/fsanitize=address`), but UBSan, MSan, and TSan are not. Use Clang-cl or WSL for full sanitizer coverage.
-- Run sanitizer builds with **your full test suite**—sanitizers only catch UB that is actually executed. Increase code coverage to maximize sanitizer effectiveness.
+- Run sanitizer builds with **your full test suite** - sanitizers only catch UB that is actually executed. Increase code coverage to maximize sanitizer effectiveness.
 - **Clang-Tidy checks** relevant to UB: `bugprone-signed-char-misuse`, `bugprone-integer-division`, `bugprone-undefined-memory-manipulation`, `cert-err34-c`, `cppcoreguidelines-pro-type-reinterpret-cast`.
