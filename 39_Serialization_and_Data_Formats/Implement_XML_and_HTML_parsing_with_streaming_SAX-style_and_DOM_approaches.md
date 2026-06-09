@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-XML remains common in enterprise, configuration, and document formats. Two parsing approaches exist: **DOM** (load entire tree into memory) and **SAX/streaming** (event-driven, low memory).
+XML remains common in enterprise systems, configuration files, and document formats. There are two fundamentally different ways to parse it, and choosing the wrong one can either leave you fighting a terrible API or exhausting all available memory.
+
+**DOM** (Document Object Model) loads the entire XML tree into memory as a navigable tree of nodes. **SAX/streaming** fires callbacks as the parser encounters each element, keeping memory usage proportional to the nesting depth rather than the document size. Both have their place.
 
 ### DOM Parsing with pugixml
 
-```cpp
+DOM is the right choice when you need to navigate the tree in arbitrary order - jumping from a leaf back to its parent, applying XPath queries, or building an in-memory representation. pugixml makes this very comfortable. Load the document once, then traverse it as many times as you like.
 
+```cpp
 #include <pugixml.hpp>
 #include <iostream>
 #include <string>
@@ -55,13 +58,15 @@ void dom_example() {
         std::cout << "  " << node.node().child("title").text().get() << "\n";
     }
 }
-
 ```
+
+Notice the XPath query `"//book[year>2015]"` - that is the kind of expressive filtering that only works when you have the whole tree loaded. With a SAX parser you would have to implement that filtering logic yourself with a state machine.
 
 ### SAX-Style Streaming with Expat Wrapper
 
-```cpp
+SAX (Simple API for XML) is event-driven. You provide a handler object with callbacks, and the parser calls them as it scans through the document. Your handler accumulates whatever state it needs - there is no tree to query after the fact. The memory footprint is tiny: only the current element stack needs to be in memory at any point.
 
+```cpp
 #include <iostream>
 #include <string>
 #include <functional>
@@ -101,10 +106,13 @@ public:
 
 // Usage: feed XML to handler chunk by chunk
 // Memory usage: O(depth) vs DOM's O(document_size)
-
 ```
 
+The `in_title_` flag is a typical SAX pattern: you track what element you are currently inside so that `on_text()` knows how to interpret the text it receives. The more complex your extraction logic, the more state flags you end up managing - which is why SAX feels harder to use than DOM even though the callback interface itself is simple.
+
 ### DOM vs SAX Decision Matrix
+
+If you are unsure which approach to reach for, this table gives you the practical answer for most scenarios.
 
 | Factor | DOM (pugixml) | SAX/Streaming |
 | --- | --- | --- |
@@ -120,8 +128,9 @@ public:
 
 ### Q1: Write XML from a C++ struct using pugixml
 
-```cpp
+Writing XML with pugixml uses the same tree API as reading - you build nodes programmatically and then serialize with `doc.save()`. The `std::ostringstream` sink gives you the XML as a `std::string`, which is convenient for returning from a function.
 
+```cpp
 #include <pugixml.hpp>
 #include <sstream>
 #include <string>
@@ -150,17 +159,17 @@ std::string to_xml(const Config& cfg) {
 //   <port>8080</port>
 //   <debug>true</debug>
 // </config>
-
 ```
 
 ### Q2: Why is SAX parsing preferred for very large XML files
 
-DOM parsing loads the entire XML tree into memory. A 1GB XML file requires 2-5GB of RAM for the DOM tree. SAX/streaming parsers process one element at a time, using O(depth) memory regardless of file size. For log files, data feeds, and scientific data in XML, streaming is the only practical approach.
+DOM parsing loads the entire XML tree into memory. A 1 GB XML file typically requires 2-5 GB of RAM for the DOM representation, because each node is a heap-allocated object with pointers. SAX/streaming parsers process one element at a time, using O(depth) memory regardless of file size. For log files, data feeds, and scientific data in XML, streaming is the only practical approach - building a DOM from a 1 GB file may simply exhaust available memory before you can read a single value.
 
 ### Q3: Handle XML namespaces correctly
 
-```cpp
+XML namespaces are one of the places where "simple" XML turns out to be less simple. The key thing to know about pugixml is that it does not resolve namespaces automatically - the prefix is just part of the element name as far as the library is concerned. If the XML uses `app:config`, you query for `"app:config"`, not just `"config"`.
 
+```cpp
 // XML with namespaces:
 // <root xmlns:app="http://example.com/app">
 //   <app:config>
@@ -172,15 +181,16 @@ DOM parsing loads the entire XML tree into memory. A 1GB XML file requires 2-5GB
 // Element names include the prefix: "app:config"
 // Use the full prefixed name in queries:
 auto node = doc.child("root").child("app:config").child("app:port");
-
 ```
+
+If you need full namespace URI resolution (i.e., treating `app:port` and `x:port` as the same element when both `app` and `x` map to the same URI), you will need a library that handles namespaces, or you will need to do the URI mapping yourself.
 
 ---
 
 ## Notes
 
-- **pugixml** is the recommended C++ XML library: fast, header-only-optional, XPath support.
+- **pugixml** is the recommended C++ XML library: fast, optionally header-only, with XPath support.
 - **RapidXML** is faster for parsing but lacks XPath and has no output support.
-- For HTML parsing (which is malformed XML), use **Gumbo** or **lexbor**.
-- Avoid `tinyxml2` for new projects — pugixml is faster and has a better API.
+- For HTML parsing (which is often malformed XML), use **Gumbo** or **lexbor**.
+- Avoid `tinyxml2` for new projects - pugixml is faster and has a better API.
 - XML is verbose; prefer JSON or binary formats for new systems unless XML is mandated.

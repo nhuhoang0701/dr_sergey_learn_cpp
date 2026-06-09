@@ -1,6 +1,6 @@
 # Serialization & Data Formats
 
-Techniques for serializing and deserializing C++ objects: binary protocols, JSON, MessagePack, FlatBuffers, schema evolution, zero-copy deserialization, and cross-platform wire formats.
+Serialization is how you turn an in-memory C++ object into bytes that can be written to disk, sent over a network, or handed to another process - and then read back later, possibly by a completely different program. This folder covers binary protocols, JSON, MessagePack, FlatBuffers, schema evolution, zero-copy deserialization, and cross-platform wire formats.
 
 **Topics:** 12
 
@@ -21,13 +21,13 @@ Techniques for serializing and deserializing C++ objects: binary protocols, JSON
 
 ## Notes
 
-- Protocol Buffers (protobuf) provide schema-evolving binary serialization with cross-language support
-- FlatBuffers enable zero-copy access — no deserialization step, ideal for performance-critical paths
-- JSON libraries (nlohmann/json, simdjson, glaze) range from convenience to raw speed
-- Cap'n Proto provides zero-copy like FlatBuffers but with an RPC framework built in
-- std::bit_cast (C++20) is the safe way to type-pun for binary serialization of trivial types
-- MessagePack is a compact binary alternative to JSON — smaller payloads, faster parsing
-- Schema validation should happen at system boundaries — not on every internal access
-- Endianness must be handled for binary formats — use network byte order or explicit conversion
-- Versioning and backward compatibility should be designed from the start (field numbers, optional fields)
-- Reflection (C++26) will eventually enable automatic serialization without boilerplate
+- Protocol Buffers (protobuf) provide schema-evolving binary serialization with cross-language support.
+- FlatBuffers enable zero-copy access - no deserialization step, ideal for performance-critical paths.
+- JSON libraries (nlohmann/json, simdjson, glaze) range from maximum convenience to raw speed.
+- Cap'n Proto provides zero-copy like FlatBuffers but with an RPC framework built in.
+- `std::bit_cast` (C++20) is the safe way to type-pun for binary serialization of trivial types.
+- MessagePack is a compact binary alternative to JSON - smaller payloads, faster parsing.
+- Schema validation should happen at system boundaries, not on every internal access.
+- Endianness must be handled for binary formats - use network byte order or explicit conversion.
+- Versioning and backward compatibility should be designed from the start (field numbers, optional fields).
+- Reflection (C++26) will eventually enable automatic serialization without boilerplate.

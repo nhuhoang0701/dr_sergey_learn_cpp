@@ -10,10 +10,13 @@
 
 Serializing `std::variant` and polymorphic class hierarchies requires encoding which type is active. `std::variant` uses a type index; polymorphic types typically use a string type discriminator.
 
+The reason this is harder than serializing a plain struct is that the reader does not know ahead of time which type it will encounter. You have to embed that information in the serialized bytes and then use it during deserialization to reconstruct the right type. The two main scenarios - `std::variant` and virtual class hierarchies - solve this the same way conceptually but with different machinery.
+
 ### Serializing std::variant
 
-```cpp
+With `std::variant`, the active type is identified by its index within the variant's type list. We write that index as a one-byte type tag before the value data, and then during deserialization we switch on the tag to know how many bytes to read and how to interpret them. The `std::visit` call dispatches to the right lambda branch depending on which alternative is currently active:
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -74,13 +77,17 @@ int main() {
         }, v);
     }
 }
-
 ```
+
+One thing worth keeping in mind: the tag values are positional. Tag `0` means "the first type in the variant list" - in this case `int`. If you ever reorder the type list (e.g. moving `bool` before `int`), old serialized data becomes unreadable because the tag numbers no longer match. The safe habit is to assign explicit tag constants rather than relying on `v.index()` directly.
 
 ### Serializing Polymorphic Types with a Type Registry
 
-```cpp
+For a virtual class hierarchy the problem is similar but the mechanism is different. During deserialization there is no existing object - you need to create one of the correct derived type from scratch. Virtual dispatch cannot help you here because virtual functions operate on objects that already exist.
 
+The standard solution is a factory registry: a map from type name strings to factory functions. Each derived class registers itself at startup. During serialization you write the type name as a string; during deserialization you look up that name in the registry and call the matching factory. Here is a complete example:
+
+```cpp
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -146,8 +153,9 @@ std::unique_ptr<Shape> load(std::istream& is) {
     if (it == registry().end()) throw std::runtime_error("Unknown type: " + type);
     return it->second(is);
 }
-
 ```
+
+The `static auto _c = register_type<Circle>(...)` lines run before `main` and populate the registry. This is the self-registration idiom - each type knows how to register itself, so you never forget to add a new type to a central list.
 
 ---
 
@@ -155,8 +163,9 @@ std::unique_ptr<Shape> load(std::istream& is) {
 
 ### Q1: Serialize a variant to JSON with type discrimination
 
-```cpp
+Instead of a compact binary tag, you can use a JSON envelope with explicit `"type"` and `"value"` keys. This makes the serialized form human-readable and easy to consume from other languages:
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -174,22 +183,25 @@ std::string variant_to_json(const Value& v) {
             return "{\"type\":\"double\",\"value\":" + std::to_string(val) + "}";
     }, v);
 }
-
 ```
 
 ### Q2: Explain why virtual functions alone are insufficient for deserialization
 
-Virtual functions dispatch on an existing object's type. During deserialization, no object exists yet — you need to **create** an object of the correct type from a type tag. This requires a factory/registry pattern external to the class hierarchy.
+Virtual functions dispatch on an existing object's type. During deserialization, no object exists yet - you need to **create** an object of the correct type from a type tag. This requires a factory/registry pattern external to the class hierarchy.
+
+The reason this trips people up is that virtual dispatch feels like a solution to the "which type is this?" question. And it is - but only once you already have an object. The chicken-and-egg problem is that to get an object, you need to know the type first, and that knowledge has to come from the serialized data via something that is not virtual dispatch.
 
 ### Q3: Handle forward compatibility when new types are added to a variant
 
 When a new alternative is added to the variant, old deserializers encounter an unknown type tag. Use a fallback strategy: skip the unknown data (if length-prefixed) or return a default/error value.
 
+The practical advice here is to always length-prefix variable-size alternatives, even if they currently have a known fixed size. That way an old reader can skip past an unknown tag by reading the length and advancing the cursor, rather than crashing or producing corrupt output.
+
 ---
 
 ## Notes
 
-- `std::variant::index()` is stable only if you never reorder alternatives — use explicit type tags instead.
+- `std::variant::index()` is stable only if you never reorder alternatives - use explicit type tags instead.
 - For polymorphic types, a type registry (factory map) is the standard pattern.
 - nlohmann/json can serialize variants automatically with `NLOHMANN_JSON_SERIALIZE_ENUM`.
 - Consider `std::any` if the set of types is truly unbounded (but you lose type safety).

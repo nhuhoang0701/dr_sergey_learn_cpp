@@ -8,9 +8,13 @@
 
 ## Topic Overview
 
-Binary protocols must evolve without breaking existing readers or writers. **Backward compatibility** means new readers can handle old data. **Forward compatibility** means old readers can handle new data gracefully (by skipping unknown fields).
+Binary protocols must evolve without breaking existing readers or writers. **Backward compatibility** means new readers can handle old data. **Forward compatibility** means old readers can handle new data gracefully, typically by skipping unknown fields. Getting both right requires deliberate design from day one - retrofitting compatibility into an existing protocol is painful.
+
+The reason this trips people up is that it is easy to think "I control both sides, so I can update them together." In practice there are always old binaries still running, old log files waiting to be replayed, or a client you forgot to update.
 
 ### Key Design Principles
+
+The table below captures the techniques that make both directions of compatibility possible. The single most important one is tagged fields with length-prefixing - it is what allows old readers to skip fields they do not recognise.
 
 | Principle | Technique |
 | --- | --- |
@@ -22,8 +26,9 @@ Binary protocols must evolve without breaking existing readers or writers. **Bac
 
 ### Wire Format Header
 
-```cpp
+Here is a minimal TLV (Type-Length-Value) protocol implementation. The magic number at the start catches accidental misreads (e.g. reading a data file as a protocol stream). The version field lets the reader decide how to handle newer messages. The `skip()` method is the key forward-compatibility primitive - it advances over any field the reader does not understand.
 
+```cpp
 #include <cstdint>
 #include <vector>
 #include <cstring>
@@ -84,7 +89,7 @@ public:
         read_raw(hdr);
         if (hdr.magic != 0x4350504D)
             throw std::runtime_error("Invalid magic");
-        // Version check — forward compatible: accept >= our version
+        // Version check - forward compatible: accept >= our version
         std::cout << "Protocol version: " << hdr.version << "\n";
     }
 
@@ -118,16 +123,18 @@ private:
         pos_ += sizeof(T);
     }
 };
-
 ```
+
+Notice the comment on `skip()` - that single method is what makes forward compatibility work. An old reader encountering a field with an unrecognised tag can call `skip(field.length)` and land cleanly at the start of the next field.
 
 ### Version Evolution Example
 
-```cpp
+This shows the progression across three versions of a message. The critical discipline here is that tag 2 (`TAG_AGE`) is never reassigned even though the field was dropped in v3. A v1 reader receiving a v3 message will simply not see tag 2 in the stream and produce a sensible default, while a v3 reader receiving a v1 message will encounter the old tag and print it normally.
 
+```cpp
 // Version 1 message: Name (tag=1) + Age (tag=2)
-// Version 2 adds:    Email (tag=3) — old readers skip tag=3
-// Version 3 removes: Age is deprecated — but tag=2 is NEVER reused
+// Version 2 adds:    Email (tag=3) - old readers skip tag=3
+// Version 3 removes: Age is deprecated - but tag=2 is NEVER reused
 
 enum FieldTag : uint16_t {
     TAG_NAME  = 1,
@@ -170,8 +177,9 @@ void read_message_any_version(const uint8_t* data, size_t len) {
         }
     }
 }
-
 ```
+
+The `default:` case is the forward-compatibility mechanism. A v1 reader processing a v3 message will hit this branch for `TAG_PHONE` (tag 4, which it does not know about) and skip it cleanly, printing a diagnostic. This is far better than crashing or corrupting the read position.
 
 ---
 
@@ -179,8 +187,9 @@ void read_message_any_version(const uint8_t* data, size_t len) {
 
 ### Q1: Design a header that allows readers to skip entire messages they don't understand
 
-```cpp
+Sometimes you want message-level skipping, not just field-level. The pattern is to length-prefix every message at the outermost envelope level, so a reader can jump over an entire unknown message type in one move.
 
+```cpp
 #include <cstdint>
 #include <vector>
 #include <cstring>
@@ -244,22 +253,24 @@ int main() {
     //   Known message: value=42
     //   Unknown type 99, skipping 8 bytes
 }
-
 ```
+
+The key line is `pos += env.payload_length` outside the `if/else`. The reader always advances past the payload, whether it understood the message or not. This is what makes the stream robust to future message types.
 
 ### Q2: Show why reusing a deprecated field tag leads to data corruption
 
-```cpp
+This is the most important thing to understand about wire format evolution. When you recycle a tag, old readers that were written when that tag meant something else will interpret the new bytes using the old type. The result is not an error - it is silent garbage.
 
+```cpp
 #include <cstdint>
 #include <iostream>
 
 // WRONG: Reusing tag 2
 // v1: tag 2 = age (uint32_t)
-// v3: tag 2 = temperature (float)  ← REUSED! DANGEROUS!
+// v3: tag 2 = temperature (float)  <- REUSED! DANGEROUS!
 //
 // A v1 reader encountering v3 data would interpret the float bytes
-// as a uint32_t — silent data corruption!
+// as a uint32_t - silent data corruption!
 
 void demonstrate_tag_reuse_danger() {
     float temperature = 98.6f;
@@ -271,24 +282,26 @@ void demonstrate_tag_reuse_danger() {
     std::cout << "Misread as uint32 (age): " << misinterpreted << "\n";
     // Output:
     //   Temperature (float): 98.6
-    //   Misread as uint32 (age): 1120379084  ← nonsense!
+    //   Misread as uint32 (age): 1120379084  <- nonsense!
 }
 
 // CORRECT approach: deprecated tags are reserved forever
 // v1: tag 2 = age (uint32_t)
 // v3: tag 2 = RESERVED (do not use)
-//     tag 5 = temperature (float)  ← NEW tag number
+//     tag 5 = temperature (float)  <- NEW tag number
 
 int main() {
     demonstrate_tag_reuse_danger();
 }
-
 ```
+
+The number `1120379084` is just the bit pattern of `98.6f` reinterpreted as a 32-bit integer. There is no error, no exception - just a plausible-looking but completely wrong number stored in a field called "age". This kind of corruption can persist in databases for months before anyone notices.
 
 ### Q3: Implement a simple schema fingerprint for version detection
 
-```cpp
+A schema fingerprint gives the reader a fast way to detect whether it is speaking the same schema as the writer, before attempting to parse anything. Here is a simple FNV-1a based implementation:
 
+```cpp
 #include <cstdint>
 #include <string>
 #include <iostream>
@@ -334,18 +347,19 @@ int main() {
     std::cout << "v1 fingerprint: 0x" << std::hex << fp1 << "\n";
     std::cout << "v2 fingerprint: 0x" << std::hex << fp2 << "\n";
     std::cout << "Match: " << (fp1 == fp2 ? "yes" : "no") << "\n";
-    // Different fingerprints → schemas differ
+    // Different fingerprints - schemas differ
     // Reader can decide: attempt compatible read or reject
 }
-
 ```
+
+Different fingerprints mean "these schemas are not identical." The reader can then decide: attempt a compatible read (if it is willing to handle missing or extra fields), or reject the message and report a version mismatch. Either decision is better than silently parsing with the wrong schema.
 
 ---
 
 ## Notes
 
-- **Never reuse field tag IDs** — this is the single most important rule for binary protocol evolution.
+- **Never reuse field tag IDs** - this is the single most important rule for binary protocol evolution.
 - **TLV (Type-Length-Value)** is the simplest approach; Protocol Buffers and FlatBuffers use more efficient varint encodings.
 - **Endianness**: always specify wire byte order (little-endian is common on modern hardware).
-- **Length-prefix every variable-length field** so unknown fields can be skipped.
+- **Length-prefix every variable-length field** so unknown fields can be skipped cleanly.
 - Consider using established formats (Protobuf, FlatBuffers, Cap'n Proto) instead of rolling your own.
