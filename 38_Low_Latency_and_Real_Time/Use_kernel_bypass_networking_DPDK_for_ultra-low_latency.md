@@ -8,29 +8,29 @@
 
 ## Topic Overview
 
-The Linux kernel network stack adds 5–15µs of latency per packet hop through interrupt handling, context switches, socket buffer copies, and protocol processing. Kernel bypass frameworks like **DPDK** (Data Plane Development Kit) eliminate this by mapping NIC memory directly into userspace, polling for packets in a tight loop, and processing them without ever entering the kernel.
+The Linux kernel network stack adds 5-15µs of latency per packet hop through interrupt handling, context switches, socket buffer copies, and protocol processing. Kernel bypass frameworks like **DPDK** (Data Plane Development Kit) eliminate this by mapping NIC memory directly into userspace, polling for packets in a tight loop, and processing them without ever entering the kernel.
 
-DPDK uses **poll-mode drivers (PMDs)** that busy-poll the NIC's RX ring buffer. Packets arrive as **mbufs** — reference-counted, pool-allocated packet buffers — and are processed in zero-copy fashion. The typical DPDK application dedicates one or more CPU cores exclusively to packet processing (using `isolcpus` and `pthread_setaffinity`), so there is no context-switch overhead.
+DPDK uses **poll-mode drivers (PMDs)** that busy-poll the NIC's RX ring buffer. Packets arrive as **mbufs** - reference-counted, pool-allocated packet buffers - and are processed in zero-copy fashion. The typical DPDK application dedicates one or more CPU cores exclusively to packet processing (using `isolcpus` and `pthread_setaffinity`), so there is no context-switch overhead.
 
-From a C++ perspective, DPDK's C API can be wrapped in RAII classes for safe mbuf management, type-safe packet parsing, and template-based protocol dispatch. The key challenge is that DPDK is a C library with manual memory management — failing to return mbufs to the pool leaks resources and eventually stalls the NIC.
+The reason this trips people up from a C++ perspective is that DPDK is a C library with manual memory management. Every mbuf you receive must be returned to the pool after processing - via `rte_pktmbuf_free()` on the RX path, or automatically after TX completion. Failing to return mbufs is a resource leak that eventually starves the mempool and stalls the NIC. The solution is to wrap mbufs in an RAII class that returns them automatically on scope exit.
 
 | Metric | Kernel Stack | DPDK (Kernel Bypass) |
 | --- | --- | --- |
-| Per-packet latency | 5–15 µs | 0.5–2 µs |
-| Throughput (64B pkts) | ~1–5 Mpps | 40+ Mpps (per core) |
+| Per-packet latency | 5-15 µs | 0.5-2 µs |
+| Throughput (64B pkts) | ~1-5 Mpps | 40+ Mpps (per core) |
 | Context switches | Per-packet interrupt | Zero |
 | CPU usage | Low (idle when no traffic) | 100% (busy-poll) |
-| Buffer copies | 1–2 (kernel ↔ user) | Zero |
+| Buffer copies | 1-2 (kernel <-> user) | Zero |
 | Setup complexity | Low (`socket()`) | High (hugepages, VFIO, PMD) |
 
-```cpp
+Here is the architectural contrast in one picture. The kernel path has several hops between the NIC and your application; the DPDK path is a direct poll with zero copies:
 
+```cpp
 KERNEL PATH:                          DPDK PATH:
-NIC → IRQ → Kernel → sk_buff →       NIC → RX Ring → PMD Poll →
-  copy → Socket → read() → User        User (mbuf, zero-copy)
+NIC -> IRQ -> Kernel -> sk_buff ->    NIC -> RX Ring -> PMD Poll ->
+  copy -> Socket -> read() -> User      User (mbuf, zero-copy)
 
 Latency: ~10 µs                       Latency: ~1 µs
-
 ```
 
 ---
@@ -39,8 +39,9 @@ Latency: ~10 µs                       Latency: ~1 µs
 
 ### Q1: Write an RAII wrapper for DPDK `rte_mbuf` that returns the buffer to its pool on destruction and supports zero-copy access to packet data
 
-```cpp
+The `MbufPtr` class is move-only, just like `unique_ptr`. When the `MbufPtr` goes out of scope, it calls `rte_pktmbuf_free` to return the mbuf to its pool. The `release()` method lets you hand ownership to the TX path (where the NIC itself frees the buffer after sending), without calling free prematurely:
 
+```cpp
 #include <rte_mbuf.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -76,7 +77,7 @@ public:
     MbufPtr(const MbufPtr&) = delete;
     MbufPtr& operator=(const MbufPtr&) = delete;
 
-    // Release ownership without freeing (for TX — NIC frees after send)
+    // Release ownership without freeing (for TX - NIC frees after send)
     rte_mbuf* release() noexcept { return std::exchange(mbuf_, nullptr); }
 
     // Zero-copy access to packet data
@@ -109,19 +110,21 @@ void process_packet(MbufPtr pkt) {
     if (rte_be_to_cpu_16(eth->ether_type) == RTE_ETHER_TYPE_IPV4) {
         auto* ip = pkt.header_at<rte_ipv4_hdr>(sizeof(rte_ether_hdr));
         if (ip) {
-            // Process IPv4 packet — zero copies made
+            // Process IPv4 packet - zero copies made
             (void)ip->src_addr;
         }
     }
     // mbuf automatically returned to pool here
 }
-
 ```
+
+The `header_at<T>` template does a bounds-checked cast into the raw packet data - zero copy, no deserialization step.
 
 ### Q2: Implement a DPDK poll-mode RX loop that receives packets in bursts, dispatches by EtherType, and tracks per-type counters
 
-```cpp
+The `PacketDispatcher` template uses compile-time dispatch via lambda parameters, so there are no virtual calls and the compiler can inline the handlers. The main loop calls `rte_eth_rx_burst` which fills an array of mbuf pointers in one go - processing in bursts amortizes the cost of fetching NIC descriptor ring entries from memory:
 
+```cpp
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
 #include <rte_ether.h>
@@ -173,7 +176,7 @@ public:
     }
 };
 
-// Main poll loop — runs on a dedicated core
+// Main poll loop - runs on a dedicated core
 void rx_poll_loop(uint16_t port_id, uint16_t queue_id,
                   std::atomic<bool>& running) {
     constexpr uint16_t BURST_SIZE = 32;
@@ -198,19 +201,21 @@ void rx_poll_loop(uint16_t port_id, uint16_t queue_id,
             dispatcher.dispatch(rx_pkts[i], counters);
             rte_pktmbuf_free(rx_pkts[i]);
         }
-        // No sleep, no yield — pure busy-poll for minimum latency
+        // No sleep, no yield - pure busy-poll for minimum latency
     }
 
     std::printf("Total: %lu  IPv4: %lu  ARP: %lu  Other: %lu\n",
                 counters.total, counters.ipv4, counters.arp, counters.other);
 }
-
 ```
+
+The comment "no sleep, no yield" is the key design decision: this loop burns 100% of one CPU core. That's the explicit tradeoff you make for sub-microsecond latency.
 
 ### Q3: Set up DPDK EAL initialization, mempool creation, and port configuration from C++ with proper error handling
 
-```cpp
+EAL initialization is the mandatory first step in any DPDK application - it sets up hugepage mappings, binds devices, and initializes per-core memory. The `std::expected` return type lets you propagate errors cleanly without exceptions. The mempool parameters matter: the cache size per core (256 here) keeps recently freed mbufs in a per-core cache to avoid contention on the global pool:
 
+```cpp
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
@@ -294,16 +299,17 @@ int main(int argc, char** argv) {
     rte_eth_dev_close(ctx.port_id);
     rte_eal_cleanup();
 }
-
 ```
+
+Notice that the mbuf pool is created on `rte_socket_id()` - the NUMA node of the current CPU. This ensures the pool's memory is local to the core that will be doing the polling.
 
 ---
 
 ## Notes
 
 - **DPDK requires hugepages** (typically 1GB or 2MB) and VFIO/UIO kernel modules to bind the NIC to userspace drivers.
-- **mbufs must always be returned** to their pool — via `rte_pktmbuf_free()` after RX processing, or automatically after TX completion.
-- **Burst processing** (32–64 packets at a time) amortizes the cost of cache-line fetches from the NIC descriptor ring.
+- **mbufs must always be returned** to their pool - via `rte_pktmbuf_free()` after RX processing, or automatically after TX completion.
+- **Burst processing** (32-64 packets at a time) amortizes the cost of cache-line fetches from the NIC descriptor ring.
 - Use **RSS (Receive Side Scaling)** to distribute packets across multiple RX queues, each handled by a pinned core.
-- Alternatives to DPDK: **io_uring** (lower complexity, higher latency ~3–5µs), **XDP/eBPF** (in-kernel fast path), **Solarflare OpenOnload** (socket-compatible bypass).
+- Alternatives to DPDK: **io_uring** (lower complexity, higher latency ~3-5µs), **XDP/eBPF** (in-kernel fast path), **Solarflare OpenOnload** (socket-compatible bypass).
 - Profile with `rte_rdtsc()` for cycle-accurate latency measurement within DPDK; avoid `clock_gettime` in tight loops.

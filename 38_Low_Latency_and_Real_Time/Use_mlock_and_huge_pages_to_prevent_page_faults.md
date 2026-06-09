@@ -8,22 +8,25 @@
 
 ## Topic Overview
 
-A **page fault** occurs when a virtual address has no backing physical page. Minor faults (page is in memory but not mapped) cost 1–10µs; major faults (page must be read from disk) cost 1–10ms. In a real-time hot path, even a single minor fault creates an unacceptable latency spike. The OS defaults to **demand paging** — physical pages are allocated only on first access — which means any newly touched memory triggers a fault.
+A **page fault** occurs when a virtual address has no backing physical page. Minor faults (page is in memory but not mapped) cost 1-10µs; major faults (page must be read from disk) cost 1-10ms. In a real-time hot path, even a single minor fault creates an unacceptable latency spike. The OS defaults to **demand paging** - physical pages are allocated only on first access - which means any newly touched memory triggers a fault.
 
-**`mlock()`** and **`mlockall()`** pin pages in physical RAM, preventing them from being swapped out. This eliminates major faults but not minor faults on first access — you must also **pre-fault** by writing to every page. `mlockall(MCL_CURRENT | MCL_FUTURE)` locks all current and future mappings, which is the strongest guarantee for real-time code.
+The reason this trips people up is that demand paging is invisible until you measure for it. Your code looks fine in testing, but the first time a thread touches a page it hasn't seen before, the OS handler runs, maps physical memory, and adds microseconds of latency that looks like random noise in your p99 measurements.
 
-**Huge pages** (2MB or 1GB vs the standard 4KB) reduce TLB misses by covering more address space per TLB entry. The TLB has only 64–1024 entries; with 4KB pages, this covers 256KB–4MB — with 2MB pages, it covers 128MB–2GB. For data-heavy applications, TLB misses alone can add 5–50ns per access. Linux offers **Transparent Huge Pages (THP)**, which the kernel manages automatically, and **explicit hugetlbfs**, which the application controls directly.
+**`mlock()`** and **`mlockall()`** pin pages in physical RAM, preventing them from being swapped out. This eliminates major faults but not minor faults on first access - you must also **pre-fault** by writing to every page. `mlockall(MCL_CURRENT | MCL_FUTURE)` locks all current and future mappings, which is the strongest guarantee for real-time code.
+
+**Huge pages** (2MB or 1GB vs the standard 4KB) reduce TLB misses by covering more address space per TLB entry. The TLB has only 64-1024 entries; with 4KB pages, this covers 256KB-4MB of address space total - with 2MB pages, it covers 128MB-2GB. For data-heavy applications, TLB misses alone can add 5-50ns per access. Linux offers **Transparent Huge Pages (THP)**, which the kernel manages automatically, and **explicit hugetlbfs**, which the application controls directly. In real-time code, THP is usually a trap: the kernel's background compaction work to create 2MB-contiguous regions causes latency spikes at unpredictable times.
 
 | Feature | 4KB Pages | 2MB Huge Pages | 1GB Huge Pages |
 | --- | --- | --- | --- |
 | TLB coverage (512 entries) | 2 MB | 1 GB | 512 GB |
 | TLB miss cost | ~10 ns per miss | Same per miss, fewer misses | Fewest misses |
-| Page fault cost | 1–10 µs | 1–10 µs (per huge page) | 1–10 µs (per huge page) |
+| Page fault cost | 1-10 µs | 1-10 µs (per huge page) | 1-10 µs (per huge page) |
 | Fragmentation | Fine-grained | Requires contiguous 2MB | Requires contiguous 1GB |
 | Setup | Automatic | `mmap(MAP_HUGETLB)` or THP | Boot-time reservation |
 
-```cpp
+Here is the concrete TLB math for a sequential 64MB access pattern. With 4KB pages you need over 16,000 TLB entries, but the hardware only has 512, so you're thrashing the TLB on every page boundary. With 2MB pages, 32 entries cover the entire region with room to spare:
 
+```cpp
 TLB MISS IMPACT:
                                     4KB pages     2MB pages
 Access pattern: sequential 64MB
@@ -31,17 +34,17 @@ TLB entries needed:                 16,384        32
 TLB capacity (512 entries):         2 MB cover    1 GB cover
 TLB misses:                         ~15,872       0
 Added latency @ 10ns/miss:          ~159 µs       0 µs
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Write a memory manager that allocates from 2MB huge pages, pre-faults all pages, and `mlock`s them — with diagnostics showing page fault counts
+### Q1: Write a memory manager that allocates from 2MB huge pages, pre-faults all pages, and `mlock`s them - with diagnostics showing page fault counts
+
+The key sequence here is: map -> pre-fault -> lock. If you lock first and then pre-fault you still pay the fault cost, but at least the pages won't get swapped. The `prefault()` method forces every page to take its minor fault now, in the cold path, so the hot path never sees one:
 
 ```cpp
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -144,13 +147,15 @@ int main() {
                 faults_after - faults_before);
     std::printf("Expected: 0 (all pre-faulted and locked)\n");
 }
-
 ```
+
+The bump allocator (`allocate`) is just a pointer increment - O(1) and deterministic. No fragmentation, no bookkeeping. It's the right allocator for a pre-allocated working set.
 
 ### Q2: Compare TLB miss rates between 4KB pages and 2MB huge pages when scanning a large array, using `perf`-compatible measurement
 
-```cpp
+This benchmark allocates 256MB with regular pages and 256MB with huge pages, then scans both to measure the time difference. The huge page version skips most TLB misses because 32 TLB entries cover the whole array instead of needing 65,536. Run the binary under `perf stat -e dTLB-load-misses` to see the raw miss counts:
 
+```cpp
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -221,13 +226,15 @@ int main() {
     munmap(regular, kSize);
     munmap(huge, kSize);
 }
-
 ```
+
+The speedup tends to be more dramatic on access patterns with poor spatial locality, or when the working set exceeds what the hardware page-walk cache can cover.
 
 ### Q3: Implement `mlockall` at program startup with stack pre-growth, and monitor that no faults occur during the main loop
 
-```cpp
+This is the full real-time startup recipe. The tricky part is the stack: `mlockall(MCL_CURRENT)` locks memory that is already mapped, but the stack grows lazily as functions are called. If your real-time loop calls a function with a large stack frame for the first time, it triggers a stack-extension fault. The `prefault_stack()` function forces the OS to map the stack pages right now:
 
+```cpp
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -317,8 +324,9 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `MCL_FUTURE` flag in `mlockall` is the interesting piece: it means every `mmap` or `malloc` call made after this point will also have its pages locked immediately. The faults still happen (you can't escape demand paging entirely), but they happen during the cold path where you have `memset`-ing them explicitly, not in the hot loop.
 
 ---
 
@@ -326,7 +334,7 @@ int main() {
 
 - **`mlockall(MCL_FUTURE)`** is aggressive: every future `mmap`, `malloc`, and library load will be locked. Monitor RSS with `cat /proc/<pid>/status | grep VmLck`.
 - **Huge page reservation**: `echo 1024 > /proc/sys/vm/nr_hugepages` must be done at boot or when memory is unfragmented.
-- **THP (Transparent Huge Pages)** can cause latency spikes due to **compaction** — the kernel defragments memory to create 2MB contiguous regions. Disable with `echo never > /sys/kernel/mm/transparent_hugepage/enabled` and use explicit hugetlbfs instead.
+- **THP (Transparent Huge Pages)** can cause latency spikes due to **compaction** - the kernel defragments memory to create 2MB contiguous regions. Disable with `echo never > /sys/kernel/mm/transparent_hugepage/enabled` and use explicit hugetlbfs instead.
 - `mmap` with `MAP_POPULATE` pre-faults automatically but doesn't guarantee huge pages.
 - Monitor with `cat /proc/<pid>/smaps | grep -i huge` to verify huge page usage.
 - **`perf stat -e dTLB-load-misses,dTLB-store-misses,page-faults`** is the key command for measuring the impact.

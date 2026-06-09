@@ -10,22 +10,21 @@
 
 ### The Problem with Traditional I/O
 
-Every traditional I/O operation requires a **system call** — a context switch from user to kernel mode (~1-5 µs). For high-frequency trading or network servers processing millions of operations per second, this overhead is unacceptable:
+Every traditional I/O operation requires a **system call** - a context switch from user to kernel mode (~1-5 µs). For high-frequency trading or network servers processing millions of operations per second, this overhead is unacceptable. The reason this matters so much is that a context switch is not just the syscall dispatch time: it also flushes branch predictors, pollutes TLB entries, and often invalidates cache lines that your hot path was using. You pay a coordination tax on every single I/O:
 
 ```cpp
+Traditional:  read() -> [syscall] -> kernel -> copy -> [return] -> user
+              ^ context switch (~1 µs)              ^ context switch
 
-Traditional:  read() → [syscall] → kernel → copy → [return] → user
-              ↑ context switch (~1 µs)              ↑ context switch
-
-io_uring:     submit to SQ ring (user-space) → kernel polls → CQ ring (user-space)
-              ↑ no syscall needed!
-
+io_uring:     submit to SQ ring (user-space) -> kernel polls -> CQ ring (user-space)
+              ^ no syscall needed!
 ```
 
 ### io_uring Architecture
 
-```cpp
+io_uring solves this by placing two ring buffers - the Submission Queue (SQ) and the Completion Queue (CQ) - in memory that is shared between user space and kernel space. Your application writes I/O requests directly into the SQ ring without ever entering the kernel. With `IORING_SETUP_SQPOLL`, a dedicated kernel thread spins on the SQ ring and processes entries without any user-space syscall at all. Completions appear in the CQ ring, which you read from the same shared memory:
 
+```cpp
 User Space                           Kernel Space
 ┌──────────────┐                    ┌──────────────┐
 │ Submission   │  shared memory     │              │
@@ -37,13 +36,13 @@ User Space                           Kernel Space
 
 SQ and CQ are ring buffers in shared memory.
 After setup, submissions and completions need ZERO syscalls.
-
 ```
 
 ### Basic io_uring Setup with liburing
 
-```cpp
+The `liburing` library wraps the raw Linux syscalls into a clean C API. Here is a minimal RAII class that gives you safe setup and teardown, plus helper methods for submitting reads and writes and polling for completions. Notice that `submit_read` and `submit_write` just write an SQE into the ring - no kernel involvement yet:
 
+```cpp
 #include <liburing.h>
 #include <fcntl.h>
 #include <cstring>
@@ -120,13 +119,15 @@ public:
         return comp;
     }
 };
-
 ```
+
+The `user_data` field is your correlation handle: you stamp the SQE with an ID when you submit, and that same ID comes back in the CQE when it completes. That's how you match completions back to the original requests.
 
 ### Low-Latency Network Server with io_uring
 
-```cpp
+This echo server uses `IORING_SETUP_SQPOLL` so the kernel polls for new submissions without any syscall from user space. The event loop pattern is: wait for a completion, figure out what operation just finished, queue up the next operation, repeat. With SQPOLL, `io_uring_submit` may be a complete no-op because the kernel thread already picked up the SQE:
 
+```cpp
 #include <liburing.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -142,7 +143,7 @@ struct Connection {
 void run_server(int listen_fd) {
     IoUring ring(1024, IORING_SETUP_SQPOLL);  // Kernel-side polling!
     // IORING_SETUP_SQPOLL: kernel thread polls the SQ ring
-    // → zero syscalls for submission after setup
+    // -> zero syscalls for submission after setup
 
     // Submit initial accept
     struct io_uring_sqe* sqe = io_uring_get_sqe(&ring.raw());
@@ -176,7 +177,7 @@ void run_server(int listen_fd) {
                 delete conn;
                 break;
             }
-            // Echo back — submit write
+            // Echo back - submit write
             sqe = io_uring_get_sqe(&ring.raw());
             io_uring_prep_send(sqe, conn->fd, conn->buffer, cqe->res, 0);
             conn->pending_op = WRITE;
@@ -189,10 +190,11 @@ void run_server(int listen_fd) {
         io_uring_submit(&ring.raw());  // With SQPOLL, this may be a no-op
     }
 }
-
 ```
 
 ### io_uring vs epoll Performance
+
+The numbers below show the progression from classic epoll to io_uring to io_uring with SQPOLL. The key column is "Syscalls per I/O" - going from 2 to 0 is the whole story. The CPU overhead tradeoff is real though: SQPOLL burns a dedicated core even when idle.
 
 | Metric | epoll | io_uring | io_uring + SQPOLL |
 | --- | --- | --- | --- |
@@ -203,9 +205,10 @@ void run_server(int listen_fd) {
 
 ### Registered Buffers and Files
 
-```cpp
+Even with io_uring, there's a hidden cost in the default mode: every I/O requires the kernel to pin the user-space buffer pages into kernel address space. With registered buffers, you pay that cost once at registration time and then reference buffers by index. For high-frequency I/O this saves roughly 0.5-1 µs per operation:
 
-// Pre-register buffers — avoids per-I/O buffer mapping overhead
+```cpp
+// Pre-register buffers - avoids per-I/O buffer mapping overhead
 struct iovec iovecs[NUM_BUFFERS];
 for (int i = 0; i < NUM_BUFFERS; i++) {
     iovecs[i].iov_base = aligned_alloc(4096, BUFFER_SIZE);
@@ -222,8 +225,9 @@ io_uring_prep_read_fixed(sqe, fd, iovecs[0].iov_base, BUFFER_SIZE, 0,
 int fds[] = {fd1, fd2, fd3};
 io_uring_register_files(&ring, fds, 3);
 // Use IOSQE_FIXED_FILE flag with registered fd index
-
 ```
+
+You can combine registered buffers with registered file descriptors for the maximum reduction in per-operation overhead.
 
 ---
 
@@ -245,8 +249,8 @@ Without registration, every I/O operation requires the kernel to **map user-spac
 
 ## Notes
 
-- io_uring is Linux-only (kernel 5.1+); on Windows, use IOCP; on macOS, use kqueue
-- Always check `io_uring_queue_init_params` for feature support on the running kernel
-- Use `io_uring_prep_multishot_accept` for accept without re-arming
-- io_uring supports `IORING_OP_MSG_RING` for inter-ring communication (kernel 5.18+)
-- Security: io_uring can be restricted with seccomp — some container runtimes disable it
+- io_uring is Linux-only (kernel 5.1+); on Windows, use IOCP; on macOS, use kqueue.
+- Always check `io_uring_queue_init_params` for feature support on the running kernel.
+- Use `io_uring_prep_multishot_accept` for accept without re-arming.
+- io_uring supports `IORING_OP_MSG_RING` for inter-ring communication (kernel 5.18+).
+- Security: io_uring can be restricted with seccomp - some container runtimes disable it.

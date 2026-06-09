@@ -8,23 +8,26 @@
 
 ## Topic Overview
 
-When a thread waits for an event — a message arrival, a flag change, or a condition — the two extremes are **busy-spinning** (polling in a tight loop) and **sleep-based waiting** (blocking via OS primitives). The choice fundamentally trades CPU resources for wake-up latency: spinning provides sub-microsecond response but wastes an entire core; sleeping frees the core but adds 1–15µs of wake-up latency from the OS scheduler.
+When a thread waits for an event - a message arrival, a flag change, or a condition - the two extremes are **busy-spinning** (polling in a tight loop) and **sleep-based waiting** (blocking via OS primitives). The choice fundamentally trades CPU resources for wake-up latency: spinning provides sub-microsecond response but wastes an entire core; sleeping frees the core but adds 1-15µs of wake-up latency from the OS scheduler.
+
+The reason the trade-off is so stark is physics. A sleeping thread has handed control to the kernel. To wake it up, the kernel has to notice the event, find the thread in its wait queue, mark it runnable, and schedule it onto a CPU. That sequence takes time - time you can't shorten no matter how fast your hardware is. A spinning thread, by contrast, notices the event in the very next loop iteration because it never stopped looking.
 
 The **PAUSE** instruction (x86 `_mm_pause()`) is critical for spin loops. Without it, the CPU's speculative execution pipeline fills with useless iterations, wasting power and starving sibling hyperthreads. PAUSE inserts a short delay (~5ns on Skylake, ~140ns on pre-Skylake) and signals the CPU that this is a spin loop. On ARM, `__yield()` serves a similar purpose.
 
-**Hybrid spinning** combines the best of both: spin for a short duration (typically 1–100µs), then fall back to OS sleep. This captures the common case (event arrives quickly) with low latency while avoiding burning a core during prolonged waits. C++20 `std::atomic::wait/notify` implements a platform-optimized hybrid — spinning briefly, then using futex/WaitOnAddress.
+**Hybrid spinning** combines the best of both: spin for a short duration (typically 1-100µs), then fall back to OS sleep. This captures the common case (event arrives quickly) with low latency while avoiding burning a core during prolonged waits. C++20 `std::atomic::wait/notify` implements a platform-optimized hybrid - spinning briefly, then using futex/WaitOnAddress.
 
 | Strategy | Wake Latency | CPU Usage | Best For |
 | --- | --- | --- | --- |
 | Busy-spin (tight loop) | < 100 ns | 100% of core | Ultra-low latency, dedicated core |
 | Busy-spin + PAUSE | < 200 ns | ~80% of core | Spin on shared core |
-| Hybrid (spin then sleep) | 200 ns – 5 µs | Low average | General low-latency |
-| `std::atomic::wait` | 500 ns – 5 µs | Minimal | Portable, system-optimized |
-| `condition_variable::wait` | 5–15 µs | Minimal | Non-critical latency |
-| `std::this_thread::sleep_for` | 1–15 ms (!) | Minimal | Background tasks only |
+| Hybrid (spin then sleep) | 200 ns - 5 µs | Low average | General low-latency |
+| `std::atomic::wait` | 500 ns - 5 µs | Minimal | Portable, system-optimized |
+| `condition_variable::wait` | 5-15 µs | Minimal | Non-critical latency |
+| `std::this_thread::sleep_for` | 1-15 ms (!) | Minimal | Background tasks only |
+
+Here's how CPU usage and wake latency relate across the strategies. The point is that you're always trading one for the other:
 
 ```cpp
-
 LATENCY vs CPU TRADE-OFF:
 
 CPU Usage  │ ▓▓▓▓▓ Busy-spin
@@ -34,17 +37,17 @@ CPU Usage  │ ▓▓▓▓▓ Busy-spin
            │ ░     condition_variable
            │──────────────────
            0     5    10    15  µs  Wake Latency
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Implement three waiting strategies — busy-spin with PAUSE, hybrid spin-then-sleep, and `std::atomic::wait` — and benchmark their wake-up latency
+### Q1: Implement three waiting strategies - busy-spin with PAUSE, hybrid spin-then-sleep, and `std::atomic::wait` - and benchmark their wake-up latency
+
+The benchmark measures round-trip wake latency: how long from when the producer sets the flag to when the consumer thread observes it. Pay attention to how the strategies compare and think about what your hot path actually needs.
 
 ```cpp
-
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -110,13 +113,15 @@ int main() {
     measure_latency(hybrid_wait,    "Hybrid (1000 spins)");
     measure_latency(atomic_wait,    "std::atomic::wait");
 }
-
 ```
+
+On a modern x86 machine you'll typically see the busy-spin strategy win by a factor of 5-10x on wake latency. But remember that "winning" here means burning a whole CPU core. If you only have one isolated core for this thread, that's fine. If not, you need to think carefully.
 
 ### Q2: Build a `SpinLock` with PAUSE that degrades gracefully under contention by tracking spin counts and adapting
 
-```cpp
+A real production spin lock doesn't just spin blindly. It uses the test-and-test-and-set (TTAS) pattern: spin on a read-only load (which doesn't generate write traffic on the cache bus), and only attempt the expensive exchange when the lock looks free. Under high contention this makes a significant difference.
 
+```cpp
 #include <atomic>
 #include <cstdint>
 #include <immintrin.h>
@@ -197,13 +202,15 @@ int main() {
     std::printf("Time: %.2f ms, avg spins/acquisition: %.1f\n",
                 ms, lock.avg_spins());
 }
-
 ```
+
+The `avg_spins()` diagnostic is valuable in production. If it's consistently high, your critical section is too long or you have too many threads competing. If it's near zero, you're barely contending at all - which is the ideal state.
 
 ### Q3: Compare `std::condition_variable` vs `std::atomic::wait` vs a manual futex call for producer-consumer wake-up latency
 
-```cpp
+This benchmark gives you a concrete feel for the OS-level cost of each signaling mechanism. The condition variable is the most familiar, but it's also the heaviest because it always involves mutex locking and kernel transitions. The raw futex call is what the kernel actually provides - `std::atomic::wait` is essentially a well-behaved wrapper around it.
 
+```cpp
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -295,16 +302,17 @@ int main() {
     benchmark_channel<FutexChannel>("raw futex");
 #endif
 }
-
 ```
+
+You'll typically see `atomic::wait` and the raw futex very close to each other, and both noticeably faster than `condition_variable`. The condition variable's extra mutex operations are what slow it down. For a background task or UI event, the difference doesn't matter. For a hot path that fires 100,000 times per second, it absolutely does.
 
 ---
 
 ## Notes
 
-- **PAUSE on hyperthreaded cores**: Without PAUSE, a spinning thread saturates the execution port, starving its sibling. PAUSE yields resources and saves ~10–20% power.
-- **`std::atomic::wait`** (C++20) uses futex on Linux, `WaitOnAddress` on Windows, and `__ulock_wait` on macOS — all kernel-assisted, efficient wake.
-- **Never** use `sleep_for(1ms)` for low-latency waiting — timer resolution is often 1–15ms due to OS timer granularity.
-- **Test-and-test-and-set** pattern: spin on a read-only load (no bus traffic), then attempt exchange only when the lock appears free — reduces cache-line bouncing.
+- **PAUSE on hyperthreaded cores**: Without PAUSE, a spinning thread saturates the execution port, starving its sibling. PAUSE yields resources and saves ~10-20% power.
+- **`std::atomic::wait`** (C++20) uses futex on Linux, `WaitOnAddress` on Windows, and `__ulock_wait` on macOS - all kernel-assisted, efficient wake.
+- **Never** use `sleep_for(1ms)` for low-latency waiting - timer resolution is often 1-15ms due to OS timer granularity.
+- **Test-and-test-and-set** pattern: spin on a read-only load (no bus traffic), then attempt exchange only when the lock appears free - reduces cache-line bouncing.
 - Measure with `perf stat -e context-switches,cpu-migrations` to verify spinning avoids context switches.
-- For dedicated cores (isolated with `isolcpus`), pure busy-spin is optimal — the core has nothing else to do.
+- For dedicated cores (isolated with `isolcpus`), pure busy-spin is optimal - the core has nothing else to do.

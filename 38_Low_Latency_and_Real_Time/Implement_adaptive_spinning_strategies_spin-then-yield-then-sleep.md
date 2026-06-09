@@ -10,7 +10,7 @@
 
 ### The Waiting Problem
 
-When a thread must wait for a condition (lock release, data arrival, flag set), there are three strategies with different latency/CPU tradeoffs:
+When a thread must wait for a condition (lock release, data arrival, flag set), there are three strategies with different latency/CPU tradeoffs. No single strategy is best in all situations - the right choice depends on how long you expect to wait.
 
 | Strategy | Latency | CPU cost | Best for |
 | --- | --- | --- | --- |
@@ -18,10 +18,13 @@ When a thread must wait for a condition (lock release, data arrival, flag set), 
 | **Yield** (`std::this_thread::yield`) | Microseconds | Context switch cost | Medium waits |
 | **Sleep** (`futex`, condition variable) | ~50-100 µs | Minimal | Long/unknown waits |
 
-### Pure Spinning — Maximum Responsiveness
+The key insight is that each strategy trades CPU time for wake-up responsiveness. Spinning is maximally responsive but burns CPU continuously. Sleeping is CPU-friendly but adds scheduler overhead before your thread can run again. Adaptive spinning threads start with the fastest strategy and degrade gracefully if the wait turns out to be longer than expected.
+
+### Pure Spinning - Maximum Responsiveness
+
+Here's the foundation: a spinlock that never gives up the CPU. It uses `_mm_pause()` to be a good citizen while spinning, but it never yields the thread.
 
 ```cpp
-
 #include <atomic>
 #include <immintrin.h>  // _mm_pause
 
@@ -48,8 +51,9 @@ public:
         locked_.store(false, std::memory_order_release);
     }
 };
-
 ```
+
+The inner `while (locked_.load(...))` loop uses a read-only load before attempting the expensive `exchange`. This is the test-and-test-and-set (TTAS) pattern - it avoids generating write bus traffic while the lock is held by someone else.
 
 Problems with pure spinning:
 
@@ -57,10 +61,11 @@ Problems with pure spinning:
 - Causes **cache line bouncing** in contended scenarios
 - Steals resources from the thread you're waiting on
 
-### Adaptive Spinning — The Hybrid Approach
+### Adaptive Spinning - The Hybrid Approach
+
+The adaptive version adds two additional phases after the spin phase. Rather than spinning forever, it progressively gives the OS more control.
 
 ```cpp
-
 #include <atomic>
 #include <thread>
 #include <immintrin.h>
@@ -99,13 +104,15 @@ public:
         locked_.store(false, std::memory_order_release);
     }
 };
-
 ```
+
+The `SpinCount` and `YieldCount` template parameters let you tune the thresholds for your workload. A common heuristic is to set `SpinCount` so the spin phase lasts about as long as a context switch (roughly 1-10 µs), and `YieldCount` to cover the expected tail of medium-length waits.
 
 ### Production-Quality Adaptive Wait
 
-```cpp
+This class extracts the adaptive waiting logic so it can be applied to any predicate, not just lock acquisition. It also adds exponential backoff in the sleep phase and a diagnostic for detecting contented scenarios.
 
+```cpp
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -167,13 +174,15 @@ private:
 #endif
     }
 };
-
 ```
+
+The `is_contended()` method is particularly useful in production. If your waiter is frequently reaching the sleep phase, it's a signal that your wait durations are longer than your spin budget - you might want to increase `MAX_SLEEP` or investigate what's holding up the condition.
 
 ### Using Adaptive Wait in a Lock-Free Queue
 
-```cpp
+Here's the adaptive waiter integrated into a queue where the producer and consumer may run at different rates. The producer waits when the queue is full; the consumer waits when it's empty.
 
+```cpp
 template<typename T, size_t N>
 class WaitableQueue {
     std::array<std::atomic<T>, N> buffer_;
@@ -208,13 +217,15 @@ public:
         return value;
     }
 };
-
 ```
 
-### Linux futex — OS-Level Efficient Wait
+The `alignas(64)` on `head_` and `tail_` ensures they live on separate cache lines. Without this, a producer updating `tail_` and a consumer reading `tail_` would cause false sharing, degrading performance even though those accesses don't conflict logically.
+
+### Linux futex - OS-Level Efficient Wait
+
+When you need the OS to manage the wait queue efficiently, a futex gives you kernel-assisted blocking with the minimum possible overhead. This is essentially what `std::atomic::wait` uses under the hood on Linux.
 
 ```cpp
-
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -253,8 +264,9 @@ public:
         }
     }
 };
-
 ```
+
+The three-state design (`0`, `1`, `2`) is an important optimization. When there are no waiters, `unlock` just does a single atomic store - it never calls into the kernel. The kernel wake-up syscall only happens when the state is `2`, meaning at least one thread is actually sleeping. This is why futex-based locks have low overhead in the uncontended case.
 
 ---
 
@@ -262,15 +274,15 @@ public:
 
 ### Q1: Why not just always spin
 
-Spinning wastes CPU cycles that could be used by other threads — including the thread you're waiting on. If the producer shares a CPU with the consumer and both spin, neither makes progress (priority inversion). Spinning also consumes power and generates heat. Pure spinning is only appropriate when: (1) the wait is expected to be very short (< 1 µs), (2) the waiting thread has a dedicated CPU core, and (3) latency is more important than throughput.
+Spinning wastes CPU cycles that could be used by other threads - including the thread you're waiting on. If the producer shares a CPU with the consumer and both spin, neither makes progress (priority inversion). Spinning also consumes power and generates heat. Pure spinning is only appropriate when: (1) the wait is expected to be very short (< 1 µs), (2) the waiting thread has a dedicated CPU core, and (3) latency is more important than throughput.
 
 ### Q2: What does `_mm_pause()` actually do
 
 `_mm_pause()` is an x86 intrinsic (compiles to the `PAUSE` instruction) that:
 
-1. **Signals to the CPU** that this is a spin loop — allows power-saving optimizations
-2. **Adds a small delay** (~10 cycles) — prevents the spin loop from flooding the memory bus
-3. **Avoids memory order violations** on Intel CPUs with speculative execution — without it, the CPU may speculatively read stale values, causing a costly pipeline flush when the value changes
+1. **Signals to the CPU** that this is a spin loop - allows power-saving optimizations
+2. **Adds a small delay** (~10 cycles) - prevents the spin loop from flooding the memory bus
+3. **Avoids memory order violations** on Intel CPUs with speculative execution - without it, the CPU may speculatively read stale values, causing a costly pipeline flush when the value changes
 
 On ARM, the equivalent is the `YIELD` instruction.
 
@@ -288,8 +300,8 @@ Profile your specific workload: measure the typical wait duration and set the sp
 
 ## Notes
 
-- `std::this_thread::yield()` maps to `sched_yield()` on Linux — it relinquishes the timeslice
+- `std::this_thread::yield()` maps to `sched_yield()` on Linux - it relinquishes the timeslice
 - `std::atomic::wait()` (C++20) provides a portable futex-like wait mechanism
 - On Windows, use `WaitOnAddress` / `WakeByAddressSingle` as the futex equivalent
 - LMAX Disruptor (a famous low-latency library) uses configurable wait strategies
-- Always benchmark with realistic contention levels — microbenchmarks often mislead
+- Always benchmark with realistic contention levels - microbenchmarks often mislead

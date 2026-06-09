@@ -25,13 +25,13 @@ Techniques for ultra-low latency and real-time C++ systems: lock-free data struc
 
 ## Notes
 
-- Lock-free data structures avoid mutex overhead — but are extremely hard to implement correctly
-- Memory pools and arena allocators provide O(1) deterministic allocation — essential for real-time
-- Avoid allocations, exceptions, and system calls in latency-critical paths
-- CPU pinning (sched_setaffinity, SetThreadAffinityMask) ensures threads don't migrate between cores
-- Busy-waiting (spin loops) reduces wake-up latency compared to sleeping on a mutex
-- Huge pages (2MB/1GB) reduce TLB misses in memory-intensive workloads
-- Kernel bypass (DPDK, RDMA) eliminates syscall overhead for network-intensive applications
-- CLOCK_MONOTONIC / QueryPerformanceCounter provide high-resolution timing without NTP jumps
-- Pre-fault memory (mlock + page touch) prevents page faults in the hot path
-- Profile with hardware counters (cache misses, branch mispredictions) — not just wall-clock time
+- Lock-free data structures avoid mutex overhead, but are extremely hard to implement correctly.
+- Memory pools and arena allocators provide O(1) deterministic allocation, which is essential for real-time work.
+- Avoid allocations, exceptions, and system calls in latency-critical paths - each one is a potential stall.
+- CPU pinning (`sched_setaffinity`, `SetThreadAffinityMask`) ensures threads don't migrate between cores and trash their caches.
+- Busy-waiting (spin loops) reduces wake-up latency compared to sleeping on a mutex, at the cost of a dedicated CPU core.
+- Huge pages (2MB/1GB) reduce TLB misses in memory-intensive workloads, sometimes dramatically.
+- Kernel bypass (DPDK, RDMA) eliminates syscall overhead for network-intensive applications.
+- `CLOCK_MONOTONIC` / `QueryPerformanceCounter` provide high-resolution timing without NTP jumps.
+- Pre-fault memory (`mlock` + page touch) prevents page faults from appearing in the hot path.
+- Profile with hardware counters (cache misses, branch mispredictions), not just wall-clock time - the counters tell you *why* you're slow.

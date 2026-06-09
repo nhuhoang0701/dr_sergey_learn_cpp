@@ -10,29 +10,30 @@
 
 ### System Call Cost Breakdown
 
-A system call is not just a function call — it involves privilege level transition:
+A system call is not just a function call - it involves privilege level transition. The CPU has to switch from user mode (ring 3) to kernel mode (ring 0), which means saving your registers, switching the page table, executing the kernel handler, and then reversing all of that on the way back out. This is not optional overhead - the hardware enforces it.
 
 ```cpp
-
 User Space                                    Kernel Space
 ┌──────────────┐  SYSCALL instruction  ┌──────────────────┐
-│ Application  │ ─── (~100-200 ns) ──→ │                  │
+│ Application  │ ─── (~100-200 ns) ──> │                  │
 │              │                       │ Save registers    │
 │              │                       │ Switch page table │
 │              │                       │ Execute handler   │
 │              │                       │ Restore state     │
-│              │ ←── (~100-200 ns) ─── │                  │
+│              │ <── (~100-200 ns) ─── │                  │
 └──────────────┘  SYSRET instruction   └──────────────────┘
 
 Minimum syscall overhead: ~200-400 ns (x86-64, Linux)
 With Spectre mitigations: ~800-1500 ns (!!)
-
 ```
+
+The Spectre mitigation numbers deserve attention. Post-2018, most production Linux systems run with KPTI and retpolines enabled, which more than doubles or triples the cost of every syscall. Code that was marginal before may be completely unusable after enabling mitigations. This makes syscall elimination even more valuable now than it was five years ago.
 
 ### Measuring System Call Costs
 
-```cpp
+Before optimizing, measure. Here's a simple benchmark to see what syscalls actually cost on your machine with your current kernel configuration.
 
+```cpp
 #include <chrono>
 #include <unistd.h>
 #include <sys/syscall.h>
@@ -51,8 +52,9 @@ void measure_syscall_overhead() {
     printf("Average syscall: %ld ns\n", ns / ITERATIONS);
     // Typical result: 200-800 ns depending on CPU and mitigations
 }
-
 ```
+
+Note that `getpid()` is one of the fastest possible syscalls because it's typically implemented via the vDSO (see below). This gives you a lower bound. Real syscalls like `read()` and `write()` will be slower.
 
 ### Common Syscalls and Their Latency
 
@@ -70,10 +72,9 @@ void measure_syscall_overhead() {
 
 ### Technique 1: Use vDSO (Virtual Dynamic Shared Object)
 
-The kernel maps a small library into every process that handles certain syscalls without crossing the kernel boundary:
+The kernel maps a small library into every process that handles certain syscalls without crossing the kernel boundary. For these calls, there's no ring transition at all - the kernel data is accessible from user space via a shared memory region that the kernel updates atomically.
 
 ```cpp
-
 #include <time.h>
 
 void fast_timestamp() {
@@ -88,13 +89,15 @@ void fast_timestamp() {
 // - gettimeofday()
 // - getcpu()
 // - time()
-
 ```
+
+The practical implication is that you should use `clock_gettime(CLOCK_MONOTONIC, ...)` for timestamps, not `gettimeofday()` directly, and definitely not `time()`. They all go through vDSO, but `CLOCK_MONOTONIC` is the right clock for latency measurements (it can't jump backward like `CLOCK_REALTIME` can during NTP adjustments).
 
 ### Technique 2: Batch System Calls
 
-```cpp
+If you must call into the kernel, do it as infrequently as possible by batching operations. The `writev` scatter-gather syscall lets you write multiple non-contiguous memory regions in a single kernel entry.
 
+```cpp
 #include <sys/uio.h>
 
 // BAD: 4 syscalls
@@ -115,13 +118,15 @@ void write_four_fields_good(int fd) {
     };
     writev(fd, iov, 4);  // Single syscall!
 }
-
 ```
+
+With Spectre mitigations, replacing 4 syscalls with 1 can save 2-4 µs per operation. In a system processing 100,000 operations per second, that's 200-400 ms of saved latency per second.
 
 ### Technique 3: Memory-Mapped I/O
 
-```cpp
+After the initial `mmap` setup call, reading and writing a memory-mapped file is indistinguishable from normal memory access - no syscall required. The kernel handles the caching and flushing transparently.
 
+```cpp
 #include <sys/mman.h>
 #include <fcntl.h>
 
@@ -160,13 +165,15 @@ void hot_path(MappedFile& file) {
     record->value = new_value;
     // Data is written to the page cache; kernel flushes asynchronously
 }
-
 ```
+
+The `MADV_WILLNEED` hint asks the kernel to prefault the pages in the background so they're already in the TLB and page cache when you need them. Without it, the first access to each 4KB page triggers a page fault - which is a kernel transition, defeating the whole purpose.
 
 ### Technique 4: Pre-allocate Everything
 
-```cpp
+Dynamic memory allocation (`malloc`, `new`) can call `mmap` or `brk` syscalls when the heap needs to grow. Pre-allocate your working memory during startup so the hot path never touches the allocator.
 
+```cpp
 // BAD: malloc may call mmap or brk (syscalls)
 void hot_path_bad() {
     auto* data = new char[4096];  // Possible syscall!
@@ -192,13 +199,15 @@ public:
 };
 
 // Also: use mlockall(MCL_CURRENT | MCL_FUTURE) to prevent page faults
-
 ```
+
+`mlockall(MCL_CURRENT | MCL_FUTURE)` is important: it tells the kernel to keep all of your process's pages in physical memory and never swap them to disk. Without it, pages that haven't been accessed recently can be swapped out, and accessing them on the hot path triggers a page fault - which is a kernel transition that can cost microseconds.
 
 ### Technique 5: Avoid Logging/Allocation in Hot Path
 
-```cpp
+Logging is one of the most common sources of accidental syscalls in hot paths. `printf` calls `write()`, which is a syscall. The solution is to log to a ring buffer in memory and drain that buffer from a dedicated background thread.
 
+```cpp
 // BAD: printf calls write() (syscall) and may allocate
 void on_market_data_bad(const Quote& q) {
     printf("Quote: %s %.2f\n", q.symbol, q.price);  // SYSCALL!
@@ -226,8 +235,9 @@ public:
         }
     }
 };
-
 ```
+
+The hot path's `log()` call is now just a few memory writes - no kernel involvement whatsoever. The background thread pays the syscall cost but that's fine because it's not on the latency-critical path.
 
 ---
 
@@ -237,7 +247,7 @@ public:
 
 Spectre mitigations (KPTI/KAISER, retpolines, IBRS) add overhead to every kernel entry/exit:
 
-- **KPTI** flushes the TLB on user↔kernel transitions (~200-400 ns added)
+- **KPTI** flushes the TLB on user<->kernel transitions (~200-400 ns added)
 - **Retpolines** prevent speculative execution through indirect branches
 - **IBRS/STIBP** restrict branch prediction across privilege boundaries
 
@@ -249,7 +259,7 @@ vDSO (Virtual Dynamic Shared Object) is a small shared library that the kernel m
 
 ### Q3: How do you achieve zero-syscall I/O
 
-Three approaches: (1) **Memory-mapped files** (`mmap`) — after initial setup, reads and writes are plain memory accesses. (2) **io_uring with SQPOLL** — kernel thread polls for I/O submissions without any user-space syscall. (3) **Shared memory IPC** — communication between processes via mapped shared memory regions, no read/write syscalls. All three require upfront setup syscalls but eliminate per-operation syscalls in the hot path.
+Three approaches: (1) **Memory-mapped files** (`mmap`) - after initial setup, reads and writes are plain memory accesses. (2) **io_uring with SQPOLL** - kernel thread polls for I/O submissions without any user-space syscall. (3) **Shared memory IPC** - communication between processes via mapped shared memory regions, no read/write syscalls. All three require upfront setup syscalls but eliminate per-operation syscalls in the hot path.
 
 ---
 
@@ -259,4 +269,4 @@ Three approaches: (1) **Memory-mapped files** (`mmap`) — after initial setup, 
 - `perf stat -e syscalls:sys_enter_* ./my_app` shows syscall distribution
 - `mlockall(MCL_CURRENT | MCL_FUTURE)` prevents page faults (which are implicit syscalls)
 - Hugepages reduce TLB misses (which cause page-walk syscalls): `madvise(addr, len, MADV_HUGEPAGE)`
-- On Windows, similar principles apply — avoid `ReadFile`/`WriteFile` in hot paths; use memory-mapped files
+- On Windows, similar principles apply - avoid `ReadFile`/`WriteFile` in hot paths; use memory-mapped files

@@ -8,21 +8,24 @@
 
 ## Topic Overview
 
-Linux provides two real-time scheduling policies: **SCHED_FIFO** and **SCHED_FIFO**. Under the default `SCHED_OTHER` (CFS), threads receive time slices proportional to their nice value and are preempted after their quantum. Under SCHED_FIFO, a thread runs until it voluntarily yields or is preempted by a **higher-priority** RT thread — there is no timeslicing. Under SCHED_RR, RT threads at the same priority are round-robin scheduled with a configurable time quantum.
+Linux provides two real-time scheduling policies: **SCHED_FIFO** and **SCHED_RR**. Under the default `SCHED_OTHER` (CFS), threads receive time slices proportional to their nice value and are preempted after their quantum. Under SCHED_FIFO, a thread runs until it voluntarily yields or is preempted by a **higher-priority** RT thread - there is no timeslicing. Under SCHED_RR, RT threads at the same priority are round-robin scheduled with a configurable time quantum.
 
-RT priorities range from 1 (lowest) to 99 (highest). A SCHED_FIFO thread at priority 80 will preempt any thread at priority 79 or below, regardless of the lower thread's state. This provides hard determinism: the highest-priority ready thread always runs immediately. However, a runaway RT thread at priority 99 can **starve the entire system**, including the kernel's own threads.
+The reason this matters for low latency is simple: under the default CFS scheduler, the kernel can preempt your thread at any moment to run something else. Your thread might have been one instruction away from finishing a critical operation when the scheduler decided another thread deserved a turn. That preemption adds latency, and it adds it unpredictably. With SCHED_FIFO, the scheduler only touches your thread when something more important needs to run - and you control what "more important" means through the priority number.
+
+RT priorities range from 1 (lowest) to 99 (highest). A SCHED_FIFO thread at priority 80 will preempt any thread at priority 79 or below, regardless of the lower thread's state. This provides hard determinism: the highest-priority ready thread always runs immediately. However, a runaway RT thread at priority 99 can **starve the entire system**, including the kernel's own threads. That's not hypothetical - a bug in your RT thread's loop condition can make your machine completely unresponsive. Treat high RT priorities with respect.
 
 The **RT throttle** (`/proc/sys/kernel/sched_rt_runtime_us`) limits RT threads to 950ms per 1000ms by default, reserving 50ms for non-RT tasks. For production RT systems, this is often set to -1 (disabled), but only with extreme care. Combine RT scheduling with CPU isolation (`isolcpus=`, `nohz_full=`) for maximum determinism.
 
 | Policy | Priority Range | Timeslicing | Preemption | Use Case |
 | --- | --- | --- | --- | --- |
 | `SCHED_OTHER` (CFS) | nice: -20 to 19 | Yes (quantum) | By scheduler | General purpose |
-| `SCHED_FIFO` | 1–99 | No | By higher prio only | Hard real-time |
-| `SCHED_RR` | 1–99 | Yes (RT quantum) | By higher/equal prio | Soft real-time |
-| `SCHED_DEADLINE` | — | Deadline-based | EDF scheduling | Periodic tasks |
+| `SCHED_FIFO` | 1-99 | No | By higher prio only | Hard real-time |
+| `SCHED_RR` | 1-99 | Yes (RT quantum) | By higher/equal prio | Soft real-time |
+| `SCHED_DEADLINE` | - | Deadline-based | EDF scheduling | Periodic tasks |
+
+Here's a practical layering of priorities for a trading system. Higher-numbered entries run first; lower-priority threads only get CPU time when all higher-priority threads are blocked or idle:
 
 ```cpp
-
 PRIORITY PREEMPTION:
 ┌─────────────────────────────────────────────┐
 │ Priority 99: Watchdog (SCHED_FIFO)          │ ← runs first
@@ -35,17 +38,17 @@ PRIORITY PREEMPTION:
 ├─────────────────────────────────────────────┤
 │ SCHED_OTHER: Logging, monitoring            │ ← runs when RT idle
 └─────────────────────────────────────────────┘
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Create a `RealtimeThread` class that configures SCHED_FIFO, sets priority, pins to a core, and locks memory — the full RT thread setup
+### Q1: Create a `RealtimeThread` class that configures SCHED_FIFO, sets priority, pins to a core, and locks memory - the full RT thread setup
+
+Setting up a proper RT thread involves several independent steps: setting the scheduler policy, setting the priority, pinning to a CPU core, and locking memory pages. Doing them piecemeal is error-prone. This class bundles everything into one creation call.
 
 ```cpp
-
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -167,13 +170,15 @@ int main() {
     rt.print_info();
     rt.join();
 }
-
 ```
+
+Notice `PTHREAD_EXPLICIT_SCHED` - without it, the child thread inherits the parent's scheduling parameters, and your RT priority setting is silently ignored. That's a common source of confusion when first setting up RT threads.
 
 ### Q2: Implement a priority inversion detector that monitors mutex hold times and detects when a low-priority thread blocks a high-priority one
 
-```cpp
+Priority inversion is a subtle failure mode. A low-priority thread holds a mutex. A high-priority thread needs that mutex. The high-priority thread blocks, now effectively running at the low priority. Meanwhile, a medium-priority thread can preempt the low-priority lock holder because it has higher priority - and the low-priority thread never gets to release the mutex. The `PTHREAD_PRIO_INHERIT` protocol addresses this by temporarily boosting the lock holder's priority.
 
+```cpp
 #include <pthread.h>
 #include <sched.h>
 #include <cstdio>
@@ -267,13 +272,15 @@ int main() {
     high.join();
     std::printf("Priority inheritance prevented unbounded inversion.\n");
 }
-
 ```
+
+Without `PTHREAD_PRIO_INHERIT`, the high-priority thread could wait for a very long time if medium-priority threads keep getting scheduled ahead of the low-priority lock holder. With it, the kernel temporarily promotes the lock holder to the waiter's priority so it can finish and release the lock promptly.
 
 ### Q3: Combine `SCHED_FIFO`, `isolcpus` core isolation, and RT throttle configuration to create a minimal-jitter execution environment
 
-```cpp
+This example measures actual jitter - the deviation of a periodic loop from its intended wake time. The jitter numbers tell you whether your RT setup is actually working. Before isolation, you'll typically see p99.9 jitter in the tens of microseconds. With proper isolation and RT scheduling, you can drive it down to the low hundreds of nanoseconds.
 
+```cpp
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
@@ -372,8 +379,9 @@ int main() {
 
     munlockall();
 }
-
 ```
+
+The max jitter value is often more informative than p99. A single large spike can cause a missed deadline even if the average looks great. If you're seeing unexpected spikes, common culprits are: IRQs landing on your isolated core, RCU callbacks, or NMI handlers.
 
 ---
 
@@ -381,7 +389,7 @@ int main() {
 
 - **`CAP_SYS_NICE`** capability is needed to set RT scheduling; `CAP_IPC_LOCK` for `mlockall`. Use `setcap` or run as root.
 - **RT throttle**: Default 950ms/1000ms. Set to `-1` in `/proc/sys/kernel/sched_rt_runtime_us` for production RT but only with watchdog support.
-- **`SCHED_DEADLINE`** (Linux 3.14+) uses Earliest Deadline First (EDF) scheduling — ideal for periodic tasks with known deadlines, avoids manual priority assignment.
+- **`SCHED_DEADLINE`** (Linux 3.14+) uses Earliest Deadline First (EDF) scheduling - ideal for periodic tasks with known deadlines, avoids manual priority assignment.
 - **Priority inversion**: Always use `PTHREAD_PRIO_INHERIT` on mutexes shared between RT threads of different priorities.
 - Kernel boot parameters for full RT: `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 irqaffinity=0,1`.
-- **PREEMPT_RT** kernel patch provides full preemptibility — essential for sub-10µs worst-case latency.
+- **PREEMPT_RT** kernel patch provides full preemptibility - essential for sub-10µs worst-case latency.

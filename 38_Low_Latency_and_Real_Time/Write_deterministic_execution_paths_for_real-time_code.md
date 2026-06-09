@@ -8,11 +8,11 @@
 
 ## Topic Overview
 
-Deterministic code produces identical timing characteristics on every invocation. In hard real-time systems — flight controllers, medical devices, HFT order gateways — the worst-case execution time (WCET) must be bounded and provable. This means eliminating every source of non-determinism from the critical path: syscalls, memory allocation, exceptions, I/O, and data-dependent branching.
+Deterministic code produces identical timing characteristics on every invocation. In hard real-time systems - flight controllers, medical devices, HFT order gateways - the worst-case execution time (WCET) must be bounded and provable. This means eliminating every source of non-determinism from the critical path: syscalls, memory allocation, exceptions, I/O, and data-dependent branching.
 
 The real-time discipline divides the program into a **cold path** (initialization, configuration, logging) where non-deterministic operations are permitted, and a **hot path** (the real-time loop) where they are forbidden. The cold path pre-allocates all memory, pre-faults pages, opens file descriptors, and warms caches. The hot path operates exclusively on pre-allocated resources with bounded-time algorithms.
 
-Exception handling is non-deterministic because `throw` allocates memory (`__cxa_allocate_exception`), unwinds the stack (traversing DWARF tables), and invokes destructors whose count depends on the call depth. Replace exceptions with error codes, `std::expected` (C++23), or `std::optional` on the hot path. Similarly, virtual dispatch through vtables introduces an indirect branch that may cache-miss; prefer CRTP or `std::variant`-based dispatch.
+Exception handling is a particularly subtle source of non-determinism, and the reason trips people up: `throw` allocates memory (`__cxa_allocate_exception`), unwinds the stack (traversing DWARF tables at runtime), and invokes destructors whose count depends on the call depth. None of this has a bounded time. Replace exceptions with error codes, `std::expected` (C++23), or `std::optional` on the hot path. Similarly, virtual dispatch through vtables introduces an indirect branch that may cache-miss; prefer CRTP or `std::variant`-based dispatch in performance-critical code.
 
 | Non-Deterministic Source | Why It's Unpredictable | Deterministic Replacement |
 | --- | --- | --- |
@@ -24,25 +24,26 @@ Exception handling is non-deterministic because `throw` allocates memory (`__cxa
 | Virtual call | Indirect branch, icache miss | CRTP, `std::variant`, template policy |
 | Page fault | Lazy page allocation | `mlock`, pre-fault (`memset`) |
 
-```cpp
+Here is the lifecycle picture. Everything non-deterministic is intentionally front-loaded into the cold path, so the hot path can run without surprises. Shutdown is also a non-RT phase - that's where you flush logs and free resources:
 
+```cpp
 PROGRAM LIFECYCLE:
 ┌────────────────┐     ┌─────────────────────────┐     ┌──────────────┐
-│   Cold Path    │────►│      Hot Path (RT)       │────►│   Shutdown   │
+│   Cold Path    │────>│      Hot Path (RT)       │────>│   Shutdown   │
 │ alloc, mlock,  │     │ NO alloc, NO throw,      │     │ free, flush  │
 │ prefault, open │     │ NO syscall, NO I/O       │     │ close, log   │
 └────────────────┘     └─────────────────────────┘     └──────────────┘
-
 ```
 
 ---
 
 ## Self-Assessment
 
-### Q1: Build a real-time–safe message queue that pre-allocates all storage at construction, uses no exceptions, and has bounded-time push/pop
+### Q1: Build a real-time-safe message queue that pre-allocates all storage at construction, uses no exceptions, and has bounded-time push/pop
+
+This is a single-producer single-consumer lock-free ring buffer. The capacity must be a power of two so that wrapping can be done with a bitmask instead of a modulo operation (modulo with a runtime divisor is not O(1) on all hardware). All storage lives inside `buffer_` - no heap allocation after construction:
 
 ```cpp
-
 #include <atomic>
 #include <array>
 #include <optional>
@@ -60,7 +61,7 @@ class RTQueue {
     alignas(64) std::atomic<std::size_t> tail_{0};  // written by producer
 
 public:
-    // Returns false if full — no allocation, no exception
+    // Returns false if full - no allocation, no exception
     [[nodiscard]] bool try_push(const T& val) noexcept {
         std::size_t tail = tail_.load(std::memory_order_relaxed);
         std::size_t next = (tail + 1) & Mask;
@@ -106,13 +107,15 @@ int main() {
     consumer.join();
     std::printf("Transferred %d messages deterministically.\n", N);
 }
-
 ```
+
+The `alignas(64)` on `head_` and `tail_` puts them on separate cache lines, preventing false sharing between the producer and consumer. Without it, each write to `tail_` would invalidate the cache line containing `head_`, causing unnecessary coherency traffic between cores.
 
 ### Q2: Replace exception-based error handling with `std::expected` (C++23) in a trading order validation function
 
-```cpp
+`std::expected<T, E>` is a discriminated union - it holds either a `T` on success or an `E` on failure. The critical point for real-time work is that it has **zero heap allocation** and **zero stack unwinding**. Error paths are just data, not control flow. The `[[nodiscard]]` attribute ensures callers can't silently ignore a rejection:
 
+```cpp
 #include <cstdint>
 #include <cstdio>
 #include <expected>
@@ -177,13 +180,15 @@ int main() {
                     to_string(bad.error()).data());
     }
 }
-
 ```
+
+Compare this to an exception-based version: every `throw` site would potentially allocate the exception object, and every call site would need exception handling overhead even on the success path (in the zero-overhead model, that overhead is at the call site for table setup). `std::expected` has none of that.
 
 ### Q3: Pre-fault all pages at startup to eliminate minor page faults during the real-time loop, and verify with `getrusage`
 
-```cpp
+This is the minimal version of the prefaulting pattern: allocate, lock, write every page, then measure faults before and after the hot path. The hot-path loop should report zero faults because every page it touches was already physically mapped during setup:
 
+```cpp
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -215,7 +220,7 @@ int main() {
 
     long faults_before = get_minor_faults();
 
-    // Hot path: use the buffer — should cause ZERO page faults
+    // Hot path: use the buffer - should cause ZERO page faults
     char* data = static_cast<char*>(buf);
     for (std::size_t i = 0; i < kSize; ++i) {
         data[i] = static_cast<char>(i & 0xFF);
@@ -228,8 +233,9 @@ int main() {
     munlock(buf, kSize);
     std::free(buf);
 }
-
 ```
+
+If you see any non-zero fault count in the hot path, it means either the buffer wasn't fully prefaulted, another allocation happened inside the loop (check for hidden `malloc` calls in the libraries you're using), or the OS reclaimed some pages due to memory pressure.
 
 ---
 

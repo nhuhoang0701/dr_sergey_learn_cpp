@@ -8,22 +8,23 @@
 
 ## Topic Overview
 
-Modern CPUs are multi-core, multi-socket machines with Non-Uniform Memory Access (NUMA) topology: each socket has local DRAM that it can access in ~80ns, while accessing remote DRAM costs ~140–200ns. The OS scheduler freely migrates threads between cores, which causes cache invalidation, cross-NUMA memory access, and latency spikes. **CPU pinning** (affinity) locks a thread to a specific core, eliminating migration overhead.
+Modern CPUs are multi-core, multi-socket machines with Non-Uniform Memory Access (NUMA) topology: each socket has local DRAM that it can access in roughly 80ns, while accessing remote DRAM costs 140-200ns. The OS scheduler freely migrates threads between cores, which causes cache invalidation, cross-NUMA memory access, and latency spikes. **CPU pinning** (affinity) locks a thread to a specific core, eliminating migration overhead.
 
 On Linux, `pthread_setaffinity_np` sets which cores a thread may run on via a `cpu_set_t` bitmask. On Windows, `SetThreadAffinityMask` provides the same functionality. For complete isolation, `isolcpus=` in the kernel command line removes cores from the general scheduler, reserving them exclusively for pinned threads with zero interference from kernel tasks and other processes.
 
-NUMA-aware allocation ensures that memory is allocated on the same NUMA node as the core that will access it. `libnuma` provides `numa_alloc_onnode` for explicit placement. Without NUMA awareness, a thread pinned to socket 0 may access memory that the OS allocated on socket 1's DRAM, adding 60–100ns per cache miss — devastating for latency-critical paths.
+NUMA-aware allocation ensures that memory is allocated on the same NUMA node as the core that will access it. `libnuma` provides `numa_alloc_onnode` for explicit placement. Without NUMA awareness, a thread pinned to socket 0 may access memory that the OS allocated on socket 1's DRAM, adding 60-100ns per cache miss - devastating for latency-critical paths. The reason this trips people up is that affinity alone is not enough: you also have to tell the allocator *where* to put the memory, not just tell the scheduler where to run your thread.
 
 | Technique | Linux API | Windows API | Effect |
 | --- | --- | --- | --- |
 | Pin thread to core | `pthread_setaffinity_np` | `SetThreadAffinityMask` | No migration, warm cache |
 | Isolate cores | `isolcpus=` boot param | Processor group affinity | Zero interference |
 | NUMA-local alloc | `numa_alloc_onnode` | `VirtualAllocExNuma` | Local DRAM access |
-| Query topology | `numa_node_of_cpu` | `GetNumaProcessorNode` | Map core → NUMA node |
+| Query topology | `numa_node_of_cpu` | `GetNumaProcessorNode` | Map core -> NUMA node |
 | Interleave alloc | `numa_alloc_interleaved` | N/A | Balance bandwidth |
 
-```cpp
+Here is a diagram showing what the two-socket situation looks like. The key takeaway is that if Thread A runs on Socket 0 but its buffer was allocated on Socket 1's DRAM, every cache miss crosses the QPI/UPI interconnect and pays the full remote latency penalty:
 
+```cpp
 NUMA TOPOLOGY (2-socket system):
 ┌──────────────────────┐     QPI/UPI     ┌──────────────────────┐
 │  Socket 0            │◄──────────────►│  Socket 1            │
@@ -33,7 +34,6 @@ NUMA TOPOLOGY (2-socket system):
 └──────────────────────┘                └──────────────────────┘
     Thread A pinned here                    Thread B pinned here
     Memory allocated here                   Memory allocated here
-
 ```
 
 ---
@@ -42,8 +42,9 @@ NUMA TOPOLOGY (2-socket system):
 
 ### Q1: Write a cross-platform `ThreadPinner` class that pins a `std::thread` to a specific core, with NUMA-aware memory allocation for the thread's working set
 
-```cpp
+The interesting thing here is not just the affinity call - it's that the buffer is allocated on the correct NUMA node *before* the thread starts, so the thread never touches remote memory:
 
+```cpp
 #ifdef __linux__
 #include <pthread.h>
 #include <sched.h>
@@ -125,7 +126,7 @@ int main() {
         std::printf("Thread pinned to core %d (NUMA node %d)\n",
                     TARGET_CORE, ThreadPinner::get_numa_node(TARGET_CORE));
 
-        // Work on NUMA-local buffer — all accesses are local
+        // Work on NUMA-local buffer - all accesses are local
         volatile char* p = static_cast<volatile char*>(buf);
         for (std::size_t i = 0; i < BUF_SIZE; ++i)
             p[i] = static_cast<char>(i);
@@ -136,13 +137,15 @@ int main() {
     worker.join();
     ThreadPinner::free_numa(buf, BUF_SIZE);
 }
-
 ```
+
+Notice that both the affinity pin and the buffer allocation target the same core. The thread writes 1MB and every byte stays in local DRAM.
 
 ### Q2: Query the system's NUMA topology at startup and assign each worker thread to a core with its local memory, printing the topology map
 
-```cpp
+This is how you discover the topology programmatically and then lay out your workers so each one starts life on its home node. In production you'd do this once at startup and cache the result:
 
+```cpp
 #ifdef __linux__
 #include <numa.h>
 #include <sched.h>
@@ -221,13 +224,15 @@ int main() {
     }
     for (auto& w : workers) w.join();
 }
-
 ```
+
+The `discover_topology` function queries libnuma to build the full core-to-node map, then `main` filters for node 0 and launches one worker per core there. You'd replicate this pattern per node on a larger machine.
 
 ### Q3: Benchmark local vs remote NUMA memory access latency to demonstrate the cost of incorrect placement
 
-```cpp
+This benchmark pins the main thread to core 0 (node 0), allocates one buffer on node 0 and another on node 1, then measures how long it takes to touch each. The numbers will show the remote penalty directly. If you've never run this before, the result is usually a genuine surprise:
 
+```cpp
 #ifdef __linux__
 #include <numa.h>
 #endif
@@ -289,16 +294,17 @@ int main() {
     numa_free(remote_buf, kSize);
 #endif
 }
-
 ```
+
+The slowdown column is the honest answer to "does NUMA placement matter?" - typical results are 1.5-2x slower for the remote buffer on a bandwidth-bound loop, and worse for pointer-chasing patterns.
 
 ---
 
 ## Notes
 
-- **`isolcpus=2,3,4,5`** on the kernel command line is essential for true isolation — affinity alone doesn't prevent the scheduler from placing other tasks on your core.
+- **`isolcpus=2,3,4,5`** on the kernel command line is essential for true isolation - affinity alone doesn't prevent the scheduler from placing other tasks on your core.
 - Use `taskset -c 2 ./my_app` to pin an entire process; use `pthread_setaffinity_np` for per-thread pinning.
-- **Hyperthreading** (SMT) siblings share execution units; pin latency-critical threads to physical cores only, disable HT on the sibling.
+- **Hyperthreading** (SMT) siblings share execution units; pin latency-critical threads to physical cores only, and disable HT on the sibling core.
 - **`numactl --membind=0 --cpunodebind=0 ./app`** is a quick way to test NUMA-local execution without code changes.
-- Check placement with `numastat -p <pid>` — look for `other_node` hits indicating remote access.
-- Remote NUMA access is typically 1.5–2x slower for bandwidth-bound workloads.
+- Check placement with `numastat -p <pid>` - look for `other_node` hits indicating remote access.
+- Remote NUMA access is typically 1.5-2x slower for bandwidth-bound workloads.

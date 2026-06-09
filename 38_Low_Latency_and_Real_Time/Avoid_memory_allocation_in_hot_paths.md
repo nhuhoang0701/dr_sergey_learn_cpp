@@ -2,17 +2,21 @@
 
 **Category:** Low Latency & Real-Time C++  
 **Standard:** C++17 / C++20  
-**Reference:** [P0211R3 — Allocator-aware library wrappers](https://wg21.link/p0211), [CppCon 2017 — John Lakos: Local Allocators](https://www.youtube.com/watch?v=nZNd5FjSquk)  
+**Reference:** [P0211R3 - Allocator-aware library wrappers](https://wg21.link/p0211), [CppCon 2017 - John Lakos: Local Allocators](https://www.youtube.com/watch?v=nZNd5FjSquk)  
 
 ---
 
 ## Topic Overview
 
-Every call to `operator new` or `malloc` enters a global heap allocator, which typically acquires a lock, walks free-lists, and may trigger a `brk`/`mmap` syscall. In low-latency hot paths — order matching engines, audio callbacks, signal handlers — a single allocation can add 1–50µs of jitter. The zero-allocation discipline mandates that the critical path touches only pre-allocated memory.
+Every call to `operator new` or `malloc` enters a global heap allocator, which typically acquires a lock, walks free-lists, and may trigger a `brk`/`mmap` syscall. In low-latency hot paths - order matching engines, audio callbacks, signal handlers - a single allocation can add 1-50µs of jitter. The zero-allocation discipline mandates that the critical path touches only pre-allocated memory.
+
+The reason this matters so much is that the heap allocator is shared state. Every thread in your process competes for the same allocator lock, and the time spent waiting for that lock is completely unpredictable. Even on an uncontended path, the allocator has to search free-lists whose traversal time depends on the current state of the heap - which changes continuously. You have essentially no control over how long an allocation will take.
 
 The primary tools are: **arena (monotonic) allocators** that bump a pointer forward with no per-object overhead, **object pools** that pre-construct a fixed set of reusable objects, and **stack-based containers** like `std::array`, `boost::static_vector`, or `std::pmr::monotonic_buffer_resource` backed by a stack buffer. C++17's `<memory_resource>` standardizes polymorphic allocators that can be swapped without changing container types.
 
-Hidden allocations are insidious. `std::string` may allocate on construction if the string exceeds the SSO buffer (typically 15–22 chars). `std::function` heap-allocates when the callable exceeds its small-buffer (often 2–3 pointers). Even `std::vector::push_back` allocates when capacity is exhausted. Audit every type on the hot path.
+Hidden allocations are insidious. `std::string` may allocate on construction if the string exceeds the SSO buffer (typically 15-22 chars). `std::function` heap-allocates when the callable exceeds its small-buffer (often 2-3 pointers). Even `std::vector::push_back` allocates when capacity is exhausted. Audit every type on the hot path.
+
+The reason this trips people up is that the standard library is wonderfully convenient in normal code, and the allocation cost is invisible in the source. You write `std::string name = ...;` and it looks like one line. But whether that one line triggers a system call depends on string length, SSO size, and the current state of the heap. In a hot path, that uncertainty is unacceptable.
 
 | Source | Hidden Allocation? | Mitigation |
 | --- | --- | --- |
@@ -23,8 +27,9 @@ Hidden allocations are insidious. `std::string` may allocate on construction if 
 | `std::shared_ptr` (make_shared) | One allocation | Pre-allocate, use intrusive ref count |
 | Exception throwing | Yes (`__cxa_allocate_exception`) | Avoid exceptions on hot path |
 
-```cpp
+Here's the mental model for hot-path memory. You set up your arenas and pools during the cold startup phase, where allocating from the system heap is completely fine. Then, once you enter the hot loop, you never touch the global heap again - everything goes through your pre-allocated buffers:
 
+```cpp
 HOT PATH MEMORY FLOW:
 ┌──────────────┐
 │ Pre-allocated │──► Arena / Pool (bump pointer, O(1))
@@ -35,7 +40,6 @@ HOT PATH MEMORY FLOW:
 ┌──────┴───────┐
 │ System heap  │
 └──────────────┘
-
 ```
 
 ---
@@ -44,8 +48,9 @@ HOT PATH MEMORY FLOW:
 
 ### Q1: Implement a monotonic arena allocator compatible with `std::pmr::memory_resource` and use it to back a `pmr::vector` on the hot path
 
-```cpp
+The key insight here is that a monotonic (bump-pointer) allocator can allocate in O(1) time with zero synchronization - it just advances a pointer. The `std::pmr::memory_resource` interface lets you plug this into any `pmr`-aware container without changing the container's type.
 
+```cpp
 #include <memory_resource>
 #include <vector>
 #include <cstdio>
@@ -105,13 +110,15 @@ int main() {
     for (int iteration = 0; iteration < 10; ++iteration)
         process_batch(arena);  // zero allocations per call
 }
-
 ```
+
+Notice that `do_deallocate` is a no-op. Freeing individual objects is meaningless in a monotonic arena - you "free" everything at once by calling `reset()`. That simplicity is exactly what makes this O(1) and thread-safe (for a single-threaded hot path).
 
 ### Q2: Build a typed object pool that pre-allocates N objects and provides O(1) `acquire`/`release` with no heap allocation
 
-```cpp
+A pool is the right tool when you need actual object lifetimes - you want to acquire an object, use it, and return it. The trick is to store the free-list index inside the same memory as the object itself, using a `union`. That way the pool's bookkeeping costs zero extra memory.
 
+```cpp
 #include <array>
 #include <cstdint>
 #include <cassert>
@@ -186,13 +193,15 @@ int main() {
     pool.release(o2);
     std::printf("Alive: %zu, Available: %zu\n", pool.alive(), pool.available());
 }
-
 ```
+
+If `acquire` returns `nullptr`, you've exhausted the pool. In production, that's a design bug - your pool should be sized to the worst-case concurrent object count, and you should never silently fall back to `malloc`.
 
 ### Q3: Demonstrate hidden allocations from `std::function` and `std::string`, and show zero-allocation alternatives
 
-```cpp
+The best way to prove that code is allocation-free is to override `operator new` and count calls. That's exactly what this example does. Watch the allocation count go from non-zero to zero.
 
+```cpp
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -261,16 +270,17 @@ int main() {
     hot_path_bad();
     hot_path_good();
 }
-
 ```
+
+The `hot_path_good` function does exactly the same logical work but with zero heap allocations. `std::string_view` is a non-owning reference to the string literal (which lives in read-only memory). `function_ref` stores a pointer to the lambda rather than copying it - it's non-owning, so no heap is needed. The trade-off is that you have to ensure the original lambda outlives the `function_ref`.
 
 ---
 
 ## Notes
 
 - **`std::pmr::monotonic_buffer_resource`** is the standard arena; prefer it over hand-rolled arenas unless you need custom alignment or reset semantics.
-- **Object pools** should be sized to the worst-case count. If the pool is exhausted on the hot path, you have a design bug — never fall back to `malloc`.
+- **Object pools** should be sized to the worst-case count. If the pool is exhausted on the hot path, you have a design bug - never fall back to `malloc`.
 - **SSO threshold** varies: libstdc++ uses 15 chars, MSVC uses 15, libc++ uses 22. Know your platform.
 - **`std::inplace_function`** (proposed) or Boost `function` with `SBO_SIZE` template parameter eliminates `std::function` heap allocation for known-size callables.
-- **Overriding `operator new`** in a test build is the simplest way to assert zero allocations on a hot path — any allocation triggers a breakpoint or counter.
+- **Overriding `operator new`** in a test build is the simplest way to assert zero allocations on a hot path - any allocation triggers a breakpoint or counter.
 - Run under `perf stat -e page-faults` to verify no page faults during steady state.

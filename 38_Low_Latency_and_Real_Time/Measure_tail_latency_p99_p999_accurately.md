@@ -2,41 +2,43 @@
 
 **Category:** Low Latency & Real-Time C++  
 **Standard:** C++17 / C++20  
-**Reference:** [HDR Histogram](http://hdrhistogram.org/), [Gil Tene — How NOT to Measure Latency](https://www.youtube.com/watch?v=lJ8ydIuPFeU)  
+**Reference:** [HDR Histogram](http://hdrhistogram.org/), [Gil Tene - How NOT to Measure Latency](https://www.youtube.com/watch?v=lJ8ydIuPFeU)  
 
 ---
 
 ## Topic Overview
 
-Averages lie in low-latency systems. A function with 1µs average latency but 500µs p99.9 will cause periodic user-visible stalls. **Tail latencies** — percentiles like p99 (99th percentile) and p99.9 — capture the worst-case experience for 1-in-100 and 1-in-1000 operations. Measuring them accurately requires careful timestamping, appropriate data structures, and awareness of measurement pitfalls.
+Averages lie in low-latency systems. A function with 1µs average latency but 500µs p99.9 will cause periodic user-visible stalls. **Tail latencies** - percentiles like p99 (99th percentile) and p99.9 - capture the worst-case experience for 1-in-100 and 1-in-1000 operations. Measuring them accurately requires careful timestamping, appropriate data structures, and awareness of measurement pitfalls.
 
-The primary timing source on x86 is `rdtsc` (read timestamp counter), which provides cycle-accurate resolution (~0.3ns at 3GHz) with minimal overhead (<10ns per call). `std::chrono::high_resolution_clock` wraps OS facilities that may add 20–50ns overhead. For sub-microsecond measurements, `rdtsc` is preferred; for portability, `steady_clock` is acceptable.
+The reason averages are deceptive is mathematical: if 999 out of 1000 operations take 1µs but one takes 1ms, the average is about 2µs - which sounds fine. But your user experiences that 1ms stall once every second if you're processing 1000 operations per second. Tail percentiles capture that story much more honestly. The p99.9 in this example would be 1ms, immediately flagging the problem.
 
-**Coordinated omission** is the most common measurement error: when the system under test slows down, the test harness also slows down, systematically underweighting slow responses. If a request takes 100ms instead of 1ms, a naïve benchmark only records one slow data point — but 99 requests that *would have* been issued during that 100ms are missing. Gil Tene's correction multiplies the observed latency by the overdue factor.
+The primary timing source on x86 is `rdtsc` (read timestamp counter), which provides cycle-accurate resolution (~0.3ns at 3GHz) with minimal overhead (<10ns per call). `std::chrono::high_resolution_clock` wraps OS facilities that may add 20-50ns overhead. For sub-microsecond measurements, `rdtsc` is preferred; for portability, `steady_clock` is acceptable.
+
+**Coordinated omission** is the most common measurement error in latency benchmarks, and it's genuinely subtle. When the system under test slows down, a naïve test harness also slows down, systematically underweighting slow responses. Here's the intuition: imagine you're supposed to send one request every 1ms, but the 500th request takes 100ms. A naïve harness waits for that response before sending the next request, so requests 501-600 are never sent. Those 99 requests that would have been issued during the 100ms stall are simply missing from your measurements. You record one slow response instead of 100 late responses. The corrected approach accounts for all the slots that should have been served during the stall period.
 
 | Clock Source | Resolution | Overhead | Portability | Use Case |
 | --- | --- | --- | --- | --- |
 | `rdtsc` / `rdtscp` | ~0.3 ns | <10 ns | x86 only | Intra-function timing |
-| `std::chrono::steady_clock` | 1–100 ns | 20–50 ns | Portable | General benchmarking |
-| `clock_gettime(MONOTONIC)` | 1–20 ns | 20–40 ns | POSIX | System-level timing |
+| `std::chrono::steady_clock` | 1-100 ns | 20-50 ns | Portable | General benchmarking |
+| `clock_gettime(MONOTONIC)` | 1-20 ns | 20-40 ns | POSIX | System-level timing |
 | `QueryPerformanceCounter` | ~100 ns | ~30 ns | Windows | Win32 benchmarking |
 
-```cpp
+Here's what a typical latency distribution looks like. The median might be in the microseconds, but the tail stretches orders of magnitude higher as you hit GC pauses, page faults, and scheduler preemptions:
 
+```cpp
 LATENCY DISTRIBUTION (typical low-latency system):
 
-Count │██████████████████████████████  ← p50: 1µs
+Count │██████████████████████████████  <- p50: 1µs
       │████████████████████
       │████████████
       │███████
       │████
       │██
-      │█                                ← p99: 15µs
-      │░                                ← p99.9: 150µs
-      │░                                ← p99.99: 2ms (GC, page fault)
+      │█                                <- p99: 15µs
+      │░                                <- p99.9: 150µs
+      │░                                <- p99.99: 2ms (GC, page fault)
       └──────────────────────────────
         1µs    10µs   100µs   1ms   10ms
-
 ```
 
 ---
@@ -45,8 +47,9 @@ Count │███████████████████████�
 
 ### Q1: Implement a high-resolution latency recorder using `rdtsc` with an HDR histogram that reports p50/p99/p99.9 percentiles
 
-```cpp
+The key design challenge here is that you need to record millions of samples without losing precision at high values. A simple sorted array would work but can't be queried in constant time. This HDR-inspired histogram uses linear buckets for small values and logarithmically-spaced buckets for large values, giving useful precision across the entire range from nanoseconds to seconds.
 
+```cpp
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
@@ -86,7 +89,7 @@ double calibrate_tsc_ghz() {
 class LatencyHistogram {
     // Buckets: 0-1023ns in 1ns steps, then log2-scaled up to ~1s
     static constexpr int kLinearBuckets = 1024;
-    static constexpr int kLogBuckets = 30;  // up to 2^30 ns ≈ 1s
+    static constexpr int kLogBuckets = 30;  // up to 2^30 ns ~= 1s
     static constexpr int kTotalBuckets = kLinearBuckets + kLogBuckets;
 
     std::array<uint64_t, kTotalBuckets> counts_{};
@@ -155,13 +158,15 @@ int main() {
 
     hist.report();
 }
-
 ```
+
+The `__rdtscp` instruction is the serializing form of `rdtsc`. The "p" stands for "processor" - it also writes the current CPU ID to `aux`, which is useful for detecting if the thread migrated CPUs mid-measurement (which would make the TSC values incomparable). The serialization means the instruction completes in order, preventing out-of-order execution from pulling the timestamp before the work you're measuring.
 
 ### Q2: Demonstrate coordinated omission and implement a corrected measurement that accounts for missed request slots
 
-```cpp
+This is one of the most important benchmarking lessons in systems programming. The naïve approach records what actually happened. The corrected approach records what should have happened from a user's perspective - including all the requests that were invisibly delayed.
 
+```cpp
 #include <chrono>
 #include <cstdio>
 #include <thread>
@@ -205,7 +210,7 @@ int main() {
     constexpr int N = 100'000;
     constexpr uint64_t expected_interval_ns = 10'000;  // 10µs between requests
 
-    // Naïve measurement (has coordinated omission)
+    // Naive measurement (has coordinated omission)
     std::vector<uint64_t> naive_latencies;
     naive_latencies.reserve(N);
 
@@ -237,22 +242,24 @@ int main() {
     auto corrected = compute_percentiles(corrected_latencies);
 
     std::printf("┌─────────────┬──────────────┬──────────────┐\n");
-    std::printf("│ Percentile  │ Naïve (ns)   │ Corrected    │\n");
+    std::printf("│ Percentile  │ Naive (ns)   │ Corrected    │\n");
     std::printf("├─────────────┼──────────────┼──────────────┤\n");
     std::printf("│ p50         │ %10.0f   │ %10.0f   │\n", naive.p50, corrected.p50);
     std::printf("│ p99         │ %10.0f   │ %10.0f   │\n", naive.p99, corrected.p99);
     std::printf("│ p99.9       │ %10.0f   │ %10.0f   │\n", naive.p999, corrected.p999);
     std::printf("└─────────────┴──────────────┴──────────────┘\n");
-    std::printf("\nNaïve samples: %zu, Corrected samples: %zu\n",
+    std::printf("\nNaive samples: %zu, Corrected samples: %zu\n",
                 naive_latencies.size(), corrected_latencies.size());
 }
-
 ```
+
+Notice that the corrected dataset has more samples than the naive dataset - the extra samples represent the requests that were invisibly delayed by the stall. In the naive version, the 1ms stall appears once. In the corrected version, it fans out into many late-arriving responses, which is exactly what a real client would experience.
 
 ### Q3: Build a real-time latency monitor that continuously tracks p99 over a sliding window and triggers an alert when it exceeds a threshold
 
-```cpp
+Production systems need continuous latency monitoring, not just offline analysis. This sliding window tracker is designed so the hot path (the `record()` call) is fast and the slow analysis (sorting and computing percentiles) is done on a separate monitoring thread.
 
+```cpp
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -348,21 +355,22 @@ int main() {
                     (unsigned long)stats.p99,
                     (unsigned long)stats.p999,
                     (unsigned long)stats.max,
-                    stats.alert ? "⚠ ALERT" : "OK");
+                    stats.alert ? "ALERT" : "OK");
     }
     running.store(false);
     producer.join();
 }
-
 ```
+
+The `record()` function is a single `fetch_add` plus a non-atomic array write - it's about as fast as possible. The `compute()` function does a sort, which is expensive and not suitable for the hot path, but it runs on the monitoring thread where that's fine. The trade-off is that `compute()` sees a snapshot of the samples array rather than a perfectly consistent view, but for latency monitoring that approximation is acceptable.
 
 ---
 
 ## Notes
 
-- **`rdtscp`** (serializing) is preferred over `rdtsc` for measurement — it prevents out-of-order execution from skewing timestamps. Fence with `lfence` before if using plain `rdtsc`.
-- **Coordinated omission** makes naïve benchmarks report 10–100x lower tail latencies than reality. Always use rate-based load generation.
-- **HDR Histogram** (hdrhistogram.org) provides O(1) recording and O(buckets) percentile queries with configurable precision — the gold standard for latency recording.
-- **Warm-up period**: Discard the first 10–30 seconds of samples to avoid JIT, cache cold-start, and OS settling effects.
-- Do not use `std::sort` in the hot path — record into a histogram or reservoir sample instead.
+- **`rdtscp`** (serializing) is preferred over `rdtsc` for measurement - it prevents out-of-order execution from skewing timestamps. Fence with `lfence` before if using plain `rdtsc`.
+- **Coordinated omission** makes naive benchmarks report 10-100x lower tail latencies than reality. Always use rate-based load generation.
+- **HDR Histogram** (hdrhistogram.org) provides O(1) recording and O(buckets) percentile queries with configurable precision - the gold standard for latency recording.
+- **Warm-up period**: Discard the first 10-30 seconds of samples to avoid JIT, cache cold-start, and OS settling effects.
+- Do not use `std::sort` in the hot path - record into a histogram or reservoir sample instead.
 - Export percentile data to time-series databases (Prometheus histograms, Grafana) for production monitoring.

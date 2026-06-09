@@ -10,21 +10,22 @@
 
 ### Why Shared Memory
 
-Traditional IPC mechanisms add latency through syscalls and data copies:
+Traditional IPC mechanisms add latency through syscalls and data copies. Every time you use a socket or pipe, your data has to travel from your process's memory into the kernel, then back out into the other process's memory. That's two copies and at least two syscall transitions per message.
 
 | IPC Method | Latency | Data copies | Syscalls per message |
 | --- | --- | --- | --- |
-| TCP loopback | ~10-50 µs | 2+ (user→kernel→user) | 2+ (send/recv) |
-| Unix domain socket | ~2-10 µs | 2 (user→kernel→user) | 2 (send/recv) |
-| Pipe | ~2-5 µs | 2 (user→kernel→user) | 2 (write/read) |
+| TCP loopback | ~10-50 µs | 2+ (user->kernel->user) | 2+ (send/recv) |
+| Unix domain socket | ~2-10 µs | 2 (user->kernel->user) | 2 (send/recv) |
+| Pipe | ~2-5 µs | 2 (user->kernel->user) | 2 (write/read) |
 | **Shared memory** | **~50-200 ns** | **0** (same physical memory) | **0** (after setup) |
 
-Shared memory is 10-100x faster because processes read/write the same physical memory pages directly.
+Shared memory is 10-100x faster because processes read/write the same physical memory pages directly. The kernel maps the same physical pages into both processes' virtual address spaces. After the initial `mmap` call (which is setup work, not hot path), the processes communicate at the speed of memory accesses - no kernel transitions required.
 
 ### POSIX Shared Memory Setup
 
-```cpp
+The RAII wrapper handles the setup and teardown of the shared memory region. The `owner_` flag distinguishes between the process that created the segment (which should clean it up) and processes that merely opened it.
 
+```cpp
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -90,13 +91,15 @@ public:
     template<typename T>
     T* as() { return static_cast<T*>(addr_); }
 };
-
 ```
+
+The `close(fd)` after `mmap` is intentional - once the mapping is established, the file descriptor is no longer needed and holding it open would waste a system resource.
 
 ### Lock-Free SPSC Queue in Shared Memory
 
-```cpp
+The queue structure lives entirely in shared memory. There are important constraints here: it can't contain virtual functions (vtable pointers would be invalid in the other process's address space), can't contain `std::string` or `std::vector` (which contain heap pointers), and must be trivially copyable so it makes sense as raw bytes.
 
+```cpp
 #include <atomic>
 #include <cstdint>
 #include <new>
@@ -139,13 +142,15 @@ struct SharedSPSCQueue {
         return true;
     }
 };
-
 ```
+
+The `Capacity & (Capacity - 1) == 0` constraint enforces a power-of-two size, enabling the modulo operation to be replaced with a bitwise AND (`t & (Capacity - 1)`). That's a single instruction versus a division, which matters in a hot path.
 
 ### Producer Process
 
-```cpp
+The producer creates the shared memory segment, constructs the queue in it using placement new, and then writes into it continuously.
 
+```cpp
 struct MarketData {
     uint64_t timestamp;
     uint32_t instrument_id;
@@ -175,13 +180,15 @@ int main() {
         }
     }
 }
-
 ```
+
+The `__rdtsc()` timestamp is a hardware cycle counter. It's extremely cheap (~5ns) and gives you precise end-to-end latency measurements when the consumer reads it on the other side.
 
 ### Consumer Process
 
-```cpp
+The consumer opens the existing shared memory segment (not creating it), casts the raw memory to the queue type, and polls for new messages.
 
+```cpp
 int main() {
     // Open existing shared memory (consumer is not the owner)
     SharedMemoryRegion shm("/market_data_feed", sizeof(Queue), /*create=*/false);
@@ -201,13 +208,15 @@ int main() {
         }
     }
 }
-
 ```
+
+The `_mm_pause()` in the idle branch is important - without it, the consumer would hammer the cache line containing `tail`, generating constant write traffic that slows down the producer.
 
 ### Windows Shared Memory
 
-```cpp
+The Windows API for shared memory uses `CreateFileMapping` / `MapViewOfFile`. The semantics are the same as POSIX - after the mapping is established, both processes access the same physical memory directly.
 
+```cpp
 #ifdef _WIN32
 #include <windows.h>
 
@@ -254,13 +263,13 @@ public:
     void* data() { return addr_; }
 };
 #endif
-
 ```
 
 ### Safety Considerations
 
-```cpp
+Shared memory between processes is more fragile than in-process communication. When a process crashes, the shared memory persists and can be left in an inconsistent state. Here's how to detect and handle that.
 
+```cpp
 // 1. Version your shared memory layout
 struct SharedHeader {
     uint32_t magic = 0xDEADBEEF;   // Identify valid shared memory
@@ -286,8 +295,9 @@ void validate_shared_memory(const SharedHeader* header) {
 bool is_process_alive(pid_t pid) {
     return kill(pid, 0) == 0 || errno == EPERM;
 }
-
 ```
+
+The magic number and version fields are cheap insurance. They let a consumer detect a stale segment from a previous run (wrong magic) or a layout-incompatible producer (wrong version) before trying to interpret garbage as valid queue data.
 
 ---
 
@@ -299,7 +309,7 @@ Shared memory is raw bytes mapped into both processes' address spaces. Non-trivi
 
 ### Q2: Why use `std::atomic` in shared memory instead of plain variables
 
-Multiple processes access the same memory concurrently — this is the same as multi-threaded access. Without atomics, there are data races (undefined behavior). `std::atomic` provides the necessary memory ordering guarantees (acquire/release) that ensure one process sees the data written by another in the correct order. The C++ standard guarantees that `std::atomic` works across processes sharing the same memory.
+Multiple processes access the same memory concurrently - this is the same as multi-threaded access. Without atomics, there are data races (undefined behavior). `std::atomic` provides the necessary memory ordering guarantees (acquire/release) that ensure one process sees the data written by another in the correct order. The C++ standard guarantees that `std::atomic` works across processes sharing the same memory.
 
 ### Q3: What happens if the producer crashes
 
@@ -309,7 +319,7 @@ The shared memory segment persists (it's reference-counted by the kernel). The c
 
 ## Notes
 
-- Use `MAP_HUGETLB` for 2MB hugepages — reduces TLB misses for large shared regions
+- Use `MAP_HUGETLB` for 2MB hugepages - reduces TLB misses for large shared regions
 - `memfd_create` (Linux 3.17+) creates anonymous shared memory without filesystem artifacts
 - Shared memory works across containers if you mount the same `/dev/shm`
 - Always lock shared memory pages with `mlock()` to prevent swapping under memory pressure
