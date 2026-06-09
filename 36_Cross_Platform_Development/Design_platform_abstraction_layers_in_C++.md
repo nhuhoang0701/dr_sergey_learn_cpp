@@ -2,15 +2,15 @@
 
 **Category:** Cross-Platform Development  
 **Standard:** C++17 / C++20  
-**Reference:** https://en.cppreference.com/w/cpp/language/if#Constexpr_if  
+**Reference:** <https://en.cppreference.com/w/cpp/language/if#Constexpr_if>  
 
 ---
 
 ## Topic Overview
 
-A Platform Abstraction Layer (PAL) encapsulates all OS-specific functionality behind a stable, platform-neutral interface. Senior engineers must design PALs that are zero-cost where possible, extensible without recompilation of client code, and testable in isolation. The two dominant strategies — compile-time selection and runtime dispatch — each carry distinct trade-offs in binary size, performance, and flexibility.
+A Platform Abstraction Layer (PAL) encapsulates all OS-specific functionality behind a stable, platform-neutral interface. The goal is that application code never sees `#ifdef _WIN32` or a raw POSIX call - it only talks to the abstraction. Getting this right requires choosing the correct dispatch strategy, because each one carries distinct trade-offs in binary size, performance, and flexibility.
 
-Compile-time selection via `if constexpr`, `#ifdef`, or policy-based templates eliminates dead code and enables inlining, but locks platform choice at build time. Runtime dispatch through virtual interfaces or `std::function` allows plugin-style loading (e.g., Vulkan vs. Metal backends chosen at startup) at the cost of indirect calls. A mature PAL typically combines both: compile-time for leaf operations (byte order, path separator) and runtime for subsystem-level selection (rendering, audio).
+Compile-time selection via `if constexpr`, `#ifdef`, or policy-based templates eliminates dead code and enables inlining, but locks the platform choice at build time. Runtime dispatch through virtual interfaces or `std::function` allows plugin-style loading (for example, choosing a Vulkan vs. Metal rendering backend at startup) at the cost of an indirect call per dispatch. A mature PAL typically combines both: compile-time for leaf operations (byte order, path separator) and runtime for subsystem-level selection (rendering, audio).
 
 | Strategy | Dispatch Cost | Binary Size | Extensibility | Testability |
 | --- | --- | --- | --- | --- |
@@ -20,19 +20,19 @@ Compile-time selection via `if constexpr`, `#ifdef`, or policy-based templates e
 | `std::variant` + `visit` | Visit dispatch | All impls linked | Closed set of types | Moderate |
 | Type-erased wrapper | Indirect call | All impls linked | Open set | Easy |
 
-The factory pattern ties runtime dispatch together: a factory function returns a `std::unique_ptr<IPlatformService>` whose concrete type depends on the detected OS or a configuration flag. Combined with dependency injection, this makes subsystems independently testable.
+The factory pattern ties runtime dispatch together: a factory function returns a `std::unique_ptr<IPlatformService>` whose concrete type depends on the detected OS or a configuration flag. Combined with dependency injection, this makes subsystems independently testable. The diagram below shows the three-layer structure you are building toward:
 
 ```cpp
-
 ┌──────────────────────────────┐
 │       Application Code       │
 ├──────────────────────────────┤
-│     Platform Abstraction     │  ← stable interface
+│     Platform Abstraction     │  <- stable interface
 ├──────┬──────┬────────────────┤
-│ Win32│ POSIX│  Mock/Test     │  ← concrete implementations
+│ Win32│ POSIX│  Mock/Test     │  <- concrete implementations
 └──────┴──────┴────────────────┘
-
 ```
+
+Application code only ever sees the middle row. The concrete implementations beneath it are selected at build time or via a factory at startup.
 
 ---
 
@@ -40,8 +40,9 @@ The factory pattern ties runtime dispatch together: a factory function returns a
 
 ### Q1: Implement a compile-time PAL for getting the current thread ID using `if constexpr` and platform tags
 
-```cpp
+The key design here is that the platform choice is baked in at compile time using tag types. The `CurrentPlatform` alias resolves to either `WindowsTag` or `PosixTag` based on preprocessor macros, and `if constexpr` inside the template selects the right code path. Because `if constexpr` discards the untaken branch entirely, you avoid the situation where non-Windows code tries to compile `GetCurrentThreadId()`:
 
+```cpp
 #include <cstdint>
 #include <iostream>
 
@@ -102,13 +103,15 @@ int main() {
     ThreadUtils<>::set_thread_name("worker-1");
     return 0;
 }
-
 ```
+
+Notice that the template parameter defaults to `CurrentPlatform`, so production code uses `ThreadUtils<>` while test code can inject a mock tag if needed.
 
 ### Q2: Design a runtime-dispatched file system watcher using an abstract interface and factory
 
-```cpp
+Runtime dispatch through a virtual interface is the right choice here because the OS kernel APIs for file watching are completely different (`ReadDirectoryChangesW` on Windows, `inotify` on Linux, `FSEvents` on macOS). The application code only ever calls through the `IFileWatcher` interface. The `create_file_watcher()` factory is the single point of platform coupling - and the only place with an `#ifdef` the application ever needs to worry about:
 
+```cpp
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -122,7 +125,7 @@ enum class FileEvent { Created, Modified, Deleted };
 
 using WatchCallback = std::function<void(const std::filesystem::path&, FileEvent)>;
 
-// Abstract interface — stable ABI boundary
+// Abstract interface - stable ABI boundary
 class IFileWatcher {
 public:
     virtual ~IFileWatcher() = default;
@@ -131,7 +134,7 @@ public:
     virtual bool is_running() const = 0;
 };
 
-// ── Win32 implementation (inotify on Linux, FSEvents on macOS) ──
+// Win32 implementation (inotify on Linux, FSEvents on macOS)
 #ifdef _WIN32
 class Win32FileWatcher final : public IFileWatcher {
     bool running_ = false;
@@ -160,7 +163,7 @@ public:
 };
 #endif
 
-// Factory — the only point of platform coupling
+// Factory - the only point of platform coupling
 std::unique_ptr<IFileWatcher> create_file_watcher() {
     #ifdef _WIN32
     return std::make_unique<Win32FileWatcher>();
@@ -182,27 +185,29 @@ int main() {
     watcher->stop();
     return 0;
 }
-
 ```
+
+For testing, you can define a third implementation (`MockFileWatcher`) that records calls instead of touching the OS, and inject it without changing any application code.
 
 ### Q3: Build a PAL that selects implementations at compile time via policy templates and supports mock injection for testing
 
-```cpp
+Policy-based design takes the compile-time selection idea further: instead of `if constexpr` inside a function, you parameterize the entire component on a policy type. This gives you zero-overhead abstraction - the compiler inlines the policy's `allocate` and `deallocate` calls directly - while making the mock path trivially injectable in tests by substituting a different policy type:
 
+```cpp
 #include <cstddef>
 #include <cstring>
 #include <iostream>
 #include <vector>
 #include <cassert>
 
-// ── Policy interfaces (concepts, C++20) ──
+// Policy interfaces (concepts, C++20)
 template <typename T>
 concept MemoryPolicy = requires(std::size_t n, void* p) {
     { T::allocate(n) } -> std::same_as<void*>;
     { T::deallocate(p, n) } -> std::same_as<void>;
 };
 
-// ── Platform policies ──
+// Platform policies
 struct PosixMemory {
     static void* allocate(std::size_t n) {
         void* p = nullptr;
@@ -223,7 +228,7 @@ struct PosixMemory {
     }
 };
 
-// ── Mock policy for testing ──
+// Mock policy for testing
 struct MockMemory {
     inline static std::size_t total_allocated = 0;
     inline static std::size_t total_freed     = 0;
@@ -238,7 +243,7 @@ struct MockMemory {
     }
 };
 
-// ── PAL component parameterized by policy ──
+// PAL component parameterized by policy
 template <MemoryPolicy MemPolicy>
 class AlignedBuffer {
     void*       data_ = nullptr;
@@ -257,7 +262,7 @@ public:
     std::size_t size() const { return size_; }
 };
 
-// ── Production alias ──
+// Production alias
 using PlatformBuffer = AlignedBuffer<PosixMemory>;
 
 int main() {
@@ -266,7 +271,7 @@ int main() {
     std::memset(buf.data(), 0, buf.size());
     std::cout << "Allocated " << buf.size() << " bytes (aligned)\n";
 
-    // Test path — verify allocation tracking
+    // Test path - verify allocation tracking
     {
         AlignedBuffer<MockMemory> test_buf(1024);
         assert(MockMemory::total_allocated == 1024);
@@ -276,16 +281,17 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `assert` checks confirm that the mock policy correctly tracked every allocation and deallocation. In a real test suite you would replace the `assert` calls with proper test assertions and run these checks as unit tests, completely independent of any OS.
 
 ---
 
 ## Notes
 
-- Prefer `if constexpr` over `#ifdef` inside templates — it preserves type safety and enables better tooling support (IDE navigation, static analysis).
+- Prefer `if constexpr` over `#ifdef` inside templates - it preserves type safety and enables better tooling support (IDE navigation, static analysis).
 - Keep platform `#include` directives behind `#ifdef` guards to prevent compilation errors on non-target platforms.
 - The factory pattern provides the cleanest ABI boundary for shared-library deployment; virtual interfaces are stable across compiler versions when no data members are exposed.
 - Policy-based design (templates) yields zero-overhead abstractions but requires recompilation; use for performance-critical leaf code.
-- Always provide a mock/stub implementation alongside real platform backends — untestable PAL code is a maintenance liability.
+- Always provide a mock/stub implementation alongside real platform backends - untestable PAL code is a maintenance liability.
 - Consider `std::variant<Win32Impl, PosixImpl>` + `std::visit` as a middle ground: closed set, no heap allocation, no vtable, but all implementations compiled into the binary.

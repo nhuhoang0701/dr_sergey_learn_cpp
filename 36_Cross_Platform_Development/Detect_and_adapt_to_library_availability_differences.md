@@ -2,7 +2,7 @@
 
 **Category:** Cross-Platform Development  
 **Standard:** C++17 / C++20  
-**Reference:** https://cmake.org/cmake/help/latest/command/find_package.html  
+**Reference:** <https://cmake.org/cmake/help/latest/command/find_package.html>  
 
 ---
 
@@ -18,25 +18,23 @@ Cross-platform C++ projects must handle the reality that libraries available on 
 | Link-time selection | Linker / CMake | `target_link_libraries(... OPTIONAL)` | Link `liburing` if present |
 | Runtime detection | `dlopen` / `LoadLibrary` | Dynamic loading + function pointers | GPU driver capabilities |
 
-Feature detection is strictly superior to platform detection for library availability. Testing `find_package(Threads REQUIRED)` succeeds on any platform with a threading library, whereas hardcoding `if(UNIX) target_link_libraries(... pthread)` breaks on MinGW, Cygwin, or exotic POSIX systems.
+An important principle: feature detection is strictly superior to platform detection for library availability. Testing `find_package(Threads REQUIRED)` succeeds on any platform with a threading library, whereas hardcoding `if(UNIX) target_link_libraries(... pthread)` breaks on MinGW, Cygwin, or exotic POSIX systems. Test what you actually need, not what OS you think you are on.
 
-The **polyfill pattern** provides a local implementation of a facility that may not be available: if the platform has `<span>`, use it; otherwise, compile a bundled `span.hpp`. This is the C++ equivalent of JavaScript polyfills and is widely used in header-only libraries.
+The **polyfill pattern** provides a local implementation of a facility that may not be available: if the platform has `<span>`, use it; otherwise, compile a bundled `span.hpp`. This is the C++ equivalent of JavaScript polyfills and is widely used in header-only libraries. The flow diagram below shows how a CMake-based detection pipeline propagates availability flags all the way into your C++ source:
 
 ```cpp
-
 Build-time detection flow:
 
   CMakeLists.txt
        │
-  find_package(OpenSSL)     ─── Found? ──► #define HAS_OPENSSL 1
-       │                                     → link OpenSSL::SSL
-       │── Not found ──► option: USE_BORINGSSL? ──► link BoringSSL
+  find_package(OpenSSL)     --- Found? --► #define HAS_OPENSSL 1
+       │                                     -> link OpenSSL::SSL
+       │-- Not found --► option: USE_BORINGSSL? --► link BoringSSL
        │                    │
-       │                    └── Not found ──► #define USE_BUILTIN_TLS 1
-       │                                      → compile embedded TLS
+       │                    └-- Not found --► #define USE_BUILTIN_TLS 1
+       │                                      -> compile embedded TLS
        ▼
-  configure_file(config.h.in → config.h)   ← propagates defines
-
+  configure_file(config.h.in -> config.h)   <- propagates defines
 ```
 
 ---
@@ -45,15 +43,16 @@ Build-time detection flow:
 
 ### Q1: Write a CMake module that detects optional libraries and generates a C++ config header with availability flags
 
-```cmake
+The pattern here has three moving parts: `find_package` detects libraries, `check_include_file_cxx` / `check_cxx_symbol_exists` probe for specific headers and symbols, and `configure_file` bakes all the results into a generated `config.h` that your C++ code can include. This keeps all the detection logic in the build system where it belongs:
 
-# CMakeLists.txt — Feature detection and config generation
+```cmake
+# CMakeLists.txt - Feature detection and config generation
 
 cmake_minimum_required(VERSION 3.20)
 project(portable_app LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 
-# ── Optional dependency detection ──
+# Optional dependency detection
 find_package(OpenSSL QUIET)
 find_package(ZLIB QUIET)
 find_package(fmt QUIET)
@@ -70,13 +69,13 @@ check_include_file_cxx("execution"  HAS_EXECUTION_HEADER)
 check_cxx_symbol_exists(posix_memalign "cstdlib" HAS_POSIX_MEMALIGN)
 check_cxx_symbol_exists(_aligned_malloc "malloc.h" HAS_ALIGNED_MALLOC)
 
-# ── Generate config header ──
+# Generate config header
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/config.h.in"
     "${CMAKE_CURRENT_BINARY_DIR}/config.h"
 )
 
-# ── Build target ──
+# Build target
 add_executable(app main.cpp)
 target_include_directories(app PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(app PRIVATE Threads::Threads)
@@ -92,12 +91,12 @@ endif()
 if(fmt_FOUND)
     target_link_libraries(app PRIVATE fmt::fmt)
 endif()
-
 ```
 
-```cpp
+The template file uses `#cmakedefine01`, which generates either `1` or `0` - always a defined token. This is safer than plain `#cmakedefine`, which generates either a `#define` or nothing, making `#if` vs `#ifdef` usage confusing:
 
-// config.h.in — Template for CMake configure_file
+```cpp
+// config.h.in - Template for CMake configure_file
 #pragma once
 
 // Library availability (set by CMake)
@@ -113,12 +112,12 @@ endif()
 // Platform capabilities
 #cmakedefine01 HAS_POSIX_MEMALIGN
 #cmakedefine01 HAS_ALIGNED_MALLOC
-
 ```
 
-```cpp
+The resulting `config.h` flows into your application code, where you use ordinary `#if` to choose between available implementations. The key benefit is that the selection logic is in one place and driven by actual detection results rather than hardcoded platform assumptions:
 
-// main.cpp — Uses generated config
+```cpp
+// main.cpp - Uses generated config
 #include "config.h"
 #include <iostream>
 
@@ -146,14 +145,14 @@ int main() {
 
     return 0;
 }
-
 ```
 
 ### Q2: Implement a polyfill for `std::span` that is used when the standard header is unavailable
 
-```cpp
+The polyfill pattern gives you a single include that automatically falls back to a bundled implementation when the standard one is unavailable. `__has_include` checks whether the header exists, and the feature-test macro `__cpp_lib_span` confirms that the implementation is complete. If either check fails, the bundled `polyfill::span` is compiled instead, and the `compat::span` alias points to whichever version is active:
 
-// portable_span.hpp — Use std::span if available, otherwise provide a polyfill
+```cpp
+// portable_span.hpp - Use std::span if available, otherwise provide a polyfill
 #pragma once
 
 #if defined(__has_include)
@@ -164,7 +163,7 @@ int main() {
 #endif
 
 #if !defined(HAS_STD_SPAN)
-// ── Minimal polyfill matching the std::span API subset ──
+// Minimal polyfill matching the std::span API subset
 #include <cstddef>
 #include <type_traits>
 #include <iterator>
@@ -229,7 +228,7 @@ span(std::array<T, N>&) -> span<T, N>;
 } // namespace polyfill
 #endif
 
-// ── Unified namespace ──
+// Unified namespace
 namespace compat {
     #if defined(HAS_STD_SPAN)
     using std::span;
@@ -238,7 +237,7 @@ namespace compat {
     #endif
 }
 
-// ── Usage ──
+// Usage
 #include <iostream>
 #include <vector>
 #include <numeric>
@@ -263,13 +262,15 @@ int main() {
     return 0;
 }
 */
-
 ```
+
+Notice that `process` accepts `compat::span<const int>` - it does not know or care whether that resolves to `std::span` or `polyfill::span`. This is the whole point: the polyfill disappears once you upgrade your toolchain.
 
 ### Q3: Demonstrate runtime library detection using `dlopen`/`LoadLibrary` for optional GPU acceleration
 
-```cpp
+Runtime detection is appropriate when you cannot know at build time whether a library will be present on the user's machine - a GPU compute library is the classic example. The `DynamicLibrary` wrapper below hides the `LoadLibraryA`/`dlopen` difference, and `ComputeEngine` tries a list of GPU libraries in order before falling back to a CPU implementation:
 
+```cpp
 #include <iostream>
 #include <functional>
 #include <string>
@@ -284,7 +285,7 @@ int main() {
     using LibHandle = void*;
 #endif
 
-// ── Platform-agnostic dynamic library loader ──
+// Platform-agnostic dynamic library loader
 class DynamicLibrary {
     LibHandle handle_ = nullptr;
     std::string name_;
@@ -333,7 +334,7 @@ public:
     }
 };
 
-// ── GPU acceleration with graceful fallback ──
+// GPU acceleration with graceful fallback
 class ComputeEngine {
     using MatMulFn = void(*)(const float*, const float*, float*, int);
 
@@ -404,16 +405,17 @@ int main() {
 
     return 0;
 }
-
 ```
+
+Notice the pattern: check that the library loaded, then check that the specific function symbol exists. A library can load successfully but be missing specific symbols - always verify both.
 
 ---
 
 ## Notes
 
-- **Feature detection > platform detection**: `check_cxx_symbol_exists` and `__has_include` test the actual capability, avoiding stale platform→feature mappings.
+- **Feature detection > platform detection**: `check_cxx_symbol_exists` and `__has_include` test the actual capability, avoiding stale platform-to-feature mappings.
 - CMake's `configure_file` with `#cmakedefine01` generates `0` or `1`, safe for use in both `#if` and `if constexpr` contexts. Prefer it over `#cmakedefine` which generates `#define` or nothing.
 - Polyfills should match the standard API exactly (same member functions, deduction guides, namespace conventions) so the `#if` switch between polyfill and standard is seamless.
-- For `dlopen`/`LoadLibrary`, always check both the library load AND each function pointer — a library may load successfully but lack specific symbols.
+- For `dlopen`/`LoadLibrary`, always check both the library load AND each function pointer - a library may load successfully but lack specific symbols.
 - Use `RTLD_LOCAL` (not `RTLD_GLOBAL`) for optional libraries to avoid symbol conflicts with other loaded libraries.
 - Provide a clear "capability report" at startup (which optional features are active) to simplify debugging deployment issues.

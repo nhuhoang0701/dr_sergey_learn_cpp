@@ -8,7 +8,7 @@
 
 ## Topic Overview
 
-`std::thread` provides a portable threading abstraction since C++11, but it is a thin wrapper whose behavior depends on the underlying platform threading model. The two dominant models — Win32 threads and POSIX threads (pthreads) — differ in creation semantics, scheduling, naming, and cleanup guarantees. Understanding these differences is essential when writing high-performance, cross-platform concurrent code.
+`std::thread` provides a portable threading abstraction since C++11, but it is a thin wrapper whose behavior depends on the underlying platform threading model. The two dominant models - Win32 threads and POSIX threads (pthreads) - differ in creation semantics, scheduling, naming, and cleanup guarantees. Understanding these differences is essential when writing high-performance, cross-platform concurrent code, because what works on Linux may silently misbehave or refuse to compile on Windows.
 
 | Feature | Win32 Threads | POSIX Threads (pthreads) |
 | --- | --- | --- |
@@ -22,21 +22,21 @@
 | TLS | `__declspec(thread)`, `TlsAlloc` | `__thread`, `pthread_key_create` |
 | Stack size | `CreateThread` parameter | `pthread_attr_setstacksize` |
 
-C++20 added `std::jthread`, which is joinable-by-default and integrates cooperative cancellation via `std::stop_token`. This eliminates the most common portability hazard: forgetting to join or detach, which calls `std::terminate()`. However, `jthread` does not expose platform-specific features like naming or affinity.
+C++20 added `std::jthread`, which is joinable-by-default and integrates cooperative cancellation via `std::stop_token`. This eliminates the most common portability hazard: forgetting to join or detach, which calls `std::terminate()`. However, `jthread` does not expose platform-specific features like naming or affinity, so you still need platform code for those.
+
+Here is a side-by-side comparison of the two thread types to see what you gain with `jthread`:
 
 ```cpp
-
 Thread lifecycle comparison:
 
-std::thread          │   std::jthread (C++20)
-─────────────────────┼────────────────────────────
-construct → running  │   construct → running
-must join() / detach │   auto-joins in destructor
-no cancellation      │   stop_token + stop_callback
-
+std::thread          |   std::jthread (C++20)
+---------------------+----------------------------
+construct -> running  |   construct -> running
+must join() / detach |   auto-joins in destructor
+no cancellation      |   stop_token + stop_callback
 ```
 
-Key portability pitfalls: (1) `thread::hardware_concurrency()` may return 0 on exotic platforms; (2) thread stack sizes default to 1–8 MB depending on OS — no standard API to set them; (3) `thread_local` destructors are not called on `detach()`'d threads on some implementations.
+Key portability pitfalls to keep in mind: `thread::hardware_concurrency()` may return 0 on exotic platforms; thread stack sizes default to 1-8 MB depending on the OS with no standard API to set them; and `thread_local` destructors are not called on detached threads on some implementations.
 
 ---
 
@@ -44,8 +44,9 @@ Key portability pitfalls: (1) `thread::hardware_concurrency()` may return 0 on e
 
 ### Q1: Write a portable thread wrapper that adds naming, priority, and affinity support across Windows and Linux
 
-```cpp
+`std::thread` gives you portability for the basic lifecycle, but it deliberately omits platform-specific features. This wrapper fills that gap by running the platform-specific configuration inside the new thread itself (where it applies to the current thread), before calling the user-supplied function.
 
+```cpp
 #include <thread>
 #include <string>
 #include <cstdint>
@@ -74,7 +75,7 @@ class PlatformThread {
     ThreadConfig config_;
 
     static void apply_config(const ThreadConfig& cfg) {
-        // ── Naming ──
+        // Naming
         if (!cfg.name.empty()) {
             #ifdef _WIN32
             // SetThreadDescription (Windows 10 1607+)
@@ -88,7 +89,7 @@ class PlatformThread {
             #endif
         }
 
-        // ── Priority ──
+        // Priority
         #ifdef _WIN32
         int prio = THREAD_PRIORITY_NORMAL;
         switch (cfg.priority) {
@@ -107,7 +108,7 @@ class PlatformThread {
         }
         #endif
 
-        // ── Affinity ──
+        // Affinity
         if (cfg.affinity_mask.has_value()) {
             #ifdef _WIN32
             ::SetThreadAffinityMask(::GetCurrentThread(),
@@ -152,13 +153,15 @@ int main() {
     // Auto-joins in destructor
     return 0;
 }
-
 ```
+
+The destructor calls `join()` unconditionally, so you never need to worry about forgetting it. This pattern mirrors what `std::jthread` does for the basic lifecycle, while adding the platform-specific configuration layer on top.
 
 ### Q2: Demonstrate `std::jthread` with cooperative cancellation and show how to integrate it with platform-specific cleanup
 
-```cpp
+The key thing to understand about `std::jthread` cancellation is that it is cooperative, not preemptive. The running thread is never forcibly stopped - it must periodically check `stop_requested()` and exit voluntarily. This is much safer than `pthread_cancel` because the thread gets to clean up its own resources.
 
+```cpp
 #include <thread>
 #include <stop_token>
 #include <iostream>
@@ -221,13 +224,15 @@ int main() {
     std::cout << "Total tasks completed: " << pool.completed() << "\n";
     return 0;
 }
-
 ```
+
+Notice the `std::stop_callback` - it fires as soon as `request_stop()` is called, even if the thread happens to be sleeping at that moment. This lets you wake the thread or release a platform handle from the outside, without the thread having to poll at the exact right time.
 
 ### Q3: Show how to set thread stack size portably, handling the lack of a standard API
 
-```cpp
+There is no standard way to set a thread's stack size through `std::thread`. If you need more than the default (which varies from 1 MB to 8 MB depending on the OS), you have to drop down to the platform threading API directly. This wrapper hides that behind a clean interface.
 
+```cpp
 #include <thread>
 #include <functional>
 #include <iostream>
@@ -349,16 +354,17 @@ int main() {
     // Auto-joins in destructor
     return 0;
 }
-
 ```
+
+The `CallableBase` type-erasure trick is exactly what `std::thread` does internally - it lets `start()` accept any callable without the class itself being a template. The `delete callable` inside `thread_proc` mirrors the ownership model: the calling thread allocates, the new thread deallocates after invoking.
 
 ---
 
 ## Notes
 
-- `std::jthread` should be the default choice for new C++20 code — it eliminates the "forgot to join" class of bugs entirely.
-- Thread naming is purely diagnostic (debuggers, profilers, `htop`) — there is no standard API; each platform has its own non-portable extension.
-- `std::thread::hardware_concurrency()` is a hint; it may return 0. Always provide a fallback: `auto n = std::max(1u, std::thread::hardware_concurrency());`
-- On Linux, `pthread_setaffinity_np` is GNU-specific. macOS has no per-thread affinity API — use `thread_policy_set` with `THREAD_AFFINITY_POLICY` instead.
+- `std::jthread` should be the default choice for new C++20 code - it eliminates the "forgot to join" class of bugs entirely.
+- Thread naming is purely diagnostic (debuggers, profilers, `htop`) - there is no standard API; each platform has its own non-portable extension.
+- `std::thread::hardware_concurrency()` is a hint and may return 0. Always provide a fallback: `auto n = std::max(1u, std::thread::hardware_concurrency());`
+- On Linux, `pthread_setaffinity_np` is GNU-specific. macOS has no per-thread affinity API - use `thread_policy_set` with `THREAD_AFFINITY_POLICY` instead.
 - `thread_local` storage duration objects have their destructors called on thread exit for threads created with `std::thread` or `std::jthread`, but behavior is implementation-defined for detached threads.
-- When wrapping platform threading APIs, always use `_beginthreadex` on Windows (not `CreateThread`) if C runtime functions will be used in the thread — `CreateThread` skips CRT per-thread initialization.
+- When wrapping platform threading APIs, always use `_beginthreadex` on Windows (not `CreateThread`) if C runtime functions will be used in the thread - `CreateThread` skips CRT per-thread initialization, which can corrupt the heap or produce wrong results from functions like `sprintf`.

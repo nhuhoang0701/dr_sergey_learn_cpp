@@ -2,13 +2,13 @@
 
 **Category:** Cross-Platform Development  
 **Standard:** C++23 (Parallelism TS v2) / C++26  
-**Reference:** https://en.cppreference.com/w/cpp/experimental/simd  
+**Reference:** <https://en.cppreference.com/w/cpp/experimental/simd>  
 
 ---
 
 ## Topic Overview
 
-SIMD (Single Instruction, Multiple Data) is essential for high-performance numeric code, but writing portable SIMD is notoriously difficult. The three major ISAs — x86 SSE/AVX, ARM NEON/SVE, and RISC-V V — have incompatible intrinsics, different register widths, and distinct semantic models (fixed-width vs. scalable vectors). Portable SIMD libraries abstract these differences behind a unified API with minimal overhead.
+SIMD (Single Instruction, Multiple Data) is essential for high-performance numeric code, but writing portable SIMD is notoriously difficult. The three major ISAs - x86 SSE/AVX, ARM NEON/SVE, and RISC-V V - have incompatible intrinsics, different register widths, and distinct semantic models (fixed-width vs. scalable vectors). Portable SIMD libraries abstract these differences behind a unified API with minimal overhead. If you have ever tried to maintain separate SSE2, AVX2, and NEON code paths for the same algorithm, you already know why this matters.
 
 | Library | Status | Width Model | Runtime Dispatch | Platforms |
 | --- | --- | --- | --- | --- |
@@ -19,25 +19,25 @@ SIMD (Single Instruction, Multiple Data) is essential for high-performance numer
 | Agner Fog VCL | Mature | Fixed (explicit) | Manual | x86 only |
 | Eve | Production | Fixed | Yes | x86, ARM |
 
-Highway uses a tag-based dispatch model where the same source code is compiled for multiple targets, and a runtime dispatcher selects the best one. This is the "write once, run on any SIMD width" approach. Key design: functions are templates parameterized by a `D` (descriptor) tag that encodes the lane type and current target width.
+Highway uses a tag-based dispatch model where the same source code is compiled for multiple targets, and a runtime dispatcher selects the best one. This is the "write once, run on any SIMD width" approach. Key design: functions are templates parameterized by a `D` (descriptor) tag that encodes the lane type and the current target width, so the same kernel body works for 128-bit SSE2 and 512-bit AVX-512 without any changes.
+
+Here is a picture of where the abstraction layer sits:
 
 ```cpp
-
 SIMD abstraction layers:
 
-  Application  ──────────────────────────────
-       │
-  ┌────▼────────────────────────────────────┐
-  │  Portable SIMD API (Highway / std::simd)│
-  ├─────────┬──────────┬────────────────────┤
-  │ SSE/AVX │ NEON/SVE │  WASM SIMD / RVV   │
-  └─────────┴──────────┴────────────────────┘
-       │
+  Application  --------------------------------
+       |
+  +----v----------------------------------------+
+  |  Portable SIMD API (Highway / std::simd)    |
+  +---------+----------+------------------------+
+  | SSE/AVX | NEON/SVE |  WASM SIMD / RVV       |
+  +---------+----------+------------------------+
+       |
   Hardware registers (128/256/512+ bits)
-
 ```
 
-The std::simd proposal (`std::simd<T, Abi>`) follows a different philosophy: `Abi` tags select a fixed width at compile time (e.g., `simd<float, simd_abi::fixed_size<8>>`), and there is no built-in runtime dispatch. Libraries like Highway complement this by adding the dispatch layer.
+The `std::simd` proposal (`std::simd<T, Abi>`) follows a different philosophy: the `Abi` tag selects a fixed width at compile time (for example, `simd<float, simd_abi::fixed_size<8>>`), and there is no built-in runtime dispatch. Libraries like Highway complement this by adding the dispatch layer on top.
 
 ---
 
@@ -45,8 +45,9 @@ The std::simd proposal (`std::simd<T, Abi>`) follows a different philosophy: `Ab
 
 ### Q1: Write a portable SIMD vector addition using Google Highway with runtime dispatch
 
-```cpp
+The unusual-looking include structure at the top is intentional: Highway's multi-target compilation model requires the file to include itself multiple times, once per SIMD target. `HWY_BEFORE_NAMESPACE` and `HWY_AFTER_NAMESPACE` create a distinct namespace for each compiled version so they can all coexist in the same binary.
 
+```cpp
 // Requires: google/highway library (CMake: FetchContent or find_package)
 // Build with: -march=native (or Highway handles multi-target compilation)
 
@@ -91,7 +92,7 @@ void AddArraysImpl(const float* HWY_RESTRICT a,
 }  // namespace project
 HWY_AFTER_NAMESPACE();
 
-// ── Runtime dispatch table ──
+// Runtime dispatch table
 #if HWY_ONCE
 namespace project {
 
@@ -120,13 +121,15 @@ int main() {
     return 0;
 }
 #endif  // HWY_ONCE
-
 ```
+
+The `HWY_RESTRICT` annotation tells the compiler that the pointers do not alias, which is critical for the optimizer to generate efficient SIMD loads and stores. Without it, the compiler has to assume `a`, `b`, and `out` could point to overlapping memory.
 
 ### Q2: Implement horizontal sum and dot product using `std::experimental::simd` (Parallelism TS v2 / GCC)
 
-```cpp
+`std::experimental::simd` takes a different approach from Highway: instead of a runtime dispatch mechanism, you use `native_simd<T>` which selects the best fixed width for the current compilation target. The `where()` function for predicated operations is one of its more elegant features - it expresses "set these lanes, leave others unchanged" without any explicit branch.
 
+```cpp
 // Requires: GCC with libstdc++ (has <experimental/simd> support)
 // Compile: g++ -std=c++20 -O2 -march=native
 
@@ -138,13 +141,13 @@ int main() {
 
 namespace stdx = std::experimental;
 
-// ── Horizontal sum: reduce all lanes to a single scalar ──
+// Horizontal sum: reduce all lanes to a single scalar
 template <typename T, typename Abi>
 T horizontal_sum(const stdx::simd<T, Abi>& v) {
     return stdx::reduce(v, std::plus<>{});
 }
 
-// ── Dot product using simd ──
+// Dot product using simd
 template <typename T>
 T simd_dot_product(const T* a, const T* b, std::size_t n) {
     using V = stdx::native_simd<T>;                // Best width for this platform
@@ -169,7 +172,7 @@ T simd_dot_product(const T* a, const T* b, std::size_t n) {
     return result;
 }
 
-// ── Conditional operation with where() ──
+// Conditional operation with where()
 template <typename T>
 void clamp_simd(T* data, std::size_t n, T low, T high) {
     using V = stdx::native_simd<T>;
@@ -213,20 +216,22 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The scalar tail loop after the main SIMD loop is not optional - array lengths are rarely a multiple of the SIMD width. Forgetting it produces wrong results for the last few elements, which is the kind of bug that only shows up with real data.
 
 ### Q3: Show compile-time SIMD target selection and a fallback strategy when no SIMD is available
 
-```cpp
+Sometimes you want the compiler to select the right code path at build time rather than runtime. This avoids the runtime dispatch overhead and is the right approach when you are compiling a dedicated binary for a known target (like an embedded system or a container image for a specific server generation).
 
+```cpp
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <vector>
 #include <chrono>
 
-// ── Detect SIMD capability at compile time ──
+// Detect SIMD capability at compile time
 enum class SimdLevel { None, SSE2, AVX2, AVX512, NEON };
 
 consteval SimdLevel detect_simd() {
@@ -254,7 +259,7 @@ constexpr const char* simd_name(SimdLevel l) {
     return "Unknown";
 }
 
-// ── Scale array by constant — multi-target implementation ──
+// Scale array by constant — multi-target implementation
 void scale_array(float* data, std::size_t n, float factor) {
     constexpr auto level = detect_simd();
 
@@ -318,16 +323,17 @@ int main() {
 
     return 0;
 }
-
 ```
+
+The `if constexpr` branches are dead-code-eliminated at compile time, so the binary only contains the code for the selected path. This also means the compiler cannot accidentally try to compile an AVX intrinsic when the target is NEON - the other branches simply do not exist in the output.
 
 ---
 
 ## Notes
 
-- Google Highway is the recommended portable SIMD library for production code today — it supports x86 (SSE2 through AVX-512), ARM (NEON, SVE, SVE2), WASM SIMD, and RISC-V V.
+- Google Highway is the recommended portable SIMD library for production code today - it supports x86 (SSE2 through AVX-512), ARM (NEON, SVE, SVE2), WASM SIMD, and RISC-V V.
 - `std::experimental::simd` is available in GCC's libstdc++ but not in MSVC or libc++; it is not yet standardized as `std::simd`.
-- Runtime dispatch (compiling for multiple targets, selecting at startup) is crucial for distributing binaries that run on varied hardware — Highway's `HWY_DYNAMIC_DISPATCH` automates this.
-- Prefer `_loadu_ps` (unaligned loads) over `_load_ps` (aligned) — modern CPUs have negligible penalty for unaligned access, and it avoids alignment bugs.
+- Runtime dispatch (compiling for multiple targets, selecting at startup) is crucial for distributing binaries that run on varied hardware - Highway's `HWY_DYNAMIC_DISPATCH` automates this.
+- Prefer `_loadu_ps` (unaligned loads) over `_load_ps` (aligned) - modern CPUs have negligible penalty for unaligned access, and it avoids hard-to-diagnose alignment bugs.
 - Auto-vectorization by the compiler often produces good results for simple loops; use explicit SIMD only when the compiler demonstrably fails (check with `-fopt-info-vec` on GCC or `/Qvec-report:2` on MSVC).
-- Always benchmark with realistic data sizes and access patterns — SIMD gains are often bottlenecked by memory bandwidth, not compute.
+- Always benchmark with realistic data sizes and access patterns - SIMD gains are often bottlenecked by memory bandwidth, not compute, so the speedup may be smaller than expected for memory-bound workloads.

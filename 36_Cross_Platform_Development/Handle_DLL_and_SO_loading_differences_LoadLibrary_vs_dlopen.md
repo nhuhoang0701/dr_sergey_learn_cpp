@@ -8,9 +8,9 @@
 
 ## Topic Overview
 
-### Dynamic Loading — Platform Differences
+### Dynamic Loading - Platform Differences
 
-Both Windows and POSIX systems support loading shared libraries at runtime, but the APIs differ:
+Both Windows and POSIX systems support loading shared libraries at runtime, but the APIs differ significantly. Understanding the differences helps you write a portable wrapper that hides the details from application code:
 
 | Feature | Windows | Linux/macOS |
 | --- | --- | --- |
@@ -24,8 +24,9 @@ Both Windows and POSIX systems support loading shared libraries at runtime, but 
 
 ### Cross-Platform Dynamic Library Wrapper
 
-```cpp
+The wrapper below handles the platform differences in one place. One subtlety worth noting: on Windows, `LoadLibraryW` takes a wide-character path, so we need to convert from UTF-8 first using `MultiByteToWideChar`. On POSIX, `dlopen` takes a plain `char*`. The RAII design ensures the library is unloaded exactly once, when the wrapper is destroyed:
 
+```cpp
 #include <string>
 #include <stdexcept>
 
@@ -96,13 +97,13 @@ public:
 
     [[nodiscard]] bool valid() const { return handle_ != nullptr; }
 };
-
 ```
 
 ### Using the Wrapper
 
-```cpp
+With the wrapper in place, loading a plugin becomes straightforward. The `extern "C"` declaration on the function types is critical - without it, name mangling would make `GetProcAddress`/`dlsym` unable to find the symbols. The `~DynamicLibrary` destructor takes care of the `FreeLibrary`/`dlclose` call automatically:
 
+```cpp
 // Plugin interface (shared header)
 extern "C" {  // Prevent name mangling!
     using CreatePluginFunc = IPlugin* (*)();
@@ -121,15 +122,13 @@ void load_plugin(const std::string& plugin_path) {
     destroy(plugin);
     // ~DynamicLibrary unloads the shared library
 }
-
 ```
 
-### Symbol Visibility — The Key Difference
+### Symbol Visibility - The Key Difference
 
-On **Linux**, all symbols are exported by default. On **Windows**, nothing is exported unless explicitly marked. The portable solution:
+On **Linux**, all symbols are exported by default. On **Windows**, nothing is exported unless explicitly marked. This asymmetry is one of the most common sources of "works on Linux, fails on Windows" plugin bugs. The portable solution is a visibility macro that resolves to the right annotation on each platform:
 
 ```cpp
-
 // Export macro that works on both platforms
 #if defined(_WIN32)
     #ifdef MYLIB_EXPORTS
@@ -148,22 +147,20 @@ public:
 };
 
 extern "C" MYLIB_API IPlugin* create_plugin();
-
 ```
 
-On Linux, combine with `-fvisibility=hidden` to hide all symbols by default (matching Windows behavior):
+On Linux, combine with `-fvisibility=hidden` to hide all symbols by default, which matches Windows behavior and brings the benefits described in Q2 below:
 
 ```cmake
-
 target_compile_options(mylib PRIVATE -fvisibility=hidden)
 target_compile_definitions(mylib PRIVATE MYLIB_EXPORTS)
-
 ```
 
 ### Platform-Specific Library Search Paths
 
-```cpp
+Library filenames and the directories the OS searches are platform-specific. It helps to centralize the naming convention in a small helper rather than scattering `#ifdef` checks throughout call sites:
 
+```cpp
 std::string get_plugin_path(const std::string& name) {
 #ifdef _WIN32
     return name + ".dll";
@@ -178,13 +175,13 @@ std::string get_plugin_path(const std::string& name) {
 // Windows: executable directory, system PATH, current directory
 // Linux: LD_LIBRARY_PATH, /usr/lib, /usr/local/lib, RPATH
 // macOS: DYLD_LIBRARY_PATH, RPATH, /usr/lib
-
 ```
 
 ### CMake for Shared Libraries
 
-```cmake
+CMake handles most of the shared library boilerplate, but you still need to set RPATH on Linux so the OS can find the library at runtime, and copy the DLL next to the executable on Windows (since Windows searches the executable's directory first):
 
+```cmake
 add_library(myplugin SHARED src/plugin.cpp)
 
 # Set RPATH so the executable finds the library at runtime
@@ -204,7 +201,6 @@ if(WIN32)
             $<TARGET_FILE_DIR:myapp>
     )
 endif()
-
 ```
 
 ---
@@ -213,24 +209,24 @@ endif()
 
 ### Q1: Why must plugin functions use `extern "C"`
 
-C++ **name mangling** encodes function signatures into symbol names (e.g., `_Z13create_pluginv`). The mangling is compiler-specific and ABI-specific. `extern "C"` disables mangling, producing predictable symbol names (e.g., `create_plugin`) that can be found with `dlsym`/`GetProcAddress` regardless of compiler.
+C++ **name mangling** encodes function signatures into symbol names (e.g., `_Z13create_pluginv`). The mangling scheme is compiler-specific and ABI-specific. `extern "C"` disables mangling, producing predictable symbol names (e.g., `create_plugin`) that can be found with `dlsym`/`GetProcAddress` regardless of which compiler built the plugin or the host application.
 
 ### Q2: Why use `-fvisibility=hidden` on Linux
 
-Without it, **all** symbols in a shared library are exported. This causes:
+Without it, **all** symbols in a shared library are exported. This causes several real problems:
 
-- **Slower loading** — the dynamic linker must process thousands of symbols
-- **Symbol collisions** — two libraries might export the same symbol name
-- **Larger binary** — symbol tables take space
-- **No encapsulation** — internal functions are accessible
+- **Slower loading** - the dynamic linker must process thousands of symbols at startup
+- **Symbol collisions** - two libraries might export the same symbol name, causing hard-to-debug crashes
+- **Larger binary** - symbol tables take significant space
+- **No encapsulation** - internal functions are accessible to anyone who loads the library
 
-With `-fvisibility=hidden`, only symbols explicitly marked with `__attribute__((visibility("default")))` (or the `MYLIB_API` macro) are exported — matching Windows behavior.
+With `-fvisibility=hidden`, only symbols explicitly marked with `__attribute__((visibility("default")))` (or the `MYLIB_API` macro) are exported - matching Windows behavior and fixing all of the above.
 
 ### Q3: How do you handle library unloading safely
 
-The main danger is **use-after-unload**: calling a function pointer from an unloaded library. Solutions:
+The main danger is **use-after-unload**: calling a function pointer from an unloaded library causes undefined behavior, usually a crash. The safe pattern is:
 
-- Use RAII: the `DynamicLibrary` wrapper unloads in its destructor
+- Use RAII: the `DynamicLibrary` wrapper unloads in its destructor, so scope controls lifetime
 - Ensure all objects created by the plugin are destroyed **before** unloading
 - Use the factory pattern: `create_plugin()` allocates, `destroy_plugin()` deallocates
 - Never store function pointers from a plugin beyond the library's lifetime
@@ -239,8 +235,8 @@ The main danger is **use-after-unload**: calling a function pointer from an unlo
 
 ## Notes
 
-- Use `RTLD_NOW` (not `RTLD_LAZY`) to catch missing symbols at load time rather than runtime
-- Windows DLLs have `DllMain` — avoid complex initialization in it (loader lock issues)
-- On macOS, use `@rpath` and `install_name_tool` for library search paths
-- `std::filesystem::path` helps construct platform-correct library paths
-- Consider using a plugin framework (e.g., Boost.DLL) for production plugin systems
+- Use `RTLD_NOW` (not `RTLD_LAZY`) to catch missing symbols at load time rather than at first call.
+- Windows DLLs have `DllMain` - avoid complex initialization in it (loader lock issues).
+- On macOS, use `@rpath` and `install_name_tool` for library search paths.
+- `std::filesystem::path` helps construct platform-correct library paths.
+- Consider using a plugin framework (e.g., Boost.DLL) for production plugin systems.

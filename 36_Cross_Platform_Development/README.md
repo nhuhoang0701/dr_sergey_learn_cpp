@@ -23,13 +23,13 @@ Writing portable C++ across operating systems and compilers: platform abstractio
 
 ## Notes
 
-- Test on all target platforms in CI — behavior varies across compilers and standard libraries
-- Use #ifdef _WIN32, __linux__, __APPLE__ for platform detection — or CMake feature tests
-- Filesystem paths differ (/ vs \\) — use std::filesystem::path for portable path handling
-- Windows uses UTF-16 (wchar_t); Unix uses UTF-8 — normalize to UTF-8 internally
-- Socket APIs differ — use Asio or platform-abstraction libraries for networking
-- Endianness matters for binary protocols — use std::byteswap (C++23) or manual conversion
-- Dynamic linking differs: .so (Linux), .dylib (macOS), .dll (Windows) — abstract behind CMake targets
-- Align on C++ standard features rather than compiler extensions for maximum portability
-- Use __has_include and __has_cpp_attribute for feature detection at compile time
-- CMake presets (CMakePresets.json) standardize cross-platform build configurations
+- Test on all target platforms in CI - behavior varies across compilers and standard libraries.
+- Use `#ifdef _WIN32`, `__linux__`, `__APPLE__` for platform detection, or prefer CMake feature tests when possible.
+- Filesystem paths differ (`/` vs `\\`) - use `std::filesystem::path` for portable path handling instead of raw strings.
+- Windows uses UTF-16 (`wchar_t`); Unix uses UTF-8 - normalize to UTF-8 internally and convert only at the boundary.
+- Socket APIs differ - use Asio or a platform-abstraction library for networking rather than wrapping them yourself.
+- Endianness matters for binary protocols - use `std::byteswap` (C++23) or a manual conversion helper.
+- Dynamic linking differs: `.so` (Linux), `.dylib` (macOS), `.dll` (Windows) - abstract the difference behind CMake targets.
+- Align on standard C++ features rather than compiler extensions for maximum portability across toolchains.
+- Use `__has_include` and `__has_cpp_attribute` for feature detection at compile time instead of guessing by compiler version.
+- CMake presets (`CMakePresets.json`) standardize cross-platform build configurations and make them shareable with the team.

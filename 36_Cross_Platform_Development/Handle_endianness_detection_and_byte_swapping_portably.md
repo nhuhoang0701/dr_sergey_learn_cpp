@@ -2,7 +2,7 @@
 
 **Category:** Cross-Platform Development  
 **Standard:** C++20 / C++23  
-**Reference:** https://en.cppreference.com/w/cpp/types/endian  
+**Reference:** <https://en.cppreference.com/w/cpp/types/endian>  
 
 ---
 
@@ -16,21 +16,21 @@ C++20 introduced `std::endian` in `<bit>`, giving a compile-time constant for na
 | --- | --- | --- | --- |
 | `std::endian::native` | C++20 | `<bit>` | Compile-time detection |
 | `std::byteswap(x)` | C++23 | `<bit>` | Reverses bytes of integral `x` |
-| `__builtin_bswap16/32/64` | GCC/Clang ext. | — | Intrinsic, compiles to single instr. |
+| `__builtin_bswap16/32/64` | GCC/Clang ext. | - | Intrinsic, compiles to single instr. |
 | `_byteswap_ushort/ulong/uint64` | MSVC ext. | `<stdlib.h>` | Intrinsic |
 | `htonl / ntohl` | POSIX / Winsock | `<arpa/inet.h>` / `<winsock2.h>` | 32-bit network order only |
 
-```cpp
+The memory layout diagram makes the concept concrete. For the value `0x01020304`:
 
+```cpp
 Memory layout of 0x01020304:
 
-Big-endian:     [01] [02] [03] [04]   (MSB first — "network byte order")
-Little-endian:  [04] [03] [02] [01]   (LSB first — x86 native)
+Big-endian:     [01] [02] [03] [04]   (MSB first - "network byte order")
+Little-endian:  [04] [03] [02] [01]   (LSB first - x86 native)
 Mixed-endian:   [02] [01] [04] [03]   (rare, some legacy ARM)
-
 ```
 
-The key design principle: **convert to a canonical byte order at serialization boundaries, use native order internally**. This avoids scattered byte-swap calls and keeps hot loops fast.
+The key design principle: **convert to a canonical byte order at serialization boundaries, use native order internally**. This avoids scattered byte-swap calls and keeps hot loops fast. The conversion only happens when data crosses a process or network boundary.
 
 ---
 
@@ -38,8 +38,9 @@ The key design principle: **convert to a canonical byte order at serialization b
 
 ### Q1: Write a portable byte_swap function that uses `std::byteswap` on C++23, compiler intrinsics on older compilers, and a manual fallback
 
-```cpp
+The reason this needs layers is that `std::byteswap` only arrived in C++23, GCC/Clang have intrinsics that compile to a single `bswap` instruction, and MSVC has its own set of intrinsics. The manual fallback is there for truly unusual toolchains. Thanks to `if constexpr`, the compiler picks exactly one path and the others are discarded entirely:
 
+```cpp
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -75,7 +76,7 @@ constexpr T portable_byteswap(T value) noexcept {
     else if constexpr (sizeof(T) == 8)
         return static_cast<T>(_byteswap_uint64(static_cast<unsigned __int64>(value)));
 #else
-    // Manual fallback — works at compile time
+    // Manual fallback - works at compile time
     if constexpr (sizeof(T) == 1) return value;
     else {
         auto u = static_cast<std::make_unsigned_t<T>>(value);
@@ -99,13 +100,15 @@ int main() {
               << "Swapped:  0x" << swapped << "\n";
     return 0;
 }
-
 ```
+
+The `static_assert` is important - it verifies the swap at compile time, so if your manual fallback path has a bug, you find out immediately rather than at runtime on the target architecture.
 
 ### Q2: Implement a `NetworkSerializer` that writes integers in big-endian (network byte order) regardless of host endianness, using `std::endian` for detection
 
-```cpp
+The design principle here is elegant: `to_big_endian` uses `std::endian::native` as a compile-time constant in `if constexpr`. On a big-endian host, the value passes through unchanged. On a little-endian host (x86, most ARM), the bytes are swapped. The serializer then writes the corrected bytes to its buffer, and the same `from_big_endian` call inverts the swap on read. Because byte-swap is its own inverse, the same function works in both directions:
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -184,13 +187,15 @@ int main() {
               << "Read back: 0x" << val32 << ", 0x" << val16 << "\n";
     return 0;
 }
-
 ```
+
+The wire bytes are always `01 02 03 04 ca fe` regardless of the host architecture. That is the guarantee you want from a network serializer.
 
 ### Q3: Demonstrate compile-time endianness detection to select struct packing strategy and validate with `static_assert`
 
-```cpp
+This example goes a step further: the `HeaderCodec` template encodes and decodes a binary file header in a specified target byte order. The `needs_swap` constant is computed at compile time from `std::endian::native`, so the `maybe_swap` helper either passes the value through or reverses it, with zero runtime cost. The `static_assert` at the end catches mixed-endian platforms early rather than producing silently corrupt file headers:
 
+```cpp
 #include <bit>
 #include <cstdint>
 #include <cstring>
@@ -254,7 +259,7 @@ static_assert(std::endian::native == std::endian::little ||
               "Mixed-endian platforms are not supported");
 
 static_assert(sizeof(FileHeader) == 16 || sizeof(FileHeader) == 24,
-              "Unexpected padding — add #pragma pack or alignas");
+              "Unexpected padding - add #pragma pack or alignas");
 
 int main() {
     FileHeader original{0xDEADBEEF, 2, 1024};
@@ -274,16 +279,17 @@ int main() {
               << "Size:    "   << decoded.payload_size << "\n";
     return 0;
 }
-
 ```
+
+On a little-endian host, `needs_swap` is `false`, so the magic `0xDEADBEEF` lands in the buffer as `EF BE AD DE` without any runtime swap. On a big-endian host, the swap kicks in and produces the same result. Same wire format, both platforms.
 
 ---
 
 ## Notes
 
-- `std::endian::native` is evaluated at compile time — use it in `if constexpr` and `static_assert` for zero-overhead dispatch.
+- `std::endian::native` is evaluated at compile time - use it in `if constexpr` and `static_assert` for zero-overhead dispatch.
 - `std::byteswap` (C++23) handles signed types correctly by operating on the object representation; it does not promote to unsigned.
 - All major compilers optimize manual byte-swap loops into single `bswap`/`rev` instructions at `-O2`; the intrinsic wrappers are mainly for clarity.
-- Mixed-endian (middle-endian) platforms are effectively extinct; `std::endian::native` will equal neither `big` nor `little` on such platforms — use `static_assert` to reject them.
+- Mixed-endian (middle-endian) platforms are effectively extinct; `std::endian::native` will equal neither `big` nor `little` on such platforms - use `static_assert` to reject them.
 - Network protocols use big-endian; most modern file formats (ELF on x86, Protocol Buffers varint) use little-endian or variable-length encoding.
-- Never byte-swap floating-point values directly — serialize the bit pattern via `std::bit_cast<uint32_t>(float_val)`, swap the integer, then transmit.
+- Never byte-swap floating-point values directly - serialize the bit pattern via `std::bit_cast<uint32_t>(float_val)`, swap the integer, then transmit.
