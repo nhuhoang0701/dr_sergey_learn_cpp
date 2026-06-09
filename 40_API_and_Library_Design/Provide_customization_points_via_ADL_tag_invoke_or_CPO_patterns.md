@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-A **customization point** is a function that library code calls but users can override for their types. Three patterns exist, from simplest to most robust.
+A **customization point** is a function that library code calls but that users can override for their own types. The classic example is `swap` - the standard library calls `swap` internally, and you can teach it to use a faster version for your type. Three patterns exist for building these hooks, each with a different trade-off between simplicity and robustness.
 
 ### Pattern 1: ADL (the classic "swap" pattern)
 
-```cpp
+The oldest and simplest approach. Your library provides a default implementation in its own namespace, the user provides an override in their namespace, and ADL makes the right one get called. Here's how it fits together:
 
+```cpp
 #include <utility>
 #include <iostream>
 
@@ -40,13 +41,15 @@ void log_value(const T& val) {
     serialize(val, std::cout);  // ADL finds user::serialize for user types
     std::cout << "\n";
 }
-
 ```
+
+The `using lib::serialize;` line is the crucial part. It ensures there's a fallback if ADL finds nothing, while still giving ADL a chance to find a type-specific overload in the argument's namespace.
 
 ### Pattern 2: tag_invoke (proposed for std::execution)
 
-```cpp
+ADL has a weakness: any function with the right name in the argument's namespace can accidentally be picked up. `tag_invoke` sidesteps this by using a single, globally unique dispatch function. The "tag" - a function object type - identifies which operation you're customizing, making it impossible for an unrelated function to hijack the call.
 
+```cpp
 #include <iostream>
 #include <type_traits>
 
@@ -73,13 +76,15 @@ namespace user {
         os << "Widget#" << w.id;
     }
 }
-
 ```
 
-### Pattern 3: CPO (Customization Point Object) — Used by Ranges
+When you call `serialize(w, os)`, it calls `tag_invoke(serialize, w, os)`. ADL finds the user's `tag_invoke` overload because the tag type `serialize_fn` is from the library namespace and the `Widget` is from the user's namespace - but crucially, the user's function must accept `serialize_fn` as its first argument, which prevents any accidental match.
+
+### Pattern 3: CPO (Customization Point Object) - Used by Ranges
+
+A Customization Point Object is an `inline constexpr` function object that wraps the ADL dispatch in a controlled way. This is what `std::ranges` uses for `ranges::begin`, `ranges::end`, and `ranges::swap`. The user still provides ADL-visible functions, but the CPO is what callers actually invoke - and it's always accessed via qualified name, so there's no hijacking risk on the call site.
 
 ```cpp
-
 #include <concepts>
 #include <iostream>
 
@@ -102,14 +107,17 @@ namespace lib {
 }
 
 // User just provides an ADL-visible serialize and the CPO finds it
-
 ```
+
+The deleted fallback in `_detail` means that if no ADL overload is found, the concept check in `requires` fails cleanly - no confusing cascade of errors.
 
 ---
 
 ## Self-Assessment
 
 ### Q1: Compare the three customization point patterns
+
+Here's a summary of the trade-offs. None of the three is universally best; it depends on how much control you need:
 
 | Pattern | Pros | Cons |
 | --- | --- | --- |
@@ -119,17 +127,19 @@ namespace lib {
 
 ### Q2: What is "ADL hijacking" and how do CPOs prevent it
 
-ADL hijacking occurs when an unrelated namespace accidentally provides a function matching the customization point name. CPOs prevent this by wrapping the dispatch in a function object — the user calls `lib::serialize(x, os)` (qualified), and the CPO internally controls how ADL is used.
+ADL hijacking is when an unrelated namespace accidentally provides a function that matches your customization point name. Imagine your library calls `serialize(val, os)` and the user's type lives in a namespace that also has a completely unrelated `serialize` - ADL will find it, and now you have a confusing mismatch.
+
+CPOs prevent this because callers always use a qualified name like `lib::serialize(x, os)` to invoke the CPO. The CPO object itself is not a free function, so the call is not subject to ADL at the call site. Inside the CPO, ADL is used in a controlled, explicit way - and you can add concept requirements to guard against unintended matches.
 
 ### Q3: Show why `using std::swap; swap(a, b);` is necessary
 
-Without the `using` declaration, unqualified `swap(a, b)` only finds ADL-visible overloads. If `a` and `b` are built-in types, ADL finds nothing. The `using std::swap` brings the fallback into scope, and ADL can still find a better match for user types.
+Without the `using` declaration, the unqualified `swap(a, b)` only finds ADL-visible overloads. If `a` and `b` are built-in types like `int` or raw pointers, ADL has no associated namespace to search and finds nothing - the call would fail. The `using std::swap;` brings the standard fallback into scope so there's always a valid candidate, while still letting ADL find a type-specific overload for user-defined types. It's the classic two-line idiom for generic swap.
 
 ---
 
 ## Notes
 
-- `std::ranges` uses CPOs everywhere: `ranges::begin`, `ranges::end`, `ranges::swap`.
-- `std::execution` (P2300) uses `tag_invoke` for sender/receiver customization.
-- For new libraries, CPOs are the recommended approach (no hijacking, composable).
-- ADL is still fine for simple customization points like `swap`, `operator<<`.
+- `std::ranges` uses CPOs everywhere: `ranges::begin`, `ranges::end`, `ranges::swap` - if you've used ranges, you've already relied on this pattern.
+- `std::execution` (P2300) uses `tag_invoke` for sender/receiver customization in its async machinery.
+- For new libraries, CPOs are the recommended approach - no hijacking risk and the interface is composable.
+- ADL is still perfectly fine for simple, well-scoped customization points like `swap` and `operator<<` where hijacking is unlikely in practice.

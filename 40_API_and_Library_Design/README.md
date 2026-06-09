@@ -24,13 +24,13 @@ Principles and patterns for designing reusable, maintainable C++ libraries and A
 
 ## Notes
 
-- Design APIs for the caller — minimize boilerplate, prevent misuse, and make correct usage obvious
-- Use strong types (wrapper classes) instead of ool, int parameters to avoid argument confusion
-- [[nodiscard]] on return values forces callers to handle results — especially for error returns
-- Prefer value semantics in APIs — accept by value, return by value, let move semantics optimize
-- Hide implementation details (Pimpl, modules, opaque types) to allow changes without breaking users
-- Header-only libraries maximize ease of use — compiled libraries maximize build speed
-- Provide both throwing and non-throwing overloads where appropriate (t() vs operator[])
-- Use concepts to constrain template parameters — they provide clear error messages and documentation
-- Namespace everything — avoid polluting the global namespace with library symbols
-- Semantic versioning (semver) communicates API/ABI stability expectations to users
+- Design APIs for the caller - minimize boilerplate, prevent misuse, and make correct usage obvious.
+- Use strong types (wrapper classes) instead of `bool` or `int` parameters to avoid argument confusion.
+- `[[nodiscard]]` on return values forces callers to handle results - especially important for error returns.
+- Prefer value semantics in APIs - accept by value, return by value, and let move semantics optimize.
+- Hide implementation details (Pimpl, modules, opaque types) to allow internal changes without breaking users.
+- Header-only libraries maximize ease of use; compiled libraries maximize build speed.
+- Provide both throwing and non-throwing overloads where appropriate (`at()` vs `operator[]`).
+- Use concepts to constrain template parameters - they provide clear error messages and serve as documentation.
+- Namespace everything - avoid polluting the global namespace with library symbols.
+- Semantic versioning (semver) communicates API/ABI stability expectations to users.
