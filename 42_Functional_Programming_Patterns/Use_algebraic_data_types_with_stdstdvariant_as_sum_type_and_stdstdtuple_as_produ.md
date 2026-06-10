@@ -8,12 +8,15 @@
 
 ## Topic Overview
 
-Algebraic data types (ADTs) form the foundation of typed functional programming. C++ has them via `std::variant` (sum types / tagged unions) and `std::tuple` (product types).
+Algebraic data types (ADTs) form the foundation of typed functional programming. The name sounds academic, but the idea is concrete: a type is either "one of several things" (a sum type) or "all of several things at once" (a product type). C++ has both via `std::variant` for sum types and `std::tuple` for product types.
+
+Understanding the distinction helps you model your problem domain precisely. Instead of using a base class with virtual functions when you have a fixed, known set of alternatives, you reach for `std::variant`. Instead of returning multiple values via out-parameters, you reach for `std::tuple` or a plain struct.
 
 ### Sum Types (variant = "one of")
 
-```cpp
+A `std::variant<A, B, C>` holds exactly one of A, B, or C at any given time - never two, never none. The term "sum type" comes from the fact that the total number of possible values is A's values + B's values + C's values. Here's a practical example showing how to model an AST node:
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -41,13 +44,15 @@ struct BinOp {
     char op;
     Expr left, right;
 };
-
 ```
+
+The `unique_ptr<BinOp>` indirection is necessary because `Expr` is recursive - `BinOp` contains `Expr` values, so the type would be infinitely large without the pointer. This is a common pattern when modeling recursive structures with `std::variant`.
 
 ### Product Types (tuple = "all of")
 
-```cpp
+A `std::tuple<A, B, C>` holds all of A, B, and C simultaneously. The term "product type" comes from the Cartesian product - the total number of possible values is A's values times B's values times C's values. C++17 structured bindings make tuples ergonomic to work with:
 
+```cpp
 #include <tuple>
 #include <string>
 
@@ -63,13 +68,15 @@ struct PersonNamed {
     int age;
     double height;
 };
-
 ```
+
+In practice, a plain struct is almost always clearer than a tuple because the fields have names. Tuples shine in generic code where you're working with types programmatically, or when returning multiple values from a function that you'll immediately destructure.
 
 ### Pattern Matching with std::visit
 
-```cpp
+The real power of sum types appears when you combine them with `std::visit`. Every alternative must be handled - the compiler enforces exhaustiveness:
 
+```cpp
 #include <variant>
 #include <string>
 #include <iostream>
@@ -86,8 +93,9 @@ double area(const Shape& shape) {
         [](const Triangle& t)  { return 0.5 * t.base * t.height; },
     }, shape);
 }
-
 ```
+
+If you add a fourth shape type to the variant and forget to update `area`, the code will not compile. That is a very different guarantee from virtual dispatch, where a missing override compiles fine and silently produces wrong behavior at runtime.
 
 ---
 
@@ -95,16 +103,17 @@ double area(const Shape& shape) {
 
 ### Q1: How do sum types improve type safety over inheritance
 
-With `std::variant`, all alternatives are known at compile time. `std::visit` forces you to handle every case — forgetting one is a compile error. With inheritance, adding a new derived class doesn't cause compile errors at call sites that use `dynamic_cast` or type switches, leading to runtime failures.
+With `std::variant`, all alternatives are known at compile time and `std::visit` forces you to handle every case - forgetting one is a compile error. With inheritance, adding a new derived class doesn't cause compile errors at call sites that use `dynamic_cast` or type switches, leading to silent runtime failures. The variant approach is "closed" (the set of alternatives is fixed) but provides strong compile-time guarantees; inheritance is "open" (new classes can always be added) but provides weaker guarantees.
 
 ### Q2: Show the relationship between product types and struct
 
-A struct with N fields IS a product type — its set of possible values is the Cartesian product of all field types. `std::tuple<int, bool>` has `INT_MAX * 2` possible values, same as `struct { int x; bool y; }`. Structs are named product types; tuples are anonymous.
+A struct with N fields is a product type - its set of possible values is the Cartesian product of all field types. `std::tuple<int, bool>` has `INT_MAX * 2` possible values, the same as `struct { int x; bool y; }`. Structs are named product types with readable field access; tuples are anonymous product types with index-based or structured-binding access. The semantics are identical - the difference is ergonomics and documentation.
 
 ### Q3: Implement a recursive expression evaluator using variant
 
-```cpp
+This builds directly on the `Expr` type defined earlier. The evaluator uses `std::visit` to dispatch on the node kind, and recursively evaluates sub-expressions for the binary operation case:
 
+```cpp
 double evaluate(const Expr& expr) {
     return std::visit(overloaded{
         [](const Literal& lit) { return lit.value; },
@@ -124,14 +133,15 @@ double evaluate(const Expr& expr) {
         },
     }, expr);
 }
-
 ```
+
+The recursive calls to `evaluate` work because `Expr` is defined before `evaluate`, even though `BinOp` contains `Expr` values. The `unique_ptr` indirection that makes the type compile also enables this recursion without any additional ceremony.
 
 ---
 
 ## Notes
 
-- `std::variant` is a closed (fixed) sum type — all alternatives must be known at compile time.
-- `std::visit` with the `overloaded` pattern is the C++ equivalent of pattern matching.
-- `std::variant` uses an index (not RTTI) — it's zero-overhead compared to virtual dispatch.
-- C++26 may add real pattern matching (`inspect` statement) which simplifies variant usage.
+- `std::variant` is a closed (fixed) sum type - all alternatives must be known at compile time. This is a deliberate restriction that buys you exhaustiveness checking.
+- `std::visit` with the `overloaded` pattern is the C++ equivalent of pattern matching in functional languages.
+- `std::variant` uses an integer index internally (not RTTI) making it zero-overhead compared to virtual dispatch.
+- C++26 may add real pattern matching via the `inspect` statement, which will simplify variant usage considerably and remove the need for the `overloaded` helper.

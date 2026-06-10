@@ -18,13 +18,13 @@ Applying functional programming concepts in modern C++: monadic error chaining, 
 
 ## Notes
 
-- Monadic chaining with std::optional::and_then / std::expected::and_then (C++23) enables composable error handling
-- Pure functions (no side effects, same input → same output) are easier to test and parallelize
-- std::variant + std::visit implements algebraic data types (sum types) in C++
-- Expression templates defer computation — used in linear algebra libraries (Eigen, Blaze)
-- Persistent (immutable) data structures share unchanged parts — efficient for undo/version history
-- Railway-oriented programming chains operations that may fail, short-circuiting on first error
-- std::views pipelines (C++20) provide lazy functional transformations over ranges
-- Continuation-passing style (CPS) maps naturally to coroutines and sender/receiver patterns
-- Pattern matching proposals (C++26) aim to add inspect expressions for functional-style dispatch
-- Avoid mutable shared state — the core principle of functional programming applies directly to concurrent C++
+- Monadic chaining with `std::optional::and_then` / `std::expected::and_then` (C++23) enables composable error handling without manual error-check boilerplate.
+- Pure functions (no side effects, same input -> same output) are easier to test and parallelize - C++ doesn't enforce purity but you can follow the discipline.
+- `std::variant` + `std::visit` implements algebraic data types (sum types) in C++, with exhaustive compile-time case checking.
+- Expression templates defer computation to a single pass - used in linear algebra libraries like Eigen and Blaze to eliminate temporary objects.
+- Persistent (immutable) data structures share unchanged parts between versions, making them efficient for undo/version history and safe for concurrent access.
+- Railway-oriented programming chains operations that may fail, short-circuiting on the first error and carrying it to the end of the pipeline.
+- `std::views` pipelines (C++20) provide lazy functional transformations over ranges with no intermediate allocations.
+- Continuation-passing style (CPS) maps naturally to coroutines and the sender/receiver pattern - coroutines are essentially syntactic sugar for CPS.
+- Pattern matching proposals (C++26) aim to add `inspect` expressions for functional-style dispatch, replacing the `overloaded` helper trick.
+- Avoid mutable shared state - this is the core principle of functional programming and applies directly to concurrent C++ to avoid data races.

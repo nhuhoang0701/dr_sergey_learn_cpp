@@ -8,12 +8,13 @@
 
 ## Topic Overview
 
-Expression templates defer computation by building an expression tree at compile time. The actual computation happens only when the result is needed, avoiding temporary objects.
+Expression templates defer computation by building an expression tree at compile time. The actual computation happens only when the result is needed, avoiding temporary objects entirely. This is one of the classic "zero-cost abstraction" techniques in C++, and understanding it will help you see why libraries like Eigen can match hand-written loop performance without sacrificing the readability of math notation.
 
 ### The Problem: Temporary Objects in Operator Overloading
 
-```cpp
+The naive approach to operator overloading for math types creates a new object for each operation. That sounds fine for one addition, but chains like `d = a + b + c` become expensive. Here is what that looks like, and why it hurts:
 
+```cpp
 #include <vector>
 #include <cstddef>
 
@@ -38,13 +39,15 @@ Vec operator+(const Vec& a, const Vec& b) {
 // temp1 = a + b   (allocates, computes)
 // temp2 = temp1 + c (allocates, computes)
 // d = temp2
-
 ```
+
+Each `+` triggers a full heap allocation and a complete pass over the data. For large vectors with many terms, this is painfully wasteful - you end up doing N passes when one would do.
 
 ### Expression Templates Solution
 
-```cpp
+The key insight is: instead of computing `a + b` immediately, return a lightweight object that *describes* the addition. The actual computation gets deferred to the moment you assign the result, at which point you loop just once and evaluate everything element by element.
 
+```cpp
 #include <cstddef>
 #include <vector>
 #include <iostream>
@@ -91,8 +94,9 @@ int main() {
 
     std::cout << d[0] << "\n"; // 6.0
 }
-
 ```
+
+The reason this works is that `a + b` now returns an `AddExpr<ETVec, ETVec>`, not an `ETVec`. Then `(a + b) + c` returns an `AddExpr<AddExpr<ETVec, ETVec>, ETVec>` - still no computation. Only when `operator=` is called does the loop run, calling `expr[i]` which recursively evaluates the whole tree for each element. The compiler inlines all of it and produces a single tight loop, identical to what you'd write by hand.
 
 ---
 
@@ -100,25 +104,25 @@ int main() {
 
 ### Q1: How do expression templates achieve zero-overhead abstraction
 
-The compiler inlines all the `operator[]` calls on the expression tree. The resulting code is identical to a hand-written loop: `d[i] = a[i] + b[i] + c[i]`. No temporary vectors are allocated, no extra loops are executed. The expression tree exists only at compile time.
+The compiler inlines all the `operator[]` calls on the expression tree. The resulting code is identical to a hand-written loop: `d[i] = a[i] + b[i] + c[i]`. No temporary vectors are allocated, no extra loops are executed. The expression tree exists only at compile time as a chain of nested template types - at runtime it simply doesn't exist.
 
 ### Q2: What libraries use expression templates
 
-Eigen (linear algebra), Blaze (linear algebra), Boost.uBLAS, Armadillo, and xTensor. They all use expression templates to make `Matrix C = A * B + D` compile to optimized single-pass code.
+Eigen (linear algebra), Blaze (linear algebra), Boost.uBLAS, Armadillo, and xTensor all use expression templates to make `Matrix C = A * B + D` compile to optimized single-pass code. This is a big part of why these libraries can compete with hand-tuned BLAS routines.
 
 ### Q3: What are the downsides of expression templates
 
-- Compile times increase significantly (deep template nesting).
-- Error messages are very long and cryptic.
-- Dangling references if expressions capture temporaries.
-- Debugging is harder (expression tree not visible in debugger).
-- Code complexity for library authors is high.
+- Compile times increase significantly because of deep template nesting.
+- Error messages are very long and cryptic - when something goes wrong, the type names in the diagnostics are enormous.
+- Dangling references become a real danger if expressions accidentally capture temporaries by reference instead of by value.
+- Debugging is harder because the expression tree is invisible in the debugger.
+- Code complexity for library authors is high - this is expert-level template metaprogramming.
 
 ---
 
 ## Notes
 
-- Expression templates are the classic C++ "zero-cost abstraction" technique.
-- C++20 concepts can improve error messages for expression template libraries.
-- The technique predates C++11 — invented by Todd Veldhuizen in 1995.
-- Modern alternatives: ranges (lazy pipelines) and `std::mdspan` (for multidimensional arrays).
+- Expression templates are the classic C++ "zero-cost abstraction" technique for math-heavy code.
+- C++20 concepts can improve error messages for expression template libraries by constraining what types are accepted.
+- The technique predates C++11 - it was invented by Todd Veldhuizen in 1995.
+- Modern alternatives worth knowing: ranges (lazy pipelines for sequences) and `std::mdspan` (for multidimensional array access patterns).
