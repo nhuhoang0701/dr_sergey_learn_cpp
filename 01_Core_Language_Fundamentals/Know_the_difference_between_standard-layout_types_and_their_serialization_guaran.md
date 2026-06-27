@@ -20,13 +20,13 @@ A **standard-layout type** is one whose memory layout is predictable and laid ou
 
 A class or struct earns "standard-layout" only if **every one** of these is true. Don't memorize them cold - the theme is "nothing the compiler would need to lay out in a surprising way":
 
-1. **No virtual functions** and no virtual base classes.
-2. **All non-static data members share the same access** (all `public`, or all `private`, etc.). This is because the compiler is free to re-order data members otherwises (e.g. private members are re-ordered before public members, etc.).
-3. **No non-static data members of reference type.**
-4. **All non-static members and base classes** are themselves standard-layout.
-5. **No two base subobjects of the same type** (no non-virtual diamond).
-6. **All non-static data members are declared in one class** of the hierarchy - either only the most-derived class, or only one base.
-7. It has no base classes carrying data, *or* it has no data of its own - the data lives at a single level.
+1. **No virtual functions and no virtual base classes**. Virtual functions add hidden vtable pointers, and virtual bases require complex offset calculations, both breaking the simple memory layout needed for C compatibility.
+1. **All non-static data members share the same access.** The compiler is allowed to reorder members across access specifier boundaries, so mixing access levels destroys the guarantee of predictable member ordering.
+1. **No non-static data members of reference type**. References are not required to have a predictable memory representation, so they cannot be safely used in types that need a guaranteed layout.
+1. **All non-static members and base classes are themselves standard-layout**. A type can only have a predictable layout if every component it contains also has a predictable layout.
+1. **No two base subobjects of the same type**. Multiple instances of the same base class create ambiguity in memory layout and make it impossible to reliably locate a specific subobject.
+1. **All non-static data members are declared in one class of the hierarchy**. Having data members in multiple classes allows the compiler to reorder them unpredictably, destroying the guarantee of a fixed memory layout.
+1. **It has no base classes carrying data, or it has no data of its own**. This ensures all data members exist at a single level in the hierarchy, preventing complex interactions between base and derived class layouts that would break predictability.
 
 ### Standard-Layout vs. Trivially Copyable vs. POD
 
