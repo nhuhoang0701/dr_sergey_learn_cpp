@@ -21,7 +21,7 @@ A **standard-layout type** is one whose memory layout is predictable and laid ou
 A class or struct earns "standard-layout" only if **every one** of these is true. Don't memorize them cold - the theme is "nothing the compiler would need to lay out in a surprising way":
 
 1. **No virtual functions** and no virtual base classes.
-2. **All non-static data members share the same access** (all `public`, or all `private`, etc.).
+2. **All non-static data members share the same access** (all `public`, or all `private`, etc.). This is because the compiler is free to re-order data members otherwises (e.g. private members are re-ordered before public members, etc.).
 3. **No non-static data members of reference type.**
 4. **All non-static members and base classes** are themselves standard-layout.
 5. **No two base subobjects of the same type** (no non-virtual diamond).
