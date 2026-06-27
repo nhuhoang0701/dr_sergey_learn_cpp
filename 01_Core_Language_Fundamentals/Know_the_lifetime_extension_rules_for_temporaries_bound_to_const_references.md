@@ -175,6 +175,7 @@ void use_ref(const Verbose& v) {
     // v is valid here - temporary alive for the duration of the function call
 }
 
+// -------------- WRONG! SAFE since C++98----------------
 // Case 4: Storing reference to temporary's member - DANGLING!
 struct Pair {
     std::string first, second;
@@ -217,7 +218,7 @@ Rules of thumb:
 - Direct binding `const T& r = T{}` -> extends lifetime
 - Returned from function `const T& r = f()` where f returns by value -> extends! (the return value is the temporary)
 - Function returning reference `const T& f() { return T{}; }` -> DANGLING
-- Member of temporary `const int& r = Pair{}.first` -> usually dangling (before C++26)
+- Member of temporary `const int& r = Pair{}.first` -> usually dangling (before C++26) // WRONG, SAFE SINCE C++98!!!
 - Through intermediate function `const T& r = identity(T{})` -> dangling (temporary dies after `identity` returns)
 
 ### Q3: C++23 deducing-this and reference binding
