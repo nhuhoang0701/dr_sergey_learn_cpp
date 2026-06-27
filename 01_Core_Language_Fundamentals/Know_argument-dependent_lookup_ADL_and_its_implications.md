@@ -79,7 +79,7 @@ Here are the rules that matter most in day-to-day C++:
 1. **ADL only applies to unqualified calls** - `ns::f(x)` never triggers ADL.
 2. **ADL does NOT apply if an object, variable, or type with the same name is found** in the local scope.
 3. **ADL can find `friend` functions** that are only declared inside a class definition. This is the "hidden friend" idiom.
-4. **ADL ignores `using` directives, but respects `using` declarations** when building the ADL candidate set.
+4. **ADL ignores `using` directives, but respects `using` declarations** when building the ADL candidate set (https://stackoverflow.com/q/27544893).
 5. **Template functions** often need a visible declaration for ADL to find them correctly, especially when two-phase lookup is involved.
 
 The second rule surprises people because it means a local name can block the lookup path you thought you were using. ADL is powerful, but it is still part of C++ name lookup, and name lookup has a lot of sharp edges.
