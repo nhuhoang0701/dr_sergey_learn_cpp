@@ -145,6 +145,8 @@ void generic_sort_helper(T& a, T& b) {
     using std::swap;  // Bring std::swap into scope as fallback
     if (b < a)
         swap(a, b);   // ADL finds lib::swap for lib::Widget, std::swap for others
+                      // It's NOT ambiguous due to a non-template function (`lib::Widget::swap`) is preferred over a function template specialization (`std::swap`).
+                      // Reference: https://en.cppreference.com/cpp/language/overload_resolution#:~:text=F1%20is%20a%20non%2Dtemplate%20function%20while%20F2%20is%20a%20template%20specialization
 }
 ```
 
