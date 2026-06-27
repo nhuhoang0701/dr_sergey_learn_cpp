@@ -41,9 +41,10 @@ The rule is strict: extension only happens for **direct** binding. Any indirecti
 | Scenario | Extends? | Why |
 | --- | --- | --- |
 | Direct binding `const T& r = T{}` | Yes | Standard rule |
-| Returned from function `const T& r = f()` | No | Temporary dies end of statement |
-| Member reference initialized `T{}.member` | No | Accessing member of temporary |
-| Passed to function parameter | No | Lifetime = duration of function call only |
+| `const T& r = f()` where `f()` returns `const T&` | No | Temporary dies end of statement |
+| `const T& r = f()` where `f()` returns `T` by value | Yes | C++17: prvalue is not materialized until needed |
+| Member reference initialized `T{}.member` | Yes (since C++17) | Accessing member of temporary |
+| Passed to function parameter | No | Lifetime = end of full expression containing the call (normal temporary lifetime, not extended) |
 | ternary `? :` (in some cases) | Depends | Complex rules |
 | Aggregate init member `{.ref = T{}}` | No (before C++26) | Temporary dies |
 
