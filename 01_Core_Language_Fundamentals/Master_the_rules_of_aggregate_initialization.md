@@ -106,13 +106,6 @@ struct Derived : Base {
 // Derived is NOT standard_layout
 ```
 
-## Summary
-
-The recursive requirement (members must be standard_layout) is just **one of many differences**. The concepts serve fundamentally different purposes:
-
-- **Aggregate**: About initialization syntax (can use brace initialization)
-- **Standard layout**: About memory layout compatibility with C (guarantees predictable layout, `offsetof` works, can be used in C APIs)
-
 ### Basic Aggregate Initialization
 
 When a type is an aggregate, brace initialization fills its members in declaration order.
