@@ -43,10 +43,15 @@ With the attribute, the empty member is marked as potentially-overlapping and ma
 ### When "Overlap" Actually Matters
 The "overlap" language from the standard becomes relevant in more complex cases:
 ```cpp
-struct A { int x; };  // 4 bytes
+struct A {
+    int x;      // 4 bytes
+    char c;     // 1 byte
+    // 3 bytes tail padding (to align to 8)
+};
+// sizeof(A) = 8
 
 struct B {
-    [[no_unique_address]] A a;  // 4 bytes
+    [[no_unique_address]] A a;  // 8 bytes
     char c;                      // Can be placed in A's tail padding!
 };
 // sizeof(B) = 8 (not 16)
