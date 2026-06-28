@@ -41,7 +41,7 @@ Base* p = new Derived();
 p->foo();
 // Compiler generates:
 //   1. Load vptr from *p          (p->vptr)
-//   2. Index into vtable           (vptr[1] for foo)
+//   2. Index into vtable           (vptr[1] for foo - index 1 is known at COMPILE TIME from Base's layout)
 //   3. Call the function pointer    (calls Derived::foo)
 ```
 
