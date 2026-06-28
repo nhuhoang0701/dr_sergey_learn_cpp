@@ -40,7 +40,7 @@ from being an aggregate. That's a breaking change if you relied on it.
 | **No user-declared constructors** | ✅ Required (C++20+) | ❌ **Not required** |
 | **No private/protected non-static data members** | ✅ Required | ❌ **Not required** |
 | **Same access control for ALL non-static data members** | ❌ Not required | ✅ **Required** |
-| **All non-static data members must be _X** | ❌ Not required | ✅ **Required (recursive)** |
+| **All non-static data members must be _X_** | ❌ Not required | ✅ **Required (recursive)** |
 | **No reference members** | ❌ Not required | ✅ **Required** |
 | **All base classes must be _X_** | ❌ Not required | ✅ **Required (recursive)** |
 | **Only one class in hierarchy with data members** | ❌ Not required | ✅ **Required** |
