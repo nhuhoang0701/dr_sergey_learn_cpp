@@ -8,7 +8,8 @@
 
 ## Topic Overview
 
-`[[no_unique_address]]` allows empty class members to occupy zero bytes, enabling the Empty Base Optimization (EBO) for members instead of just bases.
+`[[no_unique_address]]` allows empty class members to occupy zero bytes, enabling the Empty Base Optimization (EBO) for members instead of just bases. It tells the compiler:
+> "This member has no state and doesn't need its own unique address. You can optimize it away entirely."
 
 ### The Problem
 
@@ -28,7 +29,7 @@ struct WithoutAttr {
 
 struct WithAttr {
     int value;
-    [[no_unique_address]] Empty tag;  // Overlaps with padding - zero waste
+    [[no_unique_address]] Empty tag;  // both the member and the padding are eliminated
 };
 
 int main() {
@@ -37,7 +38,21 @@ int main() {
 }
 ```
 
-With the attribute, the compiler is allowed to overlap the empty member's storage with the surrounding padding.
+With the attribute, the empty member is marked as potentially-overlapping and may be optimized to zero bytes.
+
+### When "Overlap" Actually Matters
+The "overlap" language from the standard becomes relevant in more complex cases:
+```cpp
+struct A { int x; };  // 4 bytes
+
+struct B {
+    [[no_unique_address]] A a;  // 4 bytes
+    char c;                      // Can be placed in A's tail padding!
+};
+// sizeof(B) = 8 (not 16)
+```
+
+Here, c can be placed in A's tail padding because a is marked as potentially-overlapping. But this is about overlapping with another member's padding, not "the empty member's storage with surrounding padding."
 
 ### Practical Use: Stateless Allocators and Deleters
 
