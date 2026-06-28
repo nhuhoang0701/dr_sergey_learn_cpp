@@ -40,12 +40,14 @@ from being an aggregate. That's a breaking change if you relied on it.
 | **No user-declared constructors** | ✅ Required (C++20+) | ❌ **Not required** |
 | **No private/protected non-static data members** | ✅ Required | ❌ **Not required** |
 | **Same access control for ALL non-static data members** | ❌ Not required | ✅ **Required** |
-| **All non-static data members must be same type** | ❌ Not required | ❌ Not required |
-| **All non-static data members must be standard_layout** | ❌ Not required | ✅ **Required (recursive)** |
+| **All non-static data members must be _X** | ❌ Not required | ✅ **Required (recursive)** |
 | **No reference members** | ❌ Not required | ✅ **Required** |
-| **All base classes must be standard_layout** | ❌ Not required | ✅ **Required (recursive)** |
+| **All base classes must be _X_** | ❌ Not required | ✅ **Required (recursive)** |
 | **Only one class in hierarchy with data members** | ❌ Not required | ✅ **Required** |
 | **No base class same type as first data member** | ❌ Not required | ✅ **Required** |
+
+- **Aggregate**: About initialization syntax (can use brace initialization)
+- **Standard layout**: About memory layout compatibility with C (guarantees predictable layout, offsetof works, can be used in C APIs)
 
 #### 1. Constructor Requirements
 - **Aggregate**: Cannot have user-declared constructors (C++20+)
