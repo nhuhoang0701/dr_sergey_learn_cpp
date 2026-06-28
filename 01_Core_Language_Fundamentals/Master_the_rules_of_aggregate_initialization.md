@@ -33,6 +33,84 @@ restriction was added or removed in that version:
 The headline C++20 change: `T() = default;` or `T() = delete;` now disqualifies a struct
 from being an aggregate. That's a breaking change if you relied on it.
 
+### Difference between Aggregate and Standard layout
+
+| Requirement | Aggregate | Standard Layout |
+|-------------|-----------|-----------------|
+| **No user-declared constructors** | ✅ Required (C++20+) | ❌ **Not required** |
+| **No private/protected non-static data members** | ✅ Required | ❌ **Not required** |
+| **Same access control for ALL non-static data members** | ❌ Not required | ✅ **Required** |
+| **All non-static data members must be same type** | ❌ Not required | ❌ Not required |
+| **All non-static data members must be standard_layout** | ❌ Not required | ✅ **Required (recursive)** |
+| **No reference members** | ❌ Not required | ✅ **Required** |
+| **All base classes must be standard_layout** | ❌ Not required | ✅ **Required (recursive)** |
+| **Only one class in hierarchy with data members** | ❌ Not required | ✅ **Required** |
+| **No base class same type as first data member** | ❌ Not required | ✅ **Required** |
+
+#### 1. Constructor Requirements
+- **Aggregate**: Cannot have user-declared constructors (C++20+)
+- **Standard layout**: Can have any constructors
+
+```cpp
+struct WithCtor {
+    WithCtor(int) {}  // NOT aggregate, but IS standard_layout
+    int x;
+};
+```
+
+#### 2. Access Control
+- **Aggregate**: All non-static data members must be public (no private/protected)
+- **Standard layout**: All non-static data members must have the **same** access control (can all be private, all protected, or all public)
+
+```cpp
+struct AllPrivate {
+private:
+    int x;  // NOT aggregate (private member)
+            // IS standard_layout (all members have same access)
+};
+```
+
+#### 3. Reference Members
+- **Aggregate**: Can have reference members
+- **Standard layout**: Cannot have reference members
+
+```cpp
+struct WithRef {
+    int& ref;  // IS aggregate, NOT standard_layout
+};
+```
+
+#### 4. Hierarchy with Data Members
+- **Aggregate**: Multiple classes in hierarchy can have data members
+- **Standard layout**: Only one class in the hierarchy can have non-static data members
+
+```cpp
+struct Base { int a; };
+struct Derived : Base { int b; };
+// Derived IS aggregate (C++17+)
+// Derived is NOT standard_layout (both Base and Derived have data members)
+```
+
+#### 5. Base Class Type vs First Member Type
+- **Aggregate**: No restriction
+- **Standard layout**: No base class can have the same type as the first non-static data member
+
+```cpp
+struct Base {};
+struct Derived : Base {
+    Base b;  // First member has same type as base class
+};
+// Derived IS aggregate
+// Derived is NOT standard_layout
+```
+
+## Summary
+
+The recursive requirement (members must be standard_layout) is just **one of many differences**. The concepts serve fundamentally different purposes:
+
+- **Aggregate**: About initialization syntax (can use brace initialization)
+- **Standard layout**: About memory layout compatibility with C (guarantees predictable layout, `offsetof` works, can be used in C APIs)
+
 ### Basic Aggregate Initialization
 
 When a type is an aggregate, brace initialization fills its members in declaration order.
